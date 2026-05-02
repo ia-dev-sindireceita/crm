@@ -15,7 +15,7 @@ COMPOSE_NETWORK := crm_crm
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up down logs test lint lint-aicache precheck migrate-up migrate-down seed-stg smoke-alert verify-vendor
+.PHONY: help up down logs test test-backup-shell lint lint-aicache precheck migrate-up migrate-down seed-stg smoke-alert verify-vendor
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -36,8 +36,11 @@ down: ## Stop the stack and remove orphaned containers (volumes preserved)
 logs: ## Tail logs from every service
 	$(COMPOSE) logs -f --tail=200
 
-test: ## Run Go test suite with coverage
+test: test-backup-shell ## Run Go + shell test suites
 	$(GO) test ./... -race -count=1 -cover
+
+test-backup-shell: ## Run scripts/backup.sh integration tests (SIN-62267)
+	bash scripts/tests/backup_test.sh
 
 lint: notenant ## Run go vet + the notenant analyzer over internal/ (SIN-62232 / ADR 0071)
 	$(GO) vet ./...

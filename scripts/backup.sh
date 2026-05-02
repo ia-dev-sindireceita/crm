@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # Encrypted Postgres backup for Sindireceita.
 #
-# Pipeline: pg_dump (custom format) | age (X25519 recipient) | aws s3 cp.
+# Pipeline: pg_dump (custom format) -> age (X25519 recipient) -> aws s3 cp.
 # The dump is encrypted client-side BEFORE it ever touches the bucket so a
 # leaked AWS/B2 credential cannot decrypt the dumps.
+#
+# Defensive layout (SIN-62267): each stage runs as its own command with an
+# explicit exit-code check. The dump and the ciphertext land on tmpfs (the
+# unit ships with PrivateTmp=true) so we can size-check the cleartext dump,
+# size-check the ciphertext upload, and head-object-verify the remote object.
+# Any silent kill (e.g. seccomp filtering pg_dump in the hardened unit) flips
+# at least one of those checks and the script exits non-zero with a
+# structured journald log line.
 #
 # Required env:
 #   DATABASE_URL    libpq URL of the source DB.
@@ -11,21 +19,64 @@
 # Optional env:
 #   BACKUP_AGE_RECIPIENTS  recipients file (default: infra/age-backup.pub).
 #   BACKUP_PREFIX          object key prefix (default: empty -> dated dir).
+#   BACKUP_NODE_ID         per-host segregation (default: hostname -s).
+#   BACKUP_STATE_DIR       state directory (default: /var/lib/sindireceita).
+#   BACKUP_TMPDIR          where to stage the dump + ciphertext
+#                          (default: $TMPDIR or /tmp).
 #   AWS_ENDPOINT_URL       custom S3 endpoint (e.g. Backblaze B2).
 #
-# Logs go to stdout/stderr; systemd captures them in journalctl. Do not echo
-# secrets, dump bytes, or DATABASE_URL — the journal is on the same host that
-# can already read the DB, but assume someone forwards journalctl to a less
-# trusted SIEM.
+# Logs go through `logger -t sindireceita-backup` so journald captures them
+# with structured key=value fields. Do not echo secrets, dump bytes, or
+# DATABASE_URL — the journal is on the same host that already has DB access,
+# but assume someone forwards journalctl to a less trusted SIEM.
 #
-# SIN-62250.
+# SIN-62250 introduced the encrypt-then-upload pipeline; SIN-62267 added the
+# explicit per-stage exit-code chain, the size threshold, the head-object
+# verify, and the structured journald logs.
 set -Eeuo pipefail
+set -o errtrace
 shopt -s inherit_errexit
 
-log() { printf '[backup.sh] %s %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
-fail() { log "ERROR: $*"; exit 1; }
+readonly LOG_TAG="sindireceita-backup"
+readonly MIN_BYTES_FLOOR=$((1 * 1024 * 1024))      # 1 MiB
+readonly LAST_SUCCESS_FLOOR_FRACTION_PCT=10        # 10% of last success
 
-trap 'fail "command failed at line $LINENO"' ERR
+# sblog emits a single journald line tagged sindireceita-backup at the given
+# severity, plus a mirror copy on stderr. The logger call gives journald a
+# structured SYSLOG_IDENTIFIER=sindireceita-backup PRIORITY=… record; the
+# stderr mirror keeps the script CLI-debuggable (sudo -u …/backup.sh) and is
+# ALSO captured by journald in production because the unit pins
+# StandardError=journal. We deliberately avoid logger --stderr because it is
+# blocked by the hardened SystemCallFilter on some kernels.
+sblog() {
+  local level=$1
+  shift
+  local msg=$*
+  logger -t "$LOG_TAG" -p "user.${level}" -- "$msg"
+  printf '[%s] %s %s %s\n' "$LOG_TAG" "$(date -u +%FT%TZ)" "$level" "$msg" >&2
+}
+
+now_ms() { date +%s%3N; }
+
+# fail logs a structured failure line at user.err and exits with the given
+# code. The state file is intentionally NOT touched so the threshold derived
+# from the last successful run keeps protecting the next attempt.
+fail() {
+  local stage=$1
+  local reason=$2
+  local code=${3:-1}
+  sblog err "stage=${stage} status=fail code=${code} reason=${reason}"
+  exit "$code"
+}
+
+cleanup() {
+  if [[ -n "${tmp_dump:-}" && -e "${tmp_dump}" ]]; then rm -f -- "$tmp_dump"; fi
+  if [[ -n "${tmp_enc:-}" && -e "${tmp_enc}" ]]; then rm -f -- "$tmp_enc"; fi
+}
+trap cleanup EXIT
+# Catch-all for command failures that bypass the explicit `if ! ...; then`
+# checks. We still want a structured log line in that path.
+trap 'fail unknown "errtrace_line=${LINENO}" 1' ERR
 
 # require_age_v1 aborts unless `age --version` reports a major version >= 1.
 # Earlier age releases lack the HMAC over the ciphertext, so tampering would
@@ -37,11 +88,28 @@ require_age_v1() {
   raw=${raw#v}
   major=${raw%%.*}
   case "$major" in
-    ''|*[!0-9]*) fail "could not parse 'age --version' output: ${raw:-<empty>}" ;;
+    ''|*[!0-9]*) fail preflight "age-version-unparseable raw=${raw:-empty} (age >= 1.0 required)" 1 ;;
   esac
   if (( major < 1 )); then
-    fail "age >= 1.0 required (got: $raw); v0.x lacks HMAC tamper protection"
+    # NOTE: phrase "age >= 1.0 required" is asserted by
+    # internal/backup.TestBackupScriptRejectsOldAge — keep it verbatim.
+    fail preflight "age >= 1.0 required (got: ${raw}); v0.x lacks HMAC tamper protection" 1
   fi
+}
+
+# read_last_dump_bytes pulls the last successful dump_bytes value from the
+# JSON state file. It avoids jq (not in the deps allowlist) by using a
+# simple regex match on the well-known shape we write below.
+read_last_dump_bytes() {
+  local file=$1
+  [[ -f "$file" ]] || { printf '0'; return 0; }
+  local line
+  line=$(grep -oE '"dump_bytes"[[:space:]]*:[[:space:]]*[0-9]+' "$file" 2>/dev/null | head -1 || true)
+  if [[ -z "$line" ]]; then
+    printf '0'
+    return 0
+  fi
+  printf '%s' "${line##*:}" | tr -d '[:space:]'
 }
 
 : "${DATABASE_URL:?DATABASE_URL must be set}"
@@ -49,47 +117,120 @@ require_age_v1() {
 
 require_age_v1
 
-# Resolve the recipients file relative to the script unless the caller pinned
-# an absolute path via BACKUP_AGE_RECIPIENTS. age -R skips '#' comments, so we
-# can keep the rotation/runbook header inside infra/age-backup.pub.
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null && pwd)
 repo_root=$(cd -- "$script_dir/.." >/dev/null && pwd)
 recipients=${BACKUP_AGE_RECIPIENTS:-"$repo_root/infra/age-backup.pub"}
-[[ -r "$recipients" ]] || fail "recipients file not readable: $recipients"
+[[ -r "$recipients" ]] || fail preflight "recipients-not-readable path=${recipients}" 1
 
 prefix=${BACKUP_PREFIX:-}
 date_dir=$(date -u +%F)
-# Per-host segregation in the object key avoids two backup hosts overwriting
-# each other if the fleet ever grows beyond one node. BACKUP_NODE_ID lets the
-# operator pin a stable identifier (e.g. an inventory tag) so a hostname
-# rename does not orphan history.
 node_id=${BACKUP_NODE_ID:-$(hostname -s)}
-[[ -n "$node_id" ]] || fail "could not resolve node id (hostname -s empty); set BACKUP_NODE_ID explicitly"
+[[ -n "$node_id" ]] || fail preflight "no-node-id" 1
 object="${prefix:+$prefix/}$date_dir/$node_id/dump.pgc.age"
 target="s3://${BACKUP_BUCKET}/${object}"
+
+state_dir=${BACKUP_STATE_DIR:-/var/lib/sindireceita}
+state_file="$state_dir/backup-last-success.json"
+last_bytes=$(read_last_dump_bytes "$state_file")
+[[ "$last_bytes" =~ ^[0-9]+$ ]] || last_bytes=0
+
+bootstrap=false
+if (( last_bytes <= 0 )); then
+  bootstrap=true
+fi
+threshold_from_last=$(( last_bytes * LAST_SUCCESS_FLOOR_FRACTION_PCT / 100 ))
+min_size=$MIN_BYTES_FLOOR
+if (( threshold_from_last > min_size )); then
+  min_size=$threshold_from_last
+fi
 
 aws_extra=()
 if [[ -n "${AWS_ENDPOINT_URL:-}" ]]; then
   aws_extra+=(--endpoint-url "$AWS_ENDPOINT_URL")
 fi
 
-log "starting backup -> $target (recipients=$recipients)"
+tmp_root=${BACKUP_TMPDIR:-${TMPDIR:-/tmp}}
+tmp_dump=$(mktemp "$tmp_root/sindireceita-dump.XXXXXX.pgc")
+tmp_enc="${tmp_dump}.age"
 
-# pg_dump | age -R | aws s3 cp - ...
-# pipefail surfaces any non-zero stage. --no-progress avoids carriage-return
-# noise in journalctl. age streams stdin->stdout, so the dump never lands on
-# disk in cleartext.
-pg_dump \
-    --format=custom \
-    --no-owner \
-    --no-privileges \
-    "$DATABASE_URL" \
-  | age -R "$recipients" \
-  | aws s3 cp \
-      "${aws_extra[@]}" \
-      --no-progress \
-      --expected-size 0 \
-      - \
-      "$target"
+sblog info "stage=start bootstrap=${bootstrap} min_bytes=${min_size} last_bytes=${last_bytes} target=${target}"
 
-log "backup complete -> $target"
+# Stage 1: pg_dump. Land cleartext on tmpfs so we can size-check it before
+# spending CPU on encryption + bandwidth on upload. PrivateTmp=true on the
+# unit guarantees this never persists across runs.
+t0=$(now_ms)
+if ! pg_dump --format=custom --no-owner --no-privileges "$DATABASE_URL" >"$tmp_dump"; then
+  fail pg_dump "exit=$?" 1
+fi
+dur_pg_dump=$(( $(now_ms) - t0 ))
+dump_bytes=$(stat -c %s -- "$tmp_dump")
+sblog info "stage=pg_dump status=ok dur_ms=${dur_pg_dump} bytes=${dump_bytes}"
+
+if (( dump_bytes < min_size )); then
+  fail pg_dump "size-below-threshold bytes=${dump_bytes} min=${min_size} bootstrap=${bootstrap}" 1
+fi
+
+# Stage 2: encrypt to a sibling tmpfile. age normally streams stdin->stdout;
+# using -o lets us check exit code AND ciphertext size in two boring steps.
+t0=$(now_ms)
+if ! age -R "$recipients" -o "$tmp_enc" "$tmp_dump"; then
+  fail encrypt "exit=$?" 1
+fi
+dur_encrypt=$(( $(now_ms) - t0 ))
+enc_bytes=$(stat -c %s -- "$tmp_enc")
+if (( enc_bytes <= 0 )); then
+  fail encrypt "ciphertext-empty bytes=${enc_bytes}" 1
+fi
+sblog info "stage=encrypt status=ok dur_ms=${dur_encrypt} bytes=${enc_bytes}"
+
+# Stage 3: upload the ciphertext file. Passing the path (not a stream) makes
+# aws s3 cp respect --expected-size accurately and lets us run head-object
+# right after with a known content length to compare against.
+t0=$(now_ms)
+if ! aws s3 cp \
+        "${aws_extra[@]}" \
+        --no-progress \
+        --expected-size "$enc_bytes" \
+        "$tmp_enc" \
+        "$target"; then
+  fail upload "exit=$?" 1
+fi
+dur_upload=$(( $(now_ms) - t0 ))
+sblog info "stage=upload status=ok dur_ms=${dur_upload} bytes=${enc_bytes}"
+
+# Stage 4: head-object verify. aws s3 cp can return 0 even if the final put
+# silently dropped (rare but documented around S3 503 retry exhaustion). We
+# trust head-object as the authoritative "the bucket has it" signal.
+t0=$(now_ms)
+remote_bytes=$(aws s3api head-object \
+                  "${aws_extra[@]}" \
+                  --bucket "$BACKUP_BUCKET" \
+                  --key "$object" \
+                  --query 'ContentLength' \
+                  --output text 2>/dev/null) \
+  || fail verify "head-object-failed exit=$? key=${object}" 1
+dur_verify=$(( $(now_ms) - t0 ))
+
+[[ "$remote_bytes" =~ ^[0-9]+$ ]] \
+  || fail verify "content-length-unparseable raw=${remote_bytes}" 1
+if (( remote_bytes != enc_bytes )); then
+  fail verify "content-length-mismatch local=${enc_bytes} remote=${remote_bytes}" 1
+fi
+sblog info "stage=verify status=ok dur_ms=${dur_verify} bytes=${remote_bytes}"
+
+# Stage 5: persist last-success metadata. Atomic rename keeps the file
+# either fully old or fully new — never half-written if we get interrupted.
+# The state file is only written when EVERY prior stage succeeded.
+if ! mkdir -p -- "$state_dir"; then
+  fail state "mkdir-state-dir-failed path=${state_dir}" 1
+fi
+state_tmp=$(mktemp "$state_dir/.backup-last-success.XXXXXX")
+printf '{"dump_bytes":%d,"enc_bytes":%d,"object":"%s","node_id":"%s","timestamp":"%s"}\n' \
+  "$dump_bytes" "$enc_bytes" "$object" "$node_id" "$(date -u +%FT%TZ)" \
+  >"$state_tmp"
+if ! mv -f -- "$state_tmp" "$state_file"; then
+  rm -f -- "$state_tmp" || true
+  fail state "rename-state-file-failed path=${state_file}" 1
+fi
+
+sblog info "stage=done status=ok bytes=${enc_bytes} dump_bytes=${dump_bytes} target=${target}"
