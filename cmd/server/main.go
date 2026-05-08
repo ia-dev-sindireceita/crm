@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 )
 
 const defaultAddr = ":8080"
@@ -21,12 +24,28 @@ func main() {
 	os.Exit(execute(ctx, os.Getenv))
 }
 
+// execute picks the run mode based on the environment:
+//
+//   - DATABASE_URL set → full app mode (assemble deps, mount /login).
+//   - DATABASE_URL unset → health-only mode (existing run()) so local
+//     liveness probes and the existing TestRun_* suite keep working
+//     without a Postgres dependency.
+//
+// SIN-62348 wires the production app-mode path; the fallback stays
+// for backwards compatibility and ops smoke probes.
 func execute(ctx context.Context, getenv func(string) string) int {
 	addr := defaultAddr
 	if v := getenv("HTTP_ADDR"); v != "" {
 		addr = v
 	}
-	if err := run(ctx, addr); err != nil {
+	logger := slog.Default()
+	var err error
+	if getenv(postgresadapter.EnvDSN) != "" {
+		err = runApp(ctx, addr, getenv, logger)
+	} else {
+		err = run(ctx, addr)
+	}
+	if err != nil {
 		log.Printf("crm: %v", err)
 		return 1
 	}
