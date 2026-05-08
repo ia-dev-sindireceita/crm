@@ -134,7 +134,20 @@ func Generate(seed []byte, t time.Time) (string, error) {
 //
 // The comparison is constant-time so a brute-force attacker can not
 // distinguish a near-miss from a wrong-length input by timing.
+//
+// External callers use this name. Inside the package, Service.Verify
+// (a method on *Service) shares the lexical name; to avoid the
+// awkwardness of bare `Verify(...)` reading like a method call, the
+// implementation is reused under totpVerify (see below).
 func Verify(seed []byte, submitted string, t time.Time, window int) error {
+	return totpVerify(seed, submitted, t, window)
+}
+
+// totpVerify is the unexported implementation shared by package-level
+// Verify and Service.Verify. Keeping the body here means Service can
+// call totpVerify without ambiguity even though *Service has a
+// method named Verify.
+func totpVerify(seed []byte, submitted string, t time.Time, window int) error {
 	if len(seed) < totpSeedMin {
 		return ErrSeedTooShort
 	}

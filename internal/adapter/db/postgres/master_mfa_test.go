@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
@@ -68,10 +67,10 @@ func TestMasterMFA_StoreLoadVerifyReenroll(t *testing.T) {
 		}
 	})
 
-	t.Run("LoadSeed on missing row returns pgx.ErrNoRows", func(t *testing.T) {
+	t.Run("LoadSeed on missing row returns mfa.ErrNotEnrolled", func(t *testing.T) {
 		_, err := a.LoadSeed(ctx, target)
-		if !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("err = %v, want pgx.ErrNoRows", err)
+		if !errors.Is(err, mfa.ErrNotEnrolled) {
+			t.Fatalf("err = %v, want mfa.ErrNotEnrolled", err)
 		}
 	})
 

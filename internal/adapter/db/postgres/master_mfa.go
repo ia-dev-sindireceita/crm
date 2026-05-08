@@ -83,9 +83,9 @@ func (a *MasterMFA) StoreSeed(ctx context.Context, userID uuid.UUID, seedCiphert
 }
 
 // LoadSeed returns the encrypted seed for userID. Missing row is a
-// distinct outcome from a database error — pgx.ErrNoRows is wrapped so
-// callers can errors.Is and treat the user as "not enrolled" rather
-// than rejecting the request as a system failure.
+// distinct outcome from a database error — translated into the
+// domain sentinel mfa.ErrNotEnrolled so the Service layer can
+// errors.Is without importing pgx (Hexagonal rule from ADR 0074).
 func (a *MasterMFA) LoadSeed(ctx context.Context, userID uuid.UUID) ([]byte, error) {
 	var ciphertext []byte
 	err := WithMasterOps(ctx, a.pool, a.actorID, func(tx pgx.Tx) error {
@@ -95,7 +95,7 @@ func (a *MasterMFA) LoadSeed(ctx context.Context, userID uuid.UUID) ([]byte, err
 		).Scan(&ciphertext)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, pgx.ErrNoRows
+		return nil, mfa.ErrNotEnrolled
 	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: MasterMFA.LoadSeed: %w", err)

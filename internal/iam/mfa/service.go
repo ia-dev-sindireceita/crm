@@ -198,3 +198,141 @@ func (s *Service) Enroll(ctx context.Context, userID uuid.UUID, label string) (E
 		RecoveryCodes: plain,
 	}, nil
 }
+
+// totpVerifyWindow is the ±step tolerance (ADR 0074 §1: ±1 step).
+// Pulled into a constant so a future ADR amendment relaxing the
+// window has exactly one place to land.
+const totpVerifyWindow = 1
+
+// Verify checks a six-digit TOTP code against the seed stored for
+// userID. Returns nil on success, ErrInvalidCode on a mismatch, or a
+// wrapped error for storage / decryption failures.
+//
+// The seed is loaded fresh from the SeedRepository on every call —
+// callers MUST NOT cache it client-side. On success the
+// last_verified_at column is bumped via MarkVerified and an audit
+// record is emitted.
+//
+// A missing master_mfa row is reported as ErrInvalidCode (not a
+// distinct "not enrolled" error) so a hostile prober cannot
+// distinguish "no enrolment yet" from "wrong code". The
+// RequireMasterMFA middleware (PR6) gates the verify handler on the
+// "is enrolled" check upstream — by the time we reach Verify the
+// user is expected to be enrolled.
+func (s *Service) Verify(ctx context.Context, userID uuid.UUID, code string) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("mfa: Verify: userID is nil")
+	}
+	ciphertext, err := s.seeds.LoadSeed(ctx, userID)
+	if err != nil {
+		// ErrNotEnrolled specifically maps to ErrInvalidCode (anti-
+		// enumeration: a hostile prober cannot distinguish "no enrol
+		// yet" from "wrong code"). Other errors propagate wrapped.
+		if errors.Is(err, ErrNotEnrolled) {
+			return ErrInvalidCode
+		}
+		return fmt.Errorf("mfa: Verify: load seed: %w", err)
+	}
+	seed, err := s.cipher.Decrypt(ciphertext)
+	if err != nil {
+		return fmt.Errorf("mfa: Verify: decrypt seed: %w", err)
+	}
+	// Calls the package-level TOTP function (totp.go), not Service.Verify.
+	if err := totpVerify(seed, code, s.clock(), totpVerifyWindow); err != nil {
+		// Don't leak the exact reason (ErrSeedTooShort vs
+		// ErrInvalidCode) at this layer — both collapse to "wrong code"
+		// from the caller's view.
+		return ErrInvalidCode
+	}
+	if err := s.seeds.MarkVerified(ctx, userID); err != nil {
+		return fmt.Errorf("mfa: Verify: mark verified: %w", err)
+	}
+	if err := s.audit.LogVerified(ctx, userID); err != nil {
+		return fmt.Errorf("mfa: Verify: audit: %w", err)
+	}
+	return nil
+}
+
+// ConsumeRecovery validates a single recovery code against the
+// per-user active set, marks it consumed, flips the master into
+// reenroll-required state, and fires audit + Slack alert. Returns
+// nil on success, ErrInvalidCode on no match.
+//
+// Sequence (ADR 0074 §5):
+//  1. Normalise the submitted plaintext (strip dashes/spaces, upper-
+//     case, refuse non-base32).
+//  2. List the master's active codes.
+//  3. Walk the list calling CodeHasher.Verify against each row's
+//     stored Argon2id hash. The walk is exhaustive — short-circuit
+//     would leak which row matched via timing; instead we record the
+//     first match and continue past the remaining rows. (10 rows
+//     max, ~250ms each, 2.5s worst case is acceptable on the cold
+//     recovery path.)
+//  4. If no match: return ErrInvalidCode.
+//  5. MarkConsumed on the matched row.
+//  6. MarkReenrollRequired on the master so the next session forces
+//     a fresh TOTP enrol.
+//  7. LogRecoveryUsed (audit — fatal).
+//  8. AlertRecoveryUsed (Slack — non-fatal, logged on failure since
+//     the code is already consumed and rolling back would be
+//     complex).
+func (s *Service) ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitted string) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("mfa: ConsumeRecovery: userID is nil")
+	}
+	canonical, err := NormalizeRecoveryCode(submitted)
+	if err != nil {
+		// Anti-enumeration: surface the same generic error a wrong
+		// (well-formed) code would produce.
+		return ErrInvalidCode
+	}
+	rows, err := s.codes.ListActive(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("mfa: ConsumeRecovery: list active: %w", err)
+	}
+	var matched *RecoveryCodeRecord
+	for i := range rows {
+		ok, vErr := s.hasher.Verify(rows[i].Hash, canonical)
+		if vErr != nil {
+			// Malformed stored hash is a system-side problem; surface
+			// it as a wrap rather than collapsing to ErrInvalidCode so
+			// ops can spot it.
+			return fmt.Errorf("mfa: ConsumeRecovery: verify row: %w", vErr)
+		}
+		if ok && matched == nil {
+			matched = &rows[i]
+			// We deliberately keep iterating to avoid a timing oracle.
+		}
+	}
+	if matched == nil {
+		return ErrInvalidCode
+	}
+	if err := s.codes.MarkConsumed(ctx, matched.ID); err != nil {
+		return fmt.Errorf("mfa: ConsumeRecovery: mark consumed: %w", err)
+	}
+	if err := s.seeds.MarkReenrollRequired(ctx, userID); err != nil {
+		return fmt.Errorf("mfa: ConsumeRecovery: mark reenroll: %w", err)
+	}
+	if err := s.audit.LogRecoveryUsed(ctx, userID); err != nil {
+		return fmt.Errorf("mfa: ConsumeRecovery: audit: %w", err)
+	}
+	if err := s.alerter.AlertRecoveryUsed(ctx, userID); err != nil {
+		// Slack outage MUST NOT cause the master to be told their code
+		// was wrong (the consume already happened). The alert is best-
+		// effort; the audit_log entry is the durable record.
+		s.alertFailure(ctx, userID, err)
+	}
+	return nil
+}
+
+// alertFailure is the soft-fail logging hook for AlertRecoveryUsed
+// outages. Pulled into a method so a future caller (Regenerate in
+// PR7) can reuse it.
+func (s *Service) alertFailure(ctx context.Context, userID uuid.UUID, cause error) {
+	// LogMFARequired carries route + reason fields we can repurpose
+	// to surface "alerter degraded" without adding a new audit method.
+	// Any error here is double-trouble (audit AND alert failed); we
+	// drop it on the floor — the master_ops_audit DB trail still
+	// captures the underlying mutations.
+	_ = s.audit.LogMFARequired(ctx, userID, "/m/2fa/recover", "alerter_failed:"+cause.Error())
+}

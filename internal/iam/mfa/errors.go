@@ -27,4 +27,11 @@ var (
 	// submitted plaintext can not be reduced to a 10-character base32
 	// codeword (wrong length after dash-strip, illegal alphabet, etc.).
 	ErrCodeFormat = errors.New("mfa: recovery code format invalid")
+
+	// ErrNotEnrolled is returned by SeedRepository.LoadSeed when no
+	// master_mfa row exists for the requested userID. Adapters MUST
+	// translate their storage-layer "no rows" error into this domain
+	// sentinel so the Service layer compares without importing the
+	// adapter's package (Hexagonal rule from ADR 0074).
+	ErrNotEnrolled = errors.New("mfa: master not enrolled")
 )
