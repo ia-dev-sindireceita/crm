@@ -1,0 +1,79 @@
+[Unit]
+Description=Sindireceita encrypted Postgres backup (pg_dump | age | s3)
+Documentation=file:/opt/sindireceita/docs/operations/backup-restore.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Run as a dedicated unprivileged user. backup.sh does NOT use the private
+# age key — it encrypts via the public recipient in infra/age-backup.pub —
+# so the unit is intentionally locked away from /etc/sindireceita/age-backup.key
+# via InaccessiblePaths below. The user only needs:
+#   - the libpq env to reach Postgres
+#   - the public recipient file (committed in the repo, world-readable)
+#   - AWS credentials in EnvironmentFile (mode 0640 root:sindireceita-backup)
+User=sindireceita-backup
+Group=sindireceita-backup
+
+WorkingDirectory=/opt/sindireceita
+
+# EnvironmentFile holds DATABASE_URL, BACKUP_BUCKET, AWS_*, optional
+# AWS_ENDPOINT_URL and BACKUP_PREFIX. File is 0600 root:sindireceita-backup.
+# Never log its contents. systemd does NOT echo Environment values to journal.
+EnvironmentFile=/etc/sindireceita/backup.env
+
+ExecStart=/opt/sindireceita/scripts/backup.sh
+
+# Logs go to journalctl (StandardOutput/Error inherit -> journal). Avoids
+# leaking sensitive command output via shell history or /var/log files that
+# get rotated to less trusted hosts.
+StandardOutput=journal
+StandardError=journal
+
+# Sandboxing. age + pg_dump + aws need network and read-only access to the
+# repo and the key file; nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# Read-only access to the repo + /etc/sindireceita. backup.sh does not write
+# to disk: pg_dump streams stdout straight into age which streams into aws
+# s3 cp. Nothing else needs to be writable.
+ReadOnlyPaths=/opt/sindireceita /etc/sindireceita
+ReadWritePaths=
+
+# Defense in depth: the backup service must NEVER need the private age key,
+# only restore-drill.sh does. Hide the key file from this unit's namespace
+# so an exploit in pg_dump / age / aws cannot read it even if Unix perms
+# drift. Restore drill is run interactively via `sudo -u sindireceita-backup
+# -E ./scripts/restore-drill.sh` and inherits no systemd sandbox.
+InaccessiblePaths=/etc/sindireceita/age-backup.key
+
+# Resource caps. pg_dump can be memory-heavy for large schemas; tune as the
+# DB grows.
+MemoryMax=2G
+CPUQuota=200%
+TimeoutStartSec=2h
+
+# Retry once on transient failures (S3 5xx, network blip). Anything beyond
+# that pages the on-call via the journal -> alertmanager pipeline.
+Restart=on-failure
+RestartSec=5min
+
+[Install]
+WantedBy=multi-user.target
