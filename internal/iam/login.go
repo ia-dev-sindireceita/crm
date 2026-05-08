@@ -213,7 +213,7 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 				slog.String("tenant_id", tenantID.String()),
 				slog.Time("locked_until", until),
 			)
-			return Session{}, ErrAccountLocked
+			return Session{}, &AccountLockedError{Until: until}
 		}
 	}
 
@@ -224,8 +224,8 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 		// lockout row and (for master endpoints) fire the synchronous
 		// alert. The user still sees ErrAccountLocked on the
 		// trip-attempt because the persisted row is the truth source.
-		if locked := s.recordLoginFailure(ctx, tenantID, userID, email); locked {
-			return Session{}, ErrAccountLocked
+		if until, locked := s.recordLoginFailure(ctx, tenantID, userID, email); locked {
+			return Session{}, &AccountLockedError{Until: until}
 		}
 		logger.WarnContext(ctx, "login: rejected", slog.String("reason", "invalid_credentials"), slog.String("tenant_id", tenantID.String()))
 		return Session{}, ErrInvalidCredentials
@@ -351,18 +351,21 @@ func failedLoginKey(email string) string {
 // recordLoginFailure increments the sliding-window failure counter
 // for email and, when the policy threshold is exceeded, writes the
 // durable account_lockout row and fires the synchronous Slack alert
-// for master endpoints. Returns true if the call resulted in a
-// lockout being written for the current attempt — the caller uses
-// this to decide between ErrAccountLocked and ErrInvalidCredentials.
+// for master endpoints. Returns the locked_until timestamp and true
+// if the call resulted in a lockout being written for the current
+// attempt — the caller uses this to build the typed
+// *AccountLockedError so the HTTP layer can derive a Retry-After
+// header. Returns (zero, false) on every other path, including
+// counter-only throttles and write failures.
 //
 // Failure paths are intentionally swallowed (with a WARN log): a
 // Limiter outage MUST NOT make every login look like a 401 to the
 // user, and a Lockouts write-failure does not change the credential
 // verdict for the current attempt.
-func (s *Service) recordLoginFailure(ctx context.Context, tenantID, userID uuid.UUID, email string) bool {
+func (s *Service) recordLoginFailure(ctx context.Context, tenantID, userID uuid.UUID, email string) (time.Time, bool) {
 	logger := s.logger()
 	if s.Limiter == nil || !s.LoginPolicy.LockoutEnabled() {
-		return false
+		return time.Time{}, false
 	}
 	allowed, _, err := s.Limiter.Allow(
 		ctx,
@@ -375,18 +378,18 @@ func (s *Service) recordLoginFailure(ctx context.Context, tenantID, userID uuid.
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("err", err.Error()),
 		)
-		return false
+		return time.Time{}, false
 	}
 	if allowed {
-		return false
+		return time.Time{}, false
 	}
 	// Threshold tripped. Write the durable lockout row.
 	if s.Lockouts == nil {
-		// Counter trip but no Lockouts wired — return false so the
+		// Counter trip but no Lockouts wired — return zero so the
 		// caller still emits the standard ErrInvalidCredentials. This
 		// matches the "Lockouts nil disables the lockout flow" rule
 		// documented on Service.Lockouts.
-		return false
+		return time.Time{}, false
 	}
 	until := s.now().Add(s.LoginPolicy.Lockout.Duration)
 	reason := fmt.Sprintf("ratelimit: %d failed login attempts", s.LoginPolicy.Lockout.Threshold)
@@ -400,7 +403,7 @@ func (s *Service) recordLoginFailure(ctx context.Context, tenantID, userID uuid.
 		// credential rejection so the response stays uniform. A
 		// retry on the next attempt will re-trip the threshold and
 		// try the write again.
-		return false
+		return time.Time{}, false
 	}
 	logger.WarnContext(ctx, "login: locked",
 		slog.String("tenant_id", tenantID.String()),
@@ -423,5 +426,5 @@ func (s *Service) recordLoginFailure(ctx context.Context, tenantID, userID uuid.
 			)
 		}
 	}
-	return true
+	return until, true
 }
