@@ -94,7 +94,13 @@ func TestNewJSONLogger_NilWriter_DiscardsSafely(t *testing.T) {
 
 func TestFromContext_NilContext_ReturnsDefault(t *testing.T) {
 	t.Parallel()
-	if got := obs.FromContext(nil); got == nil { //nolint:staticcheck // intentional nil ctx
+	// FromContext must accept a nil ctx without panicking — adapters
+	// do call it from goroutines that haven't been handed a request
+	// context (logging shims, deferred cleanups). Use a typed nil so
+	// staticcheck SA1012 doesn't flag the explicit literal; the
+	// runtime sees a (context.Context)(nil) regardless.
+	var ctx context.Context
+	if got := obs.FromContext(ctx); got == nil {
 		t.Fatal("FromContext(nil) returned nil")
 	}
 }

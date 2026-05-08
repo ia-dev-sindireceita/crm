@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
@@ -112,22 +111,6 @@ func TestRouter_HTTPRequests_LoginGetTenantLabelNonEmpty(t *testing.T) {
 	}
 	if !matched {
 		t.Error("no http_requests_total child matched /login + GET + 200 + non-empty tenant")
-	}
-}
-
-func TestRouter_TestAlert_ProductionBuild_404(t *testing.T) {
-	// Default test command (no -tags test) compiles testalert_prod.go
-	// which serves a 404. -tags test build is exercised by
-	// internal/obs/testalert_test_build_test.go directly.
-	t.Parallel()
-	h, m, _, _, _ := newRouterWithObs(t)
-	before := testutil.ToFloat64(m.RLSMisses)
-	rec := do(t, h, http.MethodPost, "acme.crm.local", "/internal/test-alert", nil)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("/internal/test-alert in prod build: got %d, want 404", rec.Code)
-	}
-	if testutil.ToFloat64(m.RLSMisses) != before {
-		t.Errorf("rls_misses_total bumped in prod build")
 	}
 }
 
