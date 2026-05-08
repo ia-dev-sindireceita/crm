@@ -320,19 +320,71 @@ func (s *Service) ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitt
 		// Slack outage MUST NOT cause the master to be told their code
 		// was wrong (the consume already happened). The alert is best-
 		// effort; the audit_log entry is the durable record.
-		s.alertFailure(ctx, userID, err)
+		s.alertFailure(ctx, userID, "/m/2fa/recover", err)
 	}
 	return nil
 }
 
-// alertFailure is the soft-fail logging hook for AlertRecoveryUsed
-// outages. Pulled into a method so a future caller (Regenerate in
-// PR7) can reuse it.
-func (s *Service) alertFailure(ctx context.Context, userID uuid.UUID, cause error) {
+// alertFailure is the soft-fail logging hook for Slack alerter
+// outages on either the consume or regenerate path. Pulled into a
+// method so both callers reuse the same diagnostic shape.
+func (s *Service) alertFailure(ctx context.Context, userID uuid.UUID, route string, cause error) {
 	// LogMFARequired carries route + reason fields we can repurpose
 	// to surface "alerter degraded" without adding a new audit method.
 	// Any error here is double-trouble (audit AND alert failed); we
 	// drop it on the floor — the master_ops_audit DB trail still
 	// captures the underlying mutations.
-	_ = s.audit.LogMFARequired(ctx, userID, "/m/2fa/recover", "alerter_failed:"+cause.Error())
+	_ = s.audit.LogMFARequired(ctx, userID, route, "alerter_failed:"+cause.Error())
+}
+
+// RegenerateRecovery mints a fresh set of 10 recovery codes for the
+// master, mass-invalidates the prior active set, and fires audit +
+// Slack alert. Returns the plaintext codes (shown ONCE by the HTTP
+// layer) or an error.
+//
+// Sequence (ADR 0074 §2 regenerate path):
+//  1. InvalidateAll — bulk-mark every active row consumed.
+//  2. GenerateRecoveryCodes — 10 fresh plaintext codes.
+//  3. CodeHasher.Hash each.
+//  4. InsertHashes — persist.
+//  5. LogRecoveryRegenerated (audit, fatal).
+//  6. AlertRecoveryRegenerated (Slack — non-fatal: regenerate is
+//     intentional, so a failed alert MUST NOT roll back the new
+//     codes the master has already seen).
+//
+// The caller is expected to be behind RequireMasterMFA — this method
+// does NOT itself check enrolment. A master who calls Regenerate
+// without ever having enrolled will silently mint codes against a
+// non-existent seed; that's a wiring bug worth flagging in review,
+// but defending against it inside this method would create a circular
+// dependency with the SeedRepository on the success path.
+func (s *Service) RegenerateRecovery(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("mfa: RegenerateRecovery: userID is nil")
+	}
+	if _, err := s.codes.InvalidateAll(ctx, userID); err != nil {
+		return nil, fmt.Errorf("mfa: RegenerateRecovery: invalidate prior: %w", err)
+	}
+	plain, err := GenerateRecoveryCodes(s.rand)
+	if err != nil {
+		return nil, fmt.Errorf("mfa: RegenerateRecovery: generate codes: %w", err)
+	}
+	hashes := make([]string, len(plain))
+	for i, code := range plain {
+		h, err := s.hasher.Hash(code)
+		if err != nil {
+			return nil, fmt.Errorf("mfa: RegenerateRecovery: hash code %d: %w", i, err)
+		}
+		hashes[i] = h
+	}
+	if err := s.codes.InsertHashes(ctx, userID, hashes); err != nil {
+		return nil, fmt.Errorf("mfa: RegenerateRecovery: insert hashes: %w", err)
+	}
+	if err := s.audit.LogRecoveryRegenerated(ctx, userID); err != nil {
+		return nil, fmt.Errorf("mfa: RegenerateRecovery: audit: %w", err)
+	}
+	if err := s.alerter.AlertRecoveryRegenerated(ctx, userID); err != nil {
+		s.alertFailure(ctx, userID, "/m/2fa/recovery/regenerate", err)
+	}
+	return plain, nil
 }

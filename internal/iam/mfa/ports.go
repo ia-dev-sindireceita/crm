@@ -88,8 +88,10 @@ type AuditLogger interface {
 }
 
 // Alerter posts the immediate Slack #alerts notification when a
-// master recovery code is consumed (ADR 0074 §5). The domain layer
-// names the event; the adapter renders the message and routes it.
+// master recovery code is consumed (ADR 0074 §5) or the recovery set
+// is regenerated (ADR 0074 §2). The domain layer names the event;
+// the adapter renders the message and routes it.
 type Alerter interface {
 	AlertRecoveryUsed(ctx context.Context, userID uuid.UUID) error
+	AlertRecoveryRegenerated(ctx context.Context, userID uuid.UUID) error
 }

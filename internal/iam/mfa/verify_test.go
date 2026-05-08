@@ -84,13 +84,19 @@ func (a *recordingAudit) LogMFARequired(_ context.Context, _ uuid.UUID, _, _ str
 }
 
 type recordingAlerter struct {
-	calls int
-	err   error
+	calls      int
+	err        error
+	regenCalls int
+	regenErr   error
 }
 
 func (a *recordingAlerter) AlertRecoveryUsed(context.Context, uuid.UUID) error {
 	a.calls++
 	return a.err
+}
+func (a *recordingAlerter) AlertRecoveryRegenerated(context.Context, uuid.UUID) error {
+	a.regenCalls++
+	return a.regenErr
 }
 
 func newVerifyService(t *testing.T, seeds *fakeSeedRepoEnrolled, codes *fakeRecoveryStore, audit *recordingAudit, alerter *recordingAlerter, clock func() time.Time) *Service {
