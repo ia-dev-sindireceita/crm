@@ -18,8 +18,8 @@ import (
 	"net/url"
 	"strings"
 
-	domaincsrf "github.com/pericles-luz/crm/internal/iam/csrf"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
+	domaincsrf "github.com/pericles-luz/crm/internal/iam/csrf"
 )
 
 // Reason names a specific failure branch in the RequireCSRF middleware.

@@ -63,10 +63,7 @@ func TestVerifyPassword_RejectsMalformed(t *testing.T) {
 func TestVerifyPassword_NoPanicOnAdversarial(t *testing.T) {
 	// Property-style: any garbage input must return either (false, nil)
 	// or (false, ErrInvalidEncoding); never panic.
-	var cases []string
-	for _, s := range []string{"", "$", "$$$$$", "$argon2id$", "$argon2id$v=19$"} {
-		cases = append(cases, s)
-	}
+	cases := []string{"", "$", "$$$$$", "$argon2id$", "$argon2id$v=19$"}
 	for _, encoded := range cases {
 		t.Run(encoded, func(t *testing.T) {
 			defer func() {

@@ -54,11 +54,11 @@ func TestPolicyCheck_AcceptanceMatrix(t *testing.T) {
 	pol := &Policy{Pwned: pwned}
 
 	cases := []struct {
-		name      string
-		plain     string
-		ctx       PolicyContext
-		wantOK    bool
-		wantWhy   PolicyReason
+		name    string
+		plain   string
+		ctx     PolicyContext
+		wantOK  bool
+		wantWhy PolicyReason
 	}{
 		{
 			name:   "12 chars passes",

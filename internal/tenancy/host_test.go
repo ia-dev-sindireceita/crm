@@ -11,11 +11,11 @@ func TestParseHost_Variants(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		host      string
-		wantSub   string
-		wantRoot  string
-		wantErr   error
+		name     string
+		host     string
+		wantSub  string
+		wantRoot string
+		wantErr  error
 	}{
 		{name: "platform_subdomain_local", host: "acme.crm.local", wantSub: "acme", wantRoot: "crm.local"},
 		{name: "platform_subdomain_prod", host: "globex.crm.example.com", wantSub: "globex", wantRoot: "crm.example.com"},

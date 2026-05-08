@@ -15,9 +15,9 @@ import (
 )
 
 type stubResolver struct {
-	tenant   *tenancy.Tenant
-	err      error
-	gotHost  string
+	tenant  *tenancy.Tenant
+	err     error
+	gotHost string
 }
 
 func (s *stubResolver) ResolveByHost(_ context.Context, host string) (*tenancy.Tenant, error) {
