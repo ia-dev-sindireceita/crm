@@ -27,10 +27,10 @@ type Hasher interface {
 //
 //   - ok:          plaintext matches stored.
 //   - needsRehash: the stored parameters differ from the current Hasher
-//                  parameters (caller should re-hash on the next
-//                  successful login per ADR 0070 §3).
+//     parameters (caller should re-hash on the next
+//     successful login per ADR 0070 §3).
 //   - err:         decoding or computation failure. A simple mismatch is
-//                  ok=false, err=nil — never an error.
+//     ok=false, err=nil — never an error.
 type Verifier interface {
 	Verify(stored, plain string) (ok bool, needsRehash bool, err error)
 }

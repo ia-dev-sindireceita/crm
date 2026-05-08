@@ -32,11 +32,11 @@ func TestVerify(t *testing.T) {
 	const other = "totally-different-token-value-x"
 
 	cases := []struct {
-		name             string
-		sessionToken     string
-		header           string
-		form             string
-		want             error
+		name         string
+		sessionToken string
+		header       string
+		form         string
+		want         error
 	}{
 		{"both-missing-rejects", session, "", "", ErrTokenMissing},
 		{"session-token-empty-rejects", "", "x", "", ErrSessionTokenMissing},

@@ -60,9 +60,9 @@ func (r *TenantResolver) ResolveByHost(ctx context.Context, host string) (*tenan
 	}
 
 	var (
-		id       uuid.UUID
-		name     string
-		gotHost  string
+		id      uuid.UUID
+		name    string
+		gotHost string
 	)
 	row := r.db.QueryRow(ctx, tenantByHostSQL, host)
 	if err := row.Scan(&id, &name, &gotHost); err != nil {

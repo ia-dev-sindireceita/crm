@@ -205,9 +205,9 @@ func TestLocalList_Bundled(t *testing.T) {
 func TestLocalList_RejectsMalformed(t *testing.T) {
 	t.Parallel()
 	cases := map[string][]byte{
-		"short":     []byte("ABC\n"),
-		"non-hex":   []byte("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\n"),
-		"long":      []byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"),
+		"short":   []byte("ABC\n"),
+		"non-hex": []byte("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\n"),
+		"long":    []byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"),
 	}
 	for name, in := range cases {
 		in := in

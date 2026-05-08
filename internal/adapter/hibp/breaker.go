@@ -25,13 +25,13 @@ const (
 // internal so the public Client surface is the only thing tests touch —
 // breaker behaviour is exercised through Client tests.
 type breaker struct {
-	mu          sync.Mutex
-	state       breakerState
-	failures    int
-	openedAt    time.Time
-	threshold   int
-	cooldown    time.Duration
-	now         func() time.Time
+	mu        sync.Mutex
+	state     breakerState
+	failures  int
+	openedAt  time.Time
+	threshold int
+	cooldown  time.Duration
+	now       func() time.Time
 }
 
 func newBreaker(threshold int, cooldown time.Duration) *breaker {

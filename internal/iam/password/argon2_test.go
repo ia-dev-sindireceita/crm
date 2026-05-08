@@ -298,6 +298,11 @@ func TestBenchmarkHashProductionParams_Band(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping latency band assertion under -short; CI runs without -short")
 	}
+	if raceEnabled {
+		// -race instrumentation pushes argon2 ~3-5× slower; the
+		// production-shape band cannot apply. See race_on_test.go.
+		t.Skip("skipping latency band assertion under -race; production binaries do not use -race")
+	}
 	h := Default()
 	const samples = 5
 	durations := make([]time.Duration, 0, samples)

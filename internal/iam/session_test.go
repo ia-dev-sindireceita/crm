@@ -58,10 +58,10 @@ func TestParseSessionTTL(t *testing.T) {
 		{"valid-30d", "720h", 30 * 24 * time.Hour, false},
 		{"too-small-30s", "30s", 0, true},
 		{"too-small-default-zero-ns", "0s", 0, true},
-		{"too-large", "31d", 0, true},               // ParseDuration won't accept "31d" — error path
-		{"unparseable", "not-a-duration", 0, true},  // ParseDuration error
-		{"missing-unit-foot-gun", "24", 0, true},    // bare integer parsed as 24ns; rejected by bounds
-		{"too-large-real-units", "721h", 0, true},   // > 30 days
+		{"too-large", "31d", 0, true},              // ParseDuration won't accept "31d" — error path
+		{"unparseable", "not-a-duration", 0, true}, // ParseDuration error
+		{"missing-unit-foot-gun", "24", 0, true},   // bare integer parsed as 24ns; rejected by bounds
+		{"too-large-real-units", "721h", 0, true},  // > 30 days
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
