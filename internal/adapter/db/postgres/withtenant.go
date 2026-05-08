@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/pericles-luz/crm/internal/obs"
 )
 
 // TxBeginner is the minimal surface WithTenant / WithMasterOps need to start
@@ -55,6 +57,11 @@ func WithTenant(ctx context.Context, db TxBeginner, tenantID uuid.UUID, fn func(
 		return ErrNilPool
 	}
 	if tenantID == uuid.Nil {
+		// rls_misses_total is the SIN-62218 canary: defense in depth
+		// alongside middleware + Auth + RLS. The middleware path
+		// should make a uuid.Nil reach this branch impossible, so
+		// any increment alarms oncall via Prometheus + Alertmanager.
+		obs.IncRLSMiss()
 		return ErrZeroTenant
 	}
 	if fn == nil {

@@ -3,11 +3,37 @@ package obs
 import (
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// defaultMetrics is the package-level Metrics pointer that adapter
+// code (notably postgres.WithTenant) reaches for to record canary
+// events without holding a *Metrics reference. atomic.Pointer makes
+// SetDefault/IncRLSMiss safe across goroutines and across tests.
+var defaultMetrics atomic.Pointer[Metrics]
+
+// SetDefault wires m as the package-level metrics instance. cmd/server
+// calls this once at boot. Tests use it (and reset to nil via
+// SetDefault(nil) in t.Cleanup) to assert against rls_misses_total.
+func SetDefault(m *Metrics) { defaultMetrics.Store(m) }
+
+// Default returns the metrics instance set by SetDefault, or nil. The
+// HTTP /metrics handler should be derived from the same instance.
+func Default() *Metrics { return defaultMetrics.Load() }
+
+// IncRLSMiss increments the package-level rls_misses_total counter.
+// No-op when SetDefault has not yet been called, so adapter packages
+// can call this unconditionally without crashing tests that did not
+// wire metrics.
+func IncRLSMiss() {
+	if m := defaultMetrics.Load(); m != nil {
+		m.IncRLSMiss()
+	}
+}
 
 // Metrics is the small Prometheus surface SIN-62218 exposes. One
 // instance is constructed at boot and shared via package-level
