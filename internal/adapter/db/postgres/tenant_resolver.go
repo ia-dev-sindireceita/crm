@@ -49,6 +49,8 @@ func NewTenantResolver(db TenantQuerier) (*TenantResolver, error) {
 
 const tenantByHostSQL = `SELECT id, name, host FROM tenants WHERE host = $1`
 
+const tenantByIDSQL = `SELECT id, name, host FROM tenants WHERE id = $1`
+
 // ResolveByHost runs the host lookup. Misses become tenancy.ErrTenantNotFound
 // so the middleware can render the secure-by-default 404.
 func (r *TenantResolver) ResolveByHost(ctx context.Context, host string) (*tenancy.Tenant, error) {
@@ -72,4 +74,30 @@ func (r *TenantResolver) ResolveByHost(ctx context.Context, host string) (*tenan
 		return nil, fmt.Errorf("postgres: tenant lookup: %w", err)
 	}
 	return &tenancy.Tenant{ID: id, Name: name, Host: gotHost}, nil
+}
+
+// ResolveByID looks up a tenant by uuid. Used by the master impersonation
+// middleware (SIN-62219). uuid.Nil and a missing row both collapse to
+// tenancy.ErrTenantNotFound so the caller can return a generic 4xx.
+func (r *TenantResolver) ResolveByID(ctx context.Context, id uuid.UUID) (*tenancy.Tenant, error) {
+	if r == nil || r.db == nil {
+		return nil, ErrNilPool
+	}
+	if id == uuid.Nil {
+		return nil, tenancy.ErrTenantNotFound
+	}
+
+	var (
+		gotID   uuid.UUID
+		name    string
+		gotHost string
+	)
+	row := r.db.QueryRow(ctx, tenantByIDSQL, id)
+	if err := row.Scan(&gotID, &name, &gotHost); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, tenancy.ErrTenantNotFound
+		}
+		return nil, fmt.Errorf("postgres: tenant by id lookup: %w", err)
+	}
+	return &tenancy.Tenant{ID: gotID, Name: name, Host: gotHost}, nil
 }
