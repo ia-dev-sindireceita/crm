@@ -1,0 +1,31 @@
+{{define "verify.html"}}<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Verificar 2FA — Sindireceita</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 24rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+    label { display: block; font-weight: 600; margin-top: 1rem; }
+    input[type=text] { width: 100%; padding: 0.5rem; font-family: ui-monospace, monospace; font-size: 1rem; box-sizing: border-box; border: 1px solid #888; border-radius: 4px; }
+    button { margin-top: 1rem; padding: 0.5rem 1rem; border-radius: 4px; border: 1px solid #2962ff; background: #2962ff; color: white; cursor: pointer; font-size: 1rem; }
+    .error { background: #fdecea; border-left: 4px solid #d32f2f; padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.95rem; }
+    .hint { font-size: 0.85rem; color: #555; margin-top: 0.25rem; }
+  </style>
+</head>
+<body>
+  <h1>Verificar 2FA</h1>
+  {{if .ErrorMessage}}<div class="error" role="alert">{{.ErrorMessage}}</div>{{end}}
+  <form method="POST" action="/m/2fa/verify{{if .ReturnPath}}?return={{.ReturnPath}}{{end}}" autocomplete="off">
+    <label for="code">Código TOTP ou de recuperação</label>
+    <input id="code" name="code" type="text" autocomplete="one-time-code"
+      inputmode="text" autofocus required minlength="6" maxlength="16"
+      pattern="[A-Za-z0-9\- ]{6,16}">
+    <p class="hint">Insira o código TOTP de 6 dígitos do seu autenticador, ou um código de recuperação de 10 caracteres.</p>
+    <button type="submit">Verificar</button>
+  </form>
+</body>
+</html>
+{{end}}
