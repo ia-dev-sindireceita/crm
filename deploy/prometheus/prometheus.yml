@@ -1,0 +1,32 @@
+# Prometheus scrape config for the CRM Fase 0 stack (SIN-62218).
+# 7-day retention is set via the compose command flag (-storage.tsdb.retention.time=7d)
+# so a single ops change suffices to extend retention without touching this file.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    env: stg
+    service: crm
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  # The CRM app exposes /metrics on :8080. Access control is at the
+  # network edge (Caddy/firewall); this scrape is in-cluster.
+  - job_name: crm-app
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8080"]
+
+  # Self-scrape so Prometheus' own up/down is queryable.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

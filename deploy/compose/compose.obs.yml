@@ -1,0 +1,129 @@
+# SIN-62218 observability overlay. Apply with:
+#
+#   docker compose -f compose.yml -f compose.obs.yml up -d
+#
+# Splitting the four obs services off the base compose.yml keeps the
+# core application stack lean for unit-style devs and avoids paging
+# memory pressure on the small machines the dev rig runs on.
+
+name: crm
+
+networks:
+  crm: { driver: bridge }
+
+volumes:
+  prometheus-data: {}
+  grafana-data: {}
+  alertmanager-data: {}
+
+services:
+  # Extend the base `app` service so it knows where to push traces.
+  # OTLP HTTP endpoint is jaeger:4318 (the all-in-one image speaks
+  # OTLP HTTP when COLLECTOR_OTLP_ENABLED=true). Empty value flips
+  # internal/obs.NewTracerProvider to a no-op provider, which is the
+  # base compose.yml default.
+  app:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
+      OTEL_SERVICE_NAME: crm
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    networks: [crm]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ../prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    restart: unless-stopped
+    networks: [crm]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q '\"database\": \"ok\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  jaeger:
+    # all-in-one is acceptable for stg; production swaps for the
+    # split-deploy chart in PR12 (Tempo via OTLP).
+    image: jaegertracing/all-in-one:1.62
+    restart: unless-stopped
+    networks: [crm]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:14269/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    networks: [crm]
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    environment:
+      # Slack + probe webhook URLs come from env at compose time and are
+      # written into in-volume files by the entrypoint hook below — keeps
+      # the secret out of the image and out of `docker inspect`.
+      SLACK_ALERTS_WEBHOOK_URL: ${SLACK_ALERTS_WEBHOOK_URL:-}
+      SMOKE_ALERT_WEBHOOK_PROBE_URL: ${SMOKE_ALERT_WEBHOOK_PROBE_URL:-http://alertmanager-probe:9094/}
+    volumes:
+      - ../alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        umask 077
+        printf "%s" "$$SLACK_ALERTS_WEBHOOK_URL" > /etc/alertmanager/slack-webhook-url
+        printf "%s" "$$SMOKE_ALERT_WEBHOOK_PROBE_URL" > /etc/alertmanager/probe-webhook-url
+        exec /bin/alertmanager --config.file=/etc/alertmanager/alertmanager.yml --storage.path=/alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    depends_on:
+      prometheus: { condition: service_healthy }
+
+  # In-network sentinel webhook receiver. `make smoke-alert` polls
+  # /last to confirm the alert reached its destination. Production
+  # does NOT run this — it's stg/CI only.
+  alertmanager-probe:
+    image: ghcr.io/tomwhittaker-tw/alertmanager-webhook-logger:0.7.0
+    restart: unless-stopped
+    networks: [crm]
+    environment:
+      LOG_LEVEL: info
+      LISTEN_ADDR: ":9094"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9094/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6

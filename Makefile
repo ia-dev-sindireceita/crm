@@ -78,8 +78,12 @@ seed-stg: ## Apply staging seed fixtures (idempotent; SIN-62209)
 		psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" \
 		< $(MIGRATIONS_DIR)/seed/stg.sql
 
-smoke-alert: ## Inject a synthetic alert into Slack #alerts (wired in PR10)
-	@echo "smoke-alert: stub — PR10 (SIN Fase 0) implements Slack injection"
+smoke-alert: ## Trip rls_misses_total in stg and verify Slack #alerts (SIN-62218)
+	@APP_URL="$${APP_URL:-http://localhost:8080}" \
+	ALERTMANAGER_URL="$${ALERTMANAGER_URL:-http://localhost:9093}" \
+	SMOKE_ALERT_WEBHOOK_PROBE_URL="$${SMOKE_ALERT_WEBHOOK_PROBE_URL:-http://localhost:9094}" \
+	TIMEOUT="$${TIMEOUT:-60}" \
+	$(CURDIR)/scripts/smoke-alert.sh
 
 verify-vendor: ## Verify SRI sha-384 hashes for web/static/vendor/** (SIN-62284)
 	./scripts/verify-vendor-checksums.sh
