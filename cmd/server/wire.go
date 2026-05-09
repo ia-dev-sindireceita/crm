@@ -46,7 +46,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,26 +75,12 @@ const envRedisURL = "REDIS_URL"
 // lockout alerter. Empty ⇒ no-op (slackadapter.New documents the contract).
 const envSlackWebhook = "SLACK_WEBHOOK_URL"
 
-// envCookieSecure overrides the default-true Secure attribute on the
-// session cookie. Read by cookieSecureFromEnv; only the literal
-// strings "false", "0", and "off" (any case, trimmed) flip it off.
-const envCookieSecure = "COOKIE_SECURE"
-
-// cookieSecureFromEnv returns whether the session cookie's Secure
-// attribute should be set. Defaults to true so production deployments
-// (which never set the env var) get the safe behaviour by default;
-// only an explicit opt-out flips it off.
-func cookieSecureFromEnv(getenv func(string) string) bool {
-	switch strings.ToLower(strings.TrimSpace(getenv(envCookieSecure))) {
-	case "false", "0", "off":
-		return false
-	default:
-		return true
-	}
-}
-
 // deps is the assembled dependency graph the HTTP layer consumes.
 // Closed via cleanup returned from assembleDeps.
+//
+// The session cookie is always written via sessioncookie.SetTenant, which
+// hard-codes Secure (ADR 0073 §D2). There is deliberately no env override
+// for the Secure flag — production must terminate TLS at the edge.
 type deps struct {
 	pool          *pgxpool.Pool
 	redis         *goredis.Client
@@ -108,12 +93,6 @@ type deps struct {
 	logger        *slog.Logger
 	masterService masterServiceFactory
 	master        httpapi.MasterDeps
-	// cookieSecure flips the Secure attribute on the session cookie
-	// the chi login handler writes. Defaults to true (production-safe);
-	// COOKIE_SECURE=false unsets it for plaintext local-dev / test
-	// servers (httptest.Server is plain HTTP, so cookies with Secure
-	// would be dropped by the test client).
-	cookieSecure bool
 }
 
 // assembleDeps wires the production dependency graph from environment
@@ -176,7 +155,6 @@ func assembleDeps(ctx context.Context, getenv func(string) string, logger *slog.
 		sessions:      sessions,
 		logger:        logger,
 		masterService: masterFactory,
-		cookieSecure:  cookieSecureFromEnv(getenv),
 	}
 
 	masterDeps, err := buildMasterDeps(ctx, d, getenv)
@@ -232,7 +210,6 @@ func newAppMux(d *deps) http.Handler {
 		IAM:            tenantIAMAdapter{deps: d},
 		TenantResolver: d.tenants,
 		Logger:         d.logger,
-		CookieSecure:   d.cookieSecure,
 		Master:         d.master,
 	})
 }

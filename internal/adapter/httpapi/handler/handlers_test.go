@@ -183,6 +183,9 @@ func TestLoginPost_Success_SetsCookieAndRedirects(t *testing.T) {
 		t.Fatalf("got %d cookies, want 1", len(cookies))
 	}
 	c := cookies[0]
+	// ADR 0073 §D2: tenant cookie name MUST carry the __Host- prefix
+	// (sessioncookie.NameTenant). The middleware re-export points at
+	// the same string so the symbol stays usable in this test.
 	if c.Name != middleware.SessionCookieName {
 		t.Fatalf("cookie name=%q, want %s", c.Name, middleware.SessionCookieName)
 	}
@@ -198,30 +201,11 @@ func TestLoginPost_Success_SetsCookieAndRedirects(t *testing.T) {
 	if c.Path != "/" {
 		t.Fatalf("cookie Path=%q, want /", c.Path)
 	}
-	if c.Secure {
-		t.Fatal("cookie Secure should be false (CookieSecure=false in cfg)")
-	}
-}
-
-func TestLoginPost_Success_CookieSecureFlagPropagates(t *testing.T) {
-	t.Parallel()
-	tenantID := uuid.New()
-	iamFake := &fakeIAM{loginSession: iam.Session{
-		ID:        uuid.New(),
-		UserID:    uuid.New(),
-		TenantID:  tenantID,
-		ExpiresAt: time.Now().Add(time.Hour),
-	}}
-	form := url.Values{}
-	form.Set("email", "alice@acme.test")
-	form.Set("password", "x")
-	r := tenantedRequest(t, http.MethodPost, "/login", strings.NewReader(form.Encode()), &tenancy.Tenant{ID: tenantID})
-	rec := httptest.NewRecorder()
-	handler.LoginPost(handler.LoginConfig{IAM: iamFake, CookieSecure: true})(rec, r)
-
-	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 || !cookies[0].Secure {
-		t.Fatalf("expected single cookie with Secure=true; got %+v", cookies)
+	// ADR 0073 §D2: Secure is non-negotiable. The login handler always
+	// writes the cookie via sessioncookie.SetTenant which hard-codes
+	// Secure=true; there is no env override.
+	if !c.Secure {
+		t.Fatal("cookie Secure must be true (ADR 0073 §D2 — __Host- + Secure)")
 	}
 }
 

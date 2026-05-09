@@ -98,10 +98,6 @@ type Deps struct {
 	// exactly as it did pre-PR10 — useful for tests that don't want
 	// to assert against Prometheus output.
 	Metrics *obs.Metrics
-	// CookieSecure flips the Secure attribute on the session cookie.
-	// Production MUST set true. Dev/integration tests pass false so a
-	// plaintext httptest.Server can read the cookie back.
-	CookieSecure bool
 	// Master, when non-zero, mounts the /m/* master-console routes.
 	// Zero value skips the group.
 	Master MasterDeps
@@ -167,8 +163,7 @@ func NewRouter(deps Deps) http.Handler {
 
 		tenanted.Get("/login", handler.LoginGet)
 		tenanted.Post("/login", handler.LoginPost(handler.LoginConfig{
-			IAM:          deps.IAM,
-			CookieSecure: deps.CookieSecure,
+			IAM: deps.IAM,
 		}))
 		tenanted.Get("/logout", handler.Logout(deps.IAM))
 

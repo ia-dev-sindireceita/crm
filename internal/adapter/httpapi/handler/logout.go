@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -31,19 +31,12 @@ func Logout(svc LogoutDeleter) http.HandlerFunc {
 			http.Error(w, "tenant scope missing", http.StatusInternalServerError)
 			return
 		}
-		if cookie, err := r.Cookie(middleware.SessionCookieName); err == nil && cookie.Value != "" {
-			if sessionID, err := uuid.Parse(cookie.Value); err == nil {
+		if value, err := sessioncookie.Read(r, sessioncookie.NameTenant); err == nil {
+			if sessionID, err := uuid.Parse(value); err == nil {
 				_ = svc.Logout(r.Context(), tenant.ID, sessionID)
 			}
 		}
-		http.SetCookie(w, &http.Cookie{
-			Name:     middleware.SessionCookieName,
-			Value:    "",
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		})
+		sessioncookie.ClearTenant(w)
 		http.Redirect(w, r, "/login", http.StatusFound)
 	}
 }
