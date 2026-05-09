@@ -8,12 +8,14 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+
+	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
 
 // Regenerator is the slice of mfa.Service.RegenerateRecovery the
 // regenerate handler depends on.
 type Regenerator interface {
-	RegenerateRecovery(ctx context.Context, userID uuid.UUID) ([]string, error)
+	RegenerateRecovery(ctx context.Context, userID uuid.UUID, reqCtx mfa.RequestContext) ([]string, error)
 }
 
 // RegenerateHandlerConfig is the constructor input.
@@ -68,7 +70,12 @@ func (h *RegenerateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	codes, err := h.cfg.Regenerator.RegenerateRecovery(r.Context(), master.ID)
+	reqCtx := mfa.RequestContext{
+		IP:        clientIP(r),
+		UserAgent: r.Header.Get("User-Agent"),
+		Route:     r.URL.Path,
+	}
+	codes, err := h.cfg.Regenerator.RegenerateRecovery(r.Context(), master.ID, reqCtx)
 	if err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: regenerate failed",
 			slog.String("user_id", master.ID.String()),

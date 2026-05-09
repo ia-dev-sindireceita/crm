@@ -84,18 +84,22 @@ func (a *recordingAudit) LogMFARequired(_ context.Context, _ uuid.UUID, _, _ str
 }
 
 type recordingAlerter struct {
-	calls      int
-	err        error
-	regenCalls int
-	regenErr   error
+	calls       int
+	err         error
+	lastUsed    RecoveryUsedDetails
+	regenCalls  int
+	regenErr    error
+	lastRegened RecoveryRegeneratedDetails
 }
 
-func (a *recordingAlerter) AlertRecoveryUsed(context.Context, uuid.UUID) error {
+func (a *recordingAlerter) AlertRecoveryUsed(_ context.Context, d RecoveryUsedDetails) error {
 	a.calls++
+	a.lastUsed = d
 	return a.err
 }
-func (a *recordingAlerter) AlertRecoveryRegenerated(context.Context, uuid.UUID) error {
+func (a *recordingAlerter) AlertRecoveryRegenerated(_ context.Context, d RecoveryRegeneratedDetails) error {
 	a.regenCalls++
+	a.lastRegened = d
 	return a.regenErr
 }
 
@@ -314,7 +318,7 @@ func TestConsumeRecovery_RejectsNilUserID(t *testing.T) {
 		hasherForCode{},
 		&fakeSeedRepository{},
 	)
-	if err := svc.ConsumeRecovery(context.Background(), uuid.Nil, "ABCDE23456"); err == nil {
+	if err := svc.ConsumeRecovery(context.Background(), uuid.Nil, "ABCDE23456", RequestContext{}); err == nil {
 		t.Fatal("expected non-nil error")
 	}
 }
@@ -330,7 +334,7 @@ func TestConsumeRecovery_MalformedCodeMapsToInvalidCode(t *testing.T) {
 	cases := []string{"", "ABC", "tooooolongggg", "ABCDE12345" /* 1 not in base32 alphabet */}
 	for _, in := range cases {
 		t.Run(fmt.Sprintf("input=%q", in), func(t *testing.T) {
-			err := svc.ConsumeRecovery(context.Background(), uuid.New(), in)
+			err := svc.ConsumeRecovery(context.Background(), uuid.New(), in, RequestContext{})
 			if !errors.Is(err, ErrInvalidCode) {
 				t.Fatalf("err: got %v want ErrInvalidCode", err)
 			}
@@ -353,7 +357,7 @@ func TestConsumeRecovery_HappyPath(t *testing.T) {
 	seeds := &fakeSeedRepository{}
 	svc := newConsumeService(t, codes, audit, alerter, hasherForCode{}, seeds)
 
-	err := svc.ConsumeRecovery(context.Background(), uid, "ABCDE-23456") // dashed input
+	err := svc.ConsumeRecovery(context.Background(), uid, "ABCDE-23456", RequestContext{}) // dashed input
 	if err != nil {
 		t.Fatalf("ConsumeRecovery: %v", err)
 	}
@@ -398,7 +402,7 @@ func TestConsumeRecovery_WalkExhaustsListEvenAfterMatch(t *testing.T) {
 	counter := &countingHasher{}
 	codes := &recoveryStoreScripted{listResult: rows}
 	svc := newConsumeService(t, codes, &recordingAudit{}, &recordingAlerter{}, counter, &fakeSeedRepository{})
-	if err := svc.ConsumeRecovery(context.Background(), uid, "ABCDE23456"); err != nil {
+	if err := svc.ConsumeRecovery(context.Background(), uid, "ABCDE23456", RequestContext{}); err != nil {
 		t.Fatalf("ConsumeRecovery: %v", err)
 	}
 	if counter.calls != len(rows) {
@@ -426,7 +430,7 @@ func TestConsumeRecovery_NoMatchReturnsInvalidCode(t *testing.T) {
 		hasherForCode{},
 		&fakeSeedRepository{},
 	)
-	err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456")
+	err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456", RequestContext{})
 	if !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("err: got %v want ErrInvalidCode", err)
 	}
@@ -440,7 +444,7 @@ func TestConsumeRecovery_EmptyActiveSetReturnsInvalidCode(t *testing.T) {
 		hasherForCode{},
 		&fakeSeedRepository{},
 	)
-	err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456")
+	err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456", RequestContext{})
 	if !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("err: got %v want ErrInvalidCode", err)
 	}
@@ -455,7 +459,7 @@ func TestConsumeRecovery_HasherErrorPropagates(t *testing.T) {
 		hasherForCode{verifyErr: errors.New("argon decode boom")},
 		&fakeSeedRepository{},
 	)
-	err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456")
+	err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456", RequestContext{})
 	if err == nil || errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("err: got %v want wrapped non-ErrInvalidCode (system-side hasher failure)", err)
 	}
@@ -469,7 +473,7 @@ func TestConsumeRecovery_ListActiveErrorPropagates(t *testing.T) {
 		hasherForCode{},
 		&fakeSeedRepository{},
 	)
-	err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456")
+	err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456", RequestContext{})
 	if err == nil || errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("err: got %v want wrapped non-ErrInvalidCode", err)
 	}
@@ -485,7 +489,7 @@ func TestConsumeRecovery_AlertFailureIsNonFatal(t *testing.T) {
 	alerter := &recordingAlerter{err: errors.New("slack 503")}
 	svc := newConsumeService(t, codes, audit, alerter, hasherForCode{}, &fakeSeedRepository{})
 
-	if err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456"); err != nil {
+	if err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456", RequestContext{}); err != nil {
 		t.Fatalf("expected nil error despite alert failure, got %v", err)
 	}
 	// And the soft-fail audit hook fired (LogMFARequired with reason
@@ -499,7 +503,7 @@ func TestConsumeRecovery_MarkConsumedFailureIsFatal(t *testing.T) {
 	rows := []RecoveryCodeRecord{{ID: uuid.New(), Hash: "MATCH:ABCDE23456"}}
 	codes := &recoveryStoreScripted{listResult: rows, markConsumedErr: errors.New("db blip")}
 	svc := newConsumeService(t, codes, &recordingAudit{}, &recordingAlerter{}, hasherForCode{}, &fakeSeedRepository{})
-	if err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456"); err == nil {
+	if err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456", RequestContext{}); err == nil {
 		t.Fatal("MarkConsumed failure must surface, got nil")
 	}
 }
@@ -511,7 +515,7 @@ func TestConsumeRecovery_MarkReenrollFailureIsFatal(t *testing.T) {
 	// Override MarkReenrollRequired error via a wrapper.
 	failingSeeds := &reenrollFailingSeeds{base: seeds}
 	svc := newConsumeService(t, codes, &recordingAudit{}, &recordingAlerter{}, hasherForCode{}, failingSeeds)
-	if err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456"); err == nil {
+	if err := svc.ConsumeRecovery(context.Background(), uuid.New(), "ABCDE23456", RequestContext{}); err == nil {
 		t.Fatal("MarkReenrollRequired failure must surface, got nil")
 	}
 }
