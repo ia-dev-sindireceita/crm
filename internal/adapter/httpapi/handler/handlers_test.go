@@ -344,7 +344,7 @@ func TestLogout_DeletesSessionAndExpiresCookie(t *testing.T) {
 	sessID := uuid.New()
 	iamFake := &fakeIAM{}
 
-	r := tenantedRequest(t, http.MethodGet, "/logout", nil, &tenancy.Tenant{ID: tenantID})
+	r := tenantedRequest(t, http.MethodPost, "/logout", nil, &tenancy.Tenant{ID: tenantID})
 	r.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: sessID.String()})
 	rec := httptest.NewRecorder()
 
@@ -375,7 +375,7 @@ func TestLogout_DeletesSessionAndExpiresCookie(t *testing.T) {
 func TestLogout_NoCookie_StillRedirects(t *testing.T) {
 	t.Parallel()
 	iamFake := &fakeIAM{}
-	r := tenantedRequest(t, http.MethodGet, "/logout", nil, &tenancy.Tenant{ID: uuid.New()})
+	r := tenantedRequest(t, http.MethodPost, "/logout", nil, &tenancy.Tenant{ID: uuid.New()})
 	rec := httptest.NewRecorder()
 	handler.Logout(iamFake)(rec, r)
 	if rec.Code != http.StatusFound {
@@ -389,7 +389,7 @@ func TestLogout_NoCookie_StillRedirects(t *testing.T) {
 func TestLogout_BadCookieValue_StillRedirects(t *testing.T) {
 	t.Parallel()
 	iamFake := &fakeIAM{}
-	r := tenantedRequest(t, http.MethodGet, "/logout", nil, &tenancy.Tenant{ID: uuid.New()})
+	r := tenantedRequest(t, http.MethodPost, "/logout", nil, &tenancy.Tenant{ID: uuid.New()})
 	r.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: "not-a-uuid"})
 	rec := httptest.NewRecorder()
 	handler.Logout(iamFake)(rec, r)
@@ -404,7 +404,7 @@ func TestLogout_BadCookieValue_StillRedirects(t *testing.T) {
 func TestLogout_MissingTenantContext_500(t *testing.T) {
 	t.Parallel()
 	iamFake := &fakeIAM{}
-	r := httptest.NewRequest(http.MethodGet, "/logout", nil)
+	r := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	rec := httptest.NewRecorder()
 	handler.Logout(iamFake)(rec, r)
 	if rec.Code != http.StatusInternalServerError {

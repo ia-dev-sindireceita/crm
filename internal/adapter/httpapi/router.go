@@ -24,7 +24,7 @@
 //	POST /internal/test-alert  — smoke-alert seam (build tag `test` only)
 //	GET  /login                — render form          (tenant scope, no auth)
 //	POST /login                — submit credentials    (tenant scope, no auth)
-//	GET  /logout               — clear session cookie  (tenant scope, no auth)
+//	POST /logout               — clear session cookie  (tenant scope + auth + CSRF)
 //	GET  /hello-tenant         — protected page        (tenant scope + auth)
 //
 //	GET|POST /m/login               — master login form / submit (no auth)
@@ -212,8 +212,6 @@ func NewRouter(deps Deps) http.Handler {
 			loginPost = mw(loginPost)
 		}
 		tenanted.Method(http.MethodPost, "/login", loginPost)
-
-		tenanted.Get("/logout", handler.Logout(deps.IAM))
 
 		tenanted.Group(func(authed chi.Router) {
 			authed.Use(middleware.Auth(deps.IAM))

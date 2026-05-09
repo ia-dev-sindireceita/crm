@@ -280,7 +280,17 @@ func TestRouter_LoginPost_WrongPassword_ReRendersForm(t *testing.T) {
 	}
 }
 
-func TestRouter_Logout_ExpiresCookieAndRedirects(t *testing.T) {
+// TestRouter_Logout_GETReturns405_PreservesSession is SIN-62419 AC #4:
+// after the GET-side logout surface was removed (post PR #43), a GET to
+// /logout — the exact attacker shape `<img src="/logout">` — must NOT
+// terminate the session. chi returns 405 (the path exists for POST in
+// the authed group), no Set-Cookie header clears the session, and the
+// same session cookie still authenticates GET /hello-tenant afterwards.
+//
+// The success path (POST /logout with a valid CSRF token + cookies) is
+// covered by TestRouter_CSRF_LogoutOriginAllowlist_AcceptsTenantHost in
+// router_csrf_test.go; this test pins the *negative* CSRF-out shape.
+func TestRouter_Logout_GETReturns405_PreservesSession(t *testing.T) {
 	t.Parallel()
 	h, _, _ := newRouter(t)
 
@@ -288,24 +298,24 @@ func TestRouter_Logout_ExpiresCookieAndRedirects(t *testing.T) {
 	form.Set("email", "alice@acme.test")
 	form.Set("password", "pw-alice")
 	loginRec := do(t, h, http.MethodPost, "acme.crm.local", "/login", strings.NewReader(form.Encode()))
+	if loginRec.Code != http.StatusFound {
+		t.Fatalf("login status=%d, want 302", loginRec.Code)
+	}
 	cookie := loginRec.Result().Cookies()[0]
 
 	rec := do(t, h, http.MethodGet, "acme.crm.local", "/logout", nil, cookie)
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status=%d, want 302", rec.Code)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status=%d, want 405", rec.Code)
 	}
-	if loc := rec.Header().Get("Location"); loc != "/login" {
-		t.Fatalf("Location=%q, want /login", loc)
-	}
-	got := rec.Result().Cookies()
-	if len(got) != 1 || got[0].MaxAge != -1 || got[0].Value != "" {
-		t.Fatalf("logout cookie not expired: %+v", got)
+	if got := rec.Result().Cookies(); len(got) != 0 {
+		t.Fatalf("GET /logout must not set/clear cookies, got %d: %+v", len(got), got)
 	}
 
-	// Same cookie after logout must no longer authenticate.
+	// Same cookie after the (rejected) GET /logout must still authenticate —
+	// the session was never terminated.
 	hello := do(t, h, http.MethodGet, "acme.crm.local", "/hello-tenant", nil, cookie)
-	if hello.Code != http.StatusFound {
-		t.Fatalf("post-logout hello status=%d, want 302", hello.Code)
+	if hello.Code != http.StatusOK {
+		t.Fatalf("post-rejected-GET hello status=%d, want 200 (session must still be valid)", hello.Code)
 	}
 }
 

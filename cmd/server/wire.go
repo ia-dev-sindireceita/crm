@@ -17,16 +17,18 @@ package main
 //
 // HTTP composition (newAppMux):
 //
-//   - /health, /login (GET+POST), /logout, /hello-tenant are mounted
-//     via httpapi.NewRouter (the chi router from SIN-62217). The
-//     middleware chain stitched there is:
+//   - /health, /login (GET+POST), POST /logout, /hello-tenant are
+//     mounted via httpapi.NewRouter (the chi router from SIN-62217).
+//     The middleware chain stitched there is:
 //
 //         RequestID → RealIP → Logger → Recoverer → TenantScope → Auth
 //
 //     /health bypasses TenantScope (LB liveness must work without
 //     tenant resolution); /hello-tenant requires Auth (cookie session
-//     validated against iam.ValidateSession). /login GET+POST and
-//     /logout sit under TenantScope but outside Auth.
+//     validated against iam.ValidateSession). /login GET+POST sits
+//     under TenantScope but outside Auth; POST /logout sits inside
+//     the authed+CSRF group (SIN-62419 removed the GET-side surface
+//     after PR #43 mounted RequireCSRF on the authed chain).
 //   - tenantIAMAdapter is the seam between the chi handlers and the
 //     SIN-62341 lockout chain: Login is per-request (NewTenantLockouts
 //     captures tenant.ID), Logout/ValidateSession use a global Service
