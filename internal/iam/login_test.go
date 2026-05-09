@@ -141,7 +141,7 @@ func TestLoginLogoutCycle(t *testing.T) {
 	svc, tenantID, userID := newServiceForTest(t)
 	ctx := context.Background()
 
-	sess, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", net.IPv4(192, 0, 2, 1), "ua/test")
+	sess, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", net.IPv4(192, 0, 2, 1), "ua/test", "/login")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -188,12 +188,12 @@ func TestLogin_WrongPassword_NoEnumerate(t *testing.T) {
 	svc, _, _ := newServiceForTest(t)
 	ctx := context.Background()
 
-	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("wrong-password err=%v want ErrInvalidCredentials", err)
 	}
 
-	_, err = svc.Login(ctx, "acme.crm.local", "ghost@acme.test", "anything", nil, "")
+	_, err = svc.Login(ctx, "acme.crm.local", "ghost@acme.test", "anything", nil, "", "")
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("unknown-email err=%v want ErrInvalidCredentials", err)
 	}
@@ -207,7 +207,7 @@ func TestLogin_WrongPassword_NoEnumerate(t *testing.T) {
 		var samples []time.Duration
 		for i := 0; i < 3; i++ {
 			start := time.Now()
-			_, _ = svc.Login(ctx, "acme.crm.local", email, "WRONG", nil, "")
+			_, _ = svc.Login(ctx, "acme.crm.local", email, "WRONG", nil, "", "")
 			samples = append(samples, time.Since(start))
 		}
 		// median of 3
@@ -236,7 +236,7 @@ func TestLogin_WrongPassword_NoEnumerate(t *testing.T) {
 
 func TestLogin_HostInvalid_NoEnumerate(t *testing.T) {
 	svc, _, _ := newServiceForTest(t)
-	_, err := svc.Login(context.Background(), "unknown.example.com", "alice@acme.test", "anything", nil, "")
+	_, err := svc.Login(context.Background(), "unknown.example.com", "alice@acme.test", "anything", nil, "", "")
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("err=%v want ErrInvalidCredentials (no ErrTenantNotFound leak)", err)
 	}
@@ -257,7 +257,7 @@ func TestLogin_HostInvalid_NoEnumerate(t *testing.T) {
 		var samples [3]time.Duration
 		for i := 0; i < 3; i++ {
 			start := time.Now()
-			_, _ = svc.Login(ctx, host, "alice@acme.test", "WRONG", nil, "")
+			_, _ = svc.Login(ctx, host, "alice@acme.test", "WRONG", nil, "", "")
 			samples[i] = time.Since(start)
 		}
 		// median of 3
@@ -283,7 +283,7 @@ func TestLogin_HostInvalid_NoEnumerate(t *testing.T) {
 func TestLogin_TenantResolverInfraError_Propagates(t *testing.T) {
 	svc, _, _ := newServiceForTest(t)
 	svc.Tenants = fakeResolver{err: errors.New("dial tcp: connection refused")}
-	_, err := svc.Login(context.Background(), "any.host", "alice@acme.test", "x", nil, "")
+	_, err := svc.Login(context.Background(), "any.host", "alice@acme.test", "x", nil, "", "")
 	if err == nil || errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("infra error should propagate as 5xx-eligible, got: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestLogin_TenantResolverInfraError_Propagates(t *testing.T) {
 func TestLogin_UserLookupInfraError_Propagates(t *testing.T) {
 	svc, _, _ := newServiceForTest(t)
 	svc.Users = fakeUsers{err: errors.New("postgres: timeout")}
-	_, err := svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "x", nil, "")
+	_, err := svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "x", nil, "", "")
 	if err == nil || errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("infra error should propagate, got: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestSessionExpired(t *testing.T) {
 	svc.Now = func() time.Time { return t0 }
 	ctx := context.Background()
 
-	sess, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "")
+	sess, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "", "")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestService_LoggerDefaultDoesNotPanic(t *testing.T) {
 			t.Fatalf("nil Logger caused panic: %v", r)
 		}
 	}()
-	_, _ = svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "")
+	_, _ = svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "", "")
 }
 
 func TestService_TTLDefaultsTo24h(t *testing.T) {
@@ -344,7 +344,7 @@ func TestService_TTLDefaultsTo24h(t *testing.T) {
 	svc.TTL = 0
 	t0 := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	svc.Now = func() time.Time { return t0 }
-	sess, err := svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "")
+	sess, err := svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "", "")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}

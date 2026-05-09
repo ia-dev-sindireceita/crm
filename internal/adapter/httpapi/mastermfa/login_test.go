@@ -32,11 +32,12 @@ type loginCallArgs struct {
 	password string
 	ip       net.IP
 	ua       string
+	route    string
 }
 
-func (f *fakeMasterLogin) Login(_ context.Context, host, email, password string, ip net.IP, ua string) (iam.Session, error) {
+func (f *fakeMasterLogin) Login(_ context.Context, host, email, password string, ip net.IP, ua, route string) (iam.Session, error) {
 	f.calls++
-	f.last = loginCallArgs{host: host, email: email, password: password, ip: ip, ua: ua}
+	f.last = loginCallArgs{host: host, email: email, password: password, ip: ip, ua: ua, route: route}
 	return f.result, f.err
 }
 
@@ -57,7 +58,7 @@ func newLoginHandlerWith(t *testing.T, login mastermfa.MasterLoginFunc, store ma
 func TestNewLoginHandler_PanicsOnMissingDeps(t *testing.T) {
 	cases := map[string]mastermfa.LoginHandlerConfig{
 		"nil login": {Sessions: newFakeSessionStore()},
-		"nil sessions": {Login: func(context.Context, string, string, string, net.IP, string) (iam.Session, error) {
+		"nil sessions": {Login: func(context.Context, string, string, string, net.IP, string, string) (iam.Session, error) {
 			return iam.Session{}, nil
 		}},
 	}
@@ -76,7 +77,7 @@ func TestNewLoginHandler_PanicsOnMissingDeps(t *testing.T) {
 func TestNewLoginHandler_AppliesDefaults(t *testing.T) {
 	// Constructed with only the required fields → defaults fill the rest.
 	h := mastermfa.NewLoginHandler(mastermfa.LoginHandlerConfig{
-		Login: func(context.Context, string, string, string, net.IP, string) (iam.Session, error) {
+		Login: func(context.Context, string, string, string, net.IP, string, string) (iam.Session, error) {
 			return iam.Session{}, nil
 		},
 		Sessions: newFakeSessionStore(),
@@ -223,6 +224,11 @@ func TestLoginHandler_POST_HappyPath(t *testing.T) {
 	}
 	if store.lastCreateUserID != login.result.UserID {
 		t.Errorf("Create userID: got %v want %v", store.lastCreateUserID, login.result.UserID)
+	}
+	// SIN-62379: r.URL.Path threads through to the iam.Service.Login
+	// call so the master-lockout alert can carry route per ADR 0074 §6.
+	if login.last.route != "/m/login" {
+		t.Errorf("Login route: got %q want /m/login", login.last.route)
 	}
 	if store.lastCreateTTL != 4*time.Hour {
 		t.Errorf("Create ttl: got %v want 4h", store.lastCreateTTL)

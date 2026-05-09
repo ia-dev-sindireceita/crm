@@ -30,17 +30,19 @@ type loginStub struct {
 	gotPwd   string
 	gotIP    net.IP
 	gotUA    string
+	gotRoute string
 	out      iam.Session
 	err      error
 }
 
-func (l *loginStub) Login(_ context.Context, host, email, password string, ip net.IP, ua string) (iam.Session, error) {
+func (l *loginStub) Login(_ context.Context, host, email, password string, ip net.IP, ua, route string) (iam.Session, error) {
 	l.calls++
 	l.gotHost = host
 	l.gotEmail = email
 	l.gotPwd = password
 	l.gotIP = ip
 	l.gotUA = ua
+	l.gotRoute = route
 	return l.out, l.err
 }
 

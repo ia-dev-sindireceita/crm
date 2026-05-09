@@ -57,7 +57,7 @@ import (
 // concrete *iam.Service satisfies it; tests inject fakes implementing the
 // same shape.
 type IAMService interface {
-	Login(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent string) (iam.Session, error)
+	Login(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent, route string) (iam.Session, error)
 	Logout(ctx context.Context, tenantID, sessionID uuid.UUID) error
 	ValidateSession(ctx context.Context, tenantID, sessionID uuid.UUID) (iam.Session, error)
 }

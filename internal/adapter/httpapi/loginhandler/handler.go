@@ -42,7 +42,10 @@ import (
 // cmd/server wires either the shared tenant Service.Login method
 // directly or a per-request closure that builds a tenant-scoped
 // Service first (NewTenantLockouts(pool, tenant.ID)).
-type LoginFunc func(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent string) (iam.Session, error)
+//
+// route is the HTTP path that handled the request (ADR 0074 §6); it
+// flows into the master-lockout Slack alert. Tenant alerts ignore it.
+type LoginFunc func(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent, route string) (iam.Session, error)
 
 // Option configures the handler. Reserved for future extension
 // (cookie writer, success-redirect URL); keeping the signature open
@@ -88,7 +91,7 @@ func New(login LoginFunc, opts ...Option) http.Handler {
 		ip := remoteIP(r)
 		ua := r.UserAgent()
 
-		_, err := login(r.Context(), r.Host, email, password, ip, ua)
+		_, err := login(r.Context(), r.Host, email, password, ip, ua, r.URL.Path)
 		if err != nil {
 			WriteLoginError(w, r, err, cfg.logger)
 			return

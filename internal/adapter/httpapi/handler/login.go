@@ -17,9 +17,12 @@ import (
 
 // LoginAuthenticator is the slice of iam.Service the login handler needs.
 // Keeping it narrow lets tests inject a fake without dragging the full
-// Service surface. *iam.Service satisfies it.
+// Service surface. *iam.Service satisfies it. The route parameter is
+// the HTTP path that handled the request (ADR 0074 §6) — it flows into
+// the master-lockout alert so the on-call operator can correlate the
+// event against the access log.
 type LoginAuthenticator interface {
-	Login(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent string) (iam.Session, error)
+	Login(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent, route string) (iam.Session, error)
 }
 
 // LoginConfig captures the bootstrap-time wiring the login handler needs.
@@ -77,7 +80,7 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 		next := SanitizeNext(r.PostFormValue("next"))
 
 		ipAddr := parseRemoteIP(r.RemoteAddr)
-		sess, err := cfg.IAM.Login(r.Context(), r.Host, email, password, ipAddr, r.UserAgent())
+		sess, err := cfg.IAM.Login(r.Context(), r.Host, email, password, ipAddr, r.UserAgent(), r.URL.Path)
 		if err != nil {
 			if errors.Is(err, iam.ErrInvalidCredentials) {
 				renderLoginError(w, next)

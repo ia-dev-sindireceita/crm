@@ -171,7 +171,7 @@ func TestLogin_RehashOnNeedsRehash(t *testing.T) {
 		PasswordHasher:   password.Default(),
 		PasswordWriter:   writer,
 	}
-	_, err = svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", net.IPv4(127, 0, 0, 1), "ua")
+	_, err = svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", net.IPv4(127, 0, 0, 1), "ua", "")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestLogin_NoRehashWhenParamsCurrent(t *testing.T) {
 		PasswordHasher:   hasher,
 		PasswordWriter:   writer,
 	}
-	if _, err := svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, ""); err != nil {
+	if _, err := svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "", ""); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	// Give the goroutine the same window as the rehash test — but expect
@@ -275,7 +275,7 @@ func TestLogin_RehashFailureIsNonFatal(t *testing.T) {
 		PasswordHasher:   password.Default(),
 		PasswordWriter:   loggedWriter,
 	}
-	sess, err := svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "")
+	sess, err := svc.Login(context.Background(), "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "", "")
 	if err != nil {
 		t.Fatalf("Login: rehash-write failure must be non-fatal, got %v", err)
 	}

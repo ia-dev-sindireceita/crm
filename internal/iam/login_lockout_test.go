@@ -164,7 +164,7 @@ func TestLogin_MasterLockout_FiresAlerterOnce(t *testing.T) {
 	// m_login Threshold=5 → six wrong-password attempts; the 6th trips
 	// the lockout. The first five must NOT fire the alerter.
 	for i := 0; i < 5; i++ {
-		_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+		_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 		if !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("attempt %d: err=%v want ErrInvalidCredentials", i+1, err)
 		}
@@ -174,7 +174,7 @@ func TestLogin_MasterLockout_FiresAlerterOnce(t *testing.T) {
 	}
 
 	// 6th attempt: lockout writes + alert fires.
-	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 	if !errors.Is(err, ErrAccountLocked) {
 		t.Fatalf("trip attempt: err=%v want ErrAccountLocked", err)
 	}
@@ -186,7 +186,7 @@ func TestLogin_MasterLockout_FiresAlerterOnce(t *testing.T) {
 	// alert (the IsLocked branch short-circuits before
 	// recordLoginFailure is reached).
 	for i := 0; i < 3; i++ {
-		_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+		_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 		if !errors.Is(err, ErrAccountLocked) {
 			t.Fatalf("post-lock attempt: err=%v want ErrAccountLocked", err)
 		}
@@ -210,7 +210,7 @@ func TestLogin_TenantLockout_DoesNotAlert(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < int(svc.LoginPolicy.Lockout.Threshold)+1; i++ {
-		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 	}
 	if alerter.count() != 0 {
 		t.Fatalf("tenant lockout fired alerter %d times — AlertOnLock=false", alerter.count())
@@ -232,7 +232,7 @@ func TestLogin_AlerterError_DoesNotAbortLockout(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < int(svc.LoginPolicy.Lockout.Threshold)+1; i++ {
-		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 	}
 	locked, _, err := lockouts.IsLocked(ctx, userID)
 	if err != nil {
@@ -266,18 +266,18 @@ func TestLogin_TimingEquivalence_UnknownVsExisting(t *testing.T) {
 	// medians instead of biasing the second branch. Two warmup passes
 	// (one per branch) prime caches and the argon2 memory allocator.
 	for _, email := range []string{"alice@acme.test", "ghost@acme.test"} {
-		_, _ = svc.Login(ctx, "acme.crm.local", email, "WRONG", nil, "")
+		_, _ = svc.Login(ctx, "acme.crm.local", email, "WRONG", nil, "", "")
 	}
 
 	wrongPwdSamples := make([]time.Duration, 0, samples)
 	unknownSamples := make([]time.Duration, 0, samples)
 	for i := 0; i < samples; i++ {
 		start := time.Now()
-		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 		wrongPwdSamples = append(wrongPwdSamples, time.Since(start))
 
 		start = time.Now()
-		_, _ = svc.Login(ctx, "acme.crm.local", "ghost@acme.test", "WRONG", nil, "")
+		_, _ = svc.Login(ctx, "acme.crm.local", "ghost@acme.test", "WRONG", nil, "", "")
 		unknownSamples = append(unknownSamples, time.Since(start))
 	}
 	wrongPwd := medianOf(wrongPwdSamples)

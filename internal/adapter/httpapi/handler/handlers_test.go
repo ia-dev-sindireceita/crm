@@ -29,17 +29,19 @@ type fakeIAM struct {
 	loginHost    string
 	loginUA      string
 	loginIP      net.IP
+	loginRoute   string
 	logoutCalls  int
 	logoutTenant uuid.UUID
 	logoutSess   uuid.UUID
 }
 
-func (f *fakeIAM) Login(_ context.Context, host, email, password string, ipAddr net.IP, userAgent string) (iam.Session, error) {
+func (f *fakeIAM) Login(_ context.Context, host, email, password string, ipAddr net.IP, userAgent, route string) (iam.Session, error) {
 	f.loginHost = host
 	f.loginEmail = email
 	f.loginPwd = password
 	f.loginIP = ipAddr
 	f.loginUA = userAgent
+	f.loginRoute = route
 	if f.loginErr != nil {
 		return iam.Session{}, f.loginErr
 	}
@@ -176,6 +178,11 @@ func TestLoginPost_Success_SetsCookieAndRedirects(t *testing.T) {
 	}
 	if got := iamFake.loginIP.String(); got != "203.0.113.7" {
 		t.Fatalf("Login IP=%q, want 203.0.113.7", got)
+	}
+	// SIN-62379: r.URL.Path threads through to iam.Service.Login so the
+	// master-lockout alert can carry route per ADR 0074 §6.
+	if iamFake.loginRoute != "/login" {
+		t.Fatalf("Login route=%q, want /login", iamFake.loginRoute)
 	}
 
 	cookies := rec.Result().Cookies()

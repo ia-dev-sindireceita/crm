@@ -71,7 +71,7 @@ func (s *inmemIAM) addUser(host, email, password string, userID uuid.UUID) {
 	s.users[host+"|"+email] = userRow{tenantID: tenantID, userID: userID, password: password}
 }
 
-func (s *inmemIAM) Login(_ context.Context, host, email, password string, _ net.IP, _ string) (iam.Session, error) {
+func (s *inmemIAM) Login(_ context.Context, host, email, password string, _ net.IP, _, _ string) (iam.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tenantID, ok := s.tenants[host]

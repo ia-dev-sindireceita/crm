@@ -289,7 +289,7 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 	}
 
 	// loginFunc wraps the master service factory for the login handler.
-	loginFunc := mastermfaadapter.MasterLoginFunc(func(ctx context.Context, host, email, password string, ipAddr net.IP, ua string) (iam.Session, error) {
+	loginFunc := mastermfaadapter.MasterLoginFunc(func(ctx context.Context, host, email, password string, ipAddr net.IP, ua, route string) (iam.Session, error) {
 		// At login time there is no authenticated actor yet — use a
 		// well-known bootstrap actor (uuid.Nil is rejected by the session
 		// adapter, so we use a deterministic "system" UUID derived from the
@@ -304,7 +304,7 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 		if err != nil {
 			return iam.Session{}, fmt.Errorf("cmd/server: master login service: %w", err)
 		}
-		return svc.Login(ctx, host, email, password, ipAddr, ua)
+		return svc.Login(ctx, host, email, password, ipAddr, ua, route)
 	})
 
 	// loginSessionStore is a thin SessionStore for the LoginHandler; since
@@ -509,8 +509,8 @@ type tenantIAMAdapter struct {
 // adapter is wired in. The closure capture pattern means each call
 // re-resolves the tenant from context (the chi router runs
 // TenantScope first, so it is always populated when we reach here).
-func (a tenantIAMAdapter) Login(ctx context.Context, host, email, password string, ip net.IP, ua string) (iam.Session, error) {
-	return tenantLoginAdapter(a.deps)(ctx, host, email, password, ip, ua)
+func (a tenantIAMAdapter) Login(ctx context.Context, host, email, password string, ip net.IP, ua, route string) (iam.Session, error) {
+	return tenantLoginAdapter(a.deps)(ctx, host, email, password, ip, ua, route)
 }
 
 // Logout / ValidateSession do not need Lockouts — tenantID flows in
@@ -543,7 +543,7 @@ func (a tenantIAMAdapter) lockoutFreeService() *iam.Service {
 // is a tenant-scoped port (NewTenantLockouts captures tenantID at
 // construction).
 func tenantLoginAdapter(d *deps) loginhandler.LoginFunc {
-	return func(ctx context.Context, host, email, password string, ip net.IP, ua string) (iam.Session, error) {
+	return func(ctx context.Context, host, email, password string, ip net.IP, ua, route string) (iam.Session, error) {
 		tenant, err := tenancy.FromContext(ctx)
 		if err != nil {
 			return iam.Session{}, fmt.Errorf("cmd/server: %w", err)
@@ -563,7 +563,7 @@ func tenantLoginAdapter(d *deps) loginhandler.LoginFunc {
 			// Alerter intentionally nil for tenant — only master
 			// endpoints fire the synchronous Slack alert (ADR 0073 §D4).
 		}
-		return svc.Login(ctx, host, email, password, ip, ua)
+		return svc.Login(ctx, host, email, password, ip, ua, route)
 	}
 }
 
