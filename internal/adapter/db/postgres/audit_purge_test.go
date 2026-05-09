@@ -18,9 +18,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/pericles-luz/crm/internal/audit/purge"
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
+	"github.com/pericles-luz/crm/internal/audit/purge"
 )
 
 // seedExpirableTenantUser inserts a tenant + a regular user. It mirrors
