@@ -170,7 +170,13 @@ func init() {
 //
 // ipAddr / userAgent are stamped onto the Session for audit trail; they
 // are optional (pass nil / "" if unknown).
-func (s *Service) Login(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent string) (Session, error) {
+//
+// route is the HTTP path that handled the request (e.g. "/login",
+// "/m/login"). Empty when the call is not on an HTTP boundary. It does
+// NOT change auth behaviour — it only enriches the master-lockout Slack
+// alert (ADR 0074 §6) so an on-call operator can correlate the event
+// against the access log without a follow-up DB query.
+func (s *Service) Login(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent, route string) (Session, error) {
 	logger := s.logger()
 
 	tenantID, err := s.Tenants.ResolveByHost(ctx, host)
@@ -247,7 +253,7 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 		// lockout row and (for master endpoints) fire the synchronous
 		// alert. The user still sees ErrAccountLocked on the
 		// trip-attempt because the persisted row is the truth source.
-		if until, locked := s.recordLoginFailure(ctx, tenantID, userID, email); locked {
+		if until, locked := s.recordLoginFailure(ctx, tenantID, userID, email, ipAddr, userAgent, route); locked {
 			return Session{}, &AccountLockedError{Until: until}
 		}
 		logger.WarnContext(ctx, "login: rejected", slog.String("reason", "invalid_credentials"), slog.String("tenant_id", tenantID.String()))
@@ -435,6 +441,16 @@ func isLookupNotFound(err error) bool {
 	return errors.Is(err, ErrTenantNotFound)
 }
 
+// ipString renders a net.IP for the master-lockout alert. A nil IP
+// becomes the empty string rather than fmt's "<nil>" so the alert
+// reads cleanly when the boundary couldn't parse RemoteAddr.
+func ipString(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
 // failedLoginKey returns the Redis sliding-window bucket key for a
 // failed-login event. The email is sha256-hashed so PII never lands
 // in the limiter logs / metric labels — the only place the plain
@@ -460,7 +476,13 @@ func failedLoginKey(email string) string {
 // Limiter outage MUST NOT make every login look like a 401 to the
 // user, and a Lockouts write-failure does not change the credential
 // verdict for the current attempt.
-func (s *Service) recordLoginFailure(ctx context.Context, tenantID, userID uuid.UUID, email string) (time.Time, bool) {
+//
+// ipAddr / userAgent / route are the request-context fields that ride
+// into the master-lockout Slack alert per ADR 0074 §6 so the on-call
+// operator can begin investigation without round-tripping to the audit
+// log. The tenant flow leaves them visible in logs only — they reach
+// the Alerter solely on the master Service (where AlertOnLock=true).
+func (s *Service) recordLoginFailure(ctx context.Context, tenantID, userID uuid.UUID, email string, ipAddr net.IP, userAgent, route string) (time.Time, bool) {
 	logger := s.logger()
 	if s.Limiter == nil || !s.LoginPolicy.LockoutEnabled() {
 		return time.Time{}, false
@@ -513,9 +535,16 @@ func (s *Service) recordLoginFailure(ctx context.Context, tenantID, userID uuid.
 		// Synchronous notify (acceptance criterion #3). The Slack
 		// adapter caps the round-trip with its own per-call deadline,
 		// so a slow webhook does not stall the login response.
+		//
+		// ADR 0074 §6: the master-lockout alert MUST carry actor_email
+		// (master only, unmasked), ip, user_agent, and route so the
+		// on-call operator has every field needed to lock down the
+		// targeted account from the alert alone. Bracket-delimited
+		// values keep spaces in user-agent readable in Slack and avoid
+		// having to escape-quote the whole field.
 		if err := s.Alerter.Notify(ctx, fmt.Sprintf(
-			"account locked: policy=%s user=%s tenant=%s until=%s",
-			s.LoginPolicy.Name, userID, tenantID, until.UTC().Format(time.RFC3339),
+			"master account locked: policy=%s email=%s user=%s tenant=%s ip=[%s] ua=[%s] route=[%s] until=%s",
+			s.LoginPolicy.Name, email, userID, tenantID, ipString(ipAddr), userAgent, route, until.UTC().Format(time.RFC3339),
 		)); err != nil {
 			logger.WarnContext(ctx, "login: alerter notify failed",
 				slog.String("tenant_id", tenantID.String()),

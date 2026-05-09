@@ -156,7 +156,7 @@ func TestTenantLoginAdapter_NoTenantInContext_Errors(t *testing.T) {
 	t.Parallel()
 	d := &deps{} // pool nil — but we never reach it without a tenant in ctx.
 	fn := tenantLoginAdapter(d)
-	_, err := fn(context.Background(), "x", "a@b.test", "pwd", nil, "")
+	_, err := fn(context.Background(), "x", "a@b.test", "pwd", nil, "", "")
 	if err == nil {
 		t.Fatal("tenantLoginAdapter without tenant context: err = nil, want non-nil")
 	}

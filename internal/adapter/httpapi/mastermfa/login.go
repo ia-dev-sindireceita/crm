@@ -22,7 +22,11 @@ import (
 // directly. Returning iam.Session is intentional even though the
 // master flow does not use the tenant session — the handler reads the
 // UserID off the result to mint a fresh master_session row.
-type MasterLoginFunc func(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent string) (iam.Session, error)
+//
+// route is the HTTP path that handled the request (ADR 0074 §6); the
+// master-lockout Slack alert carries it so the on-call operator can
+// correlate the event against the access log.
+type MasterLoginFunc func(ctx context.Context, host, email, password string, ipAddr net.IP, userAgent, route string) (iam.Session, error)
 
 // LoginHandlerConfig is the constructor input. All four fields are
 // required; nil panics at wire time.
@@ -133,7 +137,7 @@ func (h *LoginHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	ip := remoteIP(r)
 	ua := r.UserAgent()
 
-	sess, err := h.cfg.Login(r.Context(), r.Host, email, password, ip, ua)
+	sess, err := h.cfg.Login(r.Context(), r.Host, email, password, ip, ua, r.URL.Path)
 	if err != nil {
 		// Account-locked: 429 + Retry-After, rendered through the
 		// shared translator so master and tenant report the same wire

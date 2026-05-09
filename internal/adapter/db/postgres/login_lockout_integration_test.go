@@ -247,7 +247,7 @@ func TestLogin_AC1_EleventhAttemptTripsLockout(t *testing.T) {
 
 	// Attempts 1..10 all return ErrInvalidCredentials. No row yet.
 	for i := 1; i <= threshold; i++ {
-		_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", net.IPv4(192, 0, 2, 9), "ua/test")
+		_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", net.IPv4(192, 0, 2, 9), "ua/test", "/login")
 		if !errors.Is(err, iam.ErrInvalidCredentials) {
 			t.Fatalf("attempt %d: err=%v want ErrInvalidCredentials", i, err)
 		}
@@ -257,7 +257,7 @@ func TestLogin_AC1_EleventhAttemptTripsLockout(t *testing.T) {
 	}
 
 	// 11th attempt trips: ErrAccountLocked + row in account_lockout.
-	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", net.IPv4(192, 0, 2, 9), "ua/test")
+	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", net.IPv4(192, 0, 2, 9), "ua/test", "/login")
 	if !errors.Is(err, iam.ErrAccountLocked) {
 		t.Fatalf("attempt %d: err=%v want ErrAccountLocked", threshold+1, err)
 	}
@@ -283,7 +283,7 @@ func TestLogin_AC2_TwelfthAttemptStillLockedAfterLimiterReset(t *testing.T) {
 
 	// Drive to the lockout (11 attempts).
 	for i := 0; i <= threshold; i++ {
-		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 	}
 
 	// Reset the limiter — this is the "Redis FLUSHALL" condition.
@@ -293,7 +293,7 @@ func TestLogin_AC2_TwelfthAttemptStillLockedAfterLimiterReset(t *testing.T) {
 
 	// 12th attempt (post-reset) MUST still return ErrAccountLocked
 	// because IsLocked runs first and reads from Postgres.
-	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 	if !errors.Is(err, iam.ErrAccountLocked) {
 		t.Fatalf("AC #2: post-flush attempt err=%v want ErrAccountLocked (lockout must survive limiter reset)", err)
 	}
@@ -315,7 +315,7 @@ func TestLogin_AC5_LockoutSurvivesLimiterFullWipe(t *testing.T) {
 
 	// Trip the lockout.
 	for i := 0; i <= threshold; i++ {
-		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+		_, _ = svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 	}
 
 	// Simulate a complete Redis instance loss (restart, eviction,
@@ -325,7 +325,7 @@ func TestLogin_AC5_LockoutSurvivesLimiterFullWipe(t *testing.T) {
 	// 5 more attempts MUST all return ErrAccountLocked — the lockout
 	// is durable in Postgres.
 	for i := 0; i < 5; i++ {
-		_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "")
+		_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "WRONG", nil, "", "")
 		if !errors.Is(err, iam.ErrAccountLocked) {
 			t.Fatalf("AC #5 attempt %d after wipe: err=%v want ErrAccountLocked", i+1, err)
 		}
@@ -349,7 +349,7 @@ func TestLogin_LockoutClearedOnSuccess(t *testing.T) {
 
 	// Attempt a legitimate login — IsLocked returns true and the
 	// flow MUST return ErrAccountLocked without verifying.
-	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "")
+	_, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "", "")
 	if !errors.Is(err, iam.ErrAccountLocked) {
 		t.Fatalf("locked login attempt: err=%v want ErrAccountLocked", err)
 	}
@@ -361,7 +361,7 @@ func TestLogin_LockoutClearedOnSuccess(t *testing.T) {
 
 	// A subsequent correct password succeeds — and Clear-on-success
 	// is exercised inside Login (idempotent).
-	if _, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, ""); err != nil {
+	if _, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", "correct-horse-battery-staple", nil, "", ""); err != nil {
 		t.Fatalf("post-clear login: %v", err)
 	}
 }
