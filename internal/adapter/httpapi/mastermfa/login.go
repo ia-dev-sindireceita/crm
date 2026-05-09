@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/loginhandler"
@@ -175,11 +176,15 @@ func (h *LoginHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 
 	target := ResolveReturn(r.URL.Query().Get("next"), h.cfg.VerifyPath)
-	// The verify handler reads ?return=... ; carry the next path
-	// through so a successful 2FA bounces back to the originally-
-	// requested URL.
+	// URL-encode the value (matching middleware.redirectWithReturn) so
+	// embedded query characters in the next path (e.g.
+	// /m/users?filter=active&page=2) survive the round trip — bare
+	// concat would let r.URL.Query().Get("return") on the verify side
+	// silently drop everything after the first '&'.
 	if target != h.cfg.VerifyPath {
-		target = h.cfg.VerifyPath + "?return=" + target
+		q := url.Values{}
+		q.Set("return", target)
+		target = h.cfg.VerifyPath + "?" + q.Encode()
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
 
