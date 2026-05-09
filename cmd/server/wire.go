@@ -199,6 +199,13 @@ func openRedis(ctx context.Context, url string) (*goredis.Client, error) {
 // when the master MFA routes are enabled.
 const envMasterMFAKey = "MASTER_MFA_KEY"
 
+// bootstrapMasterActorID is the system actor UUID we use at master
+// login time, before the user's identity has been resolved. Audit
+// rows generated at login carry this UUID; mastersession.Create
+// overrides the actor to the authenticated userID, so this never
+// surfaces in user-facing audit trails.
+const bootstrapMasterActorID = "00000000-0000-0000-0000-000000000001"
+
 // newAppMux returns the production HTTP handler. Originally a stdlib
 // mux, the implementation now delegates to httpapi.NewRouter (the chi
 // router from SIN-62217); the symbol name is preserved so the
@@ -322,7 +329,7 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 		// audit rows on Lockouts; at login time we construct a minimal
 		// service without lockouts (the login policy rate-limits by IP
 		// via the rate-limiter, not per-actor lockouts).
-		svc, err := d.masterService(uuid.MustParse("00000000-0000-0000-0000-000000000001"))
+		svc, err := d.masterService(uuid.MustParse(bootstrapMasterActorID))
 		if err != nil {
 			return iam.Session{}, fmt.Errorf("cmd/server: master login service: %w", err)
 		}
@@ -332,7 +339,7 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 	// loginSessionStore is a thin SessionStore for the LoginHandler; since
 	// at login time there's no authenticated actor, we use a system UUID.
 	// mastersession.Create overrides the actor to the authenticated userID.
-	loginSessStore, err := masterSessionStore(uuid.MustParse("00000000-0000-0000-0000-000000000001"))
+	loginSessStore, err := masterSessionStore(uuid.MustParse(bootstrapMasterActorID))
 	if err != nil {
 		return httpapi.MasterDeps{}, fmt.Errorf("cmd/server: login session store: %w", err)
 	}
