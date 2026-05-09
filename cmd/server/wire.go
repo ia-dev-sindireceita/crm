@@ -43,6 +43,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -494,7 +495,7 @@ func (r *masterEnrollmentReader) LoadSeed(ctx context.Context, userID uuid.UUID)
 
 // decodeHex32 parses a hex string into exactly 32 bytes.
 func decodeHex32(s string) ([]byte, error) {
-	b, err := decodeHexString(s)
+	b, err := hex.DecodeString(s)
 	if err != nil {
 		return nil, err
 	}
@@ -502,36 +503,6 @@ func decodeHex32(s string) ([]byte, error) {
 		return nil, fmt.Errorf("want 32 bytes (64 hex chars), got %d bytes", len(b))
 	}
 	return b, nil
-}
-
-// decodeHexString is a thin shim over encoding/hex.DecodeString that
-// avoids importing the package only for this one call.
-func decodeHexString(s string) ([]byte, error) {
-	if len(s)%2 != 0 {
-		return nil, fmt.Errorf("odd-length hex string")
-	}
-	b := make([]byte, len(s)/2)
-	for i := range b {
-		hi, ok1 := hexNibble(s[2*i])
-		lo, ok2 := hexNibble(s[2*i+1])
-		if !ok1 || !ok2 {
-			return nil, fmt.Errorf("invalid hex byte at position %d", 2*i)
-		}
-		b[i] = hi<<4 | lo
-	}
-	return b, nil
-}
-
-func hexNibble(c byte) (byte, bool) {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0', true
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10, true
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10, true
-	}
-	return 0, false
 }
 
 // tenantIAMAdapter satisfies httpapi.IAMService. It bridges PR #7's
