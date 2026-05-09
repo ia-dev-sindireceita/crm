@@ -56,8 +56,10 @@ func newLoginHandlerWith(t *testing.T, login mastermfa.MasterLoginFunc, store ma
 
 func TestNewLoginHandler_PanicsOnMissingDeps(t *testing.T) {
 	cases := map[string]mastermfa.LoginHandlerConfig{
-		"nil login":    {Sessions: newFakeSessionStore()},
-		"nil sessions": {Login: func(context.Context, string, string, string, net.IP, string) (iam.Session, error) { return iam.Session{}, nil }},
+		"nil login": {Sessions: newFakeSessionStore()},
+		"nil sessions": {Login: func(context.Context, string, string, string, net.IP, string) (iam.Session, error) {
+			return iam.Session{}, nil
+		}},
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -74,7 +76,9 @@ func TestNewLoginHandler_PanicsOnMissingDeps(t *testing.T) {
 func TestNewLoginHandler_AppliesDefaults(t *testing.T) {
 	// Constructed with only the required fields → defaults fill the rest.
 	h := mastermfa.NewLoginHandler(mastermfa.LoginHandlerConfig{
-		Login:    func(context.Context, string, string, string, net.IP, string) (iam.Session, error) { return iam.Session{}, nil },
+		Login: func(context.Context, string, string, string, net.IP, string) (iam.Session, error) {
+			return iam.Session{}, nil
+		},
 		Sessions: newFakeSessionStore(),
 	})
 	if h == nil {
