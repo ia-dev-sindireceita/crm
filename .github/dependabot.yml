@@ -1,0 +1,114 @@
+# Dependabot configuration for ia-dev-sindireceita/crm.
+# Policy lives in docs/adr/0001-dependency-update-policy.md (ADR-0001).
+# Parent task: SIN-62325. Implementation task: SIN-62326.
+
+version: 2
+updates:
+  # ---------------------------------------------------------------------------
+  # Go modules
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 5
+    groups:
+      go-patches:
+        dependency-type: "direct"
+        update-types:
+          - "version-update:semver-patch"
+      go-minors:
+        dependency-type: "direct"
+        update-types:
+          - "version-update:semver-minor"
+    ignore:
+      # ADR-0001 tier 3: templ is pre-1.0; major bumps require an explicit
+      # migration child issue.
+      - dependency-name: "github.com/a-h/templ"
+        update-types:
+          - "version-update:semver-major"
+    # TODO(SIN-62326): replace placeholder with the CTO's real GitHub handle
+    # once it is decided. Dependabot silently drops unknown reviewers, so this
+    # is safe to ship as a placeholder until the handoff to the CTO is made.
+    reviewers:
+      - "TBD-CTO-handle"
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "deps(go)"
+
+  # ---------------------------------------------------------------------------
+  # Docker base images (Dockerfile at repo root)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 2
+    ignore:
+      # ADR-0001: Go base-image major bumps wait for a coordinated go.mod
+      # toolchain bump. Dependabot PRs that bump only the image are closed.
+      - dependency-name: "golang"
+        update-types:
+          - "version-update:semver-major"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps(docker)"
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions used by .github/workflows/*.yml
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 5
+    groups:
+      actions-patches-and-minors:
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+    ignore:
+      # ADR-0001 tier 4: Actions majors require a migration child issue.
+      # upload/download-artifact v3 ↔ v4+ in particular are not interoperable.
+      - dependency-name: "actions/upload-artifact"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "actions/download-artifact"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "actions/checkout"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "actions/setup-go"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "docker/build-push-action"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "docker/login-action"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "docker/setup-buildx-action"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "anchore/sbom-action"
+        update-types:
+          - "version-update:semver-major"
+    labels:
+      - "dependencies"
+      - "actions"
+    commit-message:
+      prefix: "deps(actions)"
