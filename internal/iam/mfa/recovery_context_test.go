@@ -124,9 +124,9 @@ type capturingAudit struct {
 	lastReason string
 }
 
-func (a *capturingAudit) LogEnrolled(context.Context, uuid.UUID) error         { return nil }
-func (a *capturingAudit) LogVerified(context.Context, uuid.UUID) error         { return nil }
-func (a *capturingAudit) LogRecoveryUsed(context.Context, uuid.UUID) error     { return nil }
+func (a *capturingAudit) LogEnrolled(context.Context, uuid.UUID) error     { return nil }
+func (a *capturingAudit) LogVerified(context.Context, uuid.UUID) error     { return nil }
+func (a *capturingAudit) LogRecoveryUsed(context.Context, uuid.UUID) error { return nil }
 func (a *capturingAudit) LogRecoveryRegenerated(context.Context, uuid.UUID) error {
 	return nil
 }
