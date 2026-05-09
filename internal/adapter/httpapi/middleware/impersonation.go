@@ -47,17 +47,23 @@ type MasterChecker interface {
 //	header present, master, audit
 //	  write fails                    → 500 Internal Server Error
 //	                                  (request never proceeds, AC #5).
-//	all checks ok                    → audit "impersonation_started",
+//	all checks ok                    → audit "impersonation_start",
 //	                                  swap tenant in context, run
-//	                                  next; defer "impersonation_ended"
+//	                                  next; defer "impersonation_stop"
 //	                                  with duration_ms.
 //
-// The "_ended" event is best-effort: a panic in next or a write
+// SIN-62424: the writer is the split-audit `audit.SplitLogger`; the
+// legacy `audit.Logger` was retired alongside the `audit_log` table.
+// Impersonation events are security-relevant, so they are written via
+// `WriteSecurity` into `audit_log_security` (24-month retention,
+// never purged by the LGPD job).
+//
+// The "_stop" event is best-effort: a panic in next or a write
 // failure on the deferred call is logged-and-swallowed by the audit
 // adapter. This is the documented trade-off in the issue lens
 // "Idiomatic Go: defer is OK because close of transaction is
 // independent of the log".
-func Impersonation(checker MasterChecker, resolver tenancy.ByIDResolver, logger audit.Logger) func(http.Handler) http.Handler {
+func Impersonation(checker MasterChecker, resolver tenancy.ByIDResolver, logger audit.SplitLogger) func(http.Handler) http.Handler {
 	if checker == nil {
 		panic("middleware: Impersonation MasterChecker is nil")
 	}
@@ -65,7 +71,7 @@ func Impersonation(checker MasterChecker, resolver tenancy.ByIDResolver, logger 
 		panic("middleware: Impersonation ByIDResolver is nil")
 	}
 	if logger == nil {
-		panic("middleware: Impersonation audit.Logger is nil")
+		panic("middleware: Impersonation audit.SplitLogger is nil")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,15 +128,15 @@ func Impersonation(checker MasterChecker, resolver tenancy.ByIDResolver, logger 
 
 			startedAt := time.Now().UTC()
 			tenantID := targetTenant.ID
-			if err := logger.Log(r.Context(), audit.AuditEvent{
-				Event:       audit.EventImpersonationStarted,
+			if err := logger.WriteSecurity(r.Context(), audit.SecurityAuditEvent{
+				Event:       audit.SecurityEventImpersonationStart,
 				ActorUserID: sess.UserID,
 				TenantID:    &tenantID,
 				Target: map[string]any{
 					"tenant_id": tenantID.String(),
 					"reason":    reason,
 				},
-				CreatedAt: startedAt,
+				OccurredAt: startedAt,
 			}); err != nil {
 				// AC #5: a failed audit write blocks the request.
 				// Without the trail we cannot allow impersonation
@@ -141,8 +147,8 @@ func Impersonation(checker MasterChecker, resolver tenancy.ByIDResolver, logger 
 
 			defer func() {
 				endedAt := time.Now().UTC()
-				_ = logger.Log(r.Context(), audit.AuditEvent{
-					Event:       audit.EventImpersonationEnded,
+				_ = logger.WriteSecurity(r.Context(), audit.SecurityAuditEvent{
+					Event:       audit.SecurityEventImpersonationStop,
 					ActorUserID: sess.UserID,
 					TenantID:    &tenantID,
 					Target: map[string]any{
@@ -150,7 +156,7 @@ func Impersonation(checker MasterChecker, resolver tenancy.ByIDResolver, logger 
 						"reason":      reason,
 						"duration_ms": endedAt.Sub(startedAt).Milliseconds(),
 					},
-					CreatedAt: endedAt,
+					OccurredAt: endedAt,
 				})
 			}()
 
