@@ -23,7 +23,7 @@ type Verifier interface {
 // RecoveryConsumer is the slice of mfa.Service.ConsumeRecovery the
 // verify handler needs.
 type RecoveryConsumer interface {
-	ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitted string) error
+	ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitted string, reqCtx mfa.RequestContext) error
 }
 
 // VerifyHandlerConfig is the constructor input.
@@ -131,7 +131,12 @@ func (h *VerifyHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		err := h.cfg.Consumer.ConsumeRecovery(r.Context(), master.ID, code)
+		reqCtx := mfa.RequestContext{
+			IP:        clientIP(r),
+			UserAgent: r.Header.Get("User-Agent"),
+			Route:     r.URL.Path,
+		}
+		err := h.cfg.Consumer.ConsumeRecovery(r.Context(), master.ID, code, reqCtx)
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			h.renderForm(w, r, "código inválido")
 			return

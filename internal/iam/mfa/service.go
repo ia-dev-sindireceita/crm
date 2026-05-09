@@ -253,10 +253,26 @@ func (s *Service) Verify(ctx context.Context, userID uuid.UUID, code string) err
 	return nil
 }
 
+// RequestContext carries the per-request operational fields that the
+// HTTP boundary collects from the inbound request and that downstream
+// alerts and audit hooks need (ADR 0074 §5: ip + user_agent + route).
+// The domain layer treats these as opaque strings — no parsing, no
+// validation — they exist only to enrich operator-facing diagnostics.
+type RequestContext struct {
+	IP        string
+	UserAgent string
+	Route     string
+}
+
 // ConsumeRecovery validates a single recovery code against the
 // per-user active set, marks it consumed, flips the master into
 // reenroll-required state, and fires audit + Slack alert. Returns
 // nil on success, ErrInvalidCode on no match.
+//
+// reqCtx carries the IP / user-agent / route that the HTTP layer
+// captured when the consume request arrived. They flow into the
+// Slack alert (ADR 0074 §5) so the on-call operator can begin the
+// investigation without round-tripping to the audit log.
 //
 // Sequence (ADR 0074 §5):
 //  1. Normalise the submitted plaintext (strip dashes/spaces, upper-
@@ -276,7 +292,7 @@ func (s *Service) Verify(ctx context.Context, userID uuid.UUID, code string) err
 //  8. AlertRecoveryUsed (Slack — non-fatal, logged on failure since
 //     the code is already consumed and rolling back would be
 //     complex).
-func (s *Service) ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitted string) error {
+func (s *Service) ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitted string, reqCtx RequestContext) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("mfa: ConsumeRecovery: userID is nil")
 	}
@@ -291,6 +307,7 @@ func (s *Service) ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitt
 		return fmt.Errorf("mfa: ConsumeRecovery: list active: %w", err)
 	}
 	var matched *RecoveryCodeRecord
+	matchedIndex := -1
 	for i := range rows {
 		ok, vErr := s.hasher.Verify(rows[i].Hash, canonical)
 		if vErr != nil {
@@ -301,6 +318,7 @@ func (s *Service) ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitt
 		}
 		if ok && matched == nil {
 			matched = &rows[i]
+			matchedIndex = i
 			// We deliberately keep iterating to avoid a timing oracle.
 		}
 	}
@@ -316,11 +334,18 @@ func (s *Service) ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitt
 	if err := s.audit.LogRecoveryUsed(ctx, userID); err != nil {
 		return fmt.Errorf("mfa: ConsumeRecovery: audit: %w", err)
 	}
-	if err := s.alerter.AlertRecoveryUsed(ctx, userID); err != nil {
+	details := RecoveryUsedDetails{
+		UserID:    userID,
+		CodeIndex: matchedIndex,
+		IP:        reqCtx.IP,
+		UserAgent: reqCtx.UserAgent,
+		Route:     reqCtx.Route,
+	}
+	if err := s.alerter.AlertRecoveryUsed(ctx, details); err != nil {
 		// Slack outage MUST NOT cause the master to be told their code
 		// was wrong (the consume already happened). The alert is best-
 		// effort; the audit_log entry is the durable record.
-		s.alertFailure(ctx, userID, "/m/2fa/recover", err)
+		s.alertFailure(ctx, userID, reqCtx.Route, err)
 	}
 	return nil
 }
@@ -342,6 +367,12 @@ func (s *Service) alertFailure(ctx context.Context, userID uuid.UUID, route stri
 // Slack alert. Returns the plaintext codes (shown ONCE by the HTTP
 // layer) or an error.
 //
+// reqCtx carries the IP / user-agent / route the HTTP layer captured
+// for the regenerate request. They ride along into the Slack alert
+// (ADR 0074 §2) so the on-call operator can confirm the regenerate
+// was driven by the master, not by a hijacked session, without first
+// pulling the audit log.
+//
 // Sequence (ADR 0074 §2 regenerate path):
 //  1. InvalidateAll — bulk-mark every active row consumed.
 //  2. GenerateRecoveryCodes — 10 fresh plaintext codes.
@@ -358,7 +389,7 @@ func (s *Service) alertFailure(ctx context.Context, userID uuid.UUID, route stri
 // non-existent seed; that's a wiring bug worth flagging in review,
 // but defending against it inside this method would create a circular
 // dependency with the SeedRepository on the success path.
-func (s *Service) RegenerateRecovery(ctx context.Context, userID uuid.UUID) ([]string, error) {
+func (s *Service) RegenerateRecovery(ctx context.Context, userID uuid.UUID, reqCtx RequestContext) ([]string, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("mfa: RegenerateRecovery: userID is nil")
 	}
@@ -383,8 +414,14 @@ func (s *Service) RegenerateRecovery(ctx context.Context, userID uuid.UUID) ([]s
 	if err := s.audit.LogRecoveryRegenerated(ctx, userID); err != nil {
 		return nil, fmt.Errorf("mfa: RegenerateRecovery: audit: %w", err)
 	}
-	if err := s.alerter.AlertRecoveryRegenerated(ctx, userID); err != nil {
-		s.alertFailure(ctx, userID, "/m/2fa/recovery/regenerate", err)
+	details := RecoveryRegeneratedDetails{
+		UserID:    userID,
+		IP:        reqCtx.IP,
+		UserAgent: reqCtx.UserAgent,
+		Route:     reqCtx.Route,
+	}
+	if err := s.alerter.AlertRecoveryRegenerated(ctx, details); err != nil {
+		s.alertFailure(ctx, userID, reqCtx.Route, err)
 	}
 	return plain, nil
 }

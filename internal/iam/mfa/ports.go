@@ -87,11 +87,41 @@ type AuditLogger interface {
 	LogMFARequired(ctx context.Context, userID uuid.UUID, route, reason string) error
 }
 
+// RecoveryUsedDetails carries the operational context an on-call
+// operator needs to triage a master_recovery_used event without
+// round-tripping to the audit log (ADR 0074 §5: actor + code_index +
+// ip + user_agent). Route is the HTTP path that handled the consume
+// so the alert can be cross-referenced against the access log.
+//
+// CodeIndex is the 0-based position of the matched code inside the
+// master's active set as ListActive returned it. It is a forensics
+// hint, not a stable identifier — the audit row keeps the canonical
+// code UUID.
+type RecoveryUsedDetails struct {
+	UserID    uuid.UUID
+	CodeIndex int
+	IP        string
+	UserAgent string
+	Route     string
+}
+
+// RecoveryRegeneratedDetails carries the operational context for the
+// regenerate path (ADR 0074 §2). Code index does not apply because
+// regenerate consumes nothing — the entire active set is invalidated
+// and replaced — so only actor / network identity / route ride along.
+type RecoveryRegeneratedDetails struct {
+	UserID    uuid.UUID
+	IP        string
+	UserAgent string
+	Route     string
+}
+
 // Alerter posts the immediate Slack #alerts notification when a
 // master recovery code is consumed (ADR 0074 §5) or the recovery set
-// is regenerated (ADR 0074 §2). The domain layer names the event;
-// the adapter renders the message and routes it.
+// is regenerated (ADR 0074 §2). The domain layer names the event and
+// the operational context; the adapter renders the message and routes
+// it.
 type Alerter interface {
-	AlertRecoveryUsed(ctx context.Context, userID uuid.UUID) error
-	AlertRecoveryRegenerated(ctx context.Context, userID uuid.UUID) error
+	AlertRecoveryUsed(ctx context.Context, details RecoveryUsedDetails) error
+	AlertRecoveryRegenerated(ctx context.Context, details RecoveryRegeneratedDetails) error
 }

@@ -33,16 +33,18 @@ func (f *fakeVerifier) Verify(_ context.Context, uid uuid.UUID, code string) err
 
 // fakeConsumer scripts mfa.Service.ConsumeRecovery.
 type fakeConsumer struct {
-	calls    int
-	lastUID  uuid.UUID
-	lastCode string
-	err      error
+	calls      int
+	lastUID    uuid.UUID
+	lastCode   string
+	lastReqCtx mfa.RequestContext
+	err        error
 }
 
-func (f *fakeConsumer) ConsumeRecovery(_ context.Context, uid uuid.UUID, code string) error {
+func (f *fakeConsumer) ConsumeRecovery(_ context.Context, uid uuid.UUID, code string, reqCtx mfa.RequestContext) error {
 	f.calls++
 	f.lastUID = uid
 	f.lastCode = code
+	f.lastReqCtx = reqCtx
 	return f.err
 }
 

@@ -12,14 +12,19 @@ import (
 // regenAlerter records both AlertRecoveryRegenerated and the soft-fail
 // path so tests can confirm regenerate fires the regen-specific event.
 type regenAlerter struct {
-	usedCalls  int
-	regenCalls int
-	regenErr   error
+	usedCalls   int
+	regenCalls  int
+	regenErr    error
+	lastRegened RecoveryRegeneratedDetails
 }
 
-func (a *regenAlerter) AlertRecoveryUsed(context.Context, uuid.UUID) error { a.usedCalls++; return nil }
-func (a *regenAlerter) AlertRecoveryRegenerated(context.Context, uuid.UUID) error {
+func (a *regenAlerter) AlertRecoveryUsed(context.Context, RecoveryUsedDetails) error {
+	a.usedCalls++
+	return nil
+}
+func (a *regenAlerter) AlertRecoveryRegenerated(_ context.Context, d RecoveryRegeneratedDetails) error {
 	a.regenCalls++
+	a.lastRegened = d
 	return a.regenErr
 }
 
@@ -97,7 +102,7 @@ func newRegenService(t *testing.T, store *regenStore, audit *regenAudit, alerter
 
 func TestRegenerateRecovery_RejectsNilUserID(t *testing.T) {
 	svc := newRegenService(t, &regenStore{}, &regenAudit{}, &regenAlerter{})
-	if _, err := svc.RegenerateRecovery(context.Background(), uuid.Nil); err == nil {
+	if _, err := svc.RegenerateRecovery(context.Background(), uuid.Nil, RequestContext{}); err == nil {
 		t.Fatal("expected non-nil error")
 	}
 }
@@ -108,7 +113,7 @@ func TestRegenerateRecovery_HappyPath(t *testing.T) {
 	alerter := &regenAlerter{}
 	svc := newRegenService(t, store, audit, alerter)
 
-	codes, err := svc.RegenerateRecovery(context.Background(), uuid.New())
+	codes, err := svc.RegenerateRecovery(context.Background(), uuid.New(), RequestContext{})
 	if err != nil {
 		t.Fatalf("RegenerateRecovery: %v", err)
 	}
@@ -164,7 +169,7 @@ func TestRegenerateRecovery_HappyPath(t *testing.T) {
 func TestRegenerateRecovery_DeterministicWithFixedReader(t *testing.T) {
 	svc := newRegenService(t, &regenStore{}, &regenAudit{}, &regenAlerter{})
 	svc.rand = bytes.NewReader(make([]byte, recoveryCodeRawBytes*RecoveryCodeCount))
-	codes, err := svc.RegenerateRecovery(context.Background(), uuid.New())
+	codes, err := svc.RegenerateRecovery(context.Background(), uuid.New(), RequestContext{})
 	if err != nil {
 		t.Fatalf("RegenerateRecovery: %v", err)
 	}
@@ -191,7 +196,7 @@ func TestRegenerateRecovery_PropagatesEachStepError(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store, audit, alerter := mk()
 			svc := newRegenService(t, store, audit, alerter)
-			_, err := svc.RegenerateRecovery(context.Background(), uuid.New())
+			_, err := svc.RegenerateRecovery(context.Background(), uuid.New(), RequestContext{})
 			if err == nil {
 				t.Fatal("expected non-nil error")
 			}
@@ -206,7 +211,7 @@ func TestRegenerateRecovery_AlertFailureIsNonFatal(t *testing.T) {
 	audit := &regenAudit{}
 	alerter := &regenAlerter{regenErr: errors.New("slack 503")}
 	svc := newRegenService(t, store, audit, alerter)
-	codes, err := svc.RegenerateRecovery(context.Background(), uuid.New())
+	codes, err := svc.RegenerateRecovery(context.Background(), uuid.New(), RequestContext{})
 	if err != nil {
 		t.Fatalf("expected nil error despite alert failure, got %v", err)
 	}

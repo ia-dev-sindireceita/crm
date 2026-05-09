@@ -117,8 +117,10 @@ func (fakeAudit) LogMFARequired(context.Context, uuid.UUID, string, string) erro
 
 type fakeAlerter struct{}
 
-func (fakeAlerter) AlertRecoveryUsed(context.Context, uuid.UUID) error        { return nil }
-func (fakeAlerter) AlertRecoveryRegenerated(context.Context, uuid.UUID) error { return nil }
+func (fakeAlerter) AlertRecoveryUsed(context.Context, RecoveryUsedDetails) error { return nil }
+func (fakeAlerter) AlertRecoveryRegenerated(context.Context, RecoveryRegeneratedDetails) error {
+	return nil
+}
 
 func newServiceWithFakes(t *testing.T) (*Service, *fakeSeedRepository, *fakeRecoveryStore, *fakeAudit) {
 	t.Helper()

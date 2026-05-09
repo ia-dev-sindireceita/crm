@@ -17,15 +17,17 @@ import (
 
 // fakeRegenerator returns a scripted slice + error.
 type fakeRegenerator struct {
-	calls   int
-	lastUID uuid.UUID
-	codes   []string
-	err     error
+	calls      int
+	lastUID    uuid.UUID
+	lastReqCtx mfa.RequestContext
+	codes      []string
+	err        error
 }
 
-func (f *fakeRegenerator) RegenerateRecovery(_ context.Context, uid uuid.UUID) ([]string, error) {
+func (f *fakeRegenerator) RegenerateRecovery(_ context.Context, uid uuid.UUID, reqCtx mfa.RequestContext) ([]string, error) {
 	f.calls++
 	f.lastUID = uid
+	f.lastReqCtx = reqCtx
 	if f.err != nil {
 		return nil, f.err
 	}
