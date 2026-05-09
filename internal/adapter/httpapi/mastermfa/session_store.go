@@ -97,8 +97,21 @@ type SessionStore interface {
 	// Touch extends expires_at to now + idleTTL on the session row,
 	// implementing the idle-bump pattern from ADR 0073 §D3. The
 	// master-auth middleware (PR2) calls this on every request so
-	// active operators do not get logged out mid-session. Returns
-	// ErrSessionNotFound if no row exists.
+	// active operators do not get logged out mid-session.
+	//
+	// Implementations MUST refuse to extend expires_at past the master
+	// hard cap (created_at + 4h, ADR 0073 §D3). Two outcomes:
+	//
+	//   - now + idleTTL would exceed the cap but now itself is still
+	//     before the cap → clamp expires_at to (created_at + 4h) so
+	//     the session stops being extended past the ceiling.
+	//   - now is at or past the cap → DELETE the row inside the same
+	//     transaction and return ErrSessionHardCap so the upstream
+	//     middleware can clear the cookie, redirect to /m/login, and
+	//     emit a hard-cap audit event. Subsequent requests on the same
+	//     cookie observe ErrSessionNotFound from Get.
+	//
+	// Returns ErrSessionNotFound if no row exists. SIN-62418.
 	Touch(ctx context.Context, sessionID uuid.UUID, idleTTL time.Duration) error
 
 	// RotateID atomically swaps the session id of an existing master
@@ -151,3 +164,16 @@ var ErrSessionNotFound = errors.New("mastermfa: master session not found")
 // "not found" outcome on a cookie that the server signed is more
 // suspicious.
 var ErrSessionExpired = errors.New("mastermfa: master session expired")
+
+// ErrSessionHardCap is the sentinel SessionStore.Touch returns when
+// the row exists but extending its expires_at would push it past the
+// per-role hard cap (ADR 0073 §D3 — master sessions are capped at 4h
+// from created_at, regardless of activity). The Touch implementation
+// MUST also delete the row inside the same transaction so a subsequent
+// request on the now-stale cookie hits ErrSessionNotFound on the next
+// Get rather than re-tripping the hard-cap path. The master-auth
+// middleware translates this sentinel into the same UX as an idle
+// timeout (clear cookie, 303 to /m/login?next=…) plus an audit event
+// (`master.session.hard_cap_hit`) so dashboards can see breach
+// attempts. SIN-62418.
+var ErrSessionHardCap = errors.New("mastermfa: master session hard cap exceeded")
