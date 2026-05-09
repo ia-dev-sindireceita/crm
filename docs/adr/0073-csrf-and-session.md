@@ -38,6 +38,24 @@ per-request** — per-request rotation loses the race against parallel HTMX
 is rejected mid-flight). The token is re-minted only on events that already
 invalidate the session (D3).
 
+**Storage choice (SIN-62375 amendment).** The token lives in the existing
+`sessions` table as a new column `csrf_token TEXT NOT NULL DEFAULT ''`
+(migration 0011). The Redis-adjacent alternative was rejected because:
+
+- the lifecycle is exactly the session row's lifecycle (no separate TTL to
+  keep aligned),
+- the four-policy RLS template on `sessions` already gates per-tenant access
+  to the column, and
+- a column survives a Redis flush — same precedent as the durable
+  `account_lockout` row in §D4.
+
+The empty-string sentinel on legacy rows pre-dating migration 0011 maps to
+`csrf.session_token_missing` in the middleware (a programmer / migration
+bug surfaced as 403, never silently accepted). `iam.Service.Login` always
+mints via `iam/csrf.GenerateToken` so freshly issued sessions never carry
+the sentinel; the HTTP layer mirrors the value into the `__Host-csrf`
+cookie via `sessioncookie.SetCSRF` immediately after the session cookie.
+
 **Delivery (three channels, two must match).**
 
 | Channel       | Form                                                                | Read by             |

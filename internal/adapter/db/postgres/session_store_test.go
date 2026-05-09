@@ -42,6 +42,11 @@ func freshDBWithIAM(t *testing.T) *testpg.DB {
 		// reference both columns, so the helper has to apply 0011 too.
 		// Fixture-only update; no existing assertion changed.
 		"0011_session_activity.up.sql",
+		// SIN-62375 (FAIL-2) adds sessions.csrf_token. Same harness
+		// must include both 0011 migrations (they share the prefix but
+		// touch different columns). Order: activity first, csrf second
+		// — neither depends on the other; this is alphabetical.
+		"0011_session_csrf_token.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)

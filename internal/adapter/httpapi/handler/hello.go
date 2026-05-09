@@ -30,9 +30,11 @@ func HelloTenant(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		TenantName string
 		UserID     string
+		CSRFToken  string
 	}{
 		TenantName: tenant.Name,
 		UserID:     sess.UserID.String(),
+		CSRFToken:  sess.CSRFToken,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := views.Hello.ExecuteTemplate(w, "layout", data); err != nil {
