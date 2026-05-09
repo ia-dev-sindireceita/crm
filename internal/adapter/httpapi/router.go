@@ -36,9 +36,11 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -48,7 +50,9 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/handler"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
+	httpratelimit "github.com/pericles-luz/crm/internal/adapter/httpapi/ratelimit"
 	"github.com/pericles-luz/crm/internal/iam"
+	domainratelimit "github.com/pericles-luz/crm/internal/iam/ratelimit"
 	"github.com/pericles-luz/crm/internal/obs"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -101,6 +105,22 @@ type Deps struct {
 	// Master, when non-zero, mounts the /m/* master-console routes.
 	// Zero value skips the group.
 	Master MasterDeps
+	// Policies is the precomputed policy table from
+	// iam/ratelimit.DefaultPolicies(). When set together with
+	// RateLimiter, NewRouter mounts the per-route rate-limit
+	// middleware on POST /login (SIN-62376 / FAIL-1 of SIN-62343).
+	// Either field nil → no HTTP-boundary rate limiting (the
+	// downstream lockout in iam.Service.Login still applies).
+	Policies map[string]domainratelimit.Policy
+	// RateLimiter is the shared limiter implementation
+	// (typically *redis.SlidingWindow). Pairs with Policies — see
+	// the Policies docstring for the activation contract.
+	RateLimiter domainratelimit.RateLimiter
+	// RateLimitDenyMetric, when non-nil, is invoked on every 429
+	// emitted by the rate-limit middleware. cmd/server wires this
+	// to the auth_ratelimit_deny_total Prometheus counter; tests can
+	// pass a recording closure or leave it nil.
+	RateLimitDenyMetric func(policy, bucket, key string, retryAfter time.Duration)
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -162,9 +182,15 @@ func NewRouter(deps Deps) http.Handler {
 		tenanted.Use(obs.OTelHTTP("http.request", httpRouteOf, httpTenantSpanEnricher))
 
 		tenanted.Get("/login", handler.LoginGet)
-		tenanted.Post("/login", handler.LoginPost(handler.LoginConfig{
+
+		loginPost := http.Handler(handler.LoginPost(handler.LoginConfig{
 			IAM: deps.IAM,
 		}))
+		if mw := buildLoginRateLimit(deps); mw != nil {
+			loginPost = mw(loginPost)
+		}
+		tenanted.Method(http.MethodPost, "/login", loginPost)
+
 		tenanted.Get("/logout", handler.Logout(deps.IAM))
 
 		tenanted.Group(func(authed chi.Router) {
@@ -207,6 +233,39 @@ func NewRouter(deps Deps) http.Handler {
 	}
 
 	return r
+}
+
+// buildLoginRateLimit assembles the SIN-62376 middleware that fronts
+// POST /login with the per-IP / per-email policy. It returns nil when
+// either the policy table or the limiter is missing (existing tests
+// that don't wire ratelimit MUST keep behaving as before — the
+// downstream iam.Service.Login lockout still bounds abuse, and the
+// HTTP layer just skips the pre-check). A non-nil Policies map that
+// happens to lack the "login" key is treated as a programmer error
+// and panics: cmd/server is the only legitimate constructor and it
+// uses domainratelimit.DefaultPolicies which always emits "login".
+func buildLoginRateLimit(deps Deps) func(http.Handler) http.Handler {
+	if deps.Policies == nil || deps.RateLimiter == nil {
+		return nil
+	}
+	policy, ok := deps.Policies["login"]
+	if !ok {
+		panic(`httpapi: Deps.Policies missing "login" entry`)
+	}
+	mw, err := httpratelimit.New(httpratelimit.Config{
+		Policy:  policy,
+		Limiter: deps.RateLimiter,
+		Buckets: []httpratelimit.Bucket{
+			{Name: "ip", Extractor: httpratelimit.IPKeyExtractor},
+			{Name: "email", Extractor: httpratelimit.FormFieldExtractor("email")},
+		},
+		OnDeny: deps.RateLimitDenyMetric,
+		Logger: deps.Logger,
+	})
+	if err != nil {
+		panic(fmt.Errorf("httpapi: build login rate-limit: %w", err))
+	}
+	return mw
 }
 
 // slogRequestLogger emits one structured log line per request. It is

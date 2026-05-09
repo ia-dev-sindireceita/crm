@@ -44,6 +44,13 @@ type Metrics struct {
 	HTTPRequests *prometheus.CounterVec
 	HTTPDuration *prometheus.HistogramVec
 	RLSMisses    prometheus.Counter
+	// AuthRateLimitDenies counts 429s emitted by the
+	// internal/adapter/httpapi/ratelimit middleware (SIN-62376).
+	// Labels are policy ("login") + bucket ("ip" / "email") so the
+	// dashboard can split per-bucket. Per-key cardinality is
+	// deliberately excluded — the offending IP / email lives in the
+	// log line, not the metric.
+	AuthRateLimitDenies *prometheus.CounterVec
 }
 
 // NewMetrics builds a fresh registry plus the three SIN-62218
@@ -66,9 +73,25 @@ func NewMetrics() *Metrics {
 			Name: "rls_misses_total",
 			Help: "Times WithTenant was called with uuid.Nil — should always be 0; alarms wake oncall.",
 		}),
+		AuthRateLimitDenies: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "auth_ratelimit_deny_total",
+			Help: "HTTP rate-limit 429s emitted by the auth middleware, partitioned by policy and bucket.",
+		}, []string{"policy", "bucket"}),
 	}
-	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses)
+	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies)
 	return m
+}
+
+// AuthRateLimitDeny is the canonical OnDeny callback for the
+// httpapi/ratelimit middleware. It increments the per-policy /
+// per-bucket counter; key + retryAfter are intentionally dropped so
+// the metric stays low-cardinality (the log line carries them). Safe
+// with a nil receiver so wireup that omits Metrics still compiles.
+func (m *Metrics) AuthRateLimitDeny(policy, bucket, _key string, _retryAfter time.Duration) {
+	if m == nil {
+		return
+	}
+	m.AuthRateLimitDenies.WithLabelValues(policy, bucket).Inc()
 }
 
 // Handler returns the http.Handler that exposes m's registry over

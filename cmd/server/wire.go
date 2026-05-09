@@ -64,6 +64,7 @@ import (
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 	domainratelimit "github.com/pericles-luz/crm/internal/iam/ratelimit"
+	"github.com/pericles-luz/crm/internal/obs"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -205,13 +206,34 @@ const envMasterMFAKey = "MASTER_MFA_KEY"
 // describe the wireup boundary. The route shape /health, /login is
 // unchanged — only the multiplexer underneath changed, plus the new
 // /logout and /hello-tenant routes from SIN-62217 §Routes.
+//
+// SIN-62376: Policies + RateLimiter + RateLimitDenyMetric thread the
+// HTTP-boundary rate limit onto POST /login (FAIL-1 of SIN-62343).
+// The deny metric is wired only when obs.Default() has been set —
+// health-only mode and tests that don't construct *obs.Metrics keep
+// the closure nil, which the middleware tolerates.
 func newAppMux(d *deps) http.Handler {
 	return httpapi.NewRouter(httpapi.Deps{
-		IAM:            tenantIAMAdapter{deps: d},
-		TenantResolver: d.tenants,
-		Logger:         d.logger,
-		Master:         d.master,
+		IAM:                 tenantIAMAdapter{deps: d},
+		TenantResolver:      d.tenants,
+		Logger:              d.logger,
+		Master:              d.master,
+		Policies:            d.policies,
+		RateLimiter:         d.limiter,
+		RateLimitDenyMetric: rateLimitDenyMetric(),
 	})
+}
+
+// rateLimitDenyMetric returns the OnDeny callback the ratelimit
+// middleware invokes per 429. Resolved lazily through obs.Default()
+// so the *obs.Metrics instance the metrics handler exposes is the
+// same one the deny counter writes to.
+func rateLimitDenyMetric() func(policy, bucket, key string, retryAfter time.Duration) {
+	m := obs.Default()
+	if m == nil {
+		return nil
+	}
+	return m.AuthRateLimitDeny
 }
 
 // buildMasterDeps constructs the httpapi.MasterDeps for the /m/* routes.
