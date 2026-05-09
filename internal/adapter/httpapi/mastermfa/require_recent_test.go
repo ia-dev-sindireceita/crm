@@ -256,7 +256,7 @@ func TestRequireRecentMFA_CustomVerifyPath(t *testing.T) {
 	next := &downstream{}
 	mw := mastermfa.RequireRecentMFA(mastermfa.RequireRecentMFAConfig{
 		Sessions:   sessions,
-		MaxAge:    time.Minute,
+		MaxAge:     time.Minute,
 		VerifyPath: "/m/auth/step-up",
 		Now:        func() time.Time { return now },
 	})

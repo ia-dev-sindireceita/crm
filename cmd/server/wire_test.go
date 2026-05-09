@@ -264,7 +264,7 @@ func TestNewAppMux_MasterLoginMounted(t *testing.T) {
 	t.Parallel()
 	d := &deps{
 		tenants: stubResolver{},
-		master: newMasterDepsForTest(),
+		master:  newMasterDepsForTest(),
 	}
 	mux := newAppMux(d)
 	rec := httptest.NewRecorder()

@@ -53,13 +53,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
+	slogaudit "github.com/pericles-luz/crm/internal/adapter/audit/slog"
+	aesgcmadapter "github.com/pericles-luz/crm/internal/adapter/crypto/aesgcm"
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	mastersessionadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres/mastersession"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
-	mastermfaadapter "github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/loginhandler"
-	slogaudit "github.com/pericles-luz/crm/internal/adapter/audit/slog"
-	aesgcmadapter "github.com/pericles-luz/crm/internal/adapter/crypto/aesgcm"
+	mastermfaadapter "github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
 	slackadapter "github.com/pericles-luz/crm/internal/adapter/notify/slack"
 	rlredis "github.com/pericles-luz/crm/internal/adapter/ratelimit/redis"
 	"github.com/pericles-luz/crm/internal/iam"
@@ -423,9 +423,9 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 	// RequireMasterMFA uses a per-request HTTPSession for the enrollment reader.
 	requireMFA := mastermfaadapter.RequireMasterMFA(mastermfaadapter.RequireMasterMFAConfig{
 		Enrollment: &masterEnrollmentReader{factory: masterMFAStore},
-		Sessions: mastermfaadapter.NewHTTPSession(loginSessStore),
-		Audit:    audit,
-		Logger:   d.logger,
+		Sessions:   mastermfaadapter.NewHTTPSession(loginSessStore),
+		Audit:      audit,
+		Logger:     d.logger,
 	})
 
 	return httpapi.MasterDeps{
