@@ -32,10 +32,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// runtimePassword is the password assigned to all three application roles
-// inside the test cluster. It is generated per process so logs/dumps from one
-// test run cannot replay against another.
-var runtimePassword = "test_" + randHex(16)
+// sharedPassword is the deterministic password used when multiple test
+// binaries attach to the same external Postgres (TEST_DATABASE_URL mode).
+// All processes must agree on it: each binary's bootstrap ALTERs the
+// application roles' passwords, and a per-process random would let two
+// concurrent `go test ./...` packages overwrite each other and break the
+// loser's pools with SASL auth failures (SIN-62391). Test DBs are not
+// long-lived and the cluster itself is gated by the superuser DSN, so a
+// constant password adds no real risk.
+const sharedPassword = "testpg_shared_app_password"
+
+// ephemeralPassword is the password used when this process owns its own
+// pg_ctl cluster. It is generated once per process so logs/dumps from one
+// dev test run cannot replay against another. Only meaningful in ephemeral
+// mode, where the cluster is private to this process.
+var ephemeralPassword = "test_" + randHex(16)
 
 // dbCounter gives every test database in a process a unique name without
 // requiring tests to coordinate.
@@ -58,6 +69,13 @@ type Harness struct {
 	port         int
 	stopCluster  func() error
 	migrationDir string
+	// appPassword is the password used to authenticate the application
+	// roles (app_runtime / app_admin / app_master_ops) against this
+	// harness. It is sharedPassword when attached to an external Postgres
+	// (TEST_DATABASE_URL set) so concurrent test binaries can't fight over
+	// ALTER ROLE PASSWORD, and ephemeralPassword for a private pg_ctl
+	// cluster owned by this process.
+	appPassword string
 }
 
 // Start brings up (or attaches to) a Postgres cluster and applies the
@@ -83,6 +101,7 @@ func Start(ctx context.Context) (*Harness, error) {
 			port:         port,
 			stopCluster:  func() error { return nil },
 			migrationDir: migrations,
+			appPassword:  sharedPassword,
 		}
 		if err := h.bootstrap(ctx); err != nil {
 			return nil, err
@@ -100,6 +119,7 @@ func Start(ctx context.Context) (*Harness, error) {
 		port:         cluster.port,
 		stopCluster:  cluster.stop,
 		migrationDir: migrations,
+		appPassword:  ephemeralPassword,
 	}
 	if err := h.bootstrap(ctx); err != nil {
 		_ = cluster.stop()
@@ -207,19 +227,56 @@ func (h *Harness) bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read 0001_roles.up.sql: %w", err)
 	}
-	if err := h.execSuperuser(ctx, string(rolesSQL)); err != nil {
+
+	// Serialize the cluster-global bootstrap (CREATE ROLE / ALTER ROLE) under
+	// a Postgres advisory lock. Without it, two `go test ./...` packages
+	// attached to the same external Postgres race each other:
+	// concurrent CREATE ROLE inside 0001's DO blocks throws
+	// `tuple concurrently updated`, and concurrent ALTER ROLE PASSWORD lets
+	// the loser's pools fail SASL auth with the stale password (SIN-62391).
+	// The advisory lock id is an arbitrary constant; what matters is that
+	// every binary uses the same one. The lock is released when the
+	// connection is closed (session-scoped advisory locks).
+	pool, err := pgxpool.New(ctx, h.superuserDSN)
+	if err != nil {
+		return fmt.Errorf("connect superuser: %w", err)
+	}
+	defer pool.Close()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire bootstrap conn: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", testpgBootstrapLockID); err != nil {
+		return fmt.Errorf("acquire bootstrap advisory lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", testpgBootstrapLockID)
+	}()
+
+	if _, err := conn.Exec(ctx, string(rolesSQL)); err != nil {
 		return fmt.Errorf("apply 0001 as superuser: %w", err)
 	}
 
 	// Tests need to log in as app_runtime / app_admin / app_master_ops with
-	// the same per-process password.
+	// h.appPassword. In shared (TEST_DATABASE_URL) mode this is a constant
+	// every test binary agrees on, so concurrent bootstraps are idempotent
+	// and don't break the loser's pools (SIN-62391). In ephemeral mode the
+	// cluster is private to this process so the password is a per-process
+	// random value.
 	for _, role := range []string{"app_runtime", "app_admin", "app_master_ops"} {
-		if err := h.execSuperuser(ctx, fmt.Sprintf(`ALTER ROLE %s WITH PASSWORD '%s'`, role, runtimePassword)); err != nil {
+		if _, err := conn.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s WITH PASSWORD '%s'`, role, h.appPassword)); err != nil {
 			return fmt.Errorf("set password for %s: %w", role, err)
 		}
 	}
 	return nil
 }
+
+// testpgBootstrapLockID is the arbitrary constant advisory-lock id used to
+// serialize cluster-global bootstrap across concurrent test binaries.
+// Postgres advisory locks are process-wide; using the same constant
+// everywhere is what makes them serialize.
+const testpgBootstrapLockID int64 = 0x53494e3632333931
 
 // applyMigrationAs runs a migration file against dbName as the given role.
 // Empty role means "use the cluster superuser DSN".
@@ -254,7 +311,7 @@ func (h *Harness) execSuperuser(ctx context.Context, sql string) error {
 // dsnAs builds a DSN for the given role + password against the harness host.
 func (h *Harness) dsnAs(dbName, role string) string {
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		h.host, h.port, role, runtimePassword, dbName)
+		h.host, h.port, role, h.appPassword, dbName)
 }
 
 // dsnFor builds a DSN for the cluster superuser. Empty role means "use the
