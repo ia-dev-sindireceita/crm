@@ -1,0 +1,13 @@
+{
+  "name": "@sindireceita/crm-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright regression suite for the CRM edge — SIN-62285 PR-B3.",
+  "scripts": {
+    "test": "playwright test",
+    "test:csp": "playwright test specs/csp.spec.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.48.0"
+  }
+}

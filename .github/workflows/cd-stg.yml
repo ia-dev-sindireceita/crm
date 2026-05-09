@@ -130,3 +130,17 @@ jobs:
           done
           echo "smoke check FAILED — manual rollback required (see docs/deploy/staging.md)"
           exit 1
+
+      # ADR 0082 §1 / SIN-62285 PR-B3 — fail the deploy if the staging edge stops
+      # serving the security-headers contract (HSTS / CSP fallback / CORS / nosniff
+      # / etc.). REQUIRE_NONCE=0 is the staging default until SIN-62384 reconciles
+      # the fork ↔ upstream histories so the SIN-62245 CSP nonce middleware lands
+      # on fork/main; flip to 1 here once that ships and bake it into nightly too.
+      - name: smoke check security headers (ADR 0082 §1)
+        env:
+          STG_SMOKE_URL: ${{ secrets.STG_SMOKE_URL }}
+          EXPECTED_HSTS_MAX_AGE: "300"
+          REQUIRE_NONCE: "0"
+        run: |
+          set -euo pipefail
+          scripts/check-security-headers.sh "${STG_SMOKE_URL}/"

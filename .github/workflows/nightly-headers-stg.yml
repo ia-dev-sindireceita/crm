@@ -1,0 +1,48 @@
+# Nightly headers canary against staging — SIN-62285 PR-B3.
+#
+# Re-runs scripts/check-security-headers.sh against ${STG_SMOKE_URL} every
+# night at 06:30 UTC (≈ 03:30 BRT) and fails the workflow on the first
+# regression. This is the "alert in failure" half of ADR 0082 §1: cd-stg gates
+# the headers on every deploy, but a deploy can be days apart, and a config
+# drift on the staging VPS (someone editing /opt/crm/stg/.env.stg, an upstream
+# package replacing the Caddyfile, etc.) would otherwise stay invisible until
+# the next push.
+#
+# REQUIRE_NONCE=1 here — nightly is the forward-looking signal that the
+# SIN-62245 CSP nonce middleware is wired and serving per-request nonces. While
+# fork/main still lacks the middleware (SIN-62384 reconciliation) the nightly
+# is expected to fail; that is the intended canary, not a false positive. Flip
+# to silent passing only after the middleware ships and the failure clears
+# organically.
+
+name: nightly-headers-stg
+
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-headers:
+    name: check-security-headers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: checkout repo (script lives in tree)
+        uses: actions/checkout@v4
+
+      - name: run check-security-headers.sh against staging
+        env:
+          STG_SMOKE_URL: ${{ secrets.STG_SMOKE_URL }}
+          EXPECTED_HSTS_MAX_AGE: "300"
+          REQUIRE_NONCE: "1"
+        run: |
+          set -euo pipefail
+          if [[ -z "${STG_SMOKE_URL:-}" ]]; then
+            echo "STG_SMOKE_URL secret is unset — wire it in the repo settings before this nightly can run." >&2
+            exit 2
+          fi
+          scripts/check-security-headers.sh "${STG_SMOKE_URL}/"
