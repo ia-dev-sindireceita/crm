@@ -264,6 +264,23 @@ func suffixOf(plain string) string {
 	return strings.ToUpper(hex.EncodeToString(sum[:]))[5:]
 }
 
+// TestLocalList_BundledCorpusSize — SIN-62378 acceptance gate.
+// The bundled corpus MUST contain at least 100,000 entries so that the
+// §5 fail-shape (local fallback during HIBP outage) matches ADR 0070's
+// advertised coverage. This test fails if the repo is built with the
+// reduced seed file; restore the full corpus via scripts/refresh-hibp-corpus.sh.
+func TestLocalList_BundledCorpusSize(t *testing.T) {
+	t.Parallel()
+	ll, err := NewLocalList()
+	if err != nil {
+		t.Fatalf("NewLocalList: %v", err)
+	}
+	const minSize = 100_000
+	if ll.Size() < minSize {
+		t.Fatalf("bundled HIBP corpus too small: got %d entries, want >= %d (see ADR 0070 §5 and SIN-62378)", ll.Size(), minSize)
+	}
+}
+
 func prefixOf(plain string) string {
 	sum := sha1.Sum([]byte(plain))
 	return strings.ToUpper(hex.EncodeToString(sum[:]))[:5]
