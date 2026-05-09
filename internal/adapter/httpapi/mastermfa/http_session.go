@@ -29,17 +29,38 @@ import (
 // MarkVerified / VerifiedAt — a write through MarkVerified is
 // immediately visible to a subsequent VerifiedAt read.
 type HTTPSession struct {
-	store SessionStore
+	store      SessionStore
+	cookieMaxA int // Max-Age for the master cookie on rotation, in seconds
 }
 
 // NewHTTPSession returns the adapter. Nil store panics at wire time
 // per the project convention (consistent with EnrollHandler /
 // VerifyHandler shape).
+//
+// The adapter writes a fresh master cookie on RotateAndMarkVerified
+// (SIN-62377), so it needs the max-age the login handler used. cmd/server
+// passes the same cookieMaxAge to NewHTTPSession that it passed to the
+// login handler. A zero value falls back to the ADR 0073 §D3 master
+// hard-cap default (DefaultMasterHardTTL = 4h).
 func NewHTTPSession(store SessionStore) *HTTPSession {
 	if store == nil {
 		panic("mastermfa: NewHTTPSession: store is nil")
 	}
-	return &HTTPSession{store: store}
+	return &HTTPSession{store: store, cookieMaxA: int(DefaultMasterHardTTL.Seconds())}
+}
+
+// WithCookieMaxAge returns a copy of a with the master cookie max-age
+// set to maxAge seconds. Used by cmd/server to align the rotation
+// cookie with whatever HardTTL was passed to the login handler. A
+// non-positive value resets to the DefaultMasterHardTTL fallback.
+func (a *HTTPSession) WithCookieMaxAge(maxAge int) *HTTPSession {
+	cp := *a
+	if maxAge > 0 {
+		cp.cookieMaxA = maxAge
+	} else {
+		cp.cookieMaxA = int(DefaultMasterHardTTL.Seconds())
+	}
+	return &cp
 }
 
 // IsVerified satisfies MasterSessionMFA. Reads __Host-sess-master,
@@ -100,6 +121,48 @@ func (a *HTTPSession) MarkVerified(_ http.ResponseWriter, r *http.Request) error
 	if _, err := a.store.MarkVerified(r.Context(), sessionID); err != nil {
 		return fmt.Errorf("%w: %v", ErrSessionMFAState, err)
 	}
+	return nil
+}
+
+// RotateAndMarkVerified satisfies MasterSessionRotator. On a
+// successful TOTP / recovery-code submission it:
+//
+//  1. Reads the current __Host-sess-master cookie and parses the
+//     pre-MFA session id.
+//  2. Calls SessionStore.RotateID to atomically swap the master_session
+//     row for a fresh CSPRNG id (CreatedAt / ExpiresAt /
+//     MFAVerifiedAt / IP / UserAgent are inherited).
+//  3. Stamps mfa_verified_at = now() on the new row.
+//  4. Re-issues __Host-sess-master with the new id and the same
+//     cookie flags as login (HttpOnly, Secure, SameSite=Strict, host-
+//     locked __Host- prefix). Max-Age matches the value cmd/server
+//     passed at construction.
+//
+// All failure modes wrap ErrSessionMFAState so the verify handler
+// surfaces a 500 — silently leaving the cookie unrotated would
+// re-introduce the FAIL-4 vulnerability.
+//
+// SIN-62377 (FAIL-4) / ADR 0073 §D3.
+func (a *HTTPSession) RotateAndMarkVerified(w http.ResponseWriter, r *http.Request) error {
+	sessionID, ok, err := readMasterSessionID(r)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrSessionMFAState, err)
+	}
+	if !ok {
+		return fmt.Errorf("%w: missing master session cookie", ErrSessionMFAState)
+	}
+	rotated, err := a.store.RotateID(r.Context(), sessionID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrSessionMFAState, err)
+	}
+	if _, err := a.store.MarkVerified(r.Context(), rotated.ID); err != nil {
+		return fmt.Errorf("%w: %v", ErrSessionMFAState, err)
+	}
+	maxAge := a.cookieMaxA
+	if maxAge <= 0 {
+		maxAge = int(DefaultMasterHardTTL.Seconds())
+	}
+	sessioncookie.SetMaster(w, rotated.ID.String(), maxAge)
 	return nil
 }
 

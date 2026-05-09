@@ -221,6 +221,12 @@ func newAppMux(d *deps) http.Handler {
 		Policies:            d.policies,
 		RateLimiter:         d.limiter,
 		RateLimitDenyMetric: rateLimitDenyMetric(),
+		// SIN-62377 (FAIL-4): the activity middleware bumps
+		// last_activity on every passing authenticated request and
+		// rejects sessions that have crossed their per-role
+		// idle/hard window. The Postgres SessionStore satisfies the
+		// SessionToucher interface via its Touch method.
+		SessionToucher: d.sessions,
 	})
 }
 
@@ -382,10 +388,14 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 			return
 		}
 		httpSess := mastermfaadapter.NewHTTPSession(sesStore)
+		// SIN-62377 (FAIL-4): pass the same HTTPSession as Rotator
+		// so verify success swaps the pre-MFA session id for a fresh
+		// post-MFA id and stamps mfa_verified_at on the new row.
 		h := mastermfaadapter.NewVerifyHandler(mastermfaadapter.VerifyHandlerConfig{
 			Verifier: svc,
 			Consumer: svc,
 			Sessions: httpSess,
+			Rotator:  httpSess,
 			Logger:   d.logger,
 		})
 		h.ServeHTTP(w, r)

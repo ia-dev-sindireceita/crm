@@ -105,6 +105,7 @@ type Deps struct {
 	// Master, when non-zero, mounts the /m/* master-console routes.
 	// Zero value skips the group.
 	Master MasterDeps
+
 	// Policies is the precomputed policy table from
 	// iam/ratelimit.DefaultPolicies(). When set together with
 	// RateLimiter, NewRouter mounts the per-route rate-limit
@@ -121,6 +122,14 @@ type Deps struct {
 	// to the auth_ratelimit_deny_total Prometheus counter; tests can
 	// pass a recording closure or leave it nil.
 	RateLimitDenyMetric func(policy, bucket, key string, retryAfter time.Duration)
+
+	// SessionToucher, when non-nil, enables the SIN-62377 / FAIL-4
+	// activity middleware on the authenticated tenant group. Mounted
+	// AFTER middleware.Auth so the activity gate sees the iam.Session
+	// already loaded into the request context. Nil keeps the router
+	// behaving exactly as it did pre-SIN-62377 — used by router tests
+	// that don't wire a Touch port.
+	SessionToucher middleware.SessionToucher
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -195,6 +204,17 @@ func NewRouter(deps Deps) http.Handler {
 
 		tenanted.Group(func(authed chi.Router) {
 			authed.Use(middleware.Auth(deps.IAM))
+			// SIN-62377 (FAIL-4) activity middleware. Mounted AFTER
+			// middleware.Auth so it can read the validated iam.Session
+			// from context. Skipped when SessionToucher is nil so
+			// router tests that don't wire it keep their pre-PR
+			// behaviour.
+			if deps.SessionToucher != nil {
+				authed.Use(middleware.Activity(middleware.ActivityConfig{
+					Sessions: deps.SessionToucher,
+					Logger:   deps.Logger,
+				}))
+			}
 			authed.Use(propagateUserIDToObsAndSpan)
 			authed.Get("/hello-tenant", handler.HelloTenant)
 		})

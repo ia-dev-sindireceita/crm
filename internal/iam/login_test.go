@@ -64,6 +64,22 @@ func (f *fakeStore) DeleteExpired(_ context.Context, tenantID uuid.UUID) (int64,
 	return n, nil
 }
 
+// Touch satisfies the SIN-62377 SessionStore.Touch surface so the
+// existing Login tests keep compiling. The login flow does not call
+// Touch directly; the stub's behaviour is just enough to keep the
+// in-memory store consistent with the interface.
+func (f *fakeStore) Touch(_ context.Context, tenantID, sessionID uuid.UUID, lastActivity time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.sessions[sessionID]
+	if !ok || s.TenantID != tenantID {
+		return ErrSessionNotFound
+	}
+	s.LastActivity = lastActivity
+	f.sessions[sessionID] = s
+	return nil
+}
+
 // fakeResolver maps host -> tenantID, returning ErrTenantNotFound for misses.
 type fakeResolver struct {
 	hosts map[string]uuid.UUID

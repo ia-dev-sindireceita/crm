@@ -256,6 +256,92 @@ func (s *Store) MarkVerified(ctx context.Context, sessionID uuid.UUID) (time.Tim
 	return now, nil
 }
 
+// RotateID atomically swaps the master session id of an existing row
+// for a fresh CSPRNG-minted id. Used by the verify handler on a
+// successful TOTP / recovery-code submission so a passive observer
+// who saw the pre-MFA cookie cannot ride it past MFA (ADR 0073 §D3,
+// SIN-62377 / FAIL-4).
+//
+// The INSERT-new + DELETE-old pair runs inside a single transaction
+// (postgres.WithMasterOps wraps fn in a tx) so a crash mid-rotation
+// cannot leave a "session vanished" gap. UserID, CreatedAt,
+// ExpiresAt, MFAVerifiedAt, IP, UserAgent are preserved verbatim;
+// only the id changes. CreatedAt is intentionally inherited so the
+// hard-cap clock does not reset across the rotation.
+//
+// Returns mastermfa.ErrSessionNotFound when no row matches oldID.
+func (s *Store) RotateID(ctx context.Context, oldID uuid.UUID) (mastermfa.Session, error) {
+	if oldID == uuid.Nil {
+		return mastermfa.Session{}, mastermfa.ErrSessionNotFound
+	}
+	newID := uuid.New()
+	var (
+		out       mastermfa.Session
+		ip        *net.IPNet
+		userAgent *string
+		notFound  bool
+	)
+	err := postgres.WithMasterOps(ctx, s.pool, s.actorID, func(tx pgx.Tx) error {
+		// Re-read inside the tx so the INSERT and DELETE see a
+		// consistent snapshot. SELECT ... FOR UPDATE pins the row
+		// against a concurrent rotation from another request.
+		var sess mastermfa.Session
+		err := tx.QueryRow(ctx, `
+			SELECT id, user_id, created_at, expires_at, mfa_verified_at, ip, user_agent
+			  FROM master_session
+			 WHERE id = $1
+			   FOR UPDATE
+		`, oldID).Scan(
+			&sess.ID,
+			&sess.UserID,
+			&sess.CreatedAt,
+			&sess.ExpiresAt,
+			&sess.MFAVerifiedAt,
+			&ip,
+			&userAgent,
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			notFound = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO master_session
+			    (id, user_id, created_at, expires_at, mfa_verified_at, ip, user_agent)
+			VALUES
+			    ($1, $2, $3, $4, $5, $6, $7)
+		`, newID, sess.UserID, sess.CreatedAt, sess.ExpiresAt, sess.MFAVerifiedAt, ip, userAgent); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM master_session WHERE id = $1`, oldID); err != nil {
+			return err
+		}
+		out = mastermfa.Session{
+			ID:            newID,
+			UserID:        sess.UserID,
+			CreatedAt:     sess.CreatedAt,
+			ExpiresAt:     sess.ExpiresAt,
+			MFAVerifiedAt: sess.MFAVerifiedAt,
+		}
+		if ip != nil {
+			out.IP = ip.IP
+		}
+		if userAgent != nil {
+			out.UserAgent = *userAgent
+		}
+		return nil
+	})
+	if err != nil {
+		return mastermfa.Session{}, fmt.Errorf("mastersession: RotateID: %w", err)
+	}
+	if notFound {
+		return mastermfa.Session{}, mastermfa.ErrSessionNotFound
+	}
+	return out, nil
+}
+
 // Touch extends expires_at to now + idleTTL on the session row.
 // Returns mastermfa.ErrSessionNotFound if no row exists. idleTTL
 // MUST be > 0; the master-auth middleware (PR2) is the sole caller

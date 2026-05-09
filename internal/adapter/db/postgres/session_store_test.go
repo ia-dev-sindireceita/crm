@@ -37,6 +37,11 @@ func freshDBWithIAM(t *testing.T) *testpg.DB {
 		"0004_create_tenant.up.sql",
 		"0005_create_users.up.sql",
 		"0006_create_sessions.up.sql",
+		// SIN-62377 (FAIL-4) extends sessions with last_activity + role
+		// for the activity middleware. The adapter's Create/Get now
+		// reference both columns, so the helper has to apply 0011 too.
+		// Fixture-only update; no existing assertion changed.
+		"0011_session_activity.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)

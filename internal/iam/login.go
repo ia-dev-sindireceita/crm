@@ -279,14 +279,23 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 		return Session{}, fmt.Errorf("iam: new session id: %w", err)
 	}
 	now := s.now()
+	// SIN-62377 (FAIL-4): every fresh tenant session is born with
+	// LastActivity = CreatedAt so CheckActivity does not reject the
+	// very first request after login (the helper rejects on
+	// now-lastActivity >= Idle, so any too-old value would trip
+	// immediately). Role defaults to RoleTenantCommon — the broadest
+	// of the four ADR 0073 §D3 pairs (Idle 30 min, Hard 8 h) — pending
+	// the per-user role lookup that will land with the next IAM PR.
 	sess := Session{
-		ID:        id,
-		UserID:    userID,
-		TenantID:  tenantID,
-		ExpiresAt: now.Add(s.ttl()),
-		CreatedAt: now,
-		IPAddr:    ipAddr,
-		UserAgent: userAgent,
+		ID:           id,
+		UserID:       userID,
+		TenantID:     tenantID,
+		ExpiresAt:    now.Add(s.ttl()),
+		CreatedAt:    now,
+		IPAddr:       ipAddr,
+		UserAgent:    userAgent,
+		LastActivity: now,
+		Role:         RoleTenantCommon,
 	}
 	if err := s.Sessions.Create(ctx, sess); err != nil {
 		return Session{}, fmt.Errorf("iam: create session: %w", err)

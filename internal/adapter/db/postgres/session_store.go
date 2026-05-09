@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -38,15 +39,31 @@ func NewSessionStore(pool *pgxpool.Pool) *SessionStore {
 // Create inserts the session row inside a tenant-scoped transaction. The
 // tenant_id is written explicitly — we do not rely on the RLS policy to
 // fill it.
+//
+// SIN-62377: last_activity defaults to created_at when the caller leaves
+// it zero (a fresh session is by definition active "now"); role defaults
+// to RoleTenantCommon when the caller leaves it empty so a struct
+// literal that omits the new fields does not write empty and trip the
+// migration-0011 CHECK constraint. Both fall-throughs match the SQL
+// DEFAULTs on the columns; mirroring them in the adapter keeps the row
+// shape predictable when the caller IS field-aware.
 func (s *SessionStore) Create(ctx context.Context, sess iam.Session) error {
 	if sess.TenantID == uuid.Nil {
 		return fmt.Errorf("postgres: SessionStore.Create: tenant id is nil")
 	}
+	lastActivity := sess.LastActivity
+	if lastActivity.IsZero() {
+		lastActivity = sess.CreatedAt
+	}
+	role := sess.Role
+	if role == "" {
+		role = iam.RoleTenantCommon
+	}
 	return WithTenant(ctx, s.pool, sess.TenantID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
-			INSERT INTO sessions (id, tenant_id, user_id, expires_at, ip, user_agent, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, sess.ID, sess.TenantID, sess.UserID, sess.ExpiresAt, ipForDB(sess.IPAddr), nullIfEmpty(sess.UserAgent), sess.CreatedAt)
+			INSERT INTO sessions (id, tenant_id, user_id, expires_at, ip, user_agent, created_at, last_activity, role)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, sess.ID, sess.TenantID, sess.UserID, sess.ExpiresAt, ipForDB(sess.IPAddr), nullIfEmpty(sess.UserAgent), sess.CreatedAt, lastActivity, string(role))
 		if err != nil {
 			return fmt.Errorf("postgres: SessionStore.Create exec: %w", err)
 		}
@@ -65,12 +82,13 @@ func (s *SessionStore) Get(ctx context.Context, tenantID, sessionID uuid.UUID) (
 	err := WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		var ip *netip.Prefix
 		var ua *string
+		var role string
 		row := tx.QueryRow(ctx, `
-			SELECT id, tenant_id, user_id, expires_at, ip, user_agent, created_at
+			SELECT id, tenant_id, user_id, expires_at, ip, user_agent, created_at, last_activity, role
 			FROM sessions
 			WHERE id = $1
 		`, sessionID)
-		if err := row.Scan(&out.ID, &out.TenantID, &out.UserID, &out.ExpiresAt, &ip, &ua, &out.CreatedAt); err != nil {
+		if err := row.Scan(&out.ID, &out.TenantID, &out.UserID, &out.ExpiresAt, &ip, &ua, &out.CreatedAt, &out.LastActivity, &role); err != nil {
 			return err
 		}
 		if ip != nil {
@@ -79,6 +97,7 @@ func (s *SessionStore) Get(ctx context.Context, tenantID, sessionID uuid.UUID) (
 		if ua != nil {
 			out.UserAgent = *ua
 		}
+		out.Role = iam.Role(role)
 		return nil
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -101,6 +120,46 @@ func (s *SessionStore) Delete(ctx context.Context, tenantID, sessionID uuid.UUID
 		}
 		return nil
 	})
+}
+
+// Touch bumps last_activity to the supplied timestamp for (tenantID,
+// sessionID). Returns iam.ErrSessionNotFound when no row matches —
+// either the session never existed or was concurrently deleted (race
+// with logout in another tab); both shapes are the same authentication-
+// deny outcome on the caller side. SIN-62377 (FAIL-4).
+//
+// The single-statement UPDATE is fast enough that the activity
+// middleware can run it on every authenticated request without
+// noticeable per-request overhead.
+func (s *SessionStore) Touch(ctx context.Context, tenantID, sessionID uuid.UUID, lastActivity time.Time) error {
+	if tenantID == uuid.Nil {
+		return fmt.Errorf("postgres: SessionStore.Touch: tenant id is nil")
+	}
+	if sessionID == uuid.Nil {
+		return iam.ErrSessionNotFound
+	}
+	if lastActivity.IsZero() {
+		lastActivity = time.Now().UTC()
+	}
+	var rows int64
+	err := WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		tag, execErr := tx.Exec(ctx,
+			`UPDATE sessions SET last_activity = $1 WHERE id = $2`,
+			lastActivity, sessionID,
+		)
+		if execErr != nil {
+			return execErr
+		}
+		rows = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("postgres: SessionStore.Touch: %w", err)
+	}
+	if rows == 0 {
+		return iam.ErrSessionNotFound
+	}
+	return nil
 }
 
 // DeleteExpired removes all sessions whose expires_at is in the past for
