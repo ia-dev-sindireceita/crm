@@ -342,11 +342,33 @@ func (s *Store) RotateID(ctx context.Context, oldID uuid.UUID) (mastermfa.Sessio
 	return out, nil
 }
 
-// Touch extends expires_at to now + idleTTL on the session row.
-// Returns mastermfa.ErrSessionNotFound if no row exists. idleTTL
-// MUST be > 0; the master-auth middleware (PR2) is the sole caller
-// and a zero idleTTL would silently retire the session on the next
-// request.
+// MasterHardTTL is the ADR 0073 §D3 master hard cap: a master session
+// is invalidated 4h after created_at regardless of activity. Pinned as
+// a package constant rather than a Touch parameter so the storage
+// layer enforces the same number every caller sees. Tests advance the
+// clock via Store.WithClock to exercise the boundary deterministically.
+const MasterHardTTL = 4 * time.Hour
+
+// Touch extends expires_at on the session row, implementing the idle
+// bump (ADR 0073 §D3). Three outcomes:
+//
+//  1. now is at or past created_at + MasterHardTTL → DELETE the row
+//     inside the tx and return mastermfa.ErrSessionHardCap. The
+//     master-auth middleware translates this into a clear-cookie +
+//     redirect-to-/m/login UX plus the master.session.hard_cap_hit
+//     audit event (SIN-62418).
+//  2. now + idleTTL would push expires_at past the cap but now itself
+//     is still before the cap → clamp expires_at to created_at +
+//     MasterHardTTL so a long idleTTL cannot ride past the 4h ceiling.
+//  3. otherwise → expires_at = now + idleTTL.
+//
+// Returns mastermfa.ErrSessionNotFound if no row exists. idleTTL MUST
+// be > 0; the master-auth middleware (PR2) is the sole caller and a
+// zero idleTTL would silently retire the session on the next request.
+//
+// The hard-cap probe and the UPDATE/DELETE run in the same WithMasterOps
+// transaction so the audit trigger sees a single, consistent operation
+// per request.
 func (s *Store) Touch(ctx context.Context, sessionID uuid.UUID, idleTTL time.Duration) error {
 	if sessionID == uuid.Nil {
 		return mastermfa.ErrSessionNotFound
@@ -354,12 +376,48 @@ func (s *Store) Touch(ctx context.Context, sessionID uuid.UUID, idleTTL time.Dur
 	if idleTTL <= 0 {
 		return fmt.Errorf("mastersession: Touch: idleTTL must be > 0, got %s", idleTTL)
 	}
-	expires := s.nowUTC().Add(idleTTL)
-	var rows int64
+	now := s.nowUTC()
+	var (
+		hardCapHit bool
+		rows       int64
+		notFound   bool
+	)
 	err := postgres.WithMasterOps(ctx, s.pool, s.actorID, func(tx pgx.Tx) error {
+		// SELECT created_at FOR UPDATE pins the row against a concurrent
+		// rotation/delete from another request. The hard-cap probe MUST
+		// see the same created_at the UPDATE/DELETE sees.
+		var createdAt time.Time
+		err := tx.QueryRow(ctx,
+			`SELECT created_at FROM master_session WHERE id = $1 FOR UPDATE`,
+			sessionID,
+		).Scan(&createdAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			notFound = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		hardCap := createdAt.Add(MasterHardTTL)
+		if !now.Before(hardCap) {
+			// Hard-cap hit: invalidate the row in the same tx so the
+			// master-auth middleware's cookie-clear + redirect path is
+			// not racing a partially-extended row.
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM master_session WHERE id = $1`, sessionID,
+			); err != nil {
+				return err
+			}
+			hardCapHit = true
+			return nil
+		}
+		newExpires := now.Add(idleTTL)
+		if newExpires.After(hardCap) {
+			newExpires = hardCap
+		}
 		tag, execErr := tx.Exec(ctx,
 			`UPDATE master_session SET expires_at = $1 WHERE id = $2`,
-			expires, sessionID,
+			newExpires, sessionID,
 		)
 		if execErr != nil {
 			return execErr
@@ -369,6 +427,12 @@ func (s *Store) Touch(ctx context.Context, sessionID uuid.UUID, idleTTL time.Dur
 	})
 	if err != nil {
 		return fmt.Errorf("mastersession: Touch: %w", err)
+	}
+	if notFound {
+		return mastermfa.ErrSessionNotFound
+	}
+	if hardCapHit {
+		return mastermfa.ErrSessionHardCap
 	}
 	if rows == 0 {
 		return mastermfa.ErrSessionNotFound

@@ -427,13 +427,17 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 	})
 
 	// Build RequireMasterAuth with a per-request directory lookup.
+	// Auditor is the same slog MFAAudit used by RequireMasterMFA so
+	// master.session.hard_cap_hit lands in the same audit stream as
+	// the rest of the master events (SIN-62418).
 	requireAuth := mastermfaadapter.RequireMasterAuth(mastermfaadapter.RequireMasterAuthConfig{
 		Sessions: loginSessStore,
 		Directory: &masterDirectoryAdapter{
 			pool:    d.pool,
 			factory: masterDirectory,
 		},
-		Logger: d.logger,
+		Auditor: audit,
+		Logger:  d.logger,
 	})
 
 	// RequireMasterMFA uses a per-request HTTPSession for the enrollment reader.
