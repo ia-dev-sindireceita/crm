@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -534,9 +533,3 @@ func columnExists(t *testing.T, ctx context.Context, db *testpg.DB, table, colum
 	}
 	return got
 }
-
-// retentionString returns audit_data_retention_months as a string for
-// inclusion in test names that index by retention setting.
-//
-//nolint:unused // kept here for forthcoming RLS regression tests.
-func retentionString(months int) string { return strconv.Itoa(months) }
