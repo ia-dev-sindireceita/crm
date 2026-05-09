@@ -53,12 +53,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
+	slogaudit "github.com/pericles-luz/crm/internal/adapter/audit/slog"
+	aesgcmadapter "github.com/pericles-luz/crm/internal/adapter/crypto/aesgcm"
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
+	mastersessionadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres/mastersession"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/loginhandler"
-	"github.com/pericles-luz/crm/internal/adapter/notify/slack"
+	mastermfaadapter "github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
+	slackadapter "github.com/pericles-luz/crm/internal/adapter/notify/slack"
 	rlredis "github.com/pericles-luz/crm/internal/adapter/ratelimit/redis"
 	"github.com/pericles-luz/crm/internal/iam"
+	"github.com/pericles-luz/crm/internal/iam/mfa"
 	domainratelimit "github.com/pericles-luz/crm/internal/iam/ratelimit"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -68,7 +73,7 @@ import (
 const envRedisURL = "REDIS_URL"
 
 // envSlackWebhook is the optional Slack webhook for the master
-// lockout alerter. Empty ⇒ no-op (slack.New documents the contract).
+// lockout alerter. Empty ⇒ no-op (slackadapter.New documents the contract).
 const envSlackWebhook = "SLACK_WEBHOOK_URL"
 
 // envCookieSecure overrides the default-true Secure attribute on the
@@ -96,12 +101,13 @@ type deps struct {
 	redis         *goredis.Client
 	limiter       domainratelimit.RateLimiter
 	policies      map[string]domainratelimit.Policy
-	notifier      *slack.Notifier
+	notifier      *slackadapter.Notifier
 	tenants       tenancy.Resolver
 	users         *postgresadapter.UserCredentialReader
 	sessions      *postgresadapter.SessionStore
 	logger        *slog.Logger
 	masterService masterServiceFactory
+	master        httpapi.MasterDeps
 	// cookieSecure flips the Secure attribute on the session cookie
 	// the chi login handler writes. Defaults to true (production-safe);
 	// COOKIE_SECURE=false unsets it for plaintext local-dev / test
@@ -136,7 +142,7 @@ func assembleDeps(ctx context.Context, getenv func(string) string, logger *slog.
 	}
 	limiter := rlredis.New(rdb, "auth:rl:")
 
-	notifier := slack.New(getenv(envSlackWebhook))
+	notifier := slackadapter.New(getenv(envSlackWebhook))
 
 	tenantsRes, err := postgresadapter.NewTenantResolver(pool)
 	if err != nil {
@@ -172,6 +178,14 @@ func assembleDeps(ctx context.Context, getenv func(string) string, logger *slog.
 		masterService: masterFactory,
 		cookieSecure:  cookieSecureFromEnv(getenv),
 	}
+
+	masterDeps, err := buildMasterDeps(ctx, d, getenv)
+	if err != nil {
+		pool.Close()
+		_ = rdb.Close()
+		return nil, nil, fmt.Errorf("cmd/server: master deps: %w", err)
+	}
+	d.master = masterDeps
 	cleanup := func() {
 		d.pool.Close()
 		_ = d.redis.Close()
@@ -201,6 +215,11 @@ func openRedis(ctx context.Context, url string) (*goredis.Client, error) {
 	return client, nil
 }
 
+// envMasterMFAKey is the hex-encoded 32-byte AES-256-GCM key used to
+// encrypt TOTP seeds before they are stored in master_mfa. Required
+// when the master MFA routes are enabled.
+const envMasterMFAKey = "MASTER_MFA_KEY"
+
 // newAppMux returns the production HTTP handler. Originally a stdlib
 // mux, the implementation now delegates to httpapi.NewRouter (the chi
 // router from SIN-62217); the symbol name is preserved so the
@@ -214,7 +233,283 @@ func newAppMux(d *deps) http.Handler {
 		TenantResolver: d.tenants,
 		Logger:         d.logger,
 		CookieSecure:   d.cookieSecure,
+		Master:         d.master,
 	})
+}
+
+// buildMasterDeps constructs the httpapi.MasterDeps for the /m/* routes.
+// Returns the zero MasterDeps (no routes mounted) when MASTER_MFA_KEY is
+// unset — allows the binary to start without master MFA configured in
+// local-dev environments.
+//
+// All adapters that need an actorID (mastersession, MasterMFA, etc.) use
+// the authenticated master's UUID extracted from the request context. This
+// requires per-request adapter construction, which is acceptable given the
+// low master-console traffic volume.
+func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (httpapi.MasterDeps, error) {
+	keyHex := getenv(envMasterMFAKey)
+	if keyHex == "" {
+		d.logger.WarnContext(ctx, "cmd/server: MASTER_MFA_KEY unset — master /m/* routes disabled")
+		return httpapi.MasterDeps{}, nil
+	}
+
+	keyBytes, err := decodeHex32(keyHex)
+	if err != nil {
+		return httpapi.MasterDeps{}, fmt.Errorf("cmd/server: MASTER_MFA_KEY: %w", err)
+	}
+
+	seedCipher, err := aesgcmadapter.New(keyBytes, nil)
+	if err != nil {
+		return httpapi.MasterDeps{}, fmt.Errorf("cmd/server: seed cipher: %w", err)
+	}
+	hasher := aesgcmadapter.NewRecoveryHasher()
+
+	audit, err := slogaudit.NewMFAAudit(d.logger)
+	if err != nil {
+		return httpapi.MasterDeps{}, fmt.Errorf("cmd/server: mfa audit: %w", err)
+	}
+	mfaAlerter := slackadapter.NewMFAAlerter(d.notifier)
+
+	// masterSessionStore builds a mastersession.Store for the given actor.
+	masterSessionStore := func(actorID uuid.UUID) (*mastersessionadapter.Store, error) {
+		return mastersessionadapter.New(d.pool, actorID)
+	}
+
+	// masterMFAStore builds a MasterMFA adapter for the given actor.
+	masterMFAStore := func(actorID uuid.UUID) (*postgresadapter.MasterMFA, error) {
+		return postgresadapter.NewMasterMFA(d.pool, actorID)
+	}
+
+	// masterRecoveryCodes builds a MasterRecoveryCodes adapter for the given actor.
+	masterRecoveryCodes := func(actorID uuid.UUID) (*postgresadapter.MasterRecoveryCodes, error) {
+		return postgresadapter.NewMasterRecoveryCodes(d.pool, actorID)
+	}
+
+	// masterDirectory builds a MasterDirectory adapter for the given actor.
+	masterDirectory := func(actorID uuid.UUID) (*postgresadapter.MasterDirectory, error) {
+		return postgresadapter.NewMasterDirectory(d.pool, actorID)
+	}
+
+	// mfaService builds an mfa.Service per-request for actorID.
+	buildMFAService := func(actorID uuid.UUID) (*mfa.Service, error) {
+		seeds, err := masterMFAStore(actorID)
+		if err != nil {
+			return nil, err
+		}
+		recovery, err := masterRecoveryCodes(actorID)
+		if err != nil {
+			return nil, err
+		}
+		return mfa.NewService(mfa.Config{
+			SeedRepository: seeds,
+			SeedCipher:     seedCipher,
+			RecoveryStore:  recovery,
+			CodeHasher:     hasher,
+			Audit:          audit,
+			Alerter:        mfaAlerter,
+			Issuer:         "Sindireceita",
+		})
+	}
+
+	// loginFunc wraps the master service factory for the login handler.
+	loginFunc := mastermfaadapter.MasterLoginFunc(func(ctx context.Context, host, email, password string, ipAddr net.IP, ua string) (iam.Session, error) {
+		// At login time there is no authenticated actor yet — use a
+		// well-known bootstrap actor (uuid.Nil is rejected by the session
+		// adapter, so we use a deterministic "system" UUID derived from the
+		// host+email; the actorID for Create is overridden to userID inside
+		// mastersession.Create regardless).
+		//
+		// The master service factory requires a real actorID only for
+		// audit rows on Lockouts; at login time we construct a minimal
+		// service without lockouts (the login policy rate-limits by IP
+		// via the rate-limiter, not per-actor lockouts).
+		svc, err := d.masterService(uuid.MustParse("00000000-0000-0000-0000-000000000001"))
+		if err != nil {
+			return iam.Session{}, fmt.Errorf("cmd/server: master login service: %w", err)
+		}
+		return svc.Login(ctx, host, email, password, ipAddr, ua)
+	})
+
+	// loginSessionStore is a thin SessionStore for the LoginHandler; since
+	// at login time there's no authenticated actor, we use a system UUID.
+	// mastersession.Create overrides the actor to the authenticated userID.
+	loginSessStore, err := masterSessionStore(uuid.MustParse("00000000-0000-0000-0000-000000000001"))
+	if err != nil {
+		return httpapi.MasterDeps{}, fmt.Errorf("cmd/server: login session store: %w", err)
+	}
+
+	loginHandler := mastermfaadapter.NewLoginHandler(mastermfaadapter.LoginHandlerConfig{
+		Login:    loginFunc,
+		Sessions: loginSessStore,
+		Logger:   d.logger,
+	})
+
+	logoutHandler := mastermfaadapter.NewLogoutHandler(mastermfaadapter.LogoutHandlerConfig{
+		Sessions: loginSessStore,
+		Logger:   d.logger,
+	})
+
+	// The remaining handlers need per-request actors. Wrap them so each
+	// request builds fresh adapters from the master in context.
+	enrollHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		master, ok := mastermfaadapter.MasterFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		svc, err := buildMFAService(master.ID)
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		h := mastermfaadapter.NewEnrollHandler(svc, d.logger)
+		h.ServeHTTP(w, r)
+	})
+
+	verifyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		master, ok := mastermfaadapter.MasterFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		svc, err := buildMFAService(master.ID)
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		sesStore, err := masterSessionStore(master.ID)
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		httpSess := mastermfaadapter.NewHTTPSession(sesStore)
+		h := mastermfaadapter.NewVerifyHandler(mastermfaadapter.VerifyHandlerConfig{
+			Verifier: svc,
+			Consumer: svc,
+			Sessions: httpSess,
+			Logger:   d.logger,
+		})
+		h.ServeHTTP(w, r)
+	})
+
+	regenerateHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		master, ok := mastermfaadapter.MasterFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		svc, err := buildMFAService(master.ID)
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		h := mastermfaadapter.NewRegenerateHandler(mastermfaadapter.RegenerateHandlerConfig{
+			Regenerator: svc,
+			Logger:      d.logger,
+		})
+		h.ServeHTTP(w, r)
+	})
+
+	// Build RequireMasterAuth with a per-request directory lookup.
+	requireAuth := mastermfaadapter.RequireMasterAuth(mastermfaadapter.RequireMasterAuthConfig{
+		Sessions: loginSessStore,
+		Directory: &masterDirectoryAdapter{
+			pool:    d.pool,
+			factory: masterDirectory,
+		},
+		Logger: d.logger,
+	})
+
+	// RequireMasterMFA uses a per-request HTTPSession for the enrollment reader.
+	requireMFA := mastermfaadapter.RequireMasterMFA(mastermfaadapter.RequireMasterMFAConfig{
+		Enrollment: &masterEnrollmentReader{factory: masterMFAStore},
+		Sessions:   mastermfaadapter.NewHTTPSession(loginSessStore),
+		Audit:      audit,
+		Logger:     d.logger,
+	})
+
+	return httpapi.MasterDeps{
+		Login:             loginHandler,
+		Logout:            logoutHandler,
+		Enroll:            enrollHandler,
+		Verify:            verifyHandler,
+		Regenerate:        regenerateHandler,
+		RequireMasterAuth: requireAuth,
+		RequireMasterMFA:  requireMFA,
+	}, nil
+}
+
+// masterDirectoryAdapter satisfies mastermfa.MasterUserDirectory. It
+// builds a per-request MasterDirectory adapter using the master actor from
+// the request context so the audit trigger records the right actor.
+type masterDirectoryAdapter struct {
+	pool    *pgxpool.Pool
+	factory func(uuid.UUID) (*postgresadapter.MasterDirectory, error)
+}
+
+func (a *masterDirectoryAdapter) EmailFor(ctx context.Context, userID uuid.UUID) (string, error) {
+	dir, err := a.factory(userID)
+	if err != nil {
+		return "", err
+	}
+	return dir.EmailFor(ctx, userID)
+}
+
+// masterEnrollmentReader satisfies mastermfa.EnrollmentReader. It reads
+// the master_mfa.totp_seed_encrypted row using the actor's own UUID so the
+// audit trigger records a self-read.
+type masterEnrollmentReader struct {
+	factory func(uuid.UUID) (*postgresadapter.MasterMFA, error)
+}
+
+func (r *masterEnrollmentReader) LoadSeed(ctx context.Context, userID uuid.UUID) ([]byte, error) {
+	store, err := r.factory(userID)
+	if err != nil {
+		return nil, err
+	}
+	return store.LoadSeed(ctx, userID)
+}
+
+// decodeHex32 parses a hex string into exactly 32 bytes.
+func decodeHex32(s string) ([]byte, error) {
+	b, err := decodeHexString(s)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != 32 {
+		return nil, fmt.Errorf("want 32 bytes (64 hex chars), got %d bytes", len(b))
+	}
+	return b, nil
+}
+
+// decodeHexString is a thin shim over encoding/hex.DecodeString that
+// avoids importing the package only for this one call.
+func decodeHexString(s string) ([]byte, error) {
+	if len(s)%2 != 0 {
+		return nil, fmt.Errorf("odd-length hex string")
+	}
+	b := make([]byte, len(s)/2)
+	for i := range b {
+		hi, ok1 := hexNibble(s[2*i])
+		lo, ok2 := hexNibble(s[2*i+1])
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("invalid hex byte at position %d", 2*i)
+		}
+		b[i] = hi<<4 | lo
+	}
+	return b, nil
+}
+
+func hexNibble(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
 
 // tenantIAMAdapter satisfies httpapi.IAMService. It bridges PR #7's
@@ -326,7 +621,7 @@ type masterFactoryDeps struct {
 	sessions *postgresadapter.SessionStore
 	limiter  domainratelimit.RateLimiter
 	policy   domainratelimit.Policy
-	alerter  *slack.Notifier
+	alerter  *slackadapter.Notifier
 	logger   *slog.Logger
 }
 

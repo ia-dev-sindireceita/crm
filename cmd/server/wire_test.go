@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/adapter/httpapi"
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -252,6 +253,56 @@ func TestCookieSecureFromEnv_DefaultsToTrue(t *testing.T) {
 				t.Fatalf("cookieSecureFromEnv(%q) = %v, want %v", tc.env, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestNewAppMux_MasterLoginMounted verifies that GET /m/login returns a
+// non-404 when MasterDeps is populated. When MASTER_MFA_KEY is unset the
+// /m/* routes are skipped; this test constructs MasterDeps directly to
+// confirm the router wires the group.
+func TestNewAppMux_MasterLoginMounted(t *testing.T) {
+	t.Parallel()
+	d := &deps{
+		tenants: stubResolver{},
+		master:  newMasterDepsForTest(),
+	}
+	mux := newAppMux(d)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/m/login", nil))
+	// The stub handler returns 200; 404 means the route is not mounted.
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("GET /m/login: status 404 — route not mounted")
+	}
+}
+
+// TestNewAppMux_MasterLoginSkippedWhenDepsNil confirms /m/* routes are
+// absent when MasterDeps is zero (MASTER_MFA_KEY unset).
+func TestNewAppMux_MasterLoginSkippedWhenDepsNil(t *testing.T) {
+	t.Parallel()
+	d := &deps{tenants: stubResolver{}}
+	mux := newAppMux(d)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/m/login", nil))
+	if rec.Code == http.StatusOK {
+		t.Fatalf("GET /m/login: status 200 but routes should not be mounted")
+	}
+}
+
+// newMasterDepsForTest returns a minimal httpapi.MasterDeps with nop
+// handlers and passthrough middleware suitable for route-mount smoke tests.
+func newMasterDepsForTest() httpapi.MasterDeps {
+	nop := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	pass := func(next http.Handler) http.Handler { return next }
+	return httpapi.MasterDeps{
+		Login:             nop,
+		Logout:            nop,
+		Enroll:            nop,
+		Verify:            nop,
+		Regenerate:        nop,
+		RequireMasterAuth: pass,
+		RequireMasterMFA:  pass,
 	}
 }
 

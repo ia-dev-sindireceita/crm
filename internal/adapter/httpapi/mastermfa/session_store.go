@@ -6,19 +6,25 @@ package mastermfa
 // The mastermfa package owns the master-side authn surface. PR1
 // defines:
 //
-//   - Session                 — value object the adapter returns.
-//   - SessionStore            — read/write port login + verify use.
-//   - MasterSessionVerifiedAt — read-only port the RequireRecentMFA
-//                               middleware (PR3) uses to gate
-//                               sensitive master actions.
-//   - ErrSessionNotFound, ErrSessionExpired — sentinels every
-//     adapter MUST translate from its underlying error.
+//   - Session                       — value object the adapter returns.
+//   - SessionStore                  — read/write port login + verify use.
+//   - MasterSessionVerifiedAtStore  — id-scoped read-only port the
+//                                     Postgres adapter satisfies; the
+//                                     request-scoped middleware port
+//                                     (MasterSessionVerifiedAt) lives in
+//                                     require_recent.go and is bridged
+//                                     by RecentReader.
+//   - ErrSessionExpired             — sentinel every adapter MUST
+//                                     translate from its underlying
+//                                     error. ErrSessionNotFound is the
+//                                     other; declared in
+//                                     require_recent.go.
 //
-// PR2 will add the master-auth middleware that calls
-// SessionStore.Get on every request to load Master into ctx, and the
-// /m/login + /m/logout handlers that call Create / Delete.
-// PR3's middleware reads through the narrow MasterSessionVerifiedAt
-// port and never sees the rest of the SessionStore surface.
+// PR2 added the master-auth middleware that calls SessionStore.Get on
+// every request to load Master into ctx, and the /m/login + /m/logout
+// handlers that call Create / Delete. PR3's middleware reads through
+// the request-scoped MasterSessionVerifiedAt port and never sees the
+// rest of the SessionStore surface.
 
 import (
 	"context"
@@ -96,15 +102,14 @@ type SessionStore interface {
 	Touch(ctx context.Context, sessionID uuid.UUID, idleTTL time.Duration) error
 }
 
-// MasterSessionVerifiedAt is the read-only slice of master session
-// storage the RequireRecentMFA middleware (PR3, ADR 0073 §D3 + ADR
-// 0074 §4) needs. The middleware never writes — it only asks "what
-// is the mfa_verified_at on this session id?" and decides whether
-// the answer is fresh enough.
-//
-// Adapters MUST satisfy both SessionStore and MasterSessionVerifiedAt
-// via the same backing store so a write through MarkVerified is
-// immediately visible to a subsequent VerifiedAt read.
+// MasterSessionVerifiedAtStore is the id-scoped read-only slice of
+// master session storage. PR3's RequireRecentMFA middleware reads
+// through the request-scoped MasterSessionVerifiedAt port (declared
+// in require_recent.go) and a small adapter (RecentReader) bridges
+// the two. The id-scoped surface stays here so the Postgres adapter
+// (mastersession.Store) can satisfy a Go-idiomatic ctx+id port and
+// the request-scoped surface can sit in the HTTP package next to
+// the cookie-bearing reader.
 //
 // VerifiedAt returns the stored mfa_verified_at value (which may be
 // the zero time if the session has only completed password auth) or
@@ -112,16 +117,13 @@ type SessionStore interface {
 // storage failure and the middleware MUST 500 — it is forbidden to
 // silently let the request through on a storage error (deny-by-
 // default for sensitive master actions).
-type MasterSessionVerifiedAt interface {
+type MasterSessionVerifiedAtStore interface {
 	VerifiedAt(ctx context.Context, sessionID uuid.UUID) (time.Time, error)
 }
 
-// ErrSessionNotFound is the canonical sentinel adapters return when
-// no master session row exists for the requested id. Both
-// SessionStore.Get and MasterSessionVerifiedAt.VerifiedAt MUST
-// translate the underlying "no row" outcome into this sentinel so
-// callers can errors.Is without depending on pgx (Hexagonal rule
-// from ADR 0074).
+// ErrSessionNotFound is the sentinel returned when a master session
+// row does not exist. Adapters translate "no row" outcomes to this
+// sentinel so callers can errors.Is without depending on pgx.
 var ErrSessionNotFound = errors.New("mastermfa: master session not found")
 
 // ErrSessionExpired is the sentinel SessionStore.Get returns when the

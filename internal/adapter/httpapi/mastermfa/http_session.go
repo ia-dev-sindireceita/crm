@@ -14,9 +14,14 @@ import (
 
 // HTTPSession is the production binding of the three master-session
 // HTTP ports: MasterSessionMFA (read + write of mfa_verified_at via
-// (w, r)), MasterSessionVerifiedAt (read by sessionID for the re-MFA
-// gate, PR3), and the cookie-IO surface the verify handler exercises
-// indirectly via MarkVerified.
+// (w, r)), MasterSessionVerifiedAtStore (read by sessionID — the
+// id-scoped freshness port), and the cookie-IO surface the verify
+// handler exercises indirectly via MarkVerified. The request-scoped
+// freshness port (MasterSessionVerifiedAt, declared in
+// require_recent.go and consumed by RequireRecentMFA) is satisfied by
+// the sibling RecentReader adapter, not by HTTPSession, because Go
+// does not allow two methods named VerifiedAt with different
+// signatures on the same struct.
 //
 // Owning all three behind one struct keeps the cookie-name and cookie-
 // value parsing logic in one place. The constructor takes a
@@ -98,7 +103,7 @@ func (a *HTTPSession) MarkVerified(_ http.ResponseWriter, r *http.Request) error
 	return nil
 }
 
-// VerifiedAt satisfies MasterSessionVerifiedAt. Looks up the session
+// VerifiedAt satisfies MasterSessionVerifiedAtStore. Looks up the session
 // row by id and returns its MFAVerifiedAt timestamp, or the zero time
 // when the session has only completed password auth. ErrSessionNotFound
 // is propagated unchanged so the PR3 RequireRecentMFA middleware can

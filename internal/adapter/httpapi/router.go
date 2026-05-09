@@ -26,6 +26,12 @@
 //	POST /login                — submit credentials    (tenant scope, no auth)
 //	GET  /logout               — clear session cookie  (tenant scope, no auth)
 //	GET  /hello-tenant         — protected page        (tenant scope + auth)
+//
+//	GET|POST /m/login               — master login form / submit (no auth)
+//	GET      /m/logout              — master logout (no auth)
+//	GET|POST /m/2fa/enroll          — enroll TOTP (RequireMasterAuth + RequireMasterMFA)
+//	GET|POST /m/2fa/verify          — verify TOTP code (RequireMasterAuth only)
+//	POST     /m/2fa/recovery/regenerate — regenerate codes (RequireMasterAuth + RequireMasterMFA)
 package httpapi
 
 import (
@@ -56,6 +62,31 @@ type IAMService interface {
 	ValidateSession(ctx context.Context, tenantID, sessionID uuid.UUID) (iam.Session, error)
 }
 
+// MasterDeps bundles the master-console handler and middleware
+// instances the /m/* route group needs. Nil MasterDeps skips the
+// entire /m/* group — existing tests that don't need master routes
+// leave it at the zero value.
+//
+// All handler slots accept any http.Handler so tests can pass simple
+// nop handlers without constructing full mastermfa.* structs. cmd/server
+// passes the concrete *mastermfa.LoginHandler etc. which all implement
+// http.Handler.
+type MasterDeps struct {
+	Login      http.Handler
+	Logout     http.Handler
+	Enroll     http.Handler
+	Verify     http.Handler
+	Regenerate http.Handler
+
+	// RequireMasterAuth gates every /m/* route except /m/login and
+	// /m/logout on a valid master session cookie.
+	RequireMasterAuth func(http.Handler) http.Handler
+
+	// RequireMasterMFA gates all authed /m/* routes except
+	// /m/2fa/verify on an enrolled + at-least-once-verified TOTP.
+	RequireMasterMFA func(http.Handler) http.Handler
+}
+
 // Deps is the constructor-injected dependency bag for NewRouter. cmd/server
 // builds it once at bootstrap; tests build it with fakes.
 type Deps struct {
@@ -71,6 +102,9 @@ type Deps struct {
 	// Production MUST set true. Dev/integration tests pass false so a
 	// plaintext httptest.Server can read the cookie back.
 	CookieSecure bool
+	// Master, when non-zero, mounts the /m/* master-console routes.
+	// Zero value skips the group.
+	Master MasterDeps
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -144,6 +178,38 @@ func NewRouter(deps Deps) http.Handler {
 			authed.Get("/hello-tenant", handler.HelloTenant)
 		})
 	})
+
+	// /m/* master-console routes. Skipped when MasterDeps is zero so
+	// existing tests and health-only mode are unaffected.
+	if deps.Master.Login != nil {
+		r.Route("/m", func(m chi.Router) {
+			// Bootstrap routes — no session required.
+			m.Method(http.MethodGet, "/login", deps.Master.Login)
+			m.Method(http.MethodPost, "/login", deps.Master.Login)
+			m.Method(http.MethodGet, "/logout", deps.Master.Logout)
+
+			// All remaining routes require a valid master session.
+			m.Group(func(authed chi.Router) {
+				authed.Use(deps.Master.RequireMasterAuth)
+
+				// /m/2fa/verify is reachable without MFA (that is the
+				// point — the user is submitting the code to gain MFA).
+				authed.Method(http.MethodGet, "/2fa/verify", deps.Master.Verify)
+				authed.Method(http.MethodPost, "/2fa/verify", deps.Master.Verify)
+
+				// Everything else needs a completed MFA pass in this
+				// session. RequireMasterMFA redirects to /m/2fa/verify when
+				// the bit is not set.
+				authed.Group(func(mfa chi.Router) {
+					mfa.Use(deps.Master.RequireMasterMFA)
+
+					mfa.Method(http.MethodGet, "/2fa/enroll", deps.Master.Enroll)
+					mfa.Method(http.MethodPost, "/2fa/enroll", deps.Master.Enroll)
+					mfa.Method(http.MethodPost, "/2fa/recovery/regenerate", deps.Master.Regenerate)
+				})
+			})
+		})
+	}
 
 	return r
 }

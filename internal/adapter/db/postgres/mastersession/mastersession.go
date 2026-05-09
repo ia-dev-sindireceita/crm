@@ -1,6 +1,6 @@
 // Package mastersession is the pgx-backed adapter for the
-// mastermfa.SessionStore and mastermfa.MasterSessionVerifiedAt ports
-// over the master_session table (migration 0010).
+// mastermfa.SessionStore and mastermfa.MasterSessionVerifiedAtStore
+// ports over the master_session table (migration 0010).
 //
 // The package lives in its own directory under
 // internal/adapter/db/postgres/ so the master-session storage
@@ -38,8 +38,8 @@ import (
 // signature changes, the build fails here before it fails at the
 // caller.
 var (
-	_ mastermfa.SessionStore            = (*Store)(nil)
-	_ mastermfa.MasterSessionVerifiedAt = (*Store)(nil)
+	_ mastermfa.SessionStore                 = (*Store)(nil)
+	_ mastermfa.MasterSessionVerifiedAtStore = (*Store)(nil)
 )
 
 // Store is the master-scope adapter for the master_session table.
@@ -178,8 +178,9 @@ func (s *Store) Get(ctx context.Context, sessionID uuid.UUID) (mastermfa.Session
 	return out, nil
 }
 
-// VerifiedAt is the narrow MasterSessionVerifiedAt port the
-// RequireRecentMFA middleware (PR3) reads on every gated request.
+// VerifiedAt is the narrow MasterSessionVerifiedAtStore port the
+// RecentReader adapter (which serves the RequireRecentMFA middleware)
+// reads on every gated request.
 // Returns the stored mfa_verified_at (the zero time if NULL — i.e.
 // the session has only completed password auth). Returns
 // mastermfa.ErrSessionNotFound on missing row. The expired-row case
