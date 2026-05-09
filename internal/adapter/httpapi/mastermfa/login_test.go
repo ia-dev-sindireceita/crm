@@ -257,8 +257,68 @@ func TestLoginHandler_POST_PropagatesNextToVerify(t *testing.T) {
 		t.Fatalf("status: got %d want 303", w.Code)
 	}
 	loc := w.Header().Get("Location")
-	if !strings.HasPrefix(loc, "/m/2fa/verify?return=/m/tenant/foo") {
-		t.Errorf("Location: got %q want /m/2fa/verify?return=/m/tenant/foo", loc)
+	parsed, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse Location %q: %v", loc, err)
+	}
+	if parsed.Path != "/m/2fa/verify" {
+		t.Errorf("Location path: got %q want /m/2fa/verify", parsed.Path)
+	}
+	if got := parsed.Query().Get("return"); got != "/m/tenant/foo" {
+		t.Errorf("return param: got %q want /m/tenant/foo (raw Location: %q)", got, loc)
+	}
+}
+
+// TestLoginHandler_POST_RedirectReturnRoundTripsThroughVerifyParse pins the
+// SIN-62394 fix: when ?next= carries a path with embedded query chars (`&`,
+// `?`, `=`), the redirect's `?return=` value must URL-encode them so the
+// verify handler's r.URL.Query().Get("return") decodes back to the exact
+// original path+query — bare concatenation would cause the parser to split
+// on the first `&` and silently drop the rest of the query.
+func TestLoginHandler_POST_RedirectReturnRoundTripsThroughVerifyParse(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "single query pair", raw: "/m/users?filter=active"},
+		{name: "ampersand-joined pairs", raw: "/m/users?filter=active&page=2"},
+		{name: "issue example", raw: "/foo?bar=baz&qux=1"},
+		{name: "multiple ampersands and equals", raw: "/m/grants?status=open&owner=alice&page=3&sort=asc"},
+		{name: "no query string", raw: "/m/dashboard"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeSessionStore()
+			login := &fakeMasterLogin{result: iam.Session{UserID: uuid.New()}}
+			h := newLoginHandlerWith(t, login.Login, store)
+
+			form := url.Values{}
+			form.Set("email", "ops@example.com")
+			form.Set("password", "x")
+			loginURL := "/m/login?" + url.Values{"next": []string{tc.raw}}.Encode()
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, loginURL, strings.NewReader(form.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			h.ServeHTTP(w, r)
+
+			if w.Code != http.StatusSeeOther {
+				t.Fatalf("status: got %d want 303", w.Code)
+			}
+
+			loc := w.Header().Get("Location")
+			parsed, err := url.Parse(loc)
+			if err != nil {
+				t.Fatalf("parse Location %q: %v", loc, err)
+			}
+			if parsed.Path != "/m/2fa/verify" {
+				t.Fatalf("Location path: got %q want /m/2fa/verify", parsed.Path)
+			}
+			got := parsed.Query().Get("return")
+			if got != tc.raw {
+				t.Errorf("return round-trip: got %q want %q (raw Location: %q)", got, tc.raw, loc)
+			}
+		})
 	}
 }
 
