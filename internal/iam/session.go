@@ -62,6 +62,14 @@ type Session struct {
 	// fakes) does not write an empty role and trip the schema CHECK
 	// constraint added in migration 0011_session_activity.
 	Role Role
+
+	// CSRFToken is the per-session CSPRNG token enforced on every
+	// state-changing request (ADR 0073 §D1). Mint-on-login writes a
+	// fresh value via iam/csrf.GenerateToken; rotation is per-session
+	// (D1) — not per-request — to dodge the HTMX hx-swap race. The
+	// HTTP layer mirrors this string into the __Host-csrf cookie, the
+	// <meta name="csrf-token"> tag, and the X-CSRF-Token header.
+	CSRFToken string
 }
 
 // IsExpired reports whether ExpiresAt is at or before now. ValidateSession

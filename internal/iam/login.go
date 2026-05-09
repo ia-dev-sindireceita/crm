@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/iam/csrf"
 	"github.com/pericles-luz/crm/internal/iam/password"
 	"github.com/pericles-luz/crm/internal/iam/ratelimit"
 )
@@ -278,6 +279,15 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 	if err != nil {
 		return Session{}, fmt.Errorf("iam: new session id: %w", err)
 	}
+	// ADR 0073 §D1 — mint a fresh per-session CSRF token on every
+	// successful login so the HTTP middleware has a verified value to
+	// compare presented tokens against. Rotation is per-session (not
+	// per-request) to dodge the HTMX hx-swap race; the token is re-minted
+	// only on session-id rotation events (D3).
+	csrfToken, err := csrf.GenerateToken()
+	if err != nil {
+		return Session{}, fmt.Errorf("iam: generate csrf token: %w", err)
+	}
 	now := s.now()
 	// SIN-62377 (FAIL-4): every fresh tenant session is born with
 	// LastActivity = CreatedAt so CheckActivity does not reject the
@@ -296,6 +306,7 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 		UserAgent:    userAgent,
 		LastActivity: now,
 		Role:         RoleTenantCommon,
+		CSRFToken:    csrfToken,
 	}
 	if err := s.Sessions.Create(ctx, sess); err != nil {
 		return Session{}, fmt.Errorf("iam: create session: %w", err)

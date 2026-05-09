@@ -36,6 +36,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -48,6 +49,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	csrfmw "github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/handler"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	httpratelimit "github.com/pericles-luz/crm/internal/adapter/httpapi/ratelimit"
@@ -130,6 +132,17 @@ type Deps struct {
 	// behaving exactly as it did pre-SIN-62377 — used by router tests
 	// that don't wire a Touch port.
 	SessionToucher middleware.SessionToucher
+
+	// MasterHost is the operator-console hostname (e.g. "master.crm.local")
+	// added to the CSRF Origin/Referer allowlist alongside the resolved
+	// tenant host (ADR 0073 §D1). Empty means "no master host configured"
+	// — the allowlist falls back to the tenant host alone, which is the
+	// minimum-viable safe value.
+	MasterHost string
+	// CSRFRejectMetric, when non-nil, is invoked on every 403 emitted
+	// by the RequireCSRF middleware. cmd/server wires this to a
+	// Prometheus counter; tests can record the reasons directly.
+	CSRFRejectMetric func(*http.Request, csrfmw.Reason)
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -216,7 +229,20 @@ func NewRouter(deps Deps) http.Handler {
 				}))
 			}
 			authed.Use(propagateUserIDToObsAndSpan)
+			// RequireCSRF gates every state-changing route in the
+			// authenticated tenant chain (ADR 0073 §D1). The
+			// SessionToken closure reads the session injected by
+			// middleware.Auth above; AllowedHosts builds the
+			// Origin/Referer allowlist from the resolved tenant plus
+			// the (optional) master host. GET/HEAD/OPTIONS short-circuit
+			// safely so /hello-tenant and other reads are unaffected.
+			authed.Use(csrfmw.New(csrfmw.Config{
+				SessionToken: csrfSessionTokenFromContext,
+				AllowedHosts: csrfAllowedHosts(deps.MasterHost),
+				OnReject:     deps.CSRFRejectMetric,
+			}))
 			authed.Get("/hello-tenant", handler.HelloTenant)
+			authed.Method(http.MethodPost, "/logout", handler.Logout(deps.IAM))
 		})
 	})
 
@@ -379,4 +405,43 @@ func httpTenantSpanEnricher(r *http.Request) []attribute.KeyValue {
 		return nil
 	}
 	return []attribute.KeyValue{attribute.String("tenant.id", t.ID.String())}
+}
+
+// errCSRFNoSessionInContext signals that the RequireCSRF middleware
+// was reached without a session in context. The CSRF middleware sits
+// behind middleware.Auth, so this indicates a wiring bug rather than
+// an unauthenticated request — the middleware surfaces it as
+// csrf.session_lookup_error and 403, which is what we want.
+var errCSRFNoSessionInContext = errors.New("httpapi: csrf middleware reached without session in context")
+
+// csrfSessionTokenFromContext is the SessionToken closure passed to
+// csrfmw.New. It reads the session injected by middleware.Auth and
+// returns its CSRFToken. A missing session is a programmer error
+// surfaced as a 403 with reason csrf.session_lookup_error so the
+// middleware fails closed.
+func csrfSessionTokenFromContext(r *http.Request) (string, error) {
+	sess, ok := middleware.SessionFromContext(r.Context())
+	if !ok {
+		return "", errCSRFNoSessionInContext
+	}
+	return sess.CSRFToken, nil
+}
+
+// csrfAllowedHosts returns the AllowedHosts closure passed to
+// csrfmw.New. The list is master-host (when configured) plus the
+// resolved tenant host on the request. Both inputs come from server
+// state — the request itself supplies only the host that already
+// matched a tenant in TenantScope, so user-controlled headers cannot
+// expand the allowlist.
+func csrfAllowedHosts(masterHost string) func(*http.Request) []string {
+	return func(r *http.Request) []string {
+		hosts := make([]string, 0, 2)
+		if masterHost != "" {
+			hosts = append(hosts, masterHost)
+		}
+		if t, err := tenancy.FromContext(r.Context()); err == nil && t != nil && t.Host != "" {
+			hosts = append(hosts, t.Host)
+		}
+		return hosts
+	}
 }

@@ -37,6 +37,15 @@ func Logout(svc LogoutDeleter) http.HandlerFunc {
 			}
 		}
 		sessioncookie.ClearTenant(w)
+		// Drop the CSRF cookie alongside the session when one was
+		// presented — the next authenticated request must mint a
+		// fresh token via Login, matching the per-session rotation
+		// rule in ADR 0073 §D1/D3. Conditional emit keeps the
+		// response bytes minimal when the client never carried a
+		// __Host-csrf cookie (legacy session, programmatic client).
+		if _, err := sessioncookie.Read(r, sessioncookie.NameCSRF); err == nil {
+			sessioncookie.ClearCSRF(w)
+		}
 		http.Redirect(w, r, "/login", http.StatusFound)
 	}
 }

@@ -49,8 +49,9 @@ type LoginConfig struct {
 // originally-requested URL.
 func LoginGet(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		Next  string
-		Error string
+		Next      string
+		Error     string
+		CSRFToken string
 	}{
 		Next: SanitizeNext(r.URL.Query().Get("next")),
 	}
@@ -99,6 +100,19 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 		// __Host- + Secure flags from sessioncookie.SetTenant are
 		// honoured by the browser.
 		sessioncookie.SetTenant(w, sess.ID.String(), 0)
+		// ADR 0073 §D1 — mirror the per-session CSRF token into the
+		// __Host-csrf cookie so the browser-side templ helpers (HTMX
+		// hx-headers, hidden form input, <meta>) can echo it back on
+		// every state-changing request. HttpOnly is FALSE on this
+		// cookie by design — see sessioncookie.SetCSRF docstring.
+		// Skipped silently when the IAM service did not mint a token
+		// (e.g. legacy session row pre-dating migration 0011); the
+		// CSRF middleware will reject the next write attempt with
+		// csrf.cookie_missing rather than authenticating without
+		// double-submit protection.
+		if sess.CSRFToken != "" {
+			sessioncookie.SetCSRF(w, sess.CSRFToken, 0)
+		}
 		http.Redirect(w, r, next, http.StatusFound)
 	}
 }
@@ -107,8 +121,9 @@ func renderLoginError(w http.ResponseWriter, next string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
 	data := struct {
-		Next  string
-		Error string
+		Next      string
+		Error     string
+		CSRFToken string
 	}{
 		Next:  next,
 		Error: "Email ou senha inválidos.",
