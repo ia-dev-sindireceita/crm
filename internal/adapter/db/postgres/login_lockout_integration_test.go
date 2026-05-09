@@ -116,6 +116,22 @@ func (s *stubSessions) DeleteExpired(_ context.Context, tenantID uuid.UUID) (int
 	return n, nil
 }
 
+// Touch satisfies the SIN-62377 SessionStore.Touch surface so the
+// stub keeps compiling against the extended port. The lockout suite
+// does not assert on Touch calls; the implementation is just enough
+// to update LastActivity in the in-memory map.
+func (s *stubSessions) Touch(_ context.Context, tenantID, sessionID uuid.UUID, lastActivity time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[sessionID]
+	if !ok || sess.TenantID != tenantID {
+		return iam.ErrSessionNotFound
+	}
+	sess.LastActivity = lastActivity
+	s.sessions[sessionID] = sess
+	return nil
+}
+
 // flushableLimiter is the in-process RateLimiter used in this suite.
 // counts is a per-key event counter that is decremented from the head
 // when a hit ages out; for the AC tests, the per-test windows are

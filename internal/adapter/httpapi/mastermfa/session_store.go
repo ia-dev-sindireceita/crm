@@ -100,6 +100,23 @@ type SessionStore interface {
 	// active operators do not get logged out mid-session. Returns
 	// ErrSessionNotFound if no row exists.
 	Touch(ctx context.Context, sessionID uuid.UUID, idleTTL time.Duration) error
+
+	// RotateID atomically swaps the session id of an existing master
+	// session for a fresh CSPRNG-minted id. The verify handler calls
+	// this on a successful TOTP / recovery-code submission so a passive
+	// observer who saw the pre-MFA cookie cannot ride it past MFA
+	// (ADR 0073 §D3, SIN-62377 / FAIL-4).
+	//
+	// All other fields (UserID, CreatedAt, ExpiresAt, MFAVerifiedAt,
+	// IP, UserAgent) are preserved verbatim — rotation is an identity
+	// swap, not a fresh login. The new row inherits the original
+	// CreatedAt so the hard cap is unchanged across the rotation.
+	//
+	// Implementations MUST do the INSERT-new + DELETE-old pair in a
+	// single transaction so a crash mid-rotation cannot leave a
+	// "session vanished" gap visible to the client. Returns
+	// ErrSessionNotFound when no row matches oldID.
+	RotateID(ctx context.Context, oldID uuid.UUID) (Session, error)
 }
 
 // MasterSessionVerifiedAtStore is the id-scoped read-only slice of

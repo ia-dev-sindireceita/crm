@@ -143,6 +143,24 @@ func (f *fakeSessionStore) Touch(_ context.Context, sessionID uuid.UUID, idleTTL
 	return nil
 }
 
+// RotateID swaps the row keyed by oldID for a new uuid.New() id,
+// preserving every other field. Added in SIN-62377 to satisfy the
+// mastermfa.SessionStore interface; auth-test cases that don't
+// exercise rotation never reach this method.
+func (f *fakeSessionStore) RotateID(_ context.Context, oldID uuid.UUID) (mastermfa.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.rows[oldID]
+	if !ok {
+		return mastermfa.Session{}, mastermfa.ErrSessionNotFound
+	}
+	newID := uuid.New()
+	row.ID = newID
+	f.rows[newID] = row
+	delete(f.rows, oldID)
+	return row, nil
+}
+
 // fakeDirectory implements mastermfa.MasterUserDirectory with scriptable
 // per-call email + error.
 type fakeDirectory struct {

@@ -28,9 +28,20 @@ type RecoveryConsumer interface {
 
 // VerifyHandlerConfig is the constructor input.
 type VerifyHandlerConfig struct {
-	Verifier   Verifier
-	Consumer   RecoveryConsumer
-	Sessions   MasterSessionMFA
+	Verifier Verifier
+	Consumer RecoveryConsumer
+	Sessions MasterSessionMFA
+
+	// Rotator, when non-nil, replaces the post-success MarkVerified
+	// call with a session-id rotation: the pre-MFA cookie is swapped
+	// for a fresh CSPRNG id and mfa_verified_at is stamped on the new
+	// row in a single transaction (ADR 0073 §D3, SIN-62377 / FAIL-4).
+	// cmd/server wires the production HTTPSession adapter, which
+	// implements both MasterSessionMFA and MasterSessionRotator. Tests
+	// that don't exercise rotation behaviour leave this nil and fall
+	// through to the legacy MarkVerified path.
+	Rotator MasterSessionRotator
+
 	Logger     *slog.Logger
 	FallbackOK string // destination after a successful verify when ?return= is absent or unsafe
 }
@@ -151,13 +162,37 @@ func (h *VerifyHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.cfg.Sessions.MarkVerified(w, r); err != nil {
+	// SIN-62377 (FAIL-4): when a Rotator is wired, swap the pre-MFA
+	// session id for a fresh post-MFA id (CSPRNG-minted) and stamp
+	// mfa_verified_at on the new row in a single tx so a passive
+	// observer who saw the pre-MFA cookie cannot ride it past MFA.
+	// The rotator also re-issues the __Host-sess-master cookie. When
+	// no Rotator is wired (older test wireups), fall through to the
+	// legacy MarkVerified path so existing behaviour is preserved.
+	var markErr error
+	if h.cfg.Rotator != nil {
+		markErr = h.cfg.Rotator.RotateAndMarkVerified(w, r)
+	} else {
+		markErr = h.cfg.Sessions.MarkVerified(w, r)
+	}
+	if markErr != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: session mark verified failed",
 			slog.String("user_id", master.ID.String()),
-			slog.String("error", err.Error()),
+			slog.String("rotated", boolStr(h.cfg.Rotator != nil)),
+			slog.String("error", markErr.Error()),
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	if h.cfg.Rotator != nil {
+		// Audit trail: master_session row swap is auto-logged by the
+		// migration-0002 master_ops_audit_trigger (insert + delete on
+		// master_session); this slog line carries the human-friendly
+		// label so dashboards can dedupe rotation-driven row churn.
+		h.cfg.Logger.InfoContext(r.Context(), "mastermfa: session rotated on 2fa success",
+			slog.String("user_id", master.ID.String()),
+			slog.String("event", "master_session_rotated_2fa"),
+		)
 	}
 
 	target := ResolveReturn(r.URL.Query().Get("return"), h.cfg.FallbackOK)
@@ -205,4 +240,14 @@ func isSixDigit(s string) bool {
 		}
 	}
 	return true
+}
+
+// boolStr turns a bool into a slog-friendly "true"/"false" string. The
+// SIN-62377 verify-success log line uses it so dashboards can split
+// rotated vs. legacy MarkVerified paths during the rollout window.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
