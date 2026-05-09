@@ -15,10 +15,13 @@ COMPOSE_NETWORK := crm_crm
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up down logs test lint lint-aicache migrate-up migrate-down seed-stg smoke-alert verify-vendor
+.PHONY: help up down logs test lint lint-aicache precheck migrate-up migrate-down seed-stg smoke-alert verify-vendor
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+precheck: ## Run the pre-PR fast-path checks (gofmt + vet + build)
+	./scripts/pre-pr-check.sh
 
 up: ## Bring up the local stack (Postgres, Redis, NATS, MinIO, Caddy, app)
 	@if [ ! -f $(COMPOSE_DIR)/.env ]; then \

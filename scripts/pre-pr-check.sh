@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "→ gofmt"; out=$(gofmt -l . | tee /dev/stderr); [ -z "$out" ] || { echo "FAIL: gofmt"; exit 1; }
+echo "→ go vet"; go vet ./...
+echo "→ go build"; go build ./...
+echo "✓ pre-PR checks OK"
