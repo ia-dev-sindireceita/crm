@@ -139,6 +139,33 @@ func TestNewTenantResolver_NilPool(t *testing.T) {
 	}
 }
 
+// TestResolveByID_KnownAndUnknown was relocated here in SIN-62424
+// (Phase B.2) when the legacy audit_logger_test.go was deleted. It
+// exercises the tenant resolver, not the audit logger; it lived in the
+// wrong file by accident.
+func TestResolveByID_KnownAndUnknown(t *testing.T) {
+	db := harness.DB(t)
+	applyTenantMigration(t, db)
+	seedAcmeAndGlobex(t, db)
+	resolver, _ := postgresadapter.NewTenantResolver(db.RuntimePool())
+	ctx := newCtx(t)
+
+	got, err := resolver.ResolveByID(ctx, uuid.MustParse(acmeID))
+	if err != nil {
+		t.Fatalf("known id: %v", err)
+	}
+	if got.Host != "acme.crm.local" {
+		t.Fatalf("got.Host=%q, want acme.crm.local", got.Host)
+	}
+
+	if _, err := resolver.ResolveByID(ctx, uuid.New()); !errors.Is(err, tenancy.ErrTenantNotFound) {
+		t.Fatalf("unknown id: err=%v, want ErrTenantNotFound", err)
+	}
+	if _, err := resolver.ResolveByID(ctx, uuid.Nil); !errors.Is(err, tenancy.ErrTenantNotFound) {
+		t.Fatalf("nil id: err=%v, want ErrTenantNotFound", err)
+	}
+}
+
 // countingResolver wraps a tenancy.Resolver to assert exactly one
 // underlying DB round-trip per host across many cache calls.
 type countingResolver struct {
