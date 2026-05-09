@@ -8,14 +8,17 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
 // SessionCookieName is the cookie that carries the per-tenant session id.
-// HttpOnly + SameSite=Lax + Path=/ are mandatory; Secure is set in
-// production via a config flag (see Auth's options).
-const SessionCookieName = "crm_session"
+// Per ADR 0073 §D2 the on-the-wire name is __Host-sess-tenant, which forces
+// Secure + Path=/ + no Domain at the browser. The constant is an alias for
+// sessioncookie.NameTenant so callers in this package keep a stable symbol
+// and tests can reference it without importing two packages.
+const SessionCookieName = sessioncookie.NameTenant
 
 // SessionValidator is the slice of iam.Service the Auth middleware needs.
 // Defining it as an interface here keeps the middleware test-friendly
@@ -65,12 +68,12 @@ func Auth(v SessionValidator) func(http.Handler) http.Handler {
 				http.Error(w, "tenant scope missing", http.StatusInternalServerError)
 				return
 			}
-			cookie, err := r.Cookie(SessionCookieName)
-			if err != nil || cookie.Value == "" {
+			value, err := sessioncookie.Read(r, SessionCookieName)
+			if err != nil {
 				redirectToLogin(w, r)
 				return
 			}
-			sessionID, err := uuid.Parse(cookie.Value)
+			sessionID, err := uuid.Parse(value)
 			if err != nil {
 				redirectToLogin(w, r)
 				return

@@ -223,39 +223,6 @@ func TestNewAppMux_HelloTenantRequiresAuth(t *testing.T) {
 	}
 }
 
-func TestCookieSecureFromEnv_DefaultsToTrue(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		env  string
-		want bool
-	}{
-		{"unset", "", true},
-		{"true literal", "true", true},
-		{"random word", "yes", true},
-		{"1", "1", true},
-		{"false lowercase", "false", false},
-		{"FALSE uppercase", "FALSE", false},
-		{"zero", "0", false},
-		{"off", "off", false},
-		{"trimmed false", "  false  ", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			getenv := func(k string) string {
-				if k == "COOKIE_SECURE" {
-					return tc.env
-				}
-				return ""
-			}
-			if got := cookieSecureFromEnv(getenv); got != tc.want {
-				t.Fatalf("cookieSecureFromEnv(%q) = %v, want %v", tc.env, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestNewAppMux_MasterLoginMounted verifies that GET /m/login returns a
 // non-404 when MasterDeps is populated. When MASTER_MFA_KEY is unset the
 // /m/* routes are skipped; this test constructs MasterDeps directly to

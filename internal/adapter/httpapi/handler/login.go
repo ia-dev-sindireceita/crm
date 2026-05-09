@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/loginhandler"
-	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/views"
 	"github.com/pericles-luz/crm/internal/iam"
 )
@@ -23,8 +23,10 @@ type LoginAuthenticator interface {
 }
 
 // LoginConfig captures the bootstrap-time wiring the login handler needs.
-// CookieSecure flips the Secure attribute on the session cookie; production
-// MUST set it true.
+// The session cookie is always written via sessioncookie.SetTenant, which
+// hard-codes the ADR 0073 §D2 contract (__Host-sess-tenant; Secure;
+// HttpOnly; SameSite=Lax; Path=/). The Secure attribute is non-negotiable
+// — there is deliberately no env override.
 //
 // This handler decides the body-form interop pattern (Gate G1 of
 // SIN-62217): we use application/x-www-form-urlencoded end-to-end and rely
@@ -36,8 +38,7 @@ type LoginAuthenticator interface {
 // middleware with a buffer-and-restore reader instead. See
 // internal/http/middleware/ratelimit/FormFieldKey for the upstream gotcha.
 type LoginConfig struct {
-	IAM          LoginAuthenticator
-	CookieSecure bool
+	IAM LoginAuthenticator
 }
 
 // LoginGet renders the GET /login form. The optional `next` query param is
@@ -89,14 +90,12 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 			loginhandler.WriteLoginError(w, r, err, slog.Default())
 			return
 		}
-		http.SetCookie(w, &http.Cookie{
-			Name:     middleware.SessionCookieName,
-			Value:    sess.ID.String(),
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   cfg.CookieSecure,
-			SameSite: http.SameSiteLaxMode,
-		})
+		// MaxAge=0 keeps the cookie a session cookie (cleared on
+		// browser close); the server-side iam.Session row carries the
+		// authoritative TTL. Production MUST be served behind TLS so the
+		// __Host- + Secure flags from sessioncookie.SetTenant are
+		// honoured by the browser.
+		sessioncookie.SetTenant(w, sess.ID.String(), 0)
 		http.Redirect(w, r, next, http.StatusFound)
 	}
 }
