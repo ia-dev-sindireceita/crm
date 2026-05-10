@@ -569,4 +569,3 @@ func TestSystemdUnitDeniesPrivateKey(t *testing.T) {
 		t.Fatalf("systemd unit %s is missing %q; backup.sh must not be able to read the private age key.", unitPath, want)
 	}
 }
-
