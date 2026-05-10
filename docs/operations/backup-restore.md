@@ -208,8 +208,24 @@ the recipients file and encrypts to all of them.
         > infra/sops/age-backup.key.enc.new
    git mv infra/sops/age-backup.key.enc.new infra/sops/age-backup.key.enc
    ```
-4. Stash a second copy of the cleartext private key in the offline cofre
-   (see § Cofre offline). Verify the cofre custodian acknowledges receipt.
+4. **Stash a second copy of the cleartext private key in the offline cofre.**
+   The cofre configuration is fixed (see § Cofre offline for the full
+   policy):
+   - Encrypt the private key into a **KeePassXC** `.kdbx` database
+     (AES-256, Argon2id KDF) **inside** a **LUKS** (Linux) or **VeraCrypt**
+     (cross-platform) volume on a **dedicated USB stick**.
+   - **Único conteúdo do USB:** the encrypted volume, the KeePassXC DB,
+     and a plain-text copy of `age-backup.pub` for verification — nothing
+     else. No other files, no spare backups, no day-to-day documents.
+   - **Localização física:** the USB MUST be stored **outside the
+     custódio's primary residence** (family member, trusted relative,
+     lawyer's office, or postal box are all acceptable). The USB MUST NOT
+     live on the dev laptop — co-locating the cofre with the dev laptop
+     nullifies the defense against the joint scenario "AWS credential
+     compromised AND dev laptop compromised".
+   - Verify the custódio primário (Pericles Luz) acknowledges receipt;
+     the next quarterly audit (see § Auditoria trimestral) confirms the
+     rotated key still decrypts.
 5. Smoke a backup with both recipients — confirm `restore-drill.sh` works
    with **either** private key:
    ```bash
@@ -240,53 +256,172 @@ evidence to be decrypted only under controlled conditions.
 ## Cofre offline (2nd-tier secret store)
 
 The offline copy of the private key is the single thing that turns the
-catastrophic-loss scenario into a recoverable one. It MUST be a real,
-named storage location — not a vague aspiration. Pick exactly one of:
+catastrophic-loss scenario into a recoverable one. The configuration is
+**fixed** (decision in [SIN-62261](/SIN/issues/SIN-62261)) — not a menu of
+options — and is the same for every host:
 
-- **(a) Hardware HSM / YubiHSM** kept in the office safe. Custodian on
-  record, rotated when the custodian leaves.
-- **(b) Bitwarden Organization vault** (`Sindireceita / Backup Keys`)
-  with a per-secret access policy: the secret is shared to a security
-  group that has at least two human members so single-person attrition
-  does not lock the org out. 1Password equivalents (Shared vault with
-  emergency kit) are acceptable; same m-of-n requirement.
-- **(c) Physical safe** at the registered Sindireceita address with the
-  cleartext key stored on a tamper-evident envelope. Combination/key
-  shared via Shamir's Secret Sharing (2-of-3) with the directors.
+- **Storage stack:** [KeePassXC](https://keepassxc.org) `.kdbx` database
+  (AES-256 cipher, Argon2id KDF) **inside** an encrypted volume:
+  - **LUKS** (Linux) — preferred when the custódio operates from a Linux
+    host; OR
+  - **VeraCrypt** — cross-platform fallback when the custódio operates
+    from a non-Linux host.
+- **Container:** a **dedicated USB stick** that holds the encrypted
+  volume, the KeePassXC DB, and a plain-text copy of the matching public
+  recipient (`age-backup.pub`) for verification — and **nothing else**.
+  No other documents, no spare backups, no day-to-day files.
+- **Localização física:** the USB MUST be stored **outside the custódio's
+  primary residence** — family member, trusted relative, lawyer's
+  office, or postal box are all acceptable. The USB MUST NOT live on the
+  dev laptop. Co-locating the cofre with the dev laptop nullifies the
+  defense against the joint scenario "AWS credential compromised AND
+  dev laptop compromised".
+- **Custódia primária:** Pericles Luz.
+- **Plano B (catastrophic):** sealed envelope handed to a trusted party
+  located outside the primary residence. See § Chave perdida for the
+  retrieval procedure. Trusted-party identity is captured operationally
+  with the placeholder `<TBD: Pericles preenche antes de Fase 4 prod cutoff>`.
+- **4-eyes:** not satisfied by design — Sindireceita is a single-founder
+  org during Fase 0–4. The formal multi-person procedure activates when
+  a 2ª pessoa-chave is hired (see § Offboarding).
 
-Record in this runbook (under operator review during the Fase 6 drill):
+Record the operational state in this runbook (review during the
+quarterly audit; see § Auditoria trimestral):
 
 | Field | Value |
 |-------|-------|
-| Storage | _e.g. Bitwarden Organization vault_ |
-| Item ID / Serial | _e.g. `bw-item-0fa31...`_ |
-| Custodians (≥ 2) | _e.g. CTO, Head of Ops_ |
-| Verification cadence | annually, as part of the Fase 6 restore drill |
-| Last verified | _YYYY-MM-DD_ |
+| Storage stack | KeePassXC `.kdbx` inside LUKS (or VeraCrypt) on dedicated USB |
+| USB serial | _e.g. `Kingston DT 50 A1B2C3...`_ |
+| Custódio primário | Pericles Luz |
+| Localização física | `<TBD: Pericles preenche antes de Fase 4 prod cutoff>` |
+| Trusted party (Plano B) | `<TBD: Pericles preenche antes de Fase 4 prod cutoff>` |
+| Last verified | _YYYY-MM-DD_ (atualizado pela auditoria trimestral) |
 
-> **Operator action — must be filled before the first prod backup.** If the
-> table above still contains placeholders, the encrypted-backup pipeline is
-> not ready for production traffic. Block the Fase 6 sign-off.
+> **Operator action — must be filled before Fase 4 prod cutoff.** If the
+> table above still contains placeholders at cutoff, the encrypted-backup
+> pipeline is not ready for production traffic. Block the Fase 4 sign-off.
 
-Verification protocol (annual): pull the cleartext key from the cofre,
-confirm `age -d -i <key> <known-test-ciphertext>` succeeds, re-seal, and
-update *Last verified* above.
+Verification protocol (quarterly): see § Auditoria trimestral. The audit
+exercises the cofre by mounting the volume, exporting the key, decrypting
+a synthetic ciphertext, and re-sealing — then updates *Last verified*
+above.
 
 ## Chave perdida (catastrophic loss)
 
-If the recipient private key is lost AND no offline copy exists:
+The recovery path depends on which copies survive. Try the procedures in
+order; only when **every** path below fails is the loss truly catastrophic.
 
-- **Every dump encrypted to that key is unrecoverable**. Do not pretend
+### Plano A — primary cofre intact
+
+The custódio primário (Pericles Luz) has the dedicated USB. Mount the
+LUKS/VeraCrypt volume, open the KeePassXC `.kdbx`, export
+`age-backup.key` to a temp file, and run the restore per § Restore drill.
+This is the normal recovery flow and is exercised end-to-end during the
+quarterly audit (see § Auditoria trimestral).
+
+### Plano B — primary cofre destroyed, sealed envelope retrieval (B1)
+
+The sealed envelope handed to a trusted party located outside the primary
+residence is the second-tier offline copy. Trusted-party identity is
+captured operationally; until the placeholder `<TBD: Pericles preenche
+antes de Fase 4 prod cutoff>` in § Cofre offline is filled in, this
+procedure is **non-functional** and Fase 4 prod cutoff is blocked.
+
+Retrieval procedure (B1):
+
+1. Pericles contacts the trusted party (identity per § Cofre offline) and
+   coordinates an in-person hand-off.
+2. Pericles retrieves the sealed envelope. Tamper evidence on the seal is
+   inspected and recorded; a broken or modified seal escalates to a
+   critical incident regardless of whether retrieval succeeds.
+3. Open the envelope **in the presence of a witness** when feasible. The
+   single-founder configuration may waive the witness requirement when no
+   second person-key exists; record the waiver in the post-mortem.
+4. Use the recorded passphrase to unlock the LUKS/VeraCrypt volume and
+   the KeePassXC DB.
+5. Export `age-backup.key` to a temp file (RAM-backed `tmpfs` preferred).
+6. Run the restore per § Restore drill (Fase 6) against the target dump.
+7. `shred -u` the temp file, prepare a fresh sealed envelope, and rotate
+   to a new trusted-party hand-off slot before closing the incident.
+
+> **4-eyes is not satisfied by design** in Fase 0–4 — Sindireceita is a
+> single-founder org. The formal multi-person retrieval procedure
+> activates when a 2ª pessoa-chave is hired; see § Offboarding for the
+> activation trigger.
+
+### Plano C — both cofre copies destroyed, key truly lost
+
+If the recipient private key is lost AND **neither** offline copy exists
+(USB destroyed AND sealed envelope unavailable):
+
+- **Every dump encrypted to that key is unrecoverable.** Do not pretend
   otherwise.
 - Open a critical incident.
-- Pivot to the most recent recoverable source: streaming replica, WAL archive,
-  or app-level export. Restore drills should already have validated those.
-- Generate a new keypair (above) and start producing fresh encrypted backups
-  immediately — every additional hour without an off-site backup compounds
-  exposure.
-- Run a full post-mortem: how did both copies disappear? The offline cofre
-  exists specifically to make this scenario impossible; understand why it
-  did not save us.
+- Pivot to the most recent recoverable source: streaming replica, WAL
+  archive, or app-level export. Restore drills should already have
+  validated those.
+- Generate a new keypair (see § Rotação de chave) and start producing
+  fresh encrypted backups immediately — every additional hour without an
+  off-site backup compounds exposure.
+- Run a full post-mortem: how did **all** copies disappear? The offline
+  cofre + Plano B envelope exist specifically to make this scenario
+  unreachable; understand why neither saved us.
+
+## Auditoria trimestral
+
+Cadence: **first Monday of January, April, July, and October**. The audit
+is single-person by design (single-founder org during Fase 0–4) and
+validates that the cofre configuration still matches policy AND that the
+offline private key still decrypts a fresh ciphertext.
+
+Procedure (6 steps):
+
+1. **CTO routine** opens the quarterly audit issue with this checklist
+   pre-filled and assigns it to Pericles.
+2. **Pericles** mounts the LUKS/VeraCrypt volume, opens the KeePassXC
+   `.kdbx`, and exports `age-backup.key` to a temp file (`tmpfs`
+   preferred, e.g. `/dev/shm/age-backup.key`).
+3. **Coder** generates a synthetic dump (~1 000 fake rows in a throwaway
+   schema) and encrypts it with `infra/age-backup.pub`.
+4. **Pericles** runs the round-trip:
+
+   ```bash
+   age -d -i /dev/shm/age-backup.key < dump.pgc.age \
+     | pg_restore --clean -d "$DB_EPHEMERAL"
+   ```
+
+   and confirms the row count matches the synthetic dump.
+5. **Pericles** `shred -u`s the temp key file and posts evidence on the
+   audit issue: SHA-256 of the encrypted dump, restored row count,
+   timestamp, and any anomalies.
+6. **Failure at any step ⇒ P0 incident.** The cofre and/or recipient key
+   are considered at risk; rotate per § Rotação de chave and treat the
+   quarter's audit as failed.
+
+Update the *Last verified* row in § Cofre offline at the end of every
+successful audit.
+
+## Offboarding
+
+> **Status:** activates when a 2ª pessoa-chave is hired. Until then: **N/A.**
+> The cofre is currently a single-custódio configuration (Pericles Luz);
+> there is no role to off-board.
+
+When activated (i.e. once the org has at least two key custodians):
+
+- **≤ 4h after departure:** revoke the departing custodian's access by
+  rotating the KeePassXC master password AND removing their keyfile (or
+  hardware token) from the `.kdbx` configuration.
+- **≤ 24h after departure:** rotate `infra/age-backup.pub` per § Rotação
+  de chave (full dual-recipient cycle when the retention window permits;
+  hard-cutover if the departure was acrimonious or the key may be
+  compromised).
+- **Same PR as the rotation:** update the nominal custodian list in this
+  runbook (§ Cofre offline) so the audit log reflects the new state.
+- **Out-of-cadence audit ≤ 7d after departure** to confirm the new cofre
+  configuration still decrypts production ciphertexts and that the
+  departed custodian's copies are demonstrably destroyed (or accounted
+  for as forensic evidence under controlled conditions).
 
 ## Threat model recap
 
