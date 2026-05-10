@@ -1,0 +1,21 @@
+[Unit]
+Description=Daily timer for sindireceita-backup.service
+Documentation=file:/opt/sindireceita/docs/operations/backup-restore.md
+
+[Timer]
+# Run every day at 03:17 UTC (off-peak, jittered off the hour to spread
+# load across services that pile up on :00).
+OnCalendar=*-*-* 03:17:00 UTC
+
+# If the host was off when the timer fired, run on next boot. Backups
+# missing for >24h are far worse than a slightly-late backup at boot time.
+Persistent=true
+
+# Spread across a 10-minute window to avoid all hosts uploading at once if
+# the backup fleet ever grows beyond one node.
+RandomizedDelaySec=10min
+
+Unit=sindireceita-backup.service
+
+[Install]
+WantedBy=timers.target
