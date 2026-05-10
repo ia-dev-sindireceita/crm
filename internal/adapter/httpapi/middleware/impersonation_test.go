@@ -48,16 +48,22 @@ func (f *fakeByIDResolver) ResolveByID(_ context.Context, id uuid.UUID) (*tenanc
 	return t, nil
 }
 
+// recordingLogger is the in-test fake of audit.SplitLogger. It implements
+// the full port (WriteSecurity + WriteData) so it can be passed to
+// middleware.Impersonation, but only WriteSecurity is exercised — the
+// impersonation middleware is a security-event emitter and never writes
+// data events. WriteData panics so a future regression that mistakenly
+// routes an impersonation row into the data ledger fails loudly in test.
 type recordingLogger struct {
 	mu     sync.Mutex
-	events []audit.AuditEvent
-	// failOn returns an error for the first matching event name. Other
-	// calls succeed. Use to model "started write fails" without also
-	// poisoning the deferred "ended" call.
-	failOn func(name string) error
+	events []audit.SecurityAuditEvent
+	// failOn returns an error for the first matching event. Other
+	// calls succeed. Use to model "start write fails" without also
+	// poisoning the deferred "stop" call.
+	failOn func(event audit.SecurityEvent) error
 }
 
-func (l *recordingLogger) Log(_ context.Context, e audit.AuditEvent) error {
+func (l *recordingLogger) WriteSecurity(_ context.Context, e audit.SecurityAuditEvent) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.failOn != nil {
@@ -69,10 +75,18 @@ func (l *recordingLogger) Log(_ context.Context, e audit.AuditEvent) error {
 	return nil
 }
 
-func (l *recordingLogger) snapshot() []audit.AuditEvent {
+// WriteData is intentionally a poison pill: impersonation events are
+// security-relevant only, and accidentally routing them to
+// audit_log_data would expand the LGPD retention surface. A real test
+// failure beats a silent regression.
+func (l *recordingLogger) WriteData(_ context.Context, _ audit.DataAuditEvent) error {
+	panic("middleware: impersonation must not emit DataAuditEvent")
+}
+
+func (l *recordingLogger) snapshot() []audit.SecurityAuditEvent {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out := make([]audit.AuditEvent, len(l.events))
+	out := make([]audit.SecurityAuditEvent, len(l.events))
 	copy(out, l.events)
 	return out
 }
@@ -115,7 +129,7 @@ func TestImpersonation_PanicsOnNilDeps(t *testing.T) {
 		name     string
 		checker  middleware.MasterChecker
 		resolver tenancy.ByIDResolver
-		logger   audit.Logger
+		logger   audit.SplitLogger
 	}{
 		{"nil checker", nil, &fakeByIDResolver{}, &recordingLogger{}},
 		{"nil resolver", &fakeMasterChecker{}, nil, &recordingLogger{}},
@@ -283,11 +297,11 @@ func TestImpersonation_AuditLogPaired(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("audit row count=%d, want 2 (started+ended)", len(events))
 	}
-	if events[0].Event != audit.EventImpersonationStarted {
-		t.Fatalf("events[0]=%q, want %q", events[0].Event, audit.EventImpersonationStarted)
+	if events[0].Event != audit.SecurityEventImpersonationStart {
+		t.Fatalf("events[0]=%q, want %q", events[0].Event, audit.SecurityEventImpersonationStart)
 	}
-	if events[1].Event != audit.EventImpersonationEnded {
-		t.Fatalf("events[1]=%q, want %q", events[1].Event, audit.EventImpersonationEnded)
+	if events[1].Event != audit.SecurityEventImpersonationStop {
+		t.Fatalf("events[1]=%q, want %q", events[1].Event, audit.SecurityEventImpersonationStop)
 	}
 	for i, ev := range events {
 		if ev.ActorUserID != masterID {
@@ -323,8 +337,8 @@ func TestImpersonation_AuditWriteFailsBlocksRequest(t *testing.T) {
 	target := &tenancy.Tenant{ID: tgtID, Name: "target", Host: "target.crm.local"}
 	resolver := &fakeByIDResolver{tenants: map[uuid.UUID]*tenancy.Tenant{tgtID: target}}
 	logger := &recordingLogger{
-		failOn: func(name string) error {
-			if name == audit.EventImpersonationStarted {
+		failOn: func(event audit.SecurityEvent) error {
+			if event == audit.SecurityEventImpersonationStart {
 				return errors.New("audit DB down")
 			}
 			return nil

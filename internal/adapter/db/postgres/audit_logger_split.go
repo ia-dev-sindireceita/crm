@@ -1,13 +1,15 @@
 package postgres
 
 // SIN-62252 / ADR 0004 §4: postgres-backed implementation of
-// audit.SplitLogger. Lives alongside the legacy AuditLogger (which
-// keeps writing into `audit_log`) until the legacy table is retired.
+// audit.SplitLogger. SIN-62424 (Phase B.2) retired the legacy
+// AuditLogger and the `audit_log` table in migration 0015, leaving
+// SplitAuditLogger as the only audit writer.
 //
-// Both writers share the same dedicated `app_audit` pool created in
-// migration 0009 and granted INSERT on the new tables in migration
-// 0014. The pool is BYPASSRLS — see internal/adapter/db/postgres/audit_logger.go
-// for the full rationale.
+// The writer uses the dedicated `app_audit` pool created in migration
+// 0009 and granted INSERT on the split tables in migration 0014. The
+// pool is BYPASSRLS: tenant_id is supplied explicitly by the caller,
+// not derived from session state, so the writer must not depend on
+// app.tenant_id being set.
 
 import (
 	"context"
@@ -16,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/pericles-luz/crm/internal/iam/audit"
 )
@@ -25,6 +28,14 @@ import (
 // SplitAuditLogger. Distinct from a wrapped pgx error so callers can
 // short-circuit retries.
 var ErrSplitAuditEventInvalid = errors.New("postgres: invalid split audit event")
+
+// AuditExecutor is the minimal pool surface SplitAuditLogger needs.
+// *pgxpool.Pool satisfies it. cmd/server passes the dedicated
+// app_audit pool. SIN-62424 (Phase B.2) moved this declaration here
+// from the deleted audit_logger.go.
+type AuditExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 // SplitAuditLogger is the postgres implementation of audit.SplitLogger.
 //
