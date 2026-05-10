@@ -284,6 +284,13 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 		return httpapi.MasterDeps{}, fmt.Errorf("cmd/server: mfa audit: %w", err)
 	}
 	mfaAlerter := slackadapter.NewMFAAlerter(d.notifier)
+	// SIN-62380 (CAVEAT-3): the master 2FA verify handler needs a
+	// session-scoped failure counter and a Slack alerter to invalidate
+	// the master session after 5 wrong codes (ADR 0074 §6). Both reuse
+	// the existing Redis client and Slack notifier so no new env vars
+	// are required.
+	verifyFailures := rlredis.NewVerifyFailures(d.redis, "auth:m_2fa_verifyfail:", rlredis.DefaultVerifyFailureTTL)
+	verifyLockoutAlerter := slackadapter.NewVerifyLockoutAlerter(d.notifier)
 
 	// masterSessionStore builds a mastersession.Store for the given actor.
 	masterSessionStore := func(actorID uuid.UUID) (*mastersessionadapter.Store, error) {
@@ -401,12 +408,18 @@ func buildMasterDeps(ctx context.Context, d *deps, getenv func(string) string) (
 		// SIN-62377 (FAIL-4): pass the same HTTPSession as Rotator
 		// so verify success swaps the pre-MFA session id for a fresh
 		// post-MFA id and stamps mfa_verified_at on the new row.
+		// SIN-62380 (CAVEAT-3): wire the failure counter, invalidator,
+		// and lockout alerter so 5 consecutive wrong codes invalidate
+		// the master session and fire a Slack alert.
 		h := mastermfaadapter.NewVerifyHandler(mastermfaadapter.VerifyHandlerConfig{
-			Verifier: svc,
-			Consumer: svc,
-			Sessions: httpSess,
-			Rotator:  httpSess,
-			Logger:   d.logger,
+			Verifier:    svc,
+			Consumer:    svc,
+			Sessions:    httpSess,
+			Rotator:     httpSess,
+			Failures:    verifyFailures,
+			Invalidator: httpSess,
+			Alerter:     verifyLockoutAlerter,
+			Logger:      d.logger,
 		})
 		h.ServeHTTP(w, r)
 	})

@@ -42,6 +42,33 @@ type VerifyHandlerConfig struct {
 	// through to the legacy MarkVerified path.
 	Rotator MasterSessionRotator
 
+	// Failures, Invalidator, and Alerter wire the SIN-62380 (CAVEAT-3)
+	// session-scoped 5-strike lockout. When all three are non-nil the
+	// handler:
+	//
+	//  1. Increments Failures on every mfa.ErrInvalidCode submission.
+	//  2. On the LockoutThresholdth strike (default 5), invokes
+	//     Invalidator to delete the session row and clear the
+	//     __Host-sess-master cookie, fires the Slack alert, and
+	//     redirects to LoginPath.
+	//  3. Resets Failures on a successful TOTP / recovery code so a
+	//     flaky thumb does not accumulate toward the lockout.
+	//
+	// Leaving any of the three nil falls through to the pre-SIN-62380
+	// behaviour (re-render the form on invalid code) so existing test
+	// wireups keep working without naming the new collaborators.
+	// Production wires all three.
+	Failures    VerifyFailureCounter
+	Invalidator MasterSessionInvalidator
+	Alerter     LockoutAlerter
+
+	// LockoutThreshold is the wrong-code count that trips the lockout.
+	// Zero or negative falls back to LockoutThresholdDefault (5).
+	LockoutThreshold int
+	// LoginPath is the destination of the redirect after the lockout
+	// trips. Empty falls back to "/m/login".
+	LoginPath string
+
 	Logger     *slog.Logger
 	FallbackOK string // destination after a successful verify when ?return= is absent or unsafe
 }
@@ -59,7 +86,15 @@ type VerifyHandlerConfig struct {
 //
 // On success the handler:
 //  1. Calls Sessions.MarkVerified to flip the session bit.
-//  2. Redirects 303 to the validated `?return=` (or FallbackOK).
+//  2. Resets the SIN-62380 failure counter (when wired).
+//  3. Redirects 303 to the validated `?return=` (or FallbackOK).
+//
+// On a wrong code (mfa.ErrInvalidCode) and when Failures + Invalidator
+// + Alerter are wired (CAVEAT-3 of SIN-62343), the handler increments
+// the session-scoped failure counter; on the LockoutThresholdth strike
+// it invalidates the session, fires the Slack alert, and redirects to
+// LoginPath. Without the lockout collaborators the handler falls
+// through to the legacy "re-render form with error" path.
 //
 // CSRF protection is supplied by the upstream RequireCSRF middleware
 // at router wire-time; this handler does not re-check the token.
@@ -73,6 +108,12 @@ var verifyTemplates embed.FS
 
 // NewVerifyHandler validates inputs and parses the embedded template
 // eagerly. Misconfiguration panics at wire time.
+//
+// The SIN-62380 lockout collaborators (Failures / Invalidator /
+// Alerter) are optional for backwards compatibility with router
+// tests that wire the verify handler without the lockout path; the
+// production wireup names all three so the lockout is active in
+// staging / prod.
 func NewVerifyHandler(cfg VerifyHandlerConfig) *VerifyHandler {
 	if cfg.Verifier == nil {
 		panic("mastermfa: NewVerifyHandler: Verifier is nil")
@@ -85,6 +126,12 @@ func NewVerifyHandler(cfg VerifyHandlerConfig) *VerifyHandler {
 	}
 	if cfg.FallbackOK == "" {
 		cfg.FallbackOK = "/m/"
+	}
+	if cfg.LoginPath == "" {
+		cfg.LoginPath = "/m/login"
+	}
+	if cfg.LockoutThreshold <= 0 {
+		cfg.LockoutThreshold = LockoutThresholdDefault
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -121,7 +168,7 @@ func (h *VerifyHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.TrimSpace(r.PostForm.Get("code"))
 	if code == "" {
-		h.renderForm(w, r, "código inválido")
+		h.handleInvalidCode(w, r, master.ID)
 		return
 	}
 
@@ -130,7 +177,7 @@ func (h *VerifyHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	if isSixDigit(code) {
 		err := h.cfg.Verifier.Verify(r.Context(), master.ID, code)
 		if errors.Is(err, mfa.ErrInvalidCode) {
-			h.renderForm(w, r, "código inválido")
+			h.handleInvalidCode(w, r, master.ID)
 			return
 		}
 		if err != nil {
@@ -149,7 +196,7 @@ func (h *VerifyHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 		err := h.cfg.Consumer.ConsumeRecovery(r.Context(), master.ID, code, reqCtx)
 		if errors.Is(err, mfa.ErrInvalidCode) {
-			h.renderForm(w, r, "código inválido")
+			h.handleInvalidCode(w, r, master.ID)
 			return
 		}
 		if err != nil {
@@ -161,6 +208,13 @@ func (h *VerifyHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// SIN-62380 (CAVEAT-3): a successful verify clears any accumulated
+	// strike count so a flaky thumb followed by the right code does
+	// not leave the user one strike short of a future lockout. Reset
+	// failures BEFORE rotation so the read is on the pre-rotation
+	// session id (the post-rotation id has no counter to clear).
+	h.resetFailuresIfWired(r, master.ID)
 
 	// SIN-62377 (FAIL-4): when a Rotator is wired, swap the pre-MFA
 	// session id for a fresh post-MFA id (CSPRNG-minted) and stamp
@@ -197,6 +251,132 @@ func (h *VerifyHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 
 	target := ResolveReturn(r.URL.Query().Get("return"), h.cfg.FallbackOK)
 	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// handleInvalidCode is the shared exit for every "wrong code" path
+// (empty submission, ErrInvalidCode from Verify, ErrInvalidCode from
+// ConsumeRecovery). When the SIN-62380 (CAVEAT-3) lockout
+// collaborators are wired it increments the session-scoped failure
+// counter, runs the lockout sequence on the threshold trip, and
+// otherwise falls through to the legacy "re-render the form with
+// código inválido" response. Without the lockout collaborators it
+// behaves exactly like the pre-PR re-render path.
+func (h *VerifyHandler) handleInvalidCode(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	if !h.lockoutWired() {
+		h.renderForm(w, r, "código inválido")
+		return
+	}
+	sessionID, ok, err := readMasterSessionID(r)
+	if err != nil || !ok {
+		// Pre-MFA cookie missing / unparseable: the upstream master-
+		// auth middleware would have already redirected, so this is a
+		// wiring or test edge. Fall through to the legacy re-render so
+		// the response is still a useful 401, but skip the lockout
+		// machinery since there is no session to key the counter on.
+		h.renderForm(w, r, "código inválido")
+		return
+	}
+	count, err := h.cfg.Failures.Increment(r.Context(), sessionID)
+	if err != nil {
+		// Counter outage MUST NOT silently grant access nor silently
+		// disable the lockout. Surfacing as 500 is the deny-by-default
+		// answer: a Redis blip stalls the verify path; ops sees it.
+		h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: verify failure counter increment failed",
+			slog.String("user_id", userID.String()),
+			slog.String("session_id", sessionID.String()),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if count < h.cfg.LockoutThreshold {
+		h.renderForm(w, r, "código inválido")
+		return
+	}
+	h.tripLockout(w, r, userID, sessionID, count)
+}
+
+// tripLockout runs the SIN-62380 lockout sequence: invalidate the
+// session row + clear the cookie, fire the Slack alert, redirect to
+// LoginPath. Called only when the failure counter has just reached
+// LockoutThreshold.
+func (h *VerifyHandler) tripLockout(w http.ResponseWriter, r *http.Request, userID, sessionID uuid.UUID, count int) {
+	// Invalidate the session row + clear the cookie. A failure here
+	// is logged loudly but does not abort the redirect — leaving the
+	// user inside a half-broken state would be worse than denying
+	// them. The Slack alert still fires so an operator can chase it.
+	if err := h.cfg.Invalidator.Invalidate(w, r); err != nil {
+		h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: verify lockout invalidate failed",
+			slog.String("user_id", userID.String()),
+			slog.String("session_id", sessionID.String()),
+			slog.String("error", err.Error()),
+		)
+	}
+	// Best-effort failure-counter cleanup so a re-login on the same
+	// browser does not inherit the trip count from the now-deleted
+	// session id. A reset failure is benign — the counter self-collects
+	// inside its TTL — but we log it so ops can spot a Redis blip.
+	if err := h.cfg.Failures.Reset(r.Context(), sessionID); err != nil {
+		h.cfg.Logger.WarnContext(r.Context(), "mastermfa: verify failure counter reset failed",
+			slog.String("session_id", sessionID.String()),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	details := VerifyLockoutDetails{
+		UserID:    userID,
+		SessionID: sessionID,
+		Failures:  count,
+		IP:        clientIP(r),
+		UserAgent: r.Header.Get("User-Agent"),
+		Route:     r.URL.Path,
+	}
+	if err := h.cfg.Alerter.AlertVerifyLockout(r.Context(), details); err != nil {
+		// Alert failure is non-fatal — the persisted invalidation is
+		// the authoritative penalty; the alert is the notification
+		// side-effect (consistent with iam.Service.Login + ratelimit.Alerter).
+		h.cfg.Logger.WarnContext(r.Context(), "mastermfa: verify lockout alert failed",
+			slog.String("user_id", userID.String()),
+			slog.String("session_id", sessionID.String()),
+			slog.String("error", err.Error()),
+		)
+	}
+	h.cfg.Logger.WarnContext(r.Context(), "mastermfa: verify lockout triggered",
+		slog.String("event", "master_2fa_verify_lockout"),
+		slog.String("user_id", userID.String()),
+		slog.String("session_id", sessionID.String()),
+		slog.Int("failures", count),
+	)
+
+	http.Redirect(w, r, h.cfg.LoginPath, http.StatusSeeOther)
+}
+
+// resetFailuresIfWired clears the session's failure counter on a
+// successful verify. A missing counter or unparseable cookie are
+// non-events — a reset on a fresh session is a no-op by design.
+func (h *VerifyHandler) resetFailuresIfWired(r *http.Request, userID uuid.UUID) {
+	if h.cfg.Failures == nil {
+		return
+	}
+	sessionID, ok, err := readMasterSessionID(r)
+	if err != nil || !ok {
+		return
+	}
+	if err := h.cfg.Failures.Reset(r.Context(), sessionID); err != nil {
+		h.cfg.Logger.WarnContext(r.Context(), "mastermfa: verify failure counter reset failed",
+			slog.String("user_id", userID.String()),
+			slog.String("session_id", sessionID.String()),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
+// lockoutWired reports whether all three SIN-62380 collaborators are
+// present. Half-wired configurations fall through to the legacy
+// re-render path so a typo in cmd/server cannot silently disable the
+// lockout while pretending to enforce it.
+func (h *VerifyHandler) lockoutWired() bool {
+	return h.cfg.Failures != nil && h.cfg.Invalidator != nil && h.cfg.Alerter != nil
 }
 
 // renderForm writes the verify page with an optional error message.
