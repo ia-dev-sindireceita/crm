@@ -166,6 +166,47 @@ func (a *HTTPSession) RotateAndMarkVerified(w http.ResponseWriter, r *http.Reque
 	return nil
 }
 
+// Invalidate satisfies MasterSessionInvalidator (SIN-62380 / CAVEAT-3).
+// On the verify-failure 5-strike trip the verify handler calls this
+// to delete the master_session row and clear the __Host-sess-master
+// cookie so subsequent requests on the same cookie hit
+// ErrSessionNotFound at the master-auth gate and bounce to /m/login.
+//
+// Behaviour:
+//
+//   - A missing / unparseable cookie is NOT an error — the
+//     post-condition (no live row for this id, no cookie on the
+//     client) is satisfied either way. ClearMaster still runs so a
+//     stale cookie from a different origin / earlier request is
+//     scrubbed.
+//   - A SessionStore.Delete failure is wrapped with ErrSessionMFAState
+//     so the verify handler logs it loudly. The cookie is cleared
+//     regardless — leaving the user with a cookie pointing at a row
+//     that may or may not exist would be worse than denying them.
+//   - SessionStore.Delete is idempotent on missing rows (per the
+//     SessionStore contract) so a concurrent logout / hard-cap hit
+//     does not race the lockout into a 500.
+func (a *HTTPSession) Invalidate(w http.ResponseWriter, r *http.Request) error {
+	// Always clear the cookie first. Even if the row delete fails or
+	// the cookie was unparseable, we want the browser to drop the
+	// stale value so the lockout redirect lands on /m/login cleanly.
+	defer sessioncookie.ClearMaster(w)
+
+	sessionID, ok, err := readMasterSessionID(r)
+	if err != nil {
+		// Unparseable cookie: nothing to delete server-side. The cookie
+		// clear above is enough.
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	if err := a.store.Delete(r.Context(), sessionID); err != nil {
+		return fmt.Errorf("%w: %v", ErrSessionMFAState, err)
+	}
+	return nil
+}
+
 // VerifiedAt satisfies MasterSessionVerifiedAtStore. Looks up the session
 // row by id and returns its MFAVerifiedAt timestamp, or the zero time
 // when the session has only completed password auth. ErrSessionNotFound

@@ -51,6 +51,7 @@ import (
 
 	csrfmw "github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/handler"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	httpratelimit "github.com/pericles-luz/crm/internal/adapter/httpapi/ratelimit"
 	"github.com/pericles-luz/crm/internal/iam"
@@ -260,7 +261,11 @@ func NewRouter(deps Deps) http.Handler {
 				// /m/2fa/verify is reachable without MFA (that is the
 				// point — the user is submitting the code to gain MFA).
 				authed.Method(http.MethodGet, "/2fa/verify", deps.Master.Verify)
-				authed.Method(http.MethodPost, "/2fa/verify", deps.Master.Verify)
+				postVerify := http.Handler(deps.Master.Verify)
+				if mw := buildMaster2FAVerifyRateLimit(deps); mw != nil {
+					postVerify = mw(postVerify)
+				}
+				authed.Method(http.MethodPost, "/2fa/verify", postVerify)
 
 				// Everything else needs a completed MFA pass in this
 				// session. RequireMasterMFA redirects to /m/2fa/verify when
@@ -277,6 +282,43 @@ func NewRouter(deps Deps) http.Handler {
 	}
 
 	return r
+}
+
+// buildMaster2FAVerifyRateLimit assembles the SIN-62380 middleware
+// that fronts POST /m/2fa/verify with the m_2fa_verify policy
+// (3/min/session, 10/h/user — ADR 0074 §6). It returns nil when the
+// policy table or the limiter is missing OR when the policies map
+// does not contain the m_2fa_verify entry — older test wireups (e.g.
+// router_master_mfa_test) leave the master verify route un-throttled
+// at the HTTP boundary and rely on the failure counter alone, which
+// matches the iam.Service-only path used elsewhere.
+//
+// A non-nil Policies map containing "m_2fa_verify" but missing one
+// of the declared buckets ("session" / "user") panics: the policy
+// declared the bucket, so a missing extractor is a wireup bug, not
+// an opt-out.
+func buildMaster2FAVerifyRateLimit(deps Deps) func(http.Handler) http.Handler {
+	if deps.Policies == nil || deps.RateLimiter == nil {
+		return nil
+	}
+	policy, ok := deps.Policies["m_2fa_verify"]
+	if !ok {
+		return nil
+	}
+	mw, err := httpratelimit.New(httpratelimit.Config{
+		Policy:  policy,
+		Limiter: deps.RateLimiter,
+		Buckets: []httpratelimit.Bucket{
+			{Name: "session", Extractor: mastermfa.SessionIDExtractor},
+			{Name: "user", Extractor: mastermfa.MasterUserIDExtractor},
+		},
+		OnDeny: deps.RateLimitDenyMetric,
+		Logger: deps.Logger,
+	})
+	if err != nil {
+		panic(fmt.Errorf("httpapi: build m_2fa_verify rate-limit: %w", err))
+	}
+	return mw
 }
 
 // buildLoginRateLimit assembles the SIN-62376 middleware that fronts
