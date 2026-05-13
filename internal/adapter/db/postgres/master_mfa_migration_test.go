@@ -1,6 +1,6 @@
 package postgres_test
 
-// SIN-62342 acceptance criterion §schema: 0009_master_mfa migrates up
+// SIN-62342 acceptance criterion §schema: 0086_master_mfa migrates up
 // and down cleanly. Mirrors the SIN-62341 0008 pattern — a single
 // up/down/up cycle proves both directions are idempotent and round-
 // trip safe.
@@ -24,7 +24,7 @@ func TestMasterMFAMigration_UpDownUp(t *testing.T) {
 		t.Fatal("master_mfa or master_recovery_code missing after initial up")
 	}
 
-	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0009_master_mfa.down.sql"))
+	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0086_master_mfa.down.sql"))
 	if err != nil {
 		t.Fatalf("read down: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestMasterMFAMigration_UpDownUp(t *testing.T) {
 		t.Fatal("master_mfa or master_recovery_code still present after down")
 	}
 
-	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0009_master_mfa.up.sql"))
+	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0086_master_mfa.up.sql"))
 	if err != nil {
 		t.Fatalf("read up: %v", err)
 	}
@@ -66,7 +66,7 @@ func freshDBWithMasterMFA(t *testing.T) *testpg.DB {
 	for _, name := range []string{
 		"0004_create_tenant.up.sql",
 		"0005_create_users.up.sql",
-		"0009_master_mfa.up.sql",
+		"0086_master_mfa.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)

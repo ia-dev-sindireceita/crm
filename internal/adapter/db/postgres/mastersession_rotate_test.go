@@ -1,4 +1,4 @@
-package mastersession_test
+package postgres_test
 
 // SIN-62377 (FAIL-4) integration tests for Store.RotateID. Cover:
 //   - Happy path: new id, fields preserved, old id removed atomically.

@@ -1,4 +1,4 @@
-package mastersession_test
+package postgres_test
 
 // SIN-62418 storage-layer tests for the master 4h hard cap on
 // Store.Touch. ADR 0073 §D3 fixes the cap at 4h from created_at; the

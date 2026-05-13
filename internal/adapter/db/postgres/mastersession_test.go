@@ -1,4 +1,4 @@
-package mastersession_test
+package postgres_test
 
 // SIN-62385 integration tests for the master_session adapter. Brings
 // up a real Postgres via the testpg harness (SIN-62212), applies
@@ -28,27 +28,6 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
 )
 
-var harness *testpg.Harness
-
-// TestMain spins up a single Postgres cluster for the whole package
-// and tears it down at the end. Each test asks for its own
-// freshly-migrated DB via harness.DB(t).
-func TestMain(m *testing.M) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	h, err := testpg.Start(ctx)
-	if err != nil {
-		panic("testpg.Start: " + err.Error())
-	}
-	harness = h
-	code := m.Run()
-	if err := h.Stop(); err != nil {
-		_, _ = os.Stderr.WriteString("testpg.Stop: " + err.Error() + "\n")
-	}
-	os.Exit(code)
-}
-
 // freshDBWithMasterSession brings up a per-test DB with all
 // migrations the adapter depends on: 0004 (tenants — required by
 // 0005's FK), 0005 (users — references tenant_id) and 0010
@@ -62,7 +41,7 @@ func freshDBWithMasterSession(t *testing.T) *testpg.DB {
 	for _, name := range []string{
 		"0004_create_tenant.up.sql",
 		"0005_create_users.up.sql",
-		"0010_master_session.up.sql",
+		"0087_master_session.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
@@ -74,24 +53,6 @@ func freshDBWithMasterSession(t *testing.T) *testpg.DB {
 		}
 	}
 	return db
-}
-
-// seedMasterUser inserts a master user (tenant_id NULL, is_master
-// true) and returns its id. Mirrors the helper in
-// account_lockout_test.go but is duplicated here so this package
-// stays self-contained.
-func seedMasterUser(t *testing.T, db *testpg.DB, email string) uuid.UUID {
-	t.Helper()
-	userID := uuid.New()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := db.AdminPool().Exec(ctx,
-		`INSERT INTO users (id, tenant_id, email, password_hash, role, is_master)
-		 VALUES ($1, NULL, $2, 'x', 'master', true)`,
-		userID, email); err != nil {
-		t.Fatalf("insert master user: %v", err)
-	}
-	return userID
 }
 
 // frozenClock returns a func that always reports t. Pinning the
@@ -500,7 +461,7 @@ func TestMasterSessionMigration_UpDownUp(t *testing.T) {
 		t.Fatal("master_session missing after initial up")
 	}
 
-	downBody := readMigration(t, "0010_master_session.down.sql")
+	downBody := readMigration(t, "0087_master_session.down.sql")
 	if _, err := db.AdminPool().Exec(ctx, downBody); err != nil {
 		t.Fatalf("apply down: %v", err)
 	}
@@ -508,7 +469,7 @@ func TestMasterSessionMigration_UpDownUp(t *testing.T) {
 		t.Fatal("master_session still present after down")
 	}
 
-	upBody := readMigration(t, "0010_master_session.up.sql")
+	upBody := readMigration(t, "0087_master_session.up.sql")
 	if _, err := db.AdminPool().Exec(ctx, upBody); err != nil {
 		t.Fatalf("re-apply up: %v", err)
 	}
@@ -544,19 +505,6 @@ func TestMasterSession_RuntimeRoleHasNoAccess(t *testing.T) {
 	if !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("app_runtime SELECT err = %v, want permission denied", err)
 	}
-}
-
-func tableExists(t *testing.T, ctx context.Context, db *testpg.DB, name string) bool {
-	t.Helper()
-	var count int
-	row := db.SuperuserPool().QueryRow(ctx,
-		`SELECT count(*) FROM pg_class c
-		   JOIN pg_namespace n ON n.oid = c.relnamespace
-		  WHERE c.relname = $1 AND n.nspname = 'public'`, name)
-	if err := row.Scan(&count); err != nil {
-		t.Fatalf("table-exists probe: %v", err)
-	}
-	return count == 1
 }
 
 func readMigration(t *testing.T, name string) string {
