@@ -1,6 +1,6 @@
 package postgres_test
 
-// SIN-62341 acceptance criterion #9: 0008_account_lockout migrates up
+// SIN-62341 acceptance criterion #9: 0076_account_lockout migrates up
 // and down cleanly. The down path is idempotent (DROP TABLE IF EXISTS)
 // and the up/down/up cycle MUST leave the table in a usable state.
 
@@ -24,7 +24,7 @@ func TestAccountLockoutMigration_UpDownUp(t *testing.T) {
 	}
 
 	// Apply the down migration.
-	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0008_account_lockout.down.sql"))
+	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0076_account_lockout.down.sql"))
 	if err != nil {
 		t.Fatalf("read down: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestAccountLockoutMigration_UpDownUp(t *testing.T) {
 
 	// Re-apply the up migration; the IF NOT EXISTS guards make it
 	// idempotent so re-application is safe.
-	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0008_account_lockout.up.sql"))
+	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0076_account_lockout.up.sql"))
 	if err != nil {
 		t.Fatalf("read up: %v", err)
 	}
