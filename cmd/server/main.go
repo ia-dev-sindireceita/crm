@@ -187,6 +187,19 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	registerUploadRoutes(mux)
 	log.Printf("crm: slug reservation + upload routes mounted on public listener")
 
+	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
+	// /m/*, metrics). Mounted before the custom-domain catch-all so
+	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
+	// catch-all handler.
+	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv)
+	defer iamCleanup()
+	if iamHandler != nil {
+		for _, pattern := range iamRoutes {
+			mux.Handle(pattern, iamHandler)
+		}
+		log.Printf("crm: IAM routes mounted on public listener")
+	}
+
 	// SIN-62334 F53: hard-fail boot when CUSTOM_DOMAIN_UI_ENABLED=1 and
 	// REDIS_URL is unset. Returning the error from runWith propagates to
 	// main(), which exits non-zero — the orchestrator restarts and the

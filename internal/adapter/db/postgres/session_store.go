@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -121,6 +122,34 @@ func (s *SessionStore) DeleteExpired(ctx context.Context, tenantID uuid.UUID) (i
 		return 0, fmt.Errorf("postgres: SessionStore.DeleteExpired: %w", err)
 	}
 	return n, nil
+}
+
+// Touch bumps last_activity to the supplied timestamp for (tenantID,
+// sessionID). Returns iam.ErrSessionNotFound when the row is missing or
+// hidden by RLS. Requires migration 0077_session_activity.
+func (s *SessionStore) Touch(ctx context.Context, tenantID, sessionID uuid.UUID, lastActivity time.Time) error {
+	if tenantID == uuid.Nil {
+		return fmt.Errorf("postgres: SessionStore.Touch: tenant id is nil")
+	}
+	var found bool
+	err := WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE sessions SET last_activity = $1 WHERE id = $2`,
+			lastActivity, sessionID,
+		)
+		if err != nil {
+			return err
+		}
+		found = tag.RowsAffected() > 0
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("postgres: SessionStore.Touch: %w", err)
+	}
+	if !found {
+		return iam.ErrSessionNotFound
+	}
+	return nil
 }
 
 // UserCredentialReader is the iam.UserCredentialReader adapter. It runs
