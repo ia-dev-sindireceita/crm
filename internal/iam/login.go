@@ -120,6 +120,16 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 		// ErrInvalidCredentials; infra errors propagate so the HTTP
 		// layer can return 5xx rather than mislead the user with 401.
 		if isLookupNotFound(err) {
+			// Anti-enumeration: same dummy-verify as the unknown-email
+			// path below. Without this, "unknown host" returns in ~µs
+			// while "known host, unknown email" takes ~100 ms (one
+			// argon2id derivation). An on-the-wire attacker can use the
+			// 3-orders-of-magnitude gap to enumerate which hosts are
+			// configured tenants — i.e. the customer list of the SaaS.
+			// Verifying the supplied password against dummyHash here
+			// equalises wall-clock cost across all credential-mismatch
+			// branches. SIN-62305 / SIN-62518.
+			_, _ = VerifyPassword(password, dummyHash)
 			logger.WarnContext(ctx, "login: host did not resolve to a tenant", slog.String("reason", "invalid_credentials"))
 			return Session{}, ErrInvalidCredentials
 		}

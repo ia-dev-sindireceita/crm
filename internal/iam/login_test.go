@@ -246,6 +246,46 @@ func TestLogin_HostInvalid_NoEnumerate(t *testing.T) {
 	}
 }
 
+// TestLogin_HostInvalid_TimingEqualized is the SIN-62305 / SIN-62518
+// anti-enumeration assertion for the host-not-found branch. Mirrors the
+// median-of-3 / ≥25% bound used by TestLogin_WrongPassword_NoEnumerate so
+// a regression that early-returns without dummyVerify on the host-not-
+// found path is caught without being CI-flaky.
+//
+// Without the dummyVerify call the host-not-found branch finishes in ~µs
+// while the known-host wrong-password branch takes ~100 ms (one argon2id
+// derivation). An on-the-wire attacker can use that gap to enumerate
+// which hosts map to tenants (i.e. the SaaS customer list).
+func TestLogin_HostInvalid_TimingEqualized(t *testing.T) {
+	svc, _, _ := newServiceForTest(t)
+	ctx := context.Background()
+
+	measure := func(host string) time.Duration {
+		var samples [3]time.Duration
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			_, _ = svc.Login(ctx, host, "alice@acme.test", "WRONG", nil, "")
+			samples[i] = time.Since(start)
+		}
+		if samples[0] > samples[1] {
+			samples[0], samples[1] = samples[1], samples[0]
+		}
+		if samples[1] > samples[2] {
+			samples[1], samples[2] = samples[2], samples[1]
+		}
+		if samples[0] > samples[1] {
+			samples[0], samples[1] = samples[1], samples[0]
+		}
+		return samples[1]
+	}
+	wrongPwd := measure("acme.crm.local")
+	hostInvalid := measure("unknown.example.com")
+
+	if hostInvalid*4 < wrongPwd {
+		t.Fatalf("host-not-found branch too fast: host-invalid=%v wrong-pwd=%v — dummy-verify likely missing on host-not-found path", hostInvalid, wrongPwd)
+	}
+}
+
 func TestLogin_TenantResolverInfraError_Propagates(t *testing.T) {
 	svc, _, _ := newServiceForTest(t)
 	svc.Tenants = fakeResolver{err: errors.New("dial tcp: connection refused")}
