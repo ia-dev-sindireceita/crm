@@ -26,6 +26,12 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY adapters ./adapters
+# web/static/vendor is imported as a Go package by
+# internal/adapter/transport/http/customdomain/templates.go (SIN-62535).
+# It embeds CHECKSUMS.txt only; the JS payloads themselves stay out of the
+# binary. The matching `!web/static/vendor` exception in .dockerignore keeps
+# this path visible in the build context.
+COPY web/static/vendor ./web/static/vendor
 
 # CGO_ENABLED=0 + -trimpath + -ldflags="-s -w" yields a small, reproducible,
 # statically linked binary. GOFLAGS prevents the toolchain from auto-downloading
