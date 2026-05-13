@@ -1,2 +1,1 @@
-sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F  alpinejs/3.14.9/alpinejs.min.js
 sha384-ESlCao+z/oasnu2Uc/5K1LQTI7YCF2KKO4xakCPQCFuiHhCh8Oa/R5NwHY6guZ3m  htmx/2.0.9/htmx.min.js

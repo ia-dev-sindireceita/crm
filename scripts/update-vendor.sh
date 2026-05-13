@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # update-vendor.sh — SIN-62284
 #
-# Idempotent vendor refresh for HTMX / Alpine.js. Downloads the official
+# Idempotent vendor refresh for HTMX. Downloads the official
 # npm tarball published by the maintainers, validates the package-level
 # SHA-512 integrity against the value in the npm registry (which is
 # signed with the maintainer's npm key), extracts the minified asset,
@@ -22,7 +22,6 @@
 #
 # Examples:
 #   scripts/update-vendor.sh htmx 2.0.9
-#   scripts/update-vendor.sh alpinejs 3.14.9
 
 set -euo pipefail
 
@@ -32,7 +31,6 @@ usage: scripts/update-vendor.sh <lib> <version>
 
 Supported libraries:
   htmx       — pulls htmx.org from npm, extracts dist/htmx.min.js
-  alpinejs   — pulls alpinejs from npm, extracts dist/cdn.min.js
 USAGE
   exit 2
 }
@@ -49,11 +47,6 @@ case "${lib}" in
     npm_pkg="htmx.org"
     asset_in_tarball="package/dist/htmx.min.js"
     output_filename="htmx.min.js"
-    ;;
-  alpinejs)
-    npm_pkg="alpinejs"
-    asset_in_tarball="package/dist/cdn.min.js"
-    output_filename="alpinejs.min.js"
     ;;
   *)
     echo "update-vendor: unknown lib '${lib}'" >&2
