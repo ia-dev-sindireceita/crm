@@ -1,0 +1,13 @@
+{{define "title"}}Login — CRM{{end}}
+{{define "content"}}
+<main>
+  <h1>Login</h1>
+  {{if .Error}}<p role="alert" data-testid="login-error">{{.Error}}</p>{{end}}
+  <form method="POST" action="/login">
+    <input type="hidden" name="next" value="{{.Next}}" />
+    <label>Email <input type="email" name="email" autocomplete="username" required /></label>
+    <label>Senha <input type="password" name="password" autocomplete="current-password" required /></label>
+    <button type="submit">Entrar</button>
+  </form>
+</main>
+{{end}}

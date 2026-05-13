@@ -40,6 +40,36 @@ type Session struct {
 	CreatedAt time.Time
 	IPAddr    net.IP
 	UserAgent string
+
+	// LastActivity is the timestamp of the most recent authenticated
+	// request that landed against this session. The activity middleware
+	// (internal/adapter/httpapi/middleware/activity.go) updates this on
+	// every request, and CheckActivity reads it as the lastActivity
+	// argument to enforce the per-role idle window (ADR 0073 §D3,
+	// migration 0011_session_activity).
+	//
+	// SessionStore.Create persists the value; the column has DEFAULT
+	// now() at the schema level, so a zero value at Create time is
+	// translated to CreatedAt by the adapter (a fresh session is by
+	// definition active "now").
+	LastActivity time.Time
+
+	// Role is the iam.Role of the session principal, denormalised onto
+	// the session row at login time so the activity middleware can pick
+	// the right idle/hard pair from TimeoutsForRole without a join.
+	// Adapters MUST translate an empty value to RoleTenantCommon so a
+	// caller that constructs Session directly (legacy tests, in-memory
+	// fakes) does not write an empty role and trip the schema CHECK
+	// constraint added in migration 0011_session_activity.
+	Role Role
+
+	// CSRFToken is the per-session CSPRNG token enforced on every
+	// state-changing request (ADR 0073 §D1). Mint-on-login writes a
+	// fresh value via iam/csrf.GenerateToken; rotation is per-session
+	// (D1) — not per-request — to dodge the HTMX hx-swap race. The
+	// HTTP layer mirrors this string into the __Host-csrf cookie, the
+	// <meta name="csrf-token"> tag, and the X-CSRF-Token header.
+	CSRFToken string
 }
 
 // IsExpired reports whether ExpiresAt is at or before now. ValidateSession
@@ -63,6 +93,16 @@ type SessionStore interface {
 	Get(ctx context.Context, tenantID, sessionID uuid.UUID) (Session, error)
 	Delete(ctx context.Context, tenantID, sessionID uuid.UUID) error
 	DeleteExpired(ctx context.Context, tenantID uuid.UUID) (int64, error)
+
+	// Touch bumps Session.LastActivity to the supplied timestamp. The
+	// activity middleware (SIN-62377 / FAIL-4) calls this on every
+	// authenticated request that passes the per-role idle/hard window
+	// check, so a session that is still in use does not become
+	// idle-expired between requests. Returns ErrSessionNotFound when no
+	// row matches the (tenantID, sessionID) pair — the caller then
+	// clears the cookie and redirects to /login, matching the
+	// "session vanished mid-flight" branch of the auth middleware.
+	Touch(ctx context.Context, tenantID, sessionID uuid.UUID, lastActivity time.Time) error
 }
 
 // NewSessionID returns a fresh version-4 UUID drawn from crypto/rand.

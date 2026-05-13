@@ -1,0 +1,12 @@
+{{define "title"}}{{.TenantName}} — CRM{{end}}
+{{define "content"}}
+<main>
+  <h1>Hello, {{.TenantName}}</h1>
+  <p>Você está autenticado em <strong data-testid="tenant-name">{{.TenantName}}</strong>.</p>
+  <p>User ID: <code data-testid="user-id">{{.UserID}}</code></p>
+  <form method="POST" action="/logout">
+    {{- if .CSRFToken}}{{csrfFormHidden .CSRFToken}}{{end}}
+    <button type="submit">Sair</button>
+  </form>
+</main>
+{{end}}

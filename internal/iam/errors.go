@@ -39,3 +39,20 @@ var ErrSessionNotFound = errors.New("iam: session not found")
 // does not match the $argon2id$… PHC format. Treat as a corrupted or
 // foreign hash; never panic on adversarial input.
 var ErrInvalidEncoding = errors.New("iam: invalid password encoding")
+
+// ErrAccountLocked is returned by Login when the lockout pre-check
+// (or the failure-counter trip on the current attempt) finds a
+// durable account_lockout row whose locked_until is in the future.
+// The HTTP layer maps this to 429 with a Retry-After header derived
+// from the locked_until timestamp the Lockouts port returns. Use
+// errors.Is to test.
+//
+// ErrAccountLocked is intentionally distinct from
+// ErrInvalidCredentials: a locked-out attacker still gets the same
+// uniform 401 timing on credential probes (the lockout pre-check
+// runs AFTER the user-found check, so unknown emails never reach
+// this branch). The asymmetry only surfaces to a real authenticated
+// principal whose account has been locked, which is the audience
+// that needs the differentiated message ("come back in 12 minutes",
+// not "wrong password").
+var ErrAccountLocked = errors.New("iam: account locked")

@@ -1,0 +1,13 @@
+{{define "layout"}}<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    {{- if .CSRFToken}}{{csrfMeta .CSRFToken}}{{end}}
+    <title>{{block "title" .}}CRM{{end}}</title>
+  </head>
+  <body{{if .CSRFToken}} {{csrfHXHeaders .CSRFToken}}{{end}}>
+    {{block "content" .}}{{end}}
+  </body>
+</html>
+{{end}}
