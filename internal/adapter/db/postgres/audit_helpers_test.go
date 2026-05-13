@@ -54,16 +54,3 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
-
-// roleExists reports whether a Postgres role with the given name is
-// present on the cluster. Used by the migration up/down/up cycle tests
-// to assert role lifecycle.
-func roleExists(t *testing.T, ctx context.Context, db *testpg.DB, name string) bool {
-	t.Helper()
-	var got bool
-	if err := db.SuperuserPool().QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, name).Scan(&got); err != nil {
-		t.Fatalf("role probe: %v", err)
-	}
-	return got
-}

@@ -13,7 +13,7 @@ package postgres_test
 //
 // The legacy audit_log path is covered by audit_logger_test.go; the
 // split path is covered here. They share the package-level harness
-// and helpers (seedTenantUserMaster, newCtx, contains, roleExists).
+// and helpers (seedTenantUserMaster, contains).
 
 import (
 	"context"
