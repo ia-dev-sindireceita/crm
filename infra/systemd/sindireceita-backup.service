@@ -51,11 +51,18 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
 
-# Read-only access to the repo + /etc/sindireceita. backup.sh does not write
-# to disk: pg_dump streams stdout straight into age which streams into aws
-# s3 cp. Nothing else needs to be writable.
+# Read-only access to the repo + /etc/sindireceita. backup.sh stages the
+# dump and the ciphertext on PrivateTmp (tmpfs) and only persists a tiny
+# JSON state file under /var/lib/sindireceita (created/managed by systemd
+# via StateDirectory below). The state file holds the last successful dump
+# size so we can size-check future runs against a moving baseline.
 ReadOnlyPaths=/opt/sindireceita /etc/sindireceita
-ReadWritePaths=
+
+# StateDirectory creates /var/lib/sindireceita with mode 0750 owned by
+# User/Group above and adds it to the unit's ReadWritePaths automatically.
+# Required by backup.sh (SIN-62267) to persist backup-last-success.json.
+StateDirectory=sindireceita
+StateDirectoryMode=0750
 
 # Defense in depth: the backup service must NEVER need the private age key,
 # only restore-drill.sh does. Hide the key file from this unit's namespace

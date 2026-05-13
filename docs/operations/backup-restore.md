@@ -16,9 +16,11 @@ scenarios. Lands in Fase 6 ([SIN-62199](/SIN/issues/SIN-62199)) as part of
 | `infra/sops/age-backup.key.enc` | SOPS-encrypted private key. Committed (ciphertext). |
 | `/etc/sindireceita/age-backup.key` | Decrypted private key on the backup host. Mode `0440`, owner `root:sindireceita-backup`. NEVER committed. |
 | `/etc/sindireceita/backup.env` | Service environment file. Mode `0640`, owner `root:sindireceita-backup`. NEVER committed. |
-| `scripts/backup.sh` | `pg_dump | age -R | aws s3 cp -`. |
+| `/var/lib/sindireceita/backup-last-success.json` | State file written at end of every successful run. Holds last successful `dump_bytes` so `backup.sh` can size-check the next run. Managed by `StateDirectory=sindireceita` in the unit; never committed. |
+| `scripts/backup.sh` | `pg_dump` -> `age -R` -> `aws s3 cp` with per-stage exit checks, dump-size threshold, S3 head-object verify, structured journald logs. |
 | `scripts/restore-drill.sh` | `aws s3 cp - | age -d -i KEY | pg_restore`. |
 | `scripts/generate-backup-key.sh` | Bootstraps the keypair on a fresh backup host. |
+| `scripts/tests/backup_test.sh` | Hermetic shell-test harness for `backup.sh` (run via `make test-backup-shell`). |
 | `infra/systemd/sindireceita-backup.{service,timer}` | Daily cron. |
 
 ## Primeira instalação (first-time setup)
@@ -80,7 +82,7 @@ shell with `sudo` on the host.
    # block records the matching public recipient — that is the line we copy.
    pub=$(grep -E '^# public key:' /etc/sindireceita/age-backup.key | sed 's/^# public key: //')
    sudo sed -i "s|^age1placeholder.*|$pub|" infra/age-backup.pub
-   sudo -u sindireceita-backup age -R infra/age-backup.pub /dev/null < /dev/null  # must now succeed
+   sudo -u sindireceita-backup age -R infra/age-backup.pub /dev/null > /dev/null  # must now succeed
    ```
    Until this swap happens, `backup.sh` aborts at the `age -R` stage — that
    is the intended safety net.
@@ -98,9 +100,14 @@ shell with `sudo` on the host.
 8. **Verify the install** with a dry-run:
    ```bash
    sudo systemctl start sindireceita-backup.service
-   sudo journalctl -u sindireceita-backup --since '5 min ago'
+   sudo journalctl -u sindireceita-backup --since '5 min ago' \
+     SYSLOG_IDENTIFIER=sindireceita-backup
    ```
-   A clean run prints `backup complete -> s3://...` and exits 0.
+   A clean run ends with a `stage=done status=ok bytes=… dump_bytes=… target=s3://…`
+   line (priority `info`) and the unit exits 0. The first run logs
+   `bootstrap=true` and `min_bytes=1048576` because no prior state file
+   exists; subsequent runs raise `min_bytes` to 10% of the last successful
+   `dump_bytes` (see § "Dump size threshold and state file").
 
 > Group hygiene: only humans/services that need to decrypt restored dumps
 > should be members of `sindireceita-backup`. Audit `getent group sindireceita-backup`
@@ -136,6 +143,56 @@ aws s3 cp "s3://$BACKUP_BUCKET/$(date -u +%F)/$NODE_ID/dump.pgc.age" - \
   | head -c 32 | xxd
 # Expect first line to start with: 6167652d 656e6372 79707469 6f6e2e6f
 # (= "age-encryption.o" — age v1 magic).
+```
+
+### Structured logs (SIN-62267)
+
+Every stage of `backup.sh` emits a `key=value` line via `logger -t
+sindireceita-backup -p user.<level>` so journald captures it with
+SYSLOG_IDENTIFIER=`sindireceita-backup`. Filter by stage to debug a slow
+or failing run:
+
+```bash
+sudo journalctl SYSLOG_IDENTIFIER=sindireceita-backup --since '24h ago'
+# stage=start    bootstrap=… min_bytes=… last_bytes=… target=s3://…
+# stage=pg_dump  status=ok dur_ms=… bytes=…
+# stage=encrypt  status=ok dur_ms=… bytes=…
+# stage=upload   status=ok dur_ms=… bytes=…
+# stage=verify   status=ok dur_ms=… bytes=…
+# stage=done     status=ok bytes=… dump_bytes=… target=s3://…
+```
+
+Failures land at `priority=err` with a `reason=…` field; grep for
+`status=fail` to alert on them. Secrets (DATABASE_URL, AWS keys, dump
+content) are intentionally never echoed — the log surface is metadata only.
+
+### Dump size threshold and state file (SIN-62267)
+
+`backup.sh` size-checks the cleartext `pg_dump` output before encrypting
+to catch a silent truncation (e.g. seccomp killing a syscall the dump
+relied on, or `pg_dump` exiting 0 after an in-progress crash). The
+threshold is dynamic:
+
+- **Bootstrap (no state file yet):** `min_bytes = 1 MiB`. Logged as
+  `bootstrap=true`.
+- **Steady state:** `min_bytes = max(1 MiB, 10% of last successful
+  dump_bytes)`. The script reads `dump_bytes` from
+  `/var/lib/sindireceita/backup-last-success.json` (created and managed
+  by `StateDirectory=sindireceita` on the unit).
+
+The state file is written via atomic rename only after every stage —
+including the post-upload `aws s3api head-object` verify — succeeds. A
+failure anywhere in the chain leaves the previous state file untouched,
+so the threshold derived from the last good run keeps protecting the
+next attempt.
+
+If you intentionally want to reset the baseline (e.g. after a planned
+schema purge that legitimately shrinks the dump), delete the state file
+on the backup host and the next run will log `bootstrap=true` again:
+
+```bash
+sudo rm /var/lib/sindireceita/backup-last-success.json
+sudo systemctl start sindireceita-backup.service
 ```
 
 ## Restore drill (Fase 6)
