@@ -56,10 +56,10 @@ func freshDBWithSplitAudit(t *testing.T) *splitAuditDB {
 		{"0005_create_users.up.sql", false},
 		{"0006_create_sessions.up.sql", false},
 		{"0007_create_audit_log.up.sql", false},
-		{"0009_app_audit_role.up.sql", true},
-		{"0012_split_audit_log.up.sql", false},
-		{"0013_tenant_audit_data_retention.up.sql", false},
-		{"0014_app_audit_role_split.up.sql", false},
+		{"0078_app_audit_role.up.sql", true},
+		{"0083_split_audit_log.up.sql", false},
+		{"0084_tenant_audit_data_retention.up.sql", false},
+		{"0085_app_audit_role_split.up.sql", false},
 	} {
 		path := filepath.Join(harness.MigrationsDir(), mig.file)
 		body, err := os.ReadFile(path)
@@ -440,7 +440,7 @@ func TestSplitAuditMigration_UpDownUp(t *testing.T) {
 		t.Fatal("split tables missing after initial up")
 	}
 
-	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0012_split_audit_log.down.sql"))
+	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0083_split_audit_log.down.sql"))
 	if err != nil {
 		t.Fatalf("read down: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestSplitAuditMigration_UpDownUp(t *testing.T) {
 		t.Fatalf("apply down again: %v", err)
 	}
 
-	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0012_split_audit_log.up.sql"))
+	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0083_split_audit_log.up.sql"))
 	if err != nil {
 		t.Fatalf("read up: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestSplitAuditMigration_RetentionUpDownUp(t *testing.T) {
 		t.Fatal("retention column missing after initial up")
 	}
 
-	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0013_tenant_audit_data_retention.down.sql"))
+	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0084_tenant_audit_data_retention.down.sql"))
 	if err != nil {
 		t.Fatalf("read down: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestSplitAuditMigration_RetentionUpDownUp(t *testing.T) {
 		t.Fatalf("apply down again: %v", err)
 	}
 
-	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0013_tenant_audit_data_retention.up.sql"))
+	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0084_tenant_audit_data_retention.up.sql"))
 	if err != nil {
 		t.Fatalf("read up: %v", err)
 	}

@@ -26,7 +26,7 @@ import (
 
 // SecurityEvent is the controlled vocabulary of audit_log_security
 // rows. The list mirrors the CHECK clause of audit_log_security in
-// migration 0012_split_audit_log.up.sql.
+// migration 0083_split_audit_log.up.sql.
 type SecurityEvent string
 
 const (
