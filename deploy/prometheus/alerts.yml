@@ -1,0 +1,48 @@
+# SIN-62218 alert rules. The most important one is RLSMissDetected
+# — it is the canary for the rls_misses_total counter, which the
+# `make smoke-alert` target trips synthetically in stg to verify
+# the path Prometheus → Alertmanager → Slack #alerts is intact.
+
+groups:
+  - name: crm-rls
+    interval: 30s
+    rules:
+      - alert: RLSMissDetected
+        expr: increase(rls_misses_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          channel: alerts
+        annotations:
+          summary: "RLS canary tripped: WithTenant received uuid.Nil"
+          description: |
+            rls_misses_total grew by {{ $value }} in the last 5 minutes.
+            The middleware path makes uuid.Nil unreachable in production,
+            so any increment indicates a regression in TenantScope/Auth
+            or a code path that bypasses them. Investigate immediately.
+          runbook: https://internal/runbooks/rls-miss
+
+  - name: crm-availability
+    interval: 30s
+    rules:
+      - alert: CRMAppDown
+        expr: up{job="crm-app"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          channel: alerts
+        annotations:
+          summary: "CRM app /metrics scrape down"
+          description: "Prometheus could not reach app:8080/metrics for 2 minutes."
+
+      - alert: CRMHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          channel: alerts
+        annotations:
+          summary: "CRM 5xx ratio > 5% over 5m"
+          description: "Investigate logs and recent deploys."

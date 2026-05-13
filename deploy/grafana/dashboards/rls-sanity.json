@@ -1,0 +1,44 @@
+{
+  "uid": "crm-rls-sanity",
+  "title": "CRM RLS Sanity",
+  "tags": ["crm", "fase-0", "rls"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "time": {"from": "now-6h", "to": "now"},
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "rls_misses_total (must be 0)",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "rls_misses_total", "refId": "A"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 0.5}
+            ]
+          },
+          "color": {"mode": "thresholds"}
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "rls_misses_total — 5m increase",
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "increase(rls_misses_total[5m])", "legendFormat": "5m increase", "refId": "A"}
+      ]
+    }
+  ]
+}
