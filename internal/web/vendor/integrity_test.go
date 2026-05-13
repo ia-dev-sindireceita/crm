@@ -13,9 +13,9 @@ import (
 // fakeReader returns the first read happily, then a sentinel error so
 // we can exercise the bufio.Scanner failure path in Parse.
 type fakeReader struct {
-	chunk    string
+	chunk     string
 	delivered bool
-	failErr  error
+	failErr   error
 }
 
 func (f *fakeReader) Read(p []byte) (int, error) {
@@ -65,9 +65,9 @@ func TestParse_SkipsBlankAndCommentLines(t *testing.T) {
 func TestParse_RejectsMalformedLine(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name     string
-		input    string
-		wantSub  string
+		name    string
+		input   string
+		wantSub string
 	}{
 		{
 			name:    "single field",

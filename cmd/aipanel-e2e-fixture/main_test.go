@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	vendorintegrity "github.com/pericles-luz/crm/internal/web/vendor"
 )
 
 // TestTokenBucketLimiter_FirstAllowSecondDenyThenRefill verifies the
@@ -587,4 +589,120 @@ func extractNonce(hdr, prefix string) string {
 		return ""
 	}
 	return rest[:end]
+}
+
+// TestHostPage_SRIAttributeOnEveryVendorScript is the SIN-62535
+// snapshot regression for the e2e fixture template (folded in from
+// SIN-62538). Every `<script src="/static/vendor/...">` in the
+// rendered host page MUST carry the SRI attribute pair so the browser
+// re-verifies the bytes it executes. The fixture and the production
+// `customdomain` template are deliberately covered by sibling tests so
+// neither surface can regress in isolation.
+func TestHostPage_SRIAttributeOnEveryVendorScript(t *testing.T) {
+	t.Parallel()
+	handler := buildHandler(newTokenBucketLimiter(time.Second), time.Second, "./testdata-static")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	tags := scanVendorScriptTagsForTest(body)
+	if len(tags) == 0 {
+		t.Fatalf("fixture host page renders no <script src=\"/static/vendor/...\"> tags; body=%s", body)
+	}
+	for _, tag := range tags {
+		if !strings.Contains(tag, `integrity="sha384-`) {
+			t.Errorf("vendored <script> missing integrity=sha384-: %s", tag)
+		}
+		if !strings.Contains(tag, `crossorigin="anonymous"`) {
+			t.Errorf("vendored <script> missing crossorigin=anonymous: %s", tag)
+		}
+	}
+}
+
+// scanVendorScriptTagsForTest returns every `<script ... src="/static/vendor/...">`
+// opening tag in body. Mirrors the helper in the customdomain template
+// snapshot test (different package); the SIN-62535 snapshot guarantee
+// is identical so the scan logic is intentionally identical too.
+func scanVendorScriptTagsForTest(body string) []string {
+	const needle = `src="/static/vendor/`
+	var out []string
+	rest := body
+	for {
+		srcIdx := strings.Index(rest, needle)
+		if srcIdx < 0 {
+			return out
+		}
+		openIdx := strings.LastIndex(rest[:srcIdx], "<script")
+		if openIdx < 0 {
+			rest = rest[srcIdx+len(needle):]
+			continue
+		}
+		closeIdx := strings.Index(rest[openIdx:], ">")
+		if closeIdx < 0 {
+			return out
+		}
+		end := openIdx + closeIdx + 1
+		out = append(out, rest[openIdx:end])
+		rest = rest[end:]
+	}
+}
+
+// TestMustBuildHostPageTmpl_PanicsOnUnknownAsset verifies the
+// SIN-62535 startup contract: if [fixtureRequiredVendorAssets] names a
+// relpath that the manifest does not carry, the fixture binary panics
+// during init rather than rendering an unverified `<script>` at first
+// request. The CTO arbitration on SIN-62535 made this explicit.
+func TestMustBuildHostPageTmpl_PanicsOnUnknownAsset(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("mustBuildHostPageTmpl: expected panic on missing asset, got none")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("mustBuildHostPageTmpl: panic value = %#v, want string", r)
+		}
+		if !strings.Contains(msg, "missing required asset") {
+			t.Fatalf("mustBuildHostPageTmpl: panic %q missing expected substring", msg)
+		}
+	}()
+	mustBuildHostPageTmpl(func() (vendorintegrity.VendorIntegrity, error) {
+		return emptyVendorIntegrity{}, nil
+	})
+}
+
+// TestMustBuildHostPageTmpl_PanicsOnProviderError covers the other
+// failure mode: the newProvider closure itself errors out (e.g. the
+// embedded manifest is malformed). The fixture must refuse to boot in
+// that situation too.
+func TestMustBuildHostPageTmpl_PanicsOnProviderError(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("mustBuildHostPageTmpl: expected panic on provider error, got none")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("mustBuildHostPageTmpl: panic value = %#v, want string", r)
+		}
+		if !strings.Contains(msg, "load vendor integrity") {
+			t.Fatalf("mustBuildHostPageTmpl: panic %q missing expected substring", msg)
+		}
+	}()
+	mustBuildHostPageTmpl(func() (vendorintegrity.VendorIntegrity, error) {
+		return nil, errors.New("test stub: provider boot failure")
+	})
+}
+
+// emptyVendorIntegrity is a stub that refuses every lookup. The panic
+// path in mustBuildHostPageTmpl asks for fixtureRequiredVendorAssets
+// up front; this stub returns an error so the panic fires.
+type emptyVendorIntegrity struct{}
+
+func (emptyVendorIntegrity) SRIAttribute(string) (string, error) {
+	return "", errors.New("test stub: no assets registered")
 }

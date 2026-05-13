@@ -29,6 +29,17 @@ var (
 	newVendorIntegrity = func() (vendorintegrity.VendorIntegrity, error) {
 		return vendorintegrity.NewFromFS(vendorassets.ChecksumsFS, vendorassets.ChecksumsManifestPath)
 	}
+
+	// requiredVendorAssets enumerates every vendored relpath referenced
+	// by templates in this package. loadTemplates verifies each path
+	// exists in the parsed manifest and panics at startup if any are
+	// missing — this turns "I forgot to vendor the file" or "I typo'd
+	// the relpath" into a server-boot crash instead of a 500 on first
+	// request. Add a new entry here whenever base.html (or a sibling)
+	// gains a `{{ vendorSRI "..." }}` reference.
+	requiredVendorAssets = []string{
+		"htmx/2.0.9/htmx.min.js",
+	}
 )
 
 // buildFuncMap returns the FuncMap registered with the embedded
@@ -54,12 +65,22 @@ func buildFuncMap(provider vendorintegrity.VendorIntegrity) template.FuncMap {
 // loadTemplates parses the embedded templates with the boundary's
 // custom funcs. Called once on the first render — the package init has
 // to stay side-effect free for the test binary.
+//
+// An unknown asset reference (an entry in [requiredVendorAssets] that
+// is not present in the parsed manifest) is a programmer error and
+// panics. The CTO's SIN-62535 arbitration is explicit: missing vendor
+// references must crash at startup rather than 500 on first request.
 func loadTemplates() (*template.Template, error) {
 	tmplOnce.Do(func() {
 		provider, err := newVendorIntegrity()
 		if err != nil {
 			tmplErr = fmt.Errorf("customdomain: vendor integrity: %w", err)
 			return
+		}
+		for _, relPath := range requiredVendorAssets {
+			if _, hashErr := provider.SRIAttribute(relPath); hashErr != nil {
+				panic(fmt.Sprintf("customdomain: vendor manifest missing required asset %q: %v", relPath, hashErr))
+			}
 		}
 		t := template.New("base").Funcs(buildFuncMap(provider))
 		t, err = t.ParseFS(templateFS, "templates/*.html")

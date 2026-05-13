@@ -40,6 +40,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"html/template"
 	"log"
 	"log/slog"
@@ -54,6 +55,8 @@ import (
 	"github.com/pericles-luz/crm/internal/http/handler/aipanel"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/http/middleware/ratelimit"
+	vendorintegrity "github.com/pericles-luz/crm/internal/web/vendor"
+	vendorassets "github.com/pericles-luz/crm/web/static/vendor"
 )
 
 func main() {
@@ -231,18 +234,18 @@ type hostPageData struct {
 	Nonce string
 }
 
-// hostPageTmpl is the parsed-once host page template. The single inline
+// hostPageTmplSrc is the source for [hostPageTmpl]. The single inline
 // `<script>` carries `nonce="{{.Nonce}}"` so it survives the production
-// CSP (`script-src 'self' 'nonce-{N}'`). External assets (htmx + the
-// production aipanel.css) are pulled from /static/ and matched by the
-// `'self'` source — they do not need a nonce.
-var hostPageTmpl = template.Must(template.New("hostPage").Parse(`<!doctype html>
+// CSP (`script-src 'self' 'nonce-{N}'`). The vendored htmx script gets
+// its SRI `integrity` + `crossorigin` attribute pair via the vendorSRI
+// helper (SIN-62535) so the browser re-verifies the bytes it executes.
+const hostPageTmplSrc = `<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <title>AI Panel cooldown E2E fixture (SIN-62318)</title>
   <link rel="stylesheet" href="/static/css/aipanel.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js"></script>
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" {{ vendorSRI "htmx/2.0.9/htmx.min.js" }}></script>
   <script nonce="{{.Nonce}}">
     document.addEventListener('htmx:beforeSwap', function (evt) {
       var status = evt.detail && evt.detail.xhr && evt.detail.xhr.status;
@@ -274,7 +277,50 @@ var hostPageTmpl = template.Must(template.New("hostPage").Parse(`<!doctype html>
   </main>
 </body>
 </html>
-`))
+`
+
+// fixtureRequiredVendorAssets enumerates every vendored relpath
+// referenced by [hostPageTmplSrc]. mustBuildHostPageTmpl validates each
+// against the embedded CHECKSUMS.txt manifest and panics at startup if
+// any are missing. Mirrors customdomain.requiredVendorAssets — keep
+// the lists in sync when adding new vendored bundles.
+var fixtureRequiredVendorAssets = []string{
+	"htmx/2.0.9/htmx.min.js",
+}
+
+// hostPageTmpl is the parsed-once host page template. Construction
+// validates the SRI manifest, so an unknown asset path crashes the
+// fixture binary at package init rather than at first request — the
+// SIN-62535 panic-at-startup contract.
+var hostPageTmpl = mustBuildHostPageTmpl(func() (vendorintegrity.VendorIntegrity, error) {
+	return vendorintegrity.NewFromFS(vendorassets.ChecksumsFS, vendorassets.ChecksumsManifestPath)
+})
+
+// mustBuildHostPageTmpl returns the parsed fixture template wired to a
+// vendor-integrity provider produced by newProvider. The closure makes
+// the unit test seam: tests can swap in a stub provider to exercise the
+// missing-asset panic path without touching the embedded manifest.
+func mustBuildHostPageTmpl(newProvider func() (vendorintegrity.VendorIntegrity, error)) *template.Template {
+	provider, err := newProvider()
+	if err != nil {
+		panic(fmt.Sprintf("aipanel-e2e-fixture: load vendor integrity: %v", err))
+	}
+	for _, relPath := range fixtureRequiredVendorAssets {
+		if _, err := provider.SRIAttribute(relPath); err != nil {
+			panic(fmt.Sprintf("aipanel-e2e-fixture: vendor manifest missing required asset %q: %v", relPath, err))
+		}
+	}
+	funcs := template.FuncMap{
+		"vendorSRI": func(relPath string) (template.HTMLAttr, error) {
+			attr, err := provider.SRIAttribute(relPath)
+			if err != nil {
+				return "", err
+			}
+			return template.HTMLAttr(attr), nil
+		},
+	}
+	return template.Must(template.New("hostPage").Funcs(funcs).Parse(hostPageTmplSrc))
+}
 
 // tokenBucketLimiter is a tiny in-memory port.RateLimiter for the fixture.
 // Capacity is 1 token per (bucket,key) pair; one token refills every

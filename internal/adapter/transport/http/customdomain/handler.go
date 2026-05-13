@@ -3,6 +3,7 @@ package customdomain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -65,6 +66,12 @@ func New(cfg Config) (*Handler, error) {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
+	}
+	// Eagerly parse templates so a manifest-load error (or a
+	// missing-vendor-asset panic) surfaces at server boot instead of
+	// the first request. SIN-62535.
+	if _, err := loadTemplates(); err != nil {
+		return nil, fmt.Errorf("customdomain: load templates: %w", err)
 	}
 	return &Handler{
 		uc:            cfg.UseCase,
