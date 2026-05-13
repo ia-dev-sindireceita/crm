@@ -1,0 +1,8 @@
+# govulncheck known-vulnerabilities baseline
+#
+# This file is maintained by the weekly Paperclip routine SIN-62444.
+# Format: one OSV id (CVE-* or GHSA-*) per line, sorted ascending.
+# Empty = govulncheck found zero called vulnerabilities on the date below.
+#
+# Last sweep: 2026-05-13 (govulncheck v1.3.0, go1.24.5)
+# New: 0  Resolved: 0
