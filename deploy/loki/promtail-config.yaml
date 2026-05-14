@@ -1,0 +1,44 @@
+# Promtail config for the CRM stack (SIN-62253).
+#
+# Discovers running containers via the docker socket (mounted read-only)
+# and ships their stdout/stderr lines to Loki. Container labels become
+# Loki stream labels — we keep this set tight to avoid label cardinality
+# explosion (per Grafana's "small number of labels" guidance).
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: info
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    # Backoff bounded so promtail does not memory-balloon when Loki is
+    # restarting; lines older than retention horizon are pre-dropped on
+    # the server anyway.
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  # docker_sd_configs streams container metadata from /var/run/docker.sock.
+  # We restrict labels to: container name, compose service, compose project,
+  # stream (stdout/stderr). Tenant/request/user ids live inside the JSON line
+  # (slog handler in internal/obs/log.go) — queried with LogQL, not labels.
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: "container"
+      - source_labels: ["__meta_docker_container_log_stream"]
+        target_label: "stream"
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: "service"
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        target_label: "project"

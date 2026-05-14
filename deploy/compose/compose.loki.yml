@@ -1,0 +1,61 @@
+# SIN-62253 Loki overlay (ADR 0004 decisão 3).
+#
+# Apply alongside the base + obs stacks:
+#
+#   docker compose \
+#     -f deploy/compose/compose.yml \
+#     -f deploy/compose/compose.obs.yml \
+#     -f deploy/compose/compose.loki.yml \
+#     up -d
+#
+# This overlay is independent of compose.obs.yml so it can be applied
+# even while batch 15's compose re-land is still pending. When the obs
+# overlay lands, this file does not change.
+#
+# Retention is enforced by the Loki compactor (see deploy/loki/loki-config.yaml,
+# `compactor.retention_enabled: true` + `limits_config.retention_period: 30d`).
+# Compactor sweeps run every 10 minutes; chunks past 30d are deleted within
+# the next compaction cycle plus retention_delete_delay.
+
+name: crm
+
+networks:
+  crm: { driver: bridge }
+
+volumes:
+  loki-data: {}
+
+services:
+  loki:
+    # Pin to v3.x for stable retention + compactor semantics. v2.9 used a
+    # different retention path (table-manager) which is deprecated upstream.
+    image: grafana/loki:3.2.1
+    restart: unless-stopped
+    networks: [crm]
+    user: "10001:10001"
+    command:
+      - "-config.file=/etc/loki/loki-config.yaml"
+    volumes:
+      - ../loki:/etc/loki:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  promtail:
+    # Promtail discovers running containers via the docker socket and
+    # ships their stdout/stderr to Loki. Read-only socket mount keeps
+    # blast radius scoped to log read.
+    image: grafana/promtail:3.2.1
+    restart: unless-stopped
+    networks: [crm]
+    command:
+      - "-config.file=/etc/promtail/promtail-config.yaml"
+    volumes:
+      - ../loki:/etc/promtail:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      loki: { condition: service_healthy }
