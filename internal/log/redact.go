@@ -179,8 +179,8 @@ func scrubStructValue(v any) any {
 // RawEvent carries the opaque identifier and content hash that are safe
 // to log at Error level instead of raw payload bytes.
 type RawEvent struct {
-	ID          string // stable UUID for correlation
-	PayloadSHA  string // hex-encoded SHA-256 of the raw payload
+	ID         string // stable UUID for correlation
+	PayloadSHA string // hex-encoded SHA-256 of the raw payload
 }
 
 // NewRawEvent hashes payload and returns a RawEvent. The payload itself
