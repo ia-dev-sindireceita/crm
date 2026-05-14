@@ -1,19 +1,31 @@
-package contacts_test
+package postgres_test
 
 // SIN-62726 integration tests for the contacts Postgres adapter.
 //
-// Every test spins up a fresh database via the shared testpg harness
-// (TestMain below), applies the migration chain the adapter needs
-// (0004 tenants → 0005 users → 0088 inbox/contacts) on top of the
-// harness's default 0001-0003, then drives the adapter end-to-end
-// against the real cluster.
+// These live in the parent postgres_test package (not the
+// internal/adapter/db/postgres/contacts subpackage) so they share the
+// TestMain / harness with withtenant_test.go,
+// inbox_contacts_migration_test.go, account_lockout_test.go, etc.
+//
+// Why parent package? `go test -race ./...` starts every package's test
+// binary in parallel. Each binary that calls testpg.Start() bootstraps
+// the SHARED Postgres cluster (CI TEST_DATABASE_URL) by ALTERing the
+// app_admin / app_runtime / app_master_ops role passwords to its own
+// per-process value. Two binaries racing on that ALTER yield SQLSTATE
+// 28P01 (password authentication failed) for whichever bootstrap was
+// overwritten — the deterministic failure pattern observed on the
+// initial PR #79 CI run. The existing mastersession adapter dodged
+// this by keeping its code in a subpackage (db/postgres/mastersession)
+// but its tests in the parent package (db/postgres/mastersession_test.go).
+// We follow that pattern.
+//
+// freshDBWithInboxContacts and seedTenantUserMaster are reused from
+// inbox_contacts_migration_test.go and audit_helpers_test.go.
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,56 +33,17 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
+	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
-	contactsdomain "github.com/pericles-luz/crm/internal/contacts"
+	"github.com/pericles-luz/crm/internal/contacts"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 )
 
-var harness *testpg.Harness
-
-func TestMain(m *testing.M) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	h, err := testpg.Start(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "testpg.Start: %v\n", err)
-		os.Exit(2)
-	}
-	harness = h
-	code := m.Run()
-	if err := h.Stop(); err != nil {
-		fmt.Fprintf(os.Stderr, "testpg.Stop: %v\n", err)
-	}
-	os.Exit(code)
-}
-
-// freshDB applies the migration chain the contacts adapter needs.
-func freshDB(t *testing.T) *testpg.DB {
-	t.Helper()
-	db := harness.DB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	for _, name := range []string{
-		"0004_create_tenant.up.sql",
-		"0005_create_users.up.sql",
-		"0088_inbox_contacts.up.sql",
-	} {
-		body, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if _, err := db.AdminPool().Exec(ctx, string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
-		}
-	}
-	return db
-}
-
-// seedTenant inserts a tenant row (the contact table FKs to tenants(id))
-// and returns its id.
-func seedTenant(t *testing.T, db *testpg.DB) uuid.UUID {
+// seedContactsTenant inserts a fresh tenant suitable for contact-FK
+// tests and returns its id. seedTenantUserMaster also creates a master
+// user, which the contacts tests do not need; this is a lighter
+// per-test seed.
+func seedContactsTenant(t *testing.T, db *testpg.DB) uuid.UUID {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -83,52 +56,52 @@ func seedTenant(t *testing.T, db *testpg.DB) uuid.UUID {
 	return id
 }
 
-func newStore(t *testing.T, db *testpg.DB) *contacts.Store {
+func newContactsStore(t *testing.T, db *testpg.DB) *pgcontacts.Store {
 	t.Helper()
-	s, err := contacts.New(db.RuntimePool())
+	s, err := pgcontacts.New(db.RuntimePool())
 	if err != nil {
-		t.Fatalf("contacts.New: %v", err)
+		t.Fatalf("pgcontacts.New: %v", err)
 	}
 	return s
 }
 
-func TestNew_RejectsNilPool(t *testing.T) {
-	if _, err := contacts.New(nil); err == nil {
+func TestContactsAdapter_New_RejectsNilPool(t *testing.T) {
+	if _, err := pgcontacts.New(nil); err == nil {
 		t.Error("New(nil) err = nil, want postgres.ErrNilPool")
 	}
 }
 
-func TestSave_RejectsNilContact(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
+func TestContactsAdapter_Save_RejectsNilContact(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
 	if err := store.Save(context.Background(), nil); err == nil {
 		t.Error("Save(nil) err = nil, want error")
 	}
 }
 
-func TestSave_RejectsZeroFields(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	zeroTenant := contactsdomain.Hydrate(uuid.New(), uuid.Nil, "A", nil, time.Now().UTC(), time.Now().UTC())
+func TestContactsAdapter_Save_RejectsZeroFields(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	zeroTenant := contacts.Hydrate(uuid.New(), uuid.Nil, "A", nil, time.Now().UTC(), time.Now().UTC())
 	if err := store.Save(context.Background(), zeroTenant); err == nil {
 		t.Error("Save(zero tenant) err = nil")
 	}
-	zeroID := contactsdomain.Hydrate(uuid.Nil, uuid.New(), "A", nil, time.Now().UTC(), time.Now().UTC())
+	zeroID := contacts.Hydrate(uuid.Nil, uuid.New(), "A", nil, time.Now().UTC(), time.Now().UTC())
 	if err := store.Save(context.Background(), zeroID); err == nil {
 		t.Error("Save(zero id) err = nil")
 	}
 }
 
-func TestSave_RoundTrip(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_Save_RoundTrip(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 
-	c, err := contactsdomain.New(tenant, "Alice")
+	c, err := contacts.New(tenant, "Alice")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := c.AddChannelIdentity(contactsdomain.ChannelWhatsApp, "+5511999990001"); err != nil {
+	if err := c.AddChannelIdentity(contacts.ChannelWhatsApp, "+5511999990001"); err != nil {
 		t.Fatalf("AddChannelIdentity: %v", err)
 	}
 	if err := store.Save(context.Background(), c); err != nil {
@@ -153,14 +126,14 @@ func TestSave_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestSave_UsesClockForZeroTimestamps(t *testing.T) {
-	db := freshDB(t)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_Save_UsesClockForZeroTimestamps(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	tenant := seedContactsTenant(t, db)
 	pinned := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
-	store := newStore(t, db).WithClock(func() time.Time { return pinned })
+	store := newContactsStore(t, db).WithClock(func() time.Time { return pinned })
 
-	c := contactsdomain.Hydrate(uuid.New(), tenant, "Bob",
-		[]contactsdomain.ChannelIdentity{{Channel: "email", ExternalID: "bob@example.com"}},
+	c := contacts.Hydrate(uuid.New(), tenant, "Bob",
+		[]contacts.ChannelIdentity{{Channel: "email", ExternalID: "bob@example.com"}},
 		time.Time{}, time.Time{},
 	)
 	if err := store.Save(context.Background(), c); err != nil {
@@ -178,41 +151,41 @@ func TestSave_UsesClockForZeroTimestamps(t *testing.T) {
 	}
 }
 
-func TestFindByID_NotFound(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_FindByID_NotFound(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 	_, err := store.FindByID(context.Background(), tenant, uuid.New())
-	if !errors.Is(err, contactsdomain.ErrNotFound) {
+	if !errors.Is(err, contacts.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
 
-func TestFindByID_RejectsZeroTenant(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
+func TestContactsAdapter_FindByID_RejectsZeroTenant(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
 	if _, err := store.FindByID(context.Background(), uuid.Nil, uuid.New()); err == nil {
 		t.Error("FindByID(nil tenant) err = nil")
 	}
 }
 
-func TestFindByID_NilContactID_NotFound(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_FindByID_NilContactID_NotFound(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 	_, err := store.FindByID(context.Background(), tenant, uuid.Nil)
-	if !errors.Is(err, contactsdomain.ErrNotFound) {
+	if !errors.Is(err, contacts.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
 
-func TestFindByID_CrossTenantHiddenByRLS(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenantA := seedTenant(t, db)
-	tenantB := seedTenant(t, db)
+func TestContactsAdapter_FindByID_CrossTenantHiddenByRLS(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenantA := seedContactsTenant(t, db)
+	tenantB := seedContactsTenant(t, db)
 
-	c, _ := contactsdomain.New(tenantA, "Alice")
+	c, _ := contacts.New(tenantA, "Alice")
 	if err := c.AddChannelIdentity("email", "alice@example.com"); err != nil {
 		t.Fatalf("AddChannelIdentity: %v", err)
 	}
@@ -221,18 +194,18 @@ func TestFindByID_CrossTenantHiddenByRLS(t *testing.T) {
 	}
 	// Tenant B asks for tenant A's id: RLS hides the row → ErrNotFound.
 	_, err := store.FindByID(context.Background(), tenantB, c.ID)
-	if !errors.Is(err, contactsdomain.ErrNotFound) {
+	if !errors.Is(err, contacts.ErrNotFound) {
 		t.Errorf("cross-tenant err = %v, want ErrNotFound", err)
 	}
 }
 
-func TestFindByChannelIdentity_HappyPath(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_FindByChannelIdentity_HappyPath(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 
-	c, _ := contactsdomain.New(tenant, "Alice")
-	if err := c.AddChannelIdentity(contactsdomain.ChannelWhatsApp, "+5511999990001"); err != nil {
+	c, _ := contacts.New(tenant, "Alice")
+	if err := c.AddChannelIdentity(contacts.ChannelWhatsApp, "+5511999990001"); err != nil {
 		t.Fatalf("AddChannelIdentity: %v", err)
 	}
 	if err := store.Save(context.Background(), c); err != nil {
@@ -247,23 +220,23 @@ func TestFindByChannelIdentity_HappyPath(t *testing.T) {
 	}
 }
 
-func TestFindByChannelIdentity_NotFound(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_FindByChannelIdentity_NotFound(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 	_, err := store.FindByChannelIdentity(context.Background(), tenant, "whatsapp", "+5511999990001")
-	if !errors.Is(err, contactsdomain.ErrNotFound) {
+	if !errors.Is(err, contacts.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
 
-func TestFindByChannelIdentity_NormalisesChannelAndTrims(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_FindByChannelIdentity_NormalisesChannelAndTrims(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 
-	c, _ := contactsdomain.New(tenant, "Alice")
-	if err := c.AddChannelIdentity(contactsdomain.ChannelWhatsApp, "+5511999990001"); err != nil {
+	c, _ := contacts.New(tenant, "Alice")
+	if err := c.AddChannelIdentity(contacts.ChannelWhatsApp, "+5511999990001"); err != nil {
 		t.Fatalf("AddChannelIdentity: %v", err)
 	}
 	if err := store.Save(context.Background(), c); err != nil {
@@ -278,79 +251,79 @@ func TestFindByChannelIdentity_NormalisesChannelAndTrims(t *testing.T) {
 	}
 }
 
-func TestFindByChannelIdentity_InvalidShape_NotFound(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_FindByChannelIdentity_InvalidShape_NotFound(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 	_, err := store.FindByChannelIdentity(context.Background(), tenant, "whatsapp", "not-e164")
-	if !errors.Is(err, contactsdomain.ErrNotFound) {
+	if !errors.Is(err, contacts.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
 
-func TestFindByChannelIdentity_RejectsZeroTenant(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
+func TestContactsAdapter_FindByChannelIdentity_RejectsZeroTenant(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
 	if _, err := store.FindByChannelIdentity(context.Background(), uuid.Nil, "whatsapp", "+5511999990001"); err == nil {
 		t.Error("FindByChannelIdentity(nil tenant) err = nil")
 	}
 }
 
-func TestFindByChannelIdentity_CrossTenant_HiddenByRLS(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenantA := seedTenant(t, db)
-	tenantB := seedTenant(t, db)
+func TestContactsAdapter_FindByChannelIdentity_CrossTenant_HiddenByRLS(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenantA := seedContactsTenant(t, db)
+	tenantB := seedContactsTenant(t, db)
 
-	c, _ := contactsdomain.New(tenantA, "Alice")
-	if err := c.AddChannelIdentity(contactsdomain.ChannelWhatsApp, "+5511999990001"); err != nil {
+	c, _ := contacts.New(tenantA, "Alice")
+	if err := c.AddChannelIdentity(contacts.ChannelWhatsApp, "+5511999990001"); err != nil {
 		t.Fatalf("AddChannelIdentity: %v", err)
 	}
 	if err := store.Save(context.Background(), c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	_, err := store.FindByChannelIdentity(context.Background(), tenantB, "whatsapp", "+5511999990001")
-	if !errors.Is(err, contactsdomain.ErrNotFound) {
+	if !errors.Is(err, contacts.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
 
-func TestSave_DuplicateChannelExternal_ReturnsConflict(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenantA := seedTenant(t, db)
-	tenantB := seedTenant(t, db)
+func TestContactsAdapter_Save_DuplicateChannelExternal_ReturnsConflict(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenantA := seedContactsTenant(t, db)
+	tenantB := seedContactsTenant(t, db)
 
-	first, _ := contactsdomain.New(tenantA, "Alice")
-	if err := first.AddChannelIdentity(contactsdomain.ChannelWhatsApp, "+5511999990001"); err != nil {
+	first, _ := contacts.New(tenantA, "Alice")
+	if err := first.AddChannelIdentity(contacts.ChannelWhatsApp, "+5511999990001"); err != nil {
 		t.Fatalf("first AddChannelIdentity: %v", err)
 	}
 	if err := store.Save(context.Background(), first); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
 
-	second, _ := contactsdomain.New(tenantB, "Bob")
-	if err := second.AddChannelIdentity(contactsdomain.ChannelWhatsApp, "+5511999990001"); err != nil {
+	second, _ := contacts.New(tenantB, "Bob")
+	if err := second.AddChannelIdentity(contacts.ChannelWhatsApp, "+5511999990001"); err != nil {
 		t.Fatalf("second AddChannelIdentity: %v", err)
 	}
 	err := store.Save(context.Background(), second)
-	if !errors.Is(err, contactsdomain.ErrChannelIdentityConflict) {
+	if !errors.Is(err, contacts.ErrChannelIdentityConflict) {
 		t.Errorf("err = %v, want ErrChannelIdentityConflict", err)
 	}
 
 	// Confirm rollback: tenant B's contact row was NOT persisted.
 	_, ferr := store.FindByID(context.Background(), tenantB, second.ID)
-	if !errors.Is(ferr, contactsdomain.ErrNotFound) {
+	if !errors.Is(ferr, contacts.ErrNotFound) {
 		t.Errorf("after conflict, tenant B's contact persisted; err = %v", ferr)
 	}
 }
 
-func TestSave_SecondCallSameContactID_IsError(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_Save_SecondCallSameContactID_IsError(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 
-	c, _ := contactsdomain.New(tenant, "Alice")
+	c, _ := contacts.New(tenant, "Alice")
 	if err := c.AddChannelIdentity("email", "alice@example.com"); err != nil {
 		t.Fatalf("AddChannelIdentity: %v", err)
 	}
@@ -362,15 +335,15 @@ func TestSave_SecondCallSameContactID_IsError(t *testing.T) {
 	}
 }
 
-// TestUpsertContactByChannel_HighConcurrency is AC #4: 100 concurrent
-// callers with the same (tenant, channel, external_id) must result in
-// exactly one contact row and 99 calls returning the existing one.
-// Driving through the use-case + real Postgres exercises the full
-// idempotency contract end-to-end.
-func TestUpsertContactByChannel_HighConcurrency(t *testing.T) {
-	db := freshDB(t)
-	tenant := seedTenant(t, db)
-	store := newStore(t, db)
+// TestContactsAdapter_UpsertContactByChannel_HighConcurrency is AC #4:
+// 100 concurrent callers with the same (tenant, channel, external_id)
+// must result in exactly one contact row and 99 calls returning the
+// existing one. Driving through the use-case + real Postgres exercises
+// the full idempotency contract end-to-end.
+func TestContactsAdapter_UpsertContactByChannel_HighConcurrency(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	tenant := seedContactsTenant(t, db)
+	store := newContactsStore(t, db)
 	u := contactsusecase.MustNew(store)
 
 	const n = 100
@@ -451,18 +424,15 @@ func TestUpsertContactByChannel_HighConcurrency(t *testing.T) {
 	}
 }
 
-// TestSave_HydratedContactPreservesTimestamps verifies that explicit
-// CreatedAt/UpdatedAt on a hydrated contact are persisted as-is, which
-// matters when the adapter is used downstream of replay/import code.
-func TestSave_HydratedContactPreservesTimestamps(t *testing.T) {
-	db := freshDB(t)
-	store := newStore(t, db)
-	tenant := seedTenant(t, db)
+func TestContactsAdapter_Save_HydratedContactPreservesTimestamps(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newContactsStore(t, db)
+	tenant := seedContactsTenant(t, db)
 
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	t1 := t0.Add(time.Hour)
-	c := contactsdomain.Hydrate(uuid.New(), tenant, "Alice",
-		[]contactsdomain.ChannelIdentity{{Channel: "email", ExternalID: "alice@example.com"}},
+	c := contacts.Hydrate(uuid.New(), tenant, "Alice",
+		[]contacts.ChannelIdentity{{Channel: "email", ExternalID: "alice@example.com"}},
 		t0, t1,
 	)
 	if err := store.Save(context.Background(), c); err != nil {
