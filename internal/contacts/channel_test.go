@@ -8,11 +8,11 @@ import (
 
 func TestNewChannelIdentity_HappyPaths(t *testing.T) {
 	tests := []struct {
-		name             string
-		channel          string
-		externalID       string
-		wantChannel      string
-		wantExternalID   string
+		name           string
+		channel        string
+		externalID     string
+		wantChannel    string
+		wantExternalID string
 	}{
 		{name: "whatsapp E.164 BR", channel: "whatsapp", externalID: "+5511999990001", wantChannel: "whatsapp", wantExternalID: "+5511999990001"},
 		{name: "whatsapp E.164 US", channel: "whatsapp", externalID: "+12025550100", wantChannel: "whatsapp", wantExternalID: "+12025550100"},

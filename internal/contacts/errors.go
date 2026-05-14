@@ -21,9 +21,10 @@ import "errors"
 var ErrInvalidTenant = errors.New("contacts: invalid tenant id")
 
 // ErrEmptyDisplayName is returned by New when displayName is blank after
-// trimming whitespace. The column itself allows '' (DEFAULT '' in
-// migration 0088) for adapter back-fills, but the domain constructor
-// requires a non-empty name so the inbox UI never has to render "".
+// trimming whitespace. The column itself accepts the empty string
+// (DEFAULT empty in migration 0088) for adapter back-fills, but the
+// domain constructor requires a non-empty name so the inbox UI never
+// has to render a blank header.
 var ErrEmptyDisplayName = errors.New("contacts: display name must not be empty")
 
 // ErrInvalidChannel is returned by NewChannelIdentity when channel is
