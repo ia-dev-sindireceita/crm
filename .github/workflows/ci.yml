@@ -50,6 +50,8 @@ jobs:
         run: go vet -vettool=$(pwd)/bin/forbidimport ./internal/...
       - name: forbidimport analyzer self-test
         run: go test ./tools/lint/forbidimport/... -count=1
+      - name: reject subpackage *_test.go under internal/adapter/db/postgres (SIN-62750)
+        run: ./scripts/check-postgres-adapter-tests.sh
 
   test:
     name: test

@@ -1,17 +1,23 @@
-package wallet_test
+package postgres_test
 
-// Integration tests for the Postgres wallet adapter. We bring up a
-// fresh Postgres test DB through the shared testpg harness, apply
-// every migration up through 0090 (the wallet trigger migration in
-// this PR), and then exercise the four use-cases through the
-// adapter against a real database.
+// SIN-62750 follow-up to PR #80 (SIN-62727).
 //
-// Pattern follows internal/adapter/db/postgres/inbox_contacts_migration_test.go:
-// per-package TestMain spins the harness up once; each test asks for
-// its own freshly-migrated DB via harness.DB(t).
+// Wallet adapter integration tests live in the parent postgres_test
+// package — not the internal/adapter/db/postgres/wallet subpackage —
+// because `go test -race ./...` starts every package's test binary in
+// parallel. Each binary that calls testpg.Start() bootstraps the
+// SHARED Postgres cluster (CI TEST_DATABASE_URL) by ALTERing the
+// app_admin / app_runtime / app_master_ops role passwords to its own
+// per-process value. Two binaries racing on that ALTER yield SQLSTATE
+// 28P01 (password authentication failed) for whichever bootstrap was
+// overwritten — the same regression pattern SIN-62726 fixed for the
+// contacts adapter (commit 7d9cf39, contacts_adapter_test.go) and
+// that PR #80 inadvertently reintroduced. We follow the contacts
+// precedent: tests in parent, adapter code in subpackage.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,46 +36,22 @@ import (
 	"github.com/pericles-luz/crm/internal/wallet/usecase"
 )
 
-var harness *testpg.Harness
-
-func TestMain(m *testing.M) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	h, err := testpg.Start(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "testpg.Start: %v\n", err)
-		os.Exit(1)
-	}
-	harness = h
-	code := m.Run()
-	if err := h.Stop(); err != nil {
-		fmt.Fprintf(os.Stderr, "testpg.Stop: %v\n", err)
-	}
-	os.Exit(code)
-}
-
-// freshDB applies migrations 0004 (tenants), 0005 (users), 0089
-// (wallet_basic), and 0090 (wallet updated_at trigger) on top of the
-// harness default 0001-0003. Returns the ready-to-use DB plus a
-// seeded tenant + master user pair.
-func freshDB(t *testing.T) (*testpg.DB, uuid.UUID, uuid.UUID) {
+// freshDBWithWalletTrigger builds on freshDBWithWallet (defined in
+// wallet_basic_migration_test.go) by also applying 0090
+// (token_wallet BEFORE UPDATE → updated_at trigger), and returns a
+// seeded tenant + master user pair so the per-test setup is a single
+// call.
+func freshDBWithWalletTrigger(t *testing.T) (*testpg.DB, uuid.UUID, uuid.UUID) {
 	t.Helper()
-	db := harness.DB(t)
+	db := freshDBWithWallet(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	for _, name := range []string{
-		"0004_create_tenant.up.sql",
-		"0005_create_users.up.sql",
-		"0089_wallet_basic.up.sql",
-		"0090_wallet_updated_at_trigger.up.sql",
-	} {
-		body, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if _, err := db.AdminPool().Exec(ctx, string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
-		}
+	body, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0090_wallet_updated_at_trigger.up.sql"))
+	if err != nil {
+		t.Fatalf("read 0090: %v", err)
+	}
+	if _, err := db.AdminPool().Exec(ctx, string(body)); err != nil {
+		t.Fatalf("apply 0090: %v", err)
 	}
 	tenantID := uuid.New()
 	masterID := uuid.New()
@@ -88,8 +70,8 @@ func freshDB(t *testing.T) (*testpg.DB, uuid.UUID, uuid.UUID) {
 }
 
 // seedWalletWithBalance creates a token_wallet row for tenantID and
-// seeds it with `balance` tokens via a Grant ledger entry (so the
-// running balance and the ledger sum agree from the start).
+// seeds it with `balance` tokens via a direct master-ops INSERT (so
+// the running balance starts at the requested value).
 func seedWalletWithBalance(t *testing.T, ctx context.Context, db *testpg.DB, tenantID, masterID uuid.UUID, balance int64) uuid.UUID {
 	t.Helper()
 	var walletID uuid.UUID
@@ -104,14 +86,25 @@ func seedWalletWithBalance(t *testing.T, ctx context.Context, db *testpg.DB, ten
 	return walletID
 }
 
+// newWalletCtx returns a 60s test-scoped context. Wallet tests use the
+// longer timeout (vs the package-level newCtx 30s) because the
+// concurrent-reserve race test orchestrates 100 goroutines through the
+// adapter's SELECT FOR UPDATE path.
+func newWalletCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // ---------------------------------------------------------------------------
 // Migration 0090 — BEFORE UPDATE trigger refreshes updated_at
 // ---------------------------------------------------------------------------
 
 func TestWalletUpdatedAt_TriggerRefreshes(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	walletID := seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 
 	var before time.Time
@@ -143,8 +136,8 @@ func TestWalletUpdatedAt_TriggerRefreshes(t *testing.T) {
 
 func TestWalletUpdatedAtMigration_DownUp(t *testing.T) {
 	t.Parallel()
-	db, _, _ := freshDB(t)
-	ctx := newCtx(t)
+	db, _, _ := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 
 	down, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0090_wallet_updated_at_trigger.down.sql"))
 	if err != nil {
@@ -199,12 +192,12 @@ func TestNewRepository_RejectsNilPool(t *testing.T) {
 
 func TestLoadByTenant_NoWallet(t *testing.T) {
 	t.Parallel()
-	db, tenantID, _ := freshDB(t)
+	db, tenantID, _ := freshDBWithWalletTrigger(t)
 	repo, err := walletadapter.NewRepository(db.RuntimePool())
 	if err != nil {
 		t.Fatalf("NewRepository: %v", err)
 	}
-	if _, err := repo.LoadByTenant(newCtx(t), tenantID); err != wallet.ErrNotFound && err != nil {
+	if _, err := repo.LoadByTenant(newWalletCtx(t), tenantID); err != wallet.ErrNotFound && err != nil {
 		// Defensive: depending on errors.Is the test should match by
 		// equality and chain; both work.
 		t.Fatalf("LoadByTenant with no wallet: got %v, want ErrNotFound", err)
@@ -213,17 +206,17 @@ func TestLoadByTenant_NoWallet(t *testing.T) {
 
 func TestLoadByTenant_ZeroTenant(t *testing.T) {
 	t.Parallel()
-	db, _, _ := freshDB(t)
+	db, _, _ := freshDBWithWalletTrigger(t)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
-	if _, err := repo.LoadByTenant(newCtx(t), uuid.Nil); err != wallet.ErrZeroTenant {
+	if _, err := repo.LoadByTenant(newWalletCtx(t), uuid.Nil); err != wallet.ErrZeroTenant {
 		t.Fatalf("LoadByTenant(uuid.Nil): got %v, want ErrZeroTenant", err)
 	}
 }
 
 func TestLoadByTenant_HappyPath(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	walletID := seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	w, err := repo.LoadByTenant(ctx, tenantID)
@@ -245,8 +238,8 @@ func TestLoadByTenant_HappyPath(t *testing.T) {
 
 func TestService_Reserve_HappyPath(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -267,8 +260,8 @@ func TestService_Reserve_HappyPath(t *testing.T) {
 
 func TestService_Reserve_Idempotent(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -292,8 +285,8 @@ func TestService_Reserve_Idempotent(t *testing.T) {
 
 func TestService_Reserve_InsufficientFunds(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 10)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -309,8 +302,8 @@ func TestService_Reserve_InsufficientFunds(t *testing.T) {
 // 50 ErrInsufficientFunds, ledger has 50 reserve rows, balance unchanged.
 func TestService_Reserve_RaceAtomic(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	walletID := seedWalletWithBalance(t, ctx, db, tenantID, masterID, 50)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -375,8 +368,8 @@ func TestService_Reserve_RaceAtomic(t *testing.T) {
 
 func TestService_Commit_HappyPath(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -405,8 +398,8 @@ func TestService_Commit_HappyPath(t *testing.T) {
 
 func TestService_Release_HappyPath(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -426,8 +419,8 @@ func TestService_Release_HappyPath(t *testing.T) {
 
 func TestService_Grant_HappyPath(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 0)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -456,8 +449,8 @@ func TestService_Grant_HappyPath(t *testing.T) {
 
 func TestLoadByTenant_CrossTenantHidden(t *testing.T) {
 	t.Parallel()
-	db, tenantA, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantA, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantA, masterID, 100)
 
 	// Seed a second tenant + its wallet.
@@ -486,8 +479,8 @@ func TestLoadByTenant_CrossTenantHidden(t *testing.T) {
 
 func TestLookupCompletedByExternalRef_AfterCommit(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -508,8 +501,8 @@ func TestLookupCompletedByExternalRef_AfterCommit(t *testing.T) {
 
 func TestLookupCompletedByExternalRef_WhileOpen(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -527,8 +520,8 @@ func TestLookupCompletedByExternalRef_WhileOpen(t *testing.T) {
 
 func TestListOpenReservations_OnlyUnsettled(t *testing.T) {
 	t.Parallel()
-	db, tenantID, masterID := freshDB(t)
-	ctx := newCtx(t)
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
 	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	svc, _ := usecase.NewService(repo, nil)
@@ -558,9 +551,9 @@ func TestListOpenReservations_OnlyUnsettled(t *testing.T) {
 
 func TestLookups_RejectZeroArgs(t *testing.T) {
 	t.Parallel()
-	db, _, _ := freshDB(t)
+	db, _, _ := freshDBWithWalletTrigger(t)
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
-	ctx := newCtx(t)
+	ctx := newWalletCtx(t)
 	if _, err := repo.LookupByIdempotencyKey(ctx, uuid.Nil, uuid.New(), "k"); err != wallet.ErrNotFound {
 		t.Errorf("LookupByIdempotencyKey(zero tenant): got %v", err)
 	}
@@ -576,12 +569,181 @@ func TestLookups_RejectZeroArgs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// helpers
+// ApplyWithLock — targeted branch coverage. NotFound when no wallet
+// row, IdempotencyConflict on duplicate ledger key, VersionConflict
+// when the persisted version doesn't match the in-memory aggregate,
+// the wallet=nil guard, and the wider nullIfEmpty path.
 // ---------------------------------------------------------------------------
 
-func newCtx(t *testing.T) context.Context {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	t.Cleanup(cancel)
-	return ctx
+func TestApplyWithLock_NilWallet(t *testing.T) {
+	t.Parallel()
+	db, _, _ := freshDBWithWalletTrigger(t)
+	repo, _ := walletadapter.NewRepository(db.RuntimePool())
+	if err := repo.ApplyWithLock(newWalletCtx(t), nil, nil); err == nil {
+		t.Fatal("ApplyWithLock(nil): want error, got nil")
+	}
+}
+
+func TestApplyWithLock_NotFound(t *testing.T) {
+	t.Parallel()
+	db, tenantID, _ := freshDBWithWalletTrigger(t)
+	repo, _ := walletadapter.NewRepository(db.RuntimePool())
+	// Forge a wallet that doesn't exist in the DB.
+	now := time.Now()
+	ghost := wallet.Hydrate(uuid.New(), tenantID, 0, 0, 1, now, now)
+	if err := repo.ApplyWithLock(newWalletCtx(t), ghost, nil); !errors.Is(err, wallet.ErrNotFound) {
+		t.Fatalf("ApplyWithLock(ghost): got %v, want ErrNotFound", err)
+	}
+}
+
+func TestApplyWithLock_VersionConflict(t *testing.T) {
+	t.Parallel()
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
+	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
+	repo, _ := walletadapter.NewRepository(db.RuntimePool())
+
+	// Load the real row, then forge a wallet at a wrong version.
+	w, err := repo.LoadByTenant(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("LoadByTenant: %v", err)
+	}
+	// Persisted version is 0; we send version=5 (delta != 1).
+	bogus := wallet.Hydrate(w.ID(), w.TenantID(), w.Balance(), w.Reserved(), 5, w.CreatedAt(), w.UpdatedAt())
+	if err := repo.ApplyWithLock(ctx, bogus, nil); !errors.Is(err, wallet.ErrVersionConflict) {
+		t.Fatalf("ApplyWithLock(version=5 vs persisted=0): got %v, want ErrVersionConflict", err)
+	}
+}
+
+func TestApplyWithLock_IdempotencyConflict(t *testing.T) {
+	t.Parallel()
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
+	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
+	repo, _ := walletadapter.NewRepository(db.RuntimePool())
+
+	w, _ := repo.LoadByTenant(ctx, tenantID)
+	now := time.Now()
+	if err := w.Reserve(10, now); err != nil {
+		t.Fatalf("Reserve in memory: %v", err)
+	}
+	rid := uuid.New()
+	entry := wallet.LedgerEntry{
+		ID:             uuid.New(),
+		WalletID:       w.ID(),
+		TenantID:       w.TenantID(),
+		Kind:           wallet.KindReserve,
+		Amount:         wallet.SignedAmount(wallet.KindReserve, 10),
+		IdempotencyKey: "dup",
+		ExternalRef:    rid.String(),
+		OccurredAt:     now,
+		CreatedAt:      now,
+	}
+	if err := repo.ApplyWithLock(ctx, w, []wallet.LedgerEntry{entry}); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+
+	// Re-load and try to insert the same idempotency key. Reload so
+	// the version stamp matches the DB.
+	w2, _ := repo.LoadByTenant(ctx, tenantID)
+	if err := w2.Reserve(5, now); err != nil {
+		t.Fatalf("Reserve in memory (second): %v", err)
+	}
+	entry2 := wallet.LedgerEntry{
+		ID:             uuid.New(),
+		WalletID:       w2.ID(),
+		TenantID:       w2.TenantID(),
+		Kind:           wallet.KindReserve,
+		Amount:         wallet.SignedAmount(wallet.KindReserve, 5),
+		IdempotencyKey: "dup", // same key, different amount → still 23505 from the UNIQUE index
+		ExternalRef:    uuid.New().String(),
+		OccurredAt:     now,
+		CreatedAt:      now,
+	}
+	if err := repo.ApplyWithLock(ctx, w2, []wallet.LedgerEntry{entry2}); !errors.Is(err, wallet.ErrIdempotencyConflict) {
+		t.Fatalf("duplicate idempotency key: got %v, want ErrIdempotencyConflict", err)
+	}
+}
+
+func TestApplyWithLock_EmptyExternalRef(t *testing.T) {
+	t.Parallel()
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
+	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 0)
+	repo, _ := walletadapter.NewRepository(db.RuntimePool())
+
+	w, _ := repo.LoadByTenant(ctx, tenantID)
+	now := time.Now()
+	if err := w.Grant(50, now); err != nil {
+		t.Fatalf("Grant in memory: %v", err)
+	}
+	entry := wallet.LedgerEntry{
+		ID:             uuid.New(),
+		WalletID:       w.ID(),
+		TenantID:       w.TenantID(),
+		Kind:           wallet.KindGrant,
+		Amount:         wallet.SignedAmount(wallet.KindGrant, 50),
+		IdempotencyKey: "grant-1",
+		ExternalRef:    "", // empty — nullIfEmpty should send NULL
+		OccurredAt:     now,
+		CreatedAt:      now,
+	}
+	if err := repo.ApplyWithLock(ctx, w, []wallet.LedgerEntry{entry}); err != nil {
+		t.Fatalf("ApplyWithLock with empty external_ref: %v", err)
+	}
+
+	// Confirm the DB row has NULL external_ref.
+	var hasRef bool
+	if err := db.AdminPool().QueryRow(ctx,
+		`SELECT external_ref IS NOT NULL FROM token_ledger WHERE idempotency_key = $1`, "grant-1",
+	).Scan(&hasRef); err != nil {
+		t.Fatalf("read external_ref: %v", err)
+	}
+	if hasRef {
+		t.Error("external_ref was not NULL after empty-string send")
+	}
+}
+
+func TestApplyWithLock_LedgerInsertNonUniqueError(t *testing.T) {
+	t.Parallel()
+	db, tenantID, masterID := freshDBWithWalletTrigger(t)
+	ctx := newWalletCtx(t)
+	seedWalletWithBalance(t, ctx, db, tenantID, masterID, 100)
+	repo, _ := walletadapter.NewRepository(db.RuntimePool())
+
+	w, _ := repo.LoadByTenant(ctx, tenantID)
+	now := time.Now()
+	if err := w.Reserve(10, now); err != nil {
+		t.Fatalf("Reserve in memory: %v", err)
+	}
+	// Use an invalid kind that the table CHECK constraint (added in
+	// migration 0089) rejects. This forces a non-23505 error path.
+	entry := wallet.LedgerEntry{
+		ID:             uuid.New(),
+		WalletID:       w.ID(),
+		TenantID:       w.TenantID(),
+		Kind:           wallet.LedgerKind("bogus"),
+		Amount:         -10,
+		IdempotencyKey: "bk",
+		ExternalRef:    uuid.New().String(),
+		OccurredAt:     now,
+		CreatedAt:      now,
+	}
+	err := repo.ApplyWithLock(ctx, w, []wallet.LedgerEntry{entry})
+	if err == nil {
+		t.Fatal("ApplyWithLock with check-violating kind: want error, got nil")
+	}
+	if errors.Is(err, wallet.ErrIdempotencyConflict) || errors.Is(err, wallet.ErrVersionConflict) {
+		t.Errorf("check violation surfaced as a known sentinel: %v", err)
+	}
+}
+
+func TestListOpenReservations_ZeroWalletReturnsNil(t *testing.T) {
+	t.Parallel()
+	db, tenantID, _ := freshDBWithWalletTrigger(t)
+	repo, _ := walletadapter.NewRepository(db.RuntimePool())
+	got, err := repo.ListOpenReservations(newWalletCtx(t), tenantID, uuid.Nil)
+	if err != nil || got != nil {
+		t.Errorf("ListOpenReservations(zero wallet): got %v / %v, want nil/nil", got, err)
+	}
 }

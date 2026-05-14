@@ -25,7 +25,8 @@ ITEST_COVER_THRESHOLD ?= 85.0
 .DEFAULT_GOAL := help
 
 .PHONY: help up down logs test test-integration test-integration-cover \
-        lint lint-aicache lint-customdomainnet lint-imports notenant forbidimport \
+        lint lint-aicache lint-customdomainnet lint-imports lint-postgres-adapter-tests \
+        notenant forbidimport \
         migrate-up migrate-down seed-stg smoke-alert verify-vendor
 
 help: ## Show available targets
@@ -78,9 +79,12 @@ test-integration-cover: ## Run unit + integration with combined coverage and enf
 			exit 1; \
 		}
 
-lint: notenant lint-imports ## Run go vet + the notenant + forbidimport analyzers over internal/ (SIN-62232 / ADR 0071, SIN-62216)
+lint: notenant lint-imports lint-postgres-adapter-tests ## Run go vet + the notenant + forbidimport analyzers + adapter-test guard (SIN-62232 / ADR 0071, SIN-62216, SIN-62750)
 	$(GO) vet ./...
 	$(GO) vet -vettool=$(NOTENANT_BIN) ./internal/...
+
+lint-postgres-adapter-tests: ## Reject *_test.go files under internal/adapter/db/postgres/<subpkg>/ (SIN-62750)
+	./scripts/check-postgres-adapter-tests.sh
 
 notenant: ## Build the notenant analyzer binary into bin/ (SIN-62232 / ADR 0071)
 	$(GO) build -o $(NOTENANT_BIN) ./tools/lint/notenant/cmd/notenant
