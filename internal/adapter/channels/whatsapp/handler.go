@@ -104,14 +104,36 @@ type envelMessageErr struct {
 // (anti-enumeration). The single non-200 response is 401 on HMAC
 // verification failure: the carrier needs that to surface a
 // misconfigured app secret in the Meta dashboard.
+//
+// Observability invariant (SIN-62762): every exit emits a terminal
+// `whatsapp.handler_complete` slog line with `result` and
+// `handler_elapsed_ms`, and observes the matching label on the
+// `whatsapp_handler_elapsed_seconds` histogram. The runbook at
+// docs/runbooks/whatsapp-inbound-latency.md gates the queue-and-ACK
+// redesign on this signal — see SIN-62762 etapa 2.
 func (a *Adapter) handlePost(w http.ResponseWriter, r *http.Request) {
+	start := a.clock.Now()
+	result := "dropped_other"
+	defer func() {
+		elapsed := a.clock.Now().Sub(start)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		a.logger.Info("whatsapp.handler_complete",
+			slog.String("result", result),
+			slog.Int64("handler_elapsed_ms", elapsed.Milliseconds()))
+		a.handlerMetrics.observe(result, elapsed)
+	}()
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, a.cfg.MaxBodyBytes))
 	if err != nil {
+		result = "dropped_body_read"
 		a.logger.Warn("whatsapp.body_read_failed", slog.String("err", err.Error()))
 		writeAck(w)
 		return
 	}
 	if !a.verifySignature(r.Header.Get(SignatureHeader), body) {
+		result = "dropped_signature"
 		a.logger.Warn("whatsapp.signature_invalid",
 			slog.String("body_sha256", hashHex(body)))
 		w.WriteHeader(http.StatusUnauthorized)
@@ -119,6 +141,7 @@ func (a *Adapter) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	var env metaEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
+		result = "dropped_parse"
 		a.logger.Warn("whatsapp.parse_failed",
 			slog.String("body_sha256", hashHex(body)),
 			slog.String("err", err.Error()))
@@ -126,17 +149,62 @@ func (a *Adapter) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.timestampInWindow(&env, a.clock.Now()) {
+		result = "dropped_timestamp_window"
 		a.logger.Warn("whatsapp.timestamp_outside_window",
 			slog.String("body_sha256", hashHex(body)))
 		writeAck(w)
 		return
 	}
+	var agg handlerAgg
 	for _, entry := range env.Entry {
 		for _, change := range entry.Changes {
-			a.deliverChange(r.Context(), change)
+			a.deliverChange(r.Context(), change, &agg)
 		}
 	}
+	result = agg.result()
 	writeAck(w)
+}
+
+// handlerAgg accumulates per-message outcomes during the synchronous
+// delivery loop in handlePost. It exists so the terminal result label
+// is a deterministic priority-resolved string regardless of how many
+// messages or changes the envelope packs.
+//
+// Priority order (most-productive wins): delivered > duplicate >
+// dropped_deliver_error > dropped_tenant > dropped_rate_limited >
+// dropped_feature_off > dropped_other > dropped_empty. Rationale:
+// histograms partitioned by terminal label should bucket "did this
+// handler do any productive work" first so SLO dashboards can split
+// "we processed" from "we dropped" without summing across labels.
+type handlerAgg struct {
+	delivered     int
+	duplicate     int
+	deliverErrors int
+	tenantDrops   int
+	rateLimited   int
+	flagOff       int
+	otherDrops    int
+}
+
+func (s *handlerAgg) result() string {
+	switch {
+	case s.delivered > 0:
+		return "delivered"
+	case s.duplicate > 0:
+		return "duplicate"
+	case s.deliverErrors > 0:
+		return "dropped_deliver_error"
+	case s.tenantDrops > 0:
+		return "dropped_tenant"
+	case s.rateLimited > 0:
+		return "dropped_rate_limited"
+	case s.flagOff > 0:
+		return "dropped_feature_off"
+	case s.otherDrops > 0:
+		return "dropped_other"
+	default:
+		return "dropped_empty"
+	}
 }
 
 // deliverChange routes one entry[].changes[] block: it resolves the
@@ -144,13 +212,21 @@ func (a *Adapter) handlePost(w http.ResponseWriter, r *http.Request) {
 // flag, then delivers each inner message through the InboundChannel
 // port. Errors at any point are logged but never propagate to the
 // HTTP layer — Meta is acknowledged regardless.
-func (a *Adapter) deliverChange(ctx context.Context, change envelChange) {
-	if len(change.Value.Messages) == 0 {
+//
+// agg accumulates the per-message outcomes so handlePost can resolve a
+// single terminal result label for the histogram. A pre-message drop
+// (unknown tenant, rate-limited, feature off) charges one count per
+// inner message so the result label reflects "this many messages were
+// dropped" instead of "one change-block dropped".
+func (a *Adapter) deliverChange(ctx context.Context, change envelChange, agg *handlerAgg) {
+	msgCount := len(change.Value.Messages)
+	if msgCount == 0 {
 		return
 	}
 	pnID := strings.TrimSpace(change.Value.Metadata.PhoneNumberID)
 	if pnID == "" {
 		a.logger.Warn("whatsapp.missing_phone_number_id")
+		agg.otherDrops += msgCount
 		return
 	}
 	tenantID, err := a.tenants.Resolve(ctx, pnID)
@@ -159,6 +235,7 @@ func (a *Adapter) deliverChange(ctx context.Context, change envelChange) {
 		// so an unknown number does not spam warn-level dashboards.
 		a.logger.Info("whatsapp.unknown_phone_number_id",
 			slog.String("phone_number_id", pnID))
+		agg.tenantDrops += msgCount
 		return
 	}
 	allowed, retryAfter, err := a.rate.Allow(ctx, rateLimitKey(pnID),
@@ -167,12 +244,14 @@ func (a *Adapter) deliverChange(ctx context.Context, change envelChange) {
 		a.logger.Warn("whatsapp.rate_limiter_error",
 			slog.String("phone_number_id", pnID),
 			slog.String("err", err.Error()))
+		agg.otherDrops += msgCount
 		return
 	}
 	if !allowed {
 		a.logger.Warn("whatsapp.rate_limited",
 			slog.String("phone_number_id", pnID),
 			slog.Duration("retry_after", retryAfter))
+		agg.rateLimited += msgCount
 		return
 	}
 	on, err := a.flag.Enabled(ctx, tenantID)
@@ -180,16 +259,18 @@ func (a *Adapter) deliverChange(ctx context.Context, change envelChange) {
 		a.logger.Warn("whatsapp.feature_flag_error",
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("err", err.Error()))
+		agg.otherDrops += msgCount
 		return
 	}
 	if !on {
 		a.logger.Info("whatsapp.feature_flag_off",
 			slog.String("tenant_id", tenantID.String()))
+		agg.flagOff += msgCount
 		return
 	}
 	contactName := primaryContactName(change.Value.Contacts)
 	for _, msg := range change.Value.Messages {
-		a.deliverMessage(ctx, tenantID, pnID, contactName, msg)
+		a.deliverMessage(ctx, tenantID, pnID, contactName, msg, agg)
 	}
 }
 
@@ -197,12 +278,18 @@ func (a *Adapter) deliverChange(ctx context.Context, change envelChange) {
 // and hands it to the use case. Empty wamid is a programming error
 // from Meta's side; the use case rejects empty ChannelExternalID
 // anyway but the explicit check keeps the log line crisp.
-func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pnID, contactName string, msg envelMessage) {
+//
+// Every exit emits `deliver_elapsed_ms` on the relevant slog line
+// (delivered / duplicate / failed) so log-only dashboards can derive
+// per-message latency without scraping the handler-level histogram.
+// agg records the outcome for the handler-level result aggregation.
+func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pnID, contactName string, msg envelMessage, agg *handlerAgg) {
 	wamid := strings.TrimSpace(msg.ID)
 	if wamid == "" {
 		a.logger.Warn("whatsapp.missing_wamid",
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("phone_number_id", pnID))
+		agg.otherDrops++
 		return
 	}
 	from := strings.TrimSpace(msg.From)
@@ -210,6 +297,7 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pnID, 
 		a.logger.Warn("whatsapp.missing_from",
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("wamid", wamid))
+		agg.otherDrops++
 		return
 	}
 	ev := inbox.InboundEvent{
@@ -223,26 +311,38 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pnID, 
 	}
 	deliverCtx, cancel := context.WithTimeout(ctx, a.cfg.DeliverTimeout)
 	defer cancel()
-	if err := a.inbox.HandleInbound(deliverCtx, ev); err != nil {
+	deliverStart := a.clock.Now()
+	err := a.inbox.HandleInbound(deliverCtx, ev)
+	deliverElapsed := a.clock.Now().Sub(deliverStart)
+	if deliverElapsed < 0 {
+		deliverElapsed = 0
+	}
+	if err != nil {
 		if errors.Is(err, inbox.ErrInboundAlreadyProcessed) {
 			// Domain-level dedup hit: this is the success path under
 			// retry, not a failure to surface. Log at debug only.
 			a.logger.Debug("whatsapp.duplicate_wamid",
 				slog.String("tenant_id", tenantID.String()),
-				slog.String("wamid", wamid))
+				slog.String("wamid", wamid),
+				slog.Int64("deliver_elapsed_ms", deliverElapsed.Milliseconds()))
+			agg.duplicate++
 			return
 		}
 		a.logger.Error("whatsapp.deliver_failed",
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("phone_number_id", pnID),
 			slog.String("wamid", wamid),
+			slog.Int64("deliver_elapsed_ms", deliverElapsed.Milliseconds()),
 			slog.String("err", err.Error()))
+		agg.deliverErrors++
 		return
 	}
 	a.logger.Info("whatsapp.delivered",
 		slog.String("tenant_id", tenantID.String()),
 		slog.String("phone_number_id", pnID),
-		slog.String("wamid", wamid))
+		slog.String("wamid", wamid),
+		slog.Int64("deliver_elapsed_ms", deliverElapsed.Milliseconds()))
+	agg.delivered++
 }
 
 // verifySignature compares the supplied X-Hub-Signature-256 hex

@@ -30,6 +30,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/pericles-luz/crm/internal/adapter/channels/whatsapp"
@@ -125,7 +126,12 @@ func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *gored
 	rl := rlredis.New(rdb, "whatsapp")
 	flag := whatsapp.NewEnvFeatureFlag(getenv)
 	adapter, err := whatsapp.New(cfg, receiver, resolver, flag, rl,
-		whatsapp.WithLogger(slog.Default()))
+		whatsapp.WithLogger(slog.Default()),
+		// SIN-62762: register the inbound-handler latency histogram
+		// (whatsapp_handler_elapsed_seconds) on the global registry so
+		// scrape endpoints under /metrics include it. Runbook:
+		// docs/runbooks/whatsapp-inbound-latency.md.
+		whatsapp.WithMetricsRegistry(prometheus.DefaultRegisterer))
 	if err != nil {
 		return nil, nil, err
 	}

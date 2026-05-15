@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/pericles-luz/crm/internal/inbox"
 )
 
@@ -16,13 +18,14 @@ import (
 // no field is mutated after construction so the adapter is safe to
 // share across the request goroutines spawned by net/http.
 type Adapter struct {
-	cfg     Config
-	inbox   inbox.InboundChannel
-	tenants TenantResolver
-	flag    FeatureFlag
-	rate    RateLimiter
-	clock   Clock
-	logger  *slog.Logger
+	cfg            Config
+	inbox          inbox.InboundChannel
+	tenants        TenantResolver
+	flag           FeatureFlag
+	rate           RateLimiter
+	clock          Clock
+	logger         *slog.Logger
+	handlerMetrics *handlerMetrics
 }
 
 // Option mutates an Adapter at construction time. Tests use options to
@@ -47,6 +50,23 @@ func WithLogger(l *slog.Logger) Option {
 	return func(a *Adapter) {
 		if l != nil {
 			a.logger = l
+		}
+	}
+}
+
+// WithMetricsRegistry registers the inbound-handler latency histogram
+// (whatsapp_handler_elapsed_seconds) on reg. Pass
+// prometheus.DefaultRegisterer in cmd/server; pass
+// prometheus.NewRegistry() inside tests to avoid duplicate-registration
+// panics. Omitting this option leaves the histogram unregistered —
+// every observe() call becomes a no-op so the adapter remains
+// functional without metrics. See
+// docs/runbooks/whatsapp-inbound-latency.md for the operational rule
+// the histogram drives (SIN-62762).
+func WithMetricsRegistry(reg prometheus.Registerer) Option {
+	return func(a *Adapter) {
+		if reg != nil {
+			a.handlerMetrics = newHandlerMetrics(reg)
 		}
 	}
 }
