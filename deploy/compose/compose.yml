@@ -14,6 +14,11 @@ volumes:
   minio-data: {}
   caddy-data: {}
   caddy-config: {}
+  # [SIN-62805] F2-05d — shared between clamav (reader) and freshclam
+  # (writer). Putting them in one named volume avoids any per-container
+  # path divergence and keeps reloads atomic.
+  clamav-db: {}
+  clamav-log: {}
 
 x-healthdefaults: &hd
   interval: 5s
@@ -117,6 +122,75 @@ services:
     healthcheck:
       <<: *hd
       test: ["CMD", "drill", "@127.0.0.1", "-p", "5353", "example.com"]
+
+  # [SIN-62788] F2-05 — ClamAV daemon used by the mediascan worker.
+  # The freshclam sidecar (below) keeps signatures fresh; clamd itself
+  # serves INSTREAM scans on tcp/3310 — only reachable from the docker
+  # network, never published to the host.
+  clamav:
+    image: clamav/clamav:latest
+    restart: unless-stopped
+    networks: [crm]
+    volumes: [clamav-db:/var/lib/clamav]
+    healthcheck:
+      <<: *hd
+      # `clamdscan --ping` returns 0 when clamd is up and accepting
+      # INSTREAM commands. The default 5s start period (parent hd
+      # anchor) is short — bump on slow CI if needed.
+      test: ["CMD", "clamdscan", "--ping", "1"]
+
+  # [SIN-62805] F2-05d — `freshclam` sidecar. Runs every 24h via the
+  # image's built-in cron entrypoint to refresh signatures into the
+  # shared `clamav-db` volume; clamd picks the new signatures up on its
+  # own scheduled reload. The worker persists the resulting engine ID
+  # into `message.media.scan_engine` on every scan (already wired via
+  # the clamav adapter's two-dial flow — zVERSION → zINSTREAM).
+  freshclam:
+    image: clamav/clamav:latest
+    restart: unless-stopped
+    networks: [crm]
+    # Override the default entrypoint (which starts clamd) to run only
+    # freshclam in cron mode. `--daemon` keeps it alive and rotates the
+    # DB every 24h; `--checks 1` is one check per cycle.
+    entrypoint: ["/usr/local/bin/freshclam"]
+    command: ["--daemon", "--foreground=true", "--checks=1", "--log=/var/log/clamav/freshclam.log"]
+    volumes:
+      - clamav-db:/var/lib/clamav
+      - clamav-log:/var/log/clamav
+
+  # [SIN-62804] F2-05c — mediascan worker. Reads `media.scan.requested`
+  # from JetStream, scans the blob via clamd, persists the verdict, and
+  # publishes `media.scan.completed`. [SIN-62805] F2-05d wires the
+  # Quarantiner + Alerter so infected blobs are moved + #security is paged.
+  mediascan-worker:
+    image: golang:1.22-alpine
+    restart: unless-stopped
+    networks: [crm]
+    working_dir: /src
+    command: ["go", "run", "./cmd/mediascan-worker"]
+    env_file: .env
+    environment:
+      NATS_URL: nats://nats:4222
+      POSTGRES_DSN: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      CLAMD_ADDR: clamav:3310
+      # MinIO config consumed by the SIN-62805 quarantine adapter.
+      # Credentials come from the STS bootstrap flow described in
+      # docs/runbooks/minio-bucket-policy.md; the values below are the
+      # local-dev defaults from .env.
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_QUARANTINE_SOURCE: media
+      MINIO_QUARANTINE_DEST: media-quarantine
+      # Slack webhook stays out of the YAML — read from .env via env_file.
+    volumes:
+      - ../../go.mod:/src/go.mod:ro
+      - ../../go.sum:/src/go.sum:ro
+      - ../../cmd:/src/cmd:ro
+      - ../../internal:/src/internal:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      clamav: { condition: service_healthy }
 
   caddy:
     image: caddy:2-alpine

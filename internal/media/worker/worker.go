@@ -35,6 +35,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/media/alert"
+	"github.com/pericles-luz/crm/internal/media/quarantine"
 	"github.com/pericles-luz/crm/internal/media/scanner"
 )
 
@@ -80,13 +82,30 @@ type Publisher interface {
 	Publish(ctx context.Context, subject string, body []byte) error
 }
 
-// Handler ties the four collaborators together. Construct via New;
-// each non-nil field is required.
+// Handler ties the worker's collaborators together. Construct via New;
+// every field New populates is required.
+//
+// Defense-in-depth ([SIN-62805] F2-05d) is wired through the optional
+// Quarantiner and Alerter fields. When set, the worker calls
+// Quarantiner.Move on every infected verdict and Alerter.Notify so the
+// `#security` channel is paged with `{tenant_id, message_id,
+// engine_id, signature}`. Both fields default to nil — the in-process
+// worker tests exercise the happy path without standing up a MinIO or
+// Slack test double — but production wiring (cmd/mediascan-worker)
+// MUST supply both.
+//
+// Both defense-in-depth calls are BEST-EFFORT: failures are logged and
+// the delivery is still acked. The verdict is already persisted and
+// republished, and a future reconcile sweep can clean stragglers.
+// Returning an error here would trigger an unbounded redelivery loop
+// during transient MinIO or Slack outages.
 type Handler struct {
-	Scanner   scanner.MediaScanner
-	Store     scanner.MessageMediaStore
-	Publisher Publisher
-	Logger    *slog.Logger
+	Scanner     scanner.MediaScanner
+	Store       scanner.MessageMediaStore
+	Publisher   Publisher
+	Logger      *slog.Logger
+	Quarantiner quarantine.Quarantiner
+	Alerter     alert.Alerter
 }
 
 // New validates that every collaborator is wired and returns a Handler
@@ -154,6 +173,13 @@ func (h *Handler) Handle(ctx context.Context, msg Delivery) error {
 		return fmt.Errorf("worker: persist %s/%s: %w", req.TenantID, req.MessageID, persistErr)
 	}
 
+	// Defense-in-depth on infected. Best-effort: failures here are
+	// logged but do not prevent publish + ack. The verdict is already
+	// persisted, and a reconcile sweep cleans any stragglers.
+	if result.Status == scanner.StatusInfected {
+		h.runDefenseInDepth(ctx, req, result)
+	}
+
 	completed := Completed{
 		TenantID:  req.TenantID,
 		MessageID: req.MessageID,
@@ -188,4 +214,34 @@ func ackPoison(ctx context.Context, msg Delivery) error {
 		return fmt.Errorf("worker: ack poison: %w", err)
 	}
 	return nil
+}
+
+// runDefenseInDepth performs Move + Notify on the infected verdict.
+// Both collaborators are optional; nil fields are silently skipped.
+// Failures are logged at error level so a Loki query can detect a
+// degraded defense layer without blocking the worker's main loop.
+func (h *Handler) runDefenseInDepth(ctx context.Context, req Request, result scanner.ScanResult) {
+	if h.Quarantiner != nil {
+		if qErr := h.Quarantiner.Move(ctx, req.Key); qErr != nil {
+			h.Logger.ErrorContext(ctx, "media.scan: quarantine move failed",
+				"tenant_id", req.TenantID, "message_id", req.MessageID,
+				"key", req.Key, "err", qErr.Error())
+		} else {
+			h.Logger.InfoContext(ctx, "media.scan: blob quarantined",
+				"tenant_id", req.TenantID, "message_id", req.MessageID, "key", req.Key)
+		}
+	}
+	if h.Alerter != nil {
+		event := alert.Event{
+			TenantID:  req.TenantID,
+			MessageID: req.MessageID,
+			Key:       req.Key,
+			EngineID:  result.EngineID,
+			Signature: result.Signature,
+		}
+		if aErr := h.Alerter.Notify(ctx, event); aErr != nil {
+			h.Logger.ErrorContext(ctx, "media.scan: alert notify failed",
+				"tenant_id", req.TenantID, "message_id", req.MessageID, "err", aErr.Error())
+		}
+	}
 }

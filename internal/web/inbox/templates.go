@@ -247,6 +247,24 @@ var messageBubbleTmpl = template.Must(template.New("message_bubble").Funcs(templ
   hx-swap="outerHTML"
 {{- end}}>
   <p class="message-bubble__body">{{.Body}}</p>
+  {{- if .Media}}
+    {{- if eq .Media.ScanStatus "infected"}}
+  <div class="message-bubble__media message-bubble__media--blocked" role="status" aria-label="Anexo bloqueado por segurança">
+    <span class="message-bubble__media-icon" aria-hidden="true">⛔</span>
+    <span class="message-bubble__media-blocked-text">Conteúdo bloqueado por segurança</span>
+  </div>
+    {{- else if eq .Media.ScanStatus "clean"}}
+  <a class="message-bubble__media message-bubble__media--clean" href="/t/{{.Media.Hash}}/m" data-format="{{.Media.Format}}">
+    <span class="message-bubble__media-icon" aria-hidden="true">📎</span>
+    <span class="message-bubble__media-link-text">Anexo</span>
+  </a>
+    {{- else}}
+  <div class="message-bubble__media message-bubble__media--pending" role="status" aria-label="Anexo aguardando verificação">
+    <span class="message-bubble__media-icon" aria-hidden="true">…</span>
+    <span class="message-bubble__media-pending-text">Verificando anexo</span>
+  </div>
+    {{- end}}
+  {{- end}}
   <time class="message-bubble__time" datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{relativeTime .CreatedAt}}</time>
   {{- if eq .Direction "out"}}
   {{- $glyph := statusGlyph .Status}}{{if $glyph}}

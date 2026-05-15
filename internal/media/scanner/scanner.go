@@ -68,9 +68,15 @@ func (s Status) Valid() bool {
 // reviewer can tell exactly which engine cleared or rejected the
 // object. SHOULD be non-empty for production scanners; the in-process
 // fake in tests may leave it empty.
+//
+// Signature is the engine-specific name of the threat that produced
+// an infected verdict (e.g. "Win.Test.EICAR_HDB-1"). Empty for clean
+// verdicts and for engines that do not expose a per-threat name; the
+// alerter renders an "unknown signature" placeholder in that case.
 type ScanResult struct {
-	Status   Status
-	EngineID string
+	Status    Status
+	EngineID  string
+	Signature string
 }
 
 // MediaScanner is the port the worker calls to classify a single

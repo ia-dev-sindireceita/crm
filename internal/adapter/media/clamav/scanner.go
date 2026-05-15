@@ -137,11 +137,11 @@ func (s *Scanner) Scan(ctx context.Context, key string) (scanner.ScanResult, err
 		return scanner.ScanResult{}, err
 	}
 
-	status, err := s.streamScan(ctx, blob)
+	status, signature, err := s.streamScan(ctx, blob)
 	if err != nil {
 		return scanner.ScanResult{}, err
 	}
-	return scanner.ScanResult{Status: status, EngineID: engineID}, nil
+	return scanner.ScanResult{Status: status, EngineID: engineID, Signature: signature}, nil
 }
 
 // fetchVersion runs zVERSION on a fresh connection and returns the
@@ -164,26 +164,28 @@ func (s *Scanner) fetchVersion(ctx context.Context) (string, error) {
 	return parseVersion(resp), nil
 }
 
-// streamScan runs the INSTREAM exchange and returns the parsed verdict.
-func (s *Scanner) streamScan(ctx context.Context, blob io.Reader) (scanner.Status, error) {
+// streamScan runs the INSTREAM exchange and returns the parsed verdict
+// plus the threat signature (empty on clean verdicts; engine-defined
+// string like "Eicar-Signature" on FOUND).
+func (s *Scanner) streamScan(ctx context.Context, blob io.Reader) (scanner.Status, string, error) {
 	conn, err := s.dial(ctx)
 	if err != nil {
-		return "", fmt.Errorf("clamav: dial (INSTREAM): %w", err)
+		return "", "", fmt.Errorf("clamav: dial (INSTREAM): %w", err)
 	}
 	defer conn.Close()
 	s.applyDeadline(conn)
 
 	if _, err := conn.Write([]byte("zINSTREAM\x00")); err != nil {
-		return "", fmt.Errorf("clamav: write INSTREAM cmd: %w", err)
+		return "", "", fmt.Errorf("clamav: write INSTREAM cmd: %w", err)
 	}
 
 	if err := streamChunks(ctx, conn, blob, s.cfg.MaxChunkSize); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	resp, err := readUntilNull(conn)
 	if err != nil {
-		return "", fmt.Errorf("clamav: read verdict: %w", err)
+		return "", "", fmt.Errorf("clamav: read verdict: %w", err)
 	}
 	return parseVerdict(resp)
 }
@@ -263,19 +265,35 @@ func parseVersion(s string) string {
 	return "clamav-" + s
 }
 
-// parseVerdict maps clamd's INSTREAM reply to a domain Status. ERROR
-// responses are surfaced as a Go error so the worker can retry per its
-// own policy rather than persisting StatusClean on a transport failure.
-func parseVerdict(s string) (scanner.Status, error) {
+// parseVerdict maps clamd's INSTREAM reply to a domain Status plus the
+// per-threat signature (empty on clean verdicts). ERROR responses are
+// surfaced as a Go error so the worker can retry per its own policy
+// rather than persisting StatusClean on a transport failure.
+//
+// clamd's FOUND line has the shape "stream: <signature> FOUND" — we
+// strip the "stream:" prefix and the trailing " FOUND" so the caller
+// gets a clean signature string suitable for the alert.Event payload.
+func parseVerdict(s string) (scanner.Status, string, error) {
 	s = strings.TrimSpace(s)
 	switch {
 	case strings.Contains(s, "ERROR"):
-		return "", fmt.Errorf("clamav: engine error: %s", s)
+		return "", "", fmt.Errorf("clamav: engine error: %s", s)
 	case strings.HasSuffix(s, " OK"):
-		return scanner.StatusClean, nil
+		return scanner.StatusClean, "", nil
 	case strings.HasSuffix(s, " FOUND"):
-		return scanner.StatusInfected, nil
+		return scanner.StatusInfected, extractSignature(s), nil
 	default:
-		return "", fmt.Errorf("clamav: unexpected response %q", s)
+		return "", "", fmt.Errorf("clamav: unexpected response %q", s)
 	}
+}
+
+// extractSignature strips the "stream: " prefix and " FOUND" suffix
+// from a clamd INSTREAM verdict line, returning the threat name. Falls
+// back to the empty string when the line shape is unexpected; the
+// alerter then renders an "unknown signature" placeholder.
+func extractSignature(line string) string {
+	trimmed := strings.TrimSuffix(line, " FOUND")
+	trimmed = strings.TrimPrefix(trimmed, "stream: ")
+	trimmed = strings.TrimSpace(trimmed)
+	return trimmed
 }

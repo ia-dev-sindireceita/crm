@@ -346,3 +346,102 @@ func TestHandle_AckFailure_Surfaces(t *testing.T) {
 		t.Fatal("expected ack failure to surface")
 	}
 }
+
+// --- quarantine wiring (SIN-62805 F2-05d) ---------------------------
+
+type fakeQuarantiner struct {
+	mu    sync.Mutex
+	keys  []string
+	err   error
+	calls atomic.Int32
+}
+
+func (f *fakeQuarantiner) Move(_ context.Context, key string) error {
+	f.calls.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keys = append(f.keys, key)
+	return f.err
+}
+
+func TestHandle_InfectedVerdict_CallsQuarantiner(t *testing.T) {
+	t.Parallel()
+	s := &fakeScanner{result: scanner.ScanResult{Status: scanner.StatusInfected, EngineID: "clamav-1.2.3"}}
+	store := &fakeStore{}
+	pub := &fakePublisher{}
+	q := &fakeQuarantiner{}
+	h := newHandler(t, s, store, pub)
+	h.Quarantiner = q
+
+	msg := &fakeDelivery{body: makeReq(t, "media/tenant/2026-05/eicar.pdf")}
+	if err := h.Handle(context.Background(), msg); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if q.calls.Load() != 1 {
+		t.Fatalf("expected quarantiner Move on infected, got calls=%d", q.calls.Load())
+	}
+	if len(q.keys) != 1 || q.keys[0] != "media/tenant/2026-05/eicar.pdf" {
+		t.Fatalf("expected quarantiner key wiring, got %v", q.keys)
+	}
+	if msg.acked.Load() != 1 {
+		t.Fatal("infected delivery must still ack after quarantine")
+	}
+}
+
+func TestHandle_CleanVerdict_DoesNotCallQuarantiner(t *testing.T) {
+	t.Parallel()
+	s := &fakeScanner{result: scanner.ScanResult{Status: scanner.StatusClean, EngineID: "x"}}
+	store := &fakeStore{}
+	pub := &fakePublisher{}
+	q := &fakeQuarantiner{}
+	h := newHandler(t, s, store, pub)
+	h.Quarantiner = q
+
+	msg := &fakeDelivery{body: makeReq(t, "media/clean.png")}
+	if err := h.Handle(context.Background(), msg); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if q.calls.Load() != 0 {
+		t.Fatalf("expected NO quarantiner call on clean verdict, got %d", q.calls.Load())
+	}
+}
+
+func TestHandle_QuarantineError_DoesNotBlockAck(t *testing.T) {
+	t.Parallel()
+	// Best-effort contract: a quarantine failure is logged but does NOT
+	// cause redelivery. The verdict is already persisted; redelivering
+	// would re-scan and re-publish without resolving the MinIO outage.
+	s := &fakeScanner{result: scanner.ScanResult{Status: scanner.StatusInfected, EngineID: "clamav-1.2.3"}}
+	store := &fakeStore{}
+	pub := &fakePublisher{}
+	q := &fakeQuarantiner{err: errors.New("minio: 503 SlowDown")}
+	h := newHandler(t, s, store, pub)
+	h.Quarantiner = q
+
+	msg := &fakeDelivery{body: makeReq(t, "media/eicar.pdf")}
+	if err := h.Handle(context.Background(), msg); err != nil {
+		t.Fatalf("Handle should not fail on quarantine error: %v", err)
+	}
+	if msg.acked.Load() != 1 {
+		t.Fatal("delivery must ack even when quarantine move fails")
+	}
+	if len(pub.bodies) != 1 {
+		t.Fatal("publish must still happen on quarantine failure")
+	}
+}
+
+func TestHandle_QuarantinerNil_NoPanic(t *testing.T) {
+	t.Parallel()
+	s := &fakeScanner{result: scanner.ScanResult{Status: scanner.StatusInfected, EngineID: "x"}}
+	store := &fakeStore{}
+	pub := &fakePublisher{}
+	h := newHandler(t, s, store, pub) // h.Quarantiner left nil
+
+	msg := &fakeDelivery{body: makeReq(t, "media/eicar.pdf")}
+	if err := h.Handle(context.Background(), msg); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if msg.acked.Load() != 1 {
+		t.Fatal("nil Quarantiner must not block ack")
+	}
+}
