@@ -34,9 +34,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	pgmessagemedia "github.com/pericles-luz/crm/internal/adapter/db/postgres/messagemedia"
 	clamavadapter "github.com/pericles-luz/crm/internal/adapter/media/clamav"
 	natsadapter "github.com/pericles-luz/crm/internal/adapter/messaging/nats"
-	pgmessagemedia "github.com/pericles-luz/crm/internal/adapter/db/postgres/messagemedia"
 	"github.com/pericles-luz/crm/internal/media/worker"
 )
 

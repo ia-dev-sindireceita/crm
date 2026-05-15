@@ -62,9 +62,9 @@ func (f *fakePublisher) Publish(_ context.Context, subject string, body []byte) 
 }
 
 type fakeDelivery struct {
-	body    []byte
-	acked   atomic.Int32
-	ackErr  error
+	body   []byte
+	acked  atomic.Int32
+	ackErr error
 }
 
 func (f *fakeDelivery) Data() []byte { return f.body }
