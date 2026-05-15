@@ -61,8 +61,14 @@ session lookup; `RequireAuth` is the lifter and the lint anchor.
 - attaches the `Decision` to context via `WithDecision` so audit
   middleware ([SIN-62254](/SIN/issues/SIN-62254)) can emit it without
   re-calling the Authorizer,
-- responds `403 Forbidden` with the `ReasonCode` in the body when the
-  decision is deny.
+- responds `403 Forbidden` with a generic `forbidden` body when the
+  decision is deny — the `ReasonCode` is intentionally NOT echoed on
+  the wire because policy names (`denied_master_pii_step_up`,
+  `denied_rbac`, …) leak the existence and shape of internal
+  authorization gates to external tenants
+  ([SIN-62756](/SIN/issues/SIN-62756)). The full `ReasonCode` still
+  rides the audit trail via `WithDecision`, so internal troubleshooting
+  is unaffected.
 
 ### L3. The public-route allowlist is declarative.
 

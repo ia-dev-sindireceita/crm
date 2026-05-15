@@ -149,6 +149,11 @@ remains authoritative.
 - Every authz check produces a `Decision` with a closed-set
   `ReasonCode`, so [SIN-62254](/SIN/issues/SIN-62254) can index audit
   rows and Prometheus labels without an open enum.
+- The `ReasonCode` is internal-only: it rides the `Decision` through
+  context to audit and Prometheus, but the HTTP `403` body is the
+  generic string `forbidden` so policy names do not leak to external
+  tenants ([SIN-62756](/SIN/issues/SIN-62756)). Operators read the
+  reason in audit logs and Prometheus, never on the wire.
 - The PII gate is independent of role: a master with a tenant role on
   the request still hits the gate, so a step-up bypass requires
   forging both Principal.MasterImpersonating and Principal.MFAVerifiedAt.

@@ -156,8 +156,14 @@ func TestRequireAction_Allow_PropagatesDecisionAndCallsNext(t *testing.T) {
 	}
 }
 
-func TestRequireAction_Deny_403WithReason(t *testing.T) {
+func TestRequireAction_Deny_403GenericBody(t *testing.T) {
 	t.Parallel()
+	// SIN-62756: RequireAction MUST NOT echo the ReasonCode in the
+	// 403 body — policy names (denied_master_pii_step_up, denied_rbac,
+	// …) leak the existence and shape of internal authorization gates
+	// to external tenants. The reason still rides the audit trail
+	// (SIN-62254). This test pins both halves: generic body on the
+	// wire, and no leak of any defined ReasonCode value.
 	stub := &stubAuthorizer{reply: iam.Decision{Allow: false, ReasonCode: iam.ReasonDeniedRBAC}}
 	called := false
 	h := middleware.RequireAction(stub, iam.ActionTenantContactReadPII, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -174,8 +180,58 @@ func TestRequireAction_Deny_403WithReason(t *testing.T) {
 	if called {
 		t.Fatal("next must not run on deny")
 	}
-	if !strings.Contains(w.Body.String(), string(iam.ReasonDeniedRBAC)) {
-		t.Fatalf("body missing reason: %q", w.Body.String())
+	body := strings.TrimSpace(w.Body.String())
+	if body != "forbidden" {
+		t.Fatalf("body = %q, want %q", body, "forbidden")
+	}
+	for _, leak := range []iam.ReasonCode{
+		iam.ReasonDeniedRBAC,
+		iam.ReasonDeniedMasterPIIStepUp,
+		iam.ReasonDeniedTenantMismatch,
+		iam.ReasonDeniedUnknownAction,
+		iam.ReasonDeniedNoPrincipal,
+	} {
+		if strings.Contains(w.Body.String(), string(leak)) {
+			t.Fatalf("403 body leaked ReasonCode %q: %q", leak, w.Body.String())
+		}
+	}
+}
+
+func TestRequireAction_Deny_GenericBody_ForEveryReasonCode(t *testing.T) {
+	t.Parallel()
+	// Defense-in-depth: even if the Authorizer evolves to emit new
+	// ReasonCodes, the wire body MUST stay generic. This drives the
+	// middleware with each currently-defined denial reason and asserts
+	// the body shape is identical.
+	for _, reason := range []iam.ReasonCode{
+		iam.ReasonDeniedRBAC,
+		iam.ReasonDeniedMasterPIIStepUp,
+		iam.ReasonDeniedTenantMismatch,
+		iam.ReasonDeniedUnknownAction,
+		iam.ReasonDeniedNoPrincipal,
+	} {
+		reason := reason
+		t.Run(string(reason), func(t *testing.T) {
+			t.Parallel()
+			stub := &stubAuthorizer{reply: iam.Decision{Allow: false, ReasonCode: reason}}
+			h := middleware.RequireAction(stub, iam.ActionTenantContactReadPII, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next must not run on deny")
+			}))
+			p := iam.Principal{UserID: uuid.New(), TenantID: uuid.New(), Roles: []iam.Role{iam.RoleTenantCommon}}
+			req := httptest.NewRequest(http.MethodGet, "/pii", nil)
+			req = req.WithContext(iam.WithPrincipal(req.Context(), p))
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", w.Code)
+			}
+			if got := strings.TrimSpace(w.Body.String()); got != "forbidden" {
+				t.Fatalf("body = %q, want %q", got, "forbidden")
+			}
+			if strings.Contains(w.Body.String(), string(reason)) {
+				t.Fatalf("403 body leaked ReasonCode %q: %q", reason, w.Body.String())
+			}
+		})
 	}
 }
 

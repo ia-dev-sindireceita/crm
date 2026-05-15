@@ -63,12 +63,14 @@ type ResourceResolver func(*http.Request) iam.Resource
 // the given Action. RequireAuth MUST precede it — RequireAction reads
 // the Principal from context and fails closed when absent.
 //
-// On allow: forwards. On deny: 403 Forbidden with the ReasonCode in
-// the response body so the operator dashboards can see WHY without
-// having to correlate with audit logs. The full Decision (including
-// TargetKind/TargetID) is also written to the request context so
-// downstream audit middleware ([SIN-62254]) can pick it up without
-// re-calling the Authorizer.
+// On allow: forwards. On deny: 403 Forbidden with a generic
+// "forbidden" body. The ReasonCode is intentionally NOT echoed to the
+// client because policy names (denied_master_pii_step_up, denied_rbac,
+// …) leak the existence and shape of internal authorization gates to
+// external tenants — see [SIN-62756]. The full Decision (including
+// ReasonCode, TargetKind, TargetID) is written to the request context
+// so downstream audit middleware ([SIN-62254]) preserves the reason
+// for internal troubleshooting without exposing it on the wire.
 func RequireAction(authz iam.Authorizer, action iam.Action, resolve ResourceResolver) func(http.Handler) http.Handler {
 	if authz == nil {
 		panic("middleware: RequireAction Authorizer is nil")
@@ -87,7 +89,7 @@ func RequireAction(authz iam.Authorizer, action iam.Action, resolve ResourceReso
 			d := authz.Can(r.Context(), p, action, res)
 			ctx := WithDecision(r.Context(), d)
 			if !d.Allow {
-				http.Error(w, string(d.ReasonCode), http.StatusForbidden)
+				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
