@@ -6,15 +6,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// Assignment is an append-only history row: it records that a user was
-// the responsible operator for a conversation during a given interval.
-// AssignedAt is set at construction; UnassignedAt is filled when the
-// next assignment is recorded (or when the conversation closes).
+// Assignment is an append-only history row in `assignment_history`
+// (migration 0092 / F2-03): it records that a user became the
+// responsible operator for a conversation at AssignedAt for the given
+// Reason. There is no UnassignedAt column — the canonical "current
+// leader" query is `ORDER BY assigned_at DESC LIMIT 1` per
+// (tenant_id, conversation_id).
 //
-// The aggregate root for assignment history is the Conversation, but
-// the rows live in their own table because the canonical inbox query
-// is "who is currently assigned" — a derived view over the latest
-// row with UnassignedAt IS NULL.
+// UnassignedAt is preserved on the in-memory value for Fase 1
+// callers that still expect it; F2-07 stops persisting it and the
+// field will be removed once the Rule-3 refactor lands.
 type Assignment struct {
 	ID             uuid.UUID
 	TenantID       uuid.UUID
@@ -22,6 +23,7 @@ type Assignment struct {
 	UserID         uuid.UUID
 	AssignedAt     time.Time
 	UnassignedAt   *time.Time
+	Reason         LeadReason
 }
 
 // NewAssignment constructs an open-ended assignment row (UnassignedAt
@@ -58,6 +60,56 @@ func HydrateAssignment(id, tenantID, conversationID, userID uuid.UUID,
 		UserID:         userID,
 		AssignedAt:     assignedAt,
 		UnassignedAt:   unassignedAt,
+	}
+}
+
+// NewLeaderAssignment is the F2-07 constructor: it builds a fresh
+// assignment_history row with a typed Reason. Rejects zero UUIDs and
+// invalid reasons so the row cannot drift into a constraint-violation
+// state at the database boundary.
+func NewLeaderAssignment(
+	tenantID, conversationID, userID uuid.UUID,
+	reason LeadReason,
+) (*Assignment, error) {
+	if tenantID == uuid.Nil {
+		return nil, ErrInvalidTenant
+	}
+	if conversationID == uuid.Nil {
+		return nil, ErrInvalidContact
+	}
+	if userID == uuid.Nil {
+		return nil, ErrInvalidAssignee
+	}
+	if !reason.Valid() {
+		return nil, ErrInvalidLeadReason
+	}
+	return &Assignment{
+		ID:             uuid.New(),
+		TenantID:       tenantID,
+		ConversationID: conversationID,
+		UserID:         userID,
+		AssignedAt:     now(),
+		Reason:         reason,
+	}, nil
+}
+
+// HydrateLeaderAssignment is the F2-07 hydrator: it rebuilds a row
+// from `assignment_history` without running constructor invariants.
+// AdaptER code uses it after SELECTs. UnassignedAt is not part of the
+// F2-03 schema; the field stays on the struct for Fase 1 callers and
+// is left nil here.
+func HydrateLeaderAssignment(
+	id, tenantID, conversationID, userID uuid.UUID,
+	assignedAt time.Time,
+	reason LeadReason,
+) *Assignment {
+	return &Assignment{
+		ID:             id,
+		TenantID:       tenantID,
+		ConversationID: conversationID,
+		UserID:         userID,
+		AssignedAt:     assignedAt,
+		Reason:         reason,
 	}
 }
 

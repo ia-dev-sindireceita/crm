@@ -42,6 +42,10 @@ type Conversation struct {
 	AssignedUserID *uuid.UUID
 	LastMessageAt  time.Time
 	CreatedAt      time.Time
+	// history is the in-memory projection of `assignment_history` rows
+	// loaded by the adapter, oldest-first. Domain methods Lead() /
+	// History() / AssignLead() operate on this slice.
+	history []*Assignment
 }
 
 // NewConversation constructs a fresh, open conversation. AssignedUserID
@@ -102,6 +106,70 @@ func (c *Conversation) AssignTo(userID uuid.UUID) error {
 	uid := userID
 	c.AssignedUserID = &uid
 	return nil
+}
+
+// AssignLead is the F2-07 leader-attribution mutator: it builds a fresh
+// assignment_history row via NewLeaderAssignment, appends it to the
+// in-memory history slice, and refreshes AssignedUserID. The returned
+// Assignment is what the caller MUST hand to
+// AssignmentRepository.AppendHistory for persistence.
+//
+// Errors mirror NewLeaderAssignment plus ErrConversationClosed when
+// the conversation has been closed.
+func (c *Conversation) AssignLead(userID uuid.UUID, reason LeadReason) (*Assignment, error) {
+	if c.State != ConversationStateOpen {
+		return nil, ErrConversationClosed
+	}
+	a, err := NewLeaderAssignment(c.TenantID, c.ID, userID, reason)
+	if err != nil {
+		return nil, err
+	}
+	c.history = append(c.history, a)
+	uid := userID
+	c.AssignedUserID = &uid
+	return a, nil
+}
+
+// Lead returns the current leader of the conversation: the most recent
+// row in the in-memory history. Returns nil when no leader has ever
+// been recorded (history empty). Callers MUST NOT mutate the returned
+// pointer — Lead() yields a view, not ownership.
+func (c *Conversation) Lead() *Assignment {
+	if len(c.history) == 0 {
+		return nil
+	}
+	return c.history[len(c.history)-1]
+}
+
+// History returns the in-memory assignment_history projection,
+// oldest-first. The slice header is a copy so callers cannot mutate
+// the conversation's internal storage by appending to it. Returns
+// a nil slice when the conversation has no recorded history.
+func (c *Conversation) History() []*Assignment {
+	if len(c.history) == 0 {
+		return nil
+	}
+	out := make([]*Assignment, len(c.history))
+	copy(out, c.history)
+	return out
+}
+
+// SetHistory replaces the in-memory history slice with the rows
+// loaded from `assignment_history` by the adapter. The caller MUST
+// pass rows ordered oldest-first; Lead() relies on the last element
+// being the most recent assignment. This is a hydration hook for
+// adapter code — domain callers should use AssignLead instead.
+func (c *Conversation) SetHistory(rows []*Assignment) {
+	if len(rows) == 0 {
+		c.history = nil
+		return
+	}
+	c.history = make([]*Assignment, len(rows))
+	copy(c.history, rows)
+	// Sync the denormalised current-leader field so legacy callers
+	// stay coherent. The latest row's user wins.
+	uid := rows[len(rows)-1].UserID
+	c.AssignedUserID = &uid
 }
 
 // Close marks the conversation as closed. Idempotent: closing an
