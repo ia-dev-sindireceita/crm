@@ -116,6 +116,18 @@ func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *gored
 	if err != nil {
 		return nil, nil, err
 	}
+	// SIN-62768: wire the status reconciler use case from SIN-62734 so
+	// the adapter can fan statuses[] entries from the WhatsApp webhook
+	// envelope into Message.AdvanceStatus + UpdateMessage under tenant
+	// scope. inboxStore satisfies both inbox.Repository (for
+	// FindMessageByChannelExternalID / UpdateMessage) and
+	// inbox.InboundDedupRepository (for the shared
+	// inbound_message_dedup ledger, discriminated by
+	// channel="whatsapp_status"). Without this option statuses[] would
+	// be silently counted under outcome="dropped" — proven safe by
+	// TestStatus_UnwiredUpdater_DropsCleanly but a feature-completeness
+	// gap for prod.
+	statusUpdater := inboxusecase.MustNewUpdateMessageStatus(inboxStore, inboxStore)
 	lookup := pgstore.NewChannelAssociationLookup(pool)
 	resolver := whatsapp.TenantResolverFunc(func(ctx context.Context, pn string) (uuid.UUID, error) {
 		id, err := lookup.Resolve(ctx, whatsapp.Channel, pn)
@@ -128,10 +140,18 @@ func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *gored
 	flag := whatsapp.NewEnvFeatureFlag(getenv)
 	adapter, err := whatsapp.New(cfg, receiver, resolver, flag, rl,
 		whatsapp.WithLogger(slog.Default()),
+		// SIN-62768: dispatch carrier status callbacks to the inbox
+		// reconciler. Statuses[] entries that arrive without this
+		// option are counted under outcome="dropped" — the adapter
+		// stays functional but the message UI never shows
+		// delivered/read transitions.
+		whatsapp.WithStatusUpdater(statusUpdater),
 		// SIN-62762: register the inbound-handler latency histogram
 		// (whatsapp_handler_elapsed_seconds) on the global registry so
-		// scrape endpoints under /metrics include it. Runbook:
-		// docs/runbooks/whatsapp-inbound-latency.md.
+		// scrape endpoints under /metrics include it. SIN-62768
+		// piggy-backs: the same WithMetricsRegistry call also
+		// registers whatsapp_status_total and whatsapp_status_lag_seconds.
+		// Runbook: docs/runbooks/whatsapp-inbound-latency.md.
 		whatsapp.WithMetricsRegistry(prometheus.DefaultRegisterer),
 		// SIN-62763 / ADR 0094: wire the webhook_timestamp_window_drop_total
 		// callback through obs.SetDefault — the package-level helper
