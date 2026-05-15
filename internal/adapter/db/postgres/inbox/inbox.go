@@ -258,6 +258,45 @@ func (s *Store) UpdateMessage(ctx context.Context, m *domain.Message) error {
 	return nil
 }
 
+// FindMessageByChannelExternalID returns the message with the given
+// (channel, channel_external_id) pair under the tenant scope. RLS
+// hides rows from other tenants; an unknown id collapses to
+// domain.ErrNotFound. Used by the status reconciler (WhatsApp PR8) to
+// materialise the message before advancing its lifecycle state.
+func (s *Store) FindMessageByChannelExternalID(ctx context.Context, tenantID uuid.UUID, channel, channelExternalID string) (*domain.Message, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: FindMessageByChannelExternalID: tenant id is nil")
+	}
+	if channel == "" || channelExternalID == "" {
+		return nil, domain.ErrNotFound
+	}
+	var m *domain.Message
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `
+			SELECT m.id, m.tenant_id, m.conversation_id, m.direction, m.body,
+			       m.status, m.channel_external_id, m.sent_by_user_id, m.created_at
+			  FROM message m
+			  JOIN conversation c ON c.id = m.conversation_id
+			 WHERE c.channel = $1
+			   AND m.channel_external_id = $2
+			 LIMIT 1
+		`, channel, channelExternalID)
+		msg, err := scanMessage(row)
+		if err != nil {
+			return err
+		}
+		m = msg
+		return nil
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inbox/postgres: FindMessageByChannelExternalID: %w", err)
+	}
+	return m, nil
+}
+
 // Claim is the dedup-ledger half: insert the (channel, channelExternalID)
 // row, translating a UNIQUE violation to ErrInboundAlreadyProcessed.
 // NOT tenant-scoped — the receiver runs before tenant context exists.
@@ -325,6 +364,36 @@ func (s *Store) MarkProcessed(ctx context.Context, channel, channelExternalID st
 	}
 	committed = true
 	return nil
+}
+
+// scanMessage materialises a message row read by
+// FindMessageByChannelExternalID. The column order MUST match the
+// SELECT in that method.
+func scanMessage(row pgx.Row) (*domain.Message, error) {
+	var (
+		id, tenantID, conversationID uuid.UUID
+		direction, body, status      string
+		channelExternalID            *string
+		sentByUserID                 *uuid.UUID
+		createdAt                    time.Time
+	)
+	if err := row.Scan(&id, &tenantID, &conversationID, &direction, &body,
+		&status, &channelExternalID, &sentByUserID, &createdAt); err != nil {
+		return nil, err
+	}
+	ext := ""
+	if channelExternalID != nil {
+		ext = *channelExternalID
+	}
+	return domain.HydrateMessage(
+		id, tenantID, conversationID,
+		domain.MessageDirection(direction),
+		body,
+		domain.MessageStatus(status),
+		ext,
+		sentByUserID,
+		createdAt,
+	), nil
 }
 
 func scanConversation(row pgx.Row) (*domain.Conversation, error) {

@@ -53,6 +53,15 @@ type Repository interface {
 	// thin persistence escape hatch. Returns ErrNotFound when the row
 	// does not exist under the tenant scope.
 	UpdateMessage(ctx context.Context, m *Message) error
+
+	// FindMessageByChannelExternalID returns the message with the given
+	// (channel, channelExternalID) pair under the tenant scope. The
+	// status reconciler (WhatsApp PR8) uses it to materialise the
+	// message before advancing its lifecycle state. Returns ErrNotFound
+	// when no row matches — either because the carrier sent a status
+	// for an unknown wamid, or because RLS hid the row from the
+	// reconciler's tenant.
+	FindMessageByChannelExternalID(ctx context.Context, tenantID uuid.UUID, channel, channelExternalID string) (*Message, error)
 }
 
 // InboundDedupRepository is the global idempotency ledger backing the

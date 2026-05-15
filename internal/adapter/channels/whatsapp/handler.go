@@ -33,10 +33,11 @@ const (
 var ErrUnknownPhoneNumberID = errors.New("whatsapp: unknown phone_number_id")
 
 // metaEnvelope is the permissive subset of the Meta Cloud API webhook
-// payload the handler consumes. Fields we do not need (statuses,
-// contact profiles beyond the optional name fallback) are intentionally
-// absent so an upstream schema change in those areas cannot break
-// JSON parsing — encoding/json ignores unknown fields by default.
+// payload the handler consumes. Fields we do not need (contact
+// profiles beyond the optional name fallback, conversation/pricing
+// blocks under statuses[]) are intentionally absent so an upstream
+// schema change in those areas cannot break JSON parsing —
+// encoding/json ignores unknown fields by default.
 type metaEnvelope struct {
 	Object string       `json:"object"`
 	Entry  []envelEntry `json:"entry"`
@@ -57,6 +58,7 @@ type envelValue struct {
 	Metadata envelMetadata  `json:"metadata"`
 	Contacts []envelContact `json:"contacts"`
 	Messages []envelMessage `json:"messages"`
+	Statuses []envelStatus  `json:"statuses"`
 }
 
 type envelMetadata struct {
@@ -171,19 +173,24 @@ func (a *Adapter) handlePost(w http.ResponseWriter, r *http.Request) {
 // messages or changes the envelope packs.
 //
 // Priority order (most-productive wins): delivered > duplicate >
-// dropped_deliver_error > dropped_tenant > dropped_rate_limited >
-// dropped_feature_off > dropped_other > dropped_empty. Rationale:
-// histograms partitioned by terminal label should bucket "did this
-// handler do any productive work" first so SLO dashboards can split
-// "we processed" from "we dropped" without summing across labels.
+// dropped_deliver_error > status_processed > dropped_tenant >
+// dropped_rate_limited > dropped_feature_off > dropped_other >
+// dropped_empty. Rationale: histograms partitioned by terminal label
+// should bucket "did this handler do any productive work" first so
+// SLO dashboards can split "we processed" from "we dropped" without
+// summing across labels. status_processed sits just below the
+// inbound-message labels so a status-only envelope is still
+// recognised as productive work; per-status outcomes ride a separate
+// counter (whatsapp_status_total).
 type handlerAgg struct {
-	delivered     int
-	duplicate     int
-	deliverErrors int
-	tenantDrops   int
-	rateLimited   int
-	flagOff       int
-	otherDrops    int
+	delivered       int
+	duplicate       int
+	deliverErrors   int
+	statusesHandled int
+	tenantDrops     int
+	rateLimited     int
+	flagOff         int
+	otherDrops      int
 }
 
 func (s *handlerAgg) result() string {
@@ -194,6 +201,8 @@ func (s *handlerAgg) result() string {
 		return "duplicate"
 	case s.deliverErrors > 0:
 		return "dropped_deliver_error"
+	case s.statusesHandled > 0:
+		return "status_processed"
 	case s.tenantDrops > 0:
 		return "dropped_tenant"
 	case s.rateLimited > 0:
@@ -210,23 +219,25 @@ func (s *handlerAgg) result() string {
 // deliverChange routes one entry[].changes[] block: it resolves the
 // tenant from phone_number_id, applies the rate limit and feature
 // flag, then delivers each inner message through the InboundChannel
-// port. Errors at any point are logged but never propagate to the
+// port and each statuses[] entry through the MessageStatusUpdater
+// seam. Errors at any point are logged but never propagate to the
 // HTTP layer — Meta is acknowledged regardless.
 //
 // agg accumulates the per-message outcomes so handlePost can resolve a
 // single terminal result label for the histogram. A pre-message drop
 // (unknown tenant, rate-limited, feature off) charges one count per
-// inner message so the result label reflects "this many messages were
-// dropped" instead of "one change-block dropped".
+// inner message AND per inner status so the result label reflects
+// "this many envelope entries were dropped" — keeping the
+// agg.otherDrops > 0 check meaningful for status-only envelopes too.
 func (a *Adapter) deliverChange(ctx context.Context, change envelChange, agg *handlerAgg) {
-	msgCount := len(change.Value.Messages)
-	if msgCount == 0 {
+	entryCount := len(change.Value.Messages) + len(change.Value.Statuses)
+	if entryCount == 0 {
 		return
 	}
 	pnID := strings.TrimSpace(change.Value.Metadata.PhoneNumberID)
 	if pnID == "" {
 		a.logger.Warn("whatsapp.missing_phone_number_id")
-		agg.otherDrops += msgCount
+		agg.otherDrops += entryCount
 		return
 	}
 	tenantID, err := a.tenants.Resolve(ctx, pnID)
@@ -235,7 +246,7 @@ func (a *Adapter) deliverChange(ctx context.Context, change envelChange, agg *ha
 		// so an unknown number does not spam warn-level dashboards.
 		a.logger.Info("whatsapp.unknown_phone_number_id",
 			slog.String("phone_number_id", pnID))
-		agg.tenantDrops += msgCount
+		agg.tenantDrops += entryCount
 		return
 	}
 	allowed, retryAfter, err := a.rate.Allow(ctx, rateLimitKey(pnID),
@@ -244,14 +255,14 @@ func (a *Adapter) deliverChange(ctx context.Context, change envelChange, agg *ha
 		a.logger.Warn("whatsapp.rate_limiter_error",
 			slog.String("phone_number_id", pnID),
 			slog.String("err", err.Error()))
-		agg.otherDrops += msgCount
+		agg.otherDrops += entryCount
 		return
 	}
 	if !allowed {
 		a.logger.Warn("whatsapp.rate_limited",
 			slog.String("phone_number_id", pnID),
 			slog.Duration("retry_after", retryAfter))
-		agg.rateLimited += msgCount
+		agg.rateLimited += entryCount
 		return
 	}
 	on, err := a.flag.Enabled(ctx, tenantID)
@@ -259,18 +270,21 @@ func (a *Adapter) deliverChange(ctx context.Context, change envelChange, agg *ha
 		a.logger.Warn("whatsapp.feature_flag_error",
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("err", err.Error()))
-		agg.otherDrops += msgCount
+		agg.otherDrops += entryCount
 		return
 	}
 	if !on {
 		a.logger.Info("whatsapp.feature_flag_off",
 			slog.String("tenant_id", tenantID.String()))
-		agg.flagOff += msgCount
+		agg.flagOff += entryCount
 		return
 	}
 	contactName := primaryContactName(change.Value.Contacts)
 	for _, msg := range change.Value.Messages {
 		a.deliverMessage(ctx, tenantID, pnID, contactName, msg, agg)
+	}
+	for _, st := range change.Value.Statuses {
+		a.deliverStatus(ctx, tenantID, pnID, st, agg)
 	}
 }
 

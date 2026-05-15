@@ -94,6 +94,26 @@ func (r *inMemoryRepo) UpdateMessage(_ context.Context, m *inbox.Message) error 
 	return nil
 }
 
+// FindMessageByChannelExternalID satisfies inbox.Repository. Tenant
+// scope mirrors the Postgres adapter: rows owned by another tenant
+// collapse to ErrNotFound.
+func (r *inMemoryRepo) FindMessageByChannelExternalID(_ context.Context, tenantID uuid.UUID, channel, channelExternalID string) (*inbox.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.messages {
+		if m.TenantID != tenantID || m.ChannelExternalID != channelExternalID {
+			continue
+		}
+		conv, ok := r.conversations[m.ConversationID]
+		if !ok || conv.Channel != channel {
+			continue
+		}
+		cp := *m
+		return &cp, nil
+	}
+	return nil, inbox.ErrNotFound
+}
+
 func (r *inMemoryRepo) messageCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

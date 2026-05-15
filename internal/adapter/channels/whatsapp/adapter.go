@@ -26,6 +26,8 @@ type Adapter struct {
 	clock          Clock
 	logger         *slog.Logger
 	handlerMetrics *handlerMetrics
+	statusUpdater  inbox.MessageStatusUpdater
+	statusMetrics  *statusMetrics
 }
 
 // Option mutates an Adapter at construction time. Tests use options to
@@ -54,19 +56,40 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithMetricsRegistry registers the inbound-handler latency histogram
-// (whatsapp_handler_elapsed_seconds) on reg. Pass
-// prometheus.DefaultRegisterer in cmd/server; pass
-// prometheus.NewRegistry() inside tests to avoid duplicate-registration
-// panics. Omitting this option leaves the histogram unregistered —
-// every observe() call becomes a no-op so the adapter remains
-// functional without metrics. See
+// WithStatusUpdater wires the inbox.MessageStatusUpdater the adapter
+// uses to reconcile carrier status updates (sent / delivered / read /
+// failed). It is optional: without it the adapter still services
+// inbound messages, and any statuses[] in the payload are logged +
+// counted under outcome="dropped". Production wires the concrete
+// UpdateMessageStatus use case in PR8 onward (SIN-62734).
+func WithStatusUpdater(u inbox.MessageStatusUpdater) Option {
+	return func(a *Adapter) {
+		if u != nil {
+			a.statusUpdater = u
+		}
+	}
+}
+
+// WithMetricsRegistry registers every Prometheus instrument the
+// adapter owns onto reg in a single call:
+//
+//   - whatsapp_handler_elapsed_seconds (SIN-62762, handler-latency
+//     histogram partitioned by terminal result)
+//   - whatsapp_status_total (SIN-62734, status-update counter)
+//   - whatsapp_status_lag_seconds (SIN-62734, Meta-timestamp lag)
+//
+// reg MUST be non-nil; production wires prometheus.DefaultRegisterer
+// and tests inject a fresh prometheus.NewRegistry() to avoid
+// duplicate-registration panics. Omitting this option leaves every
+// instrument unregistered — every observe() call becomes a no-op so
+// the adapter remains functional without metrics. See
 // docs/runbooks/whatsapp-inbound-latency.md for the operational rule
-// the histogram drives (SIN-62762).
+// the handler histogram drives.
 func WithMetricsRegistry(reg prometheus.Registerer) Option {
 	return func(a *Adapter) {
 		if reg != nil {
 			a.handlerMetrics = newHandlerMetrics(reg)
+			a.statusMetrics = newStatusMetrics(reg)
 		}
 	}
 }
