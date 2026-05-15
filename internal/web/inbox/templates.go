@@ -21,9 +21,72 @@ import (
 // them as funcs (rather than computing inside the handler) means the
 // template stays declarative.
 var templateFuncs = template.FuncMap{
-	"relativeTime": relativeTime,
-	"messageClass": messageClass,
-	"truncate":     truncate,
+	"relativeTime":  relativeTime,
+	"messageClass":  messageClass,
+	"truncate":      truncate,
+	"isFinalStatus": isFinalStatus,
+	"statusGlyph":   statusGlyph,
+	"statusLabel":   statusLabel,
+}
+
+// finalStatuses are the terminal lifecycle states for outbound messages
+// (SIN-62736 / ADR 0095). The realtime polling loop on the message
+// bubble template renders WITHOUT hx-trigger attributes when the
+// rendered status is final, so HTMX stops polling after the swap.
+var finalStatuses = map[string]struct{}{
+	"read":   {},
+	"failed": {},
+}
+
+// isFinalStatus reports whether status terminates the outbound polling
+// loop. The two final states are "read" (recipient opened the message)
+// and "failed" (carrier rejected it). Pending / sent / delivered keep
+// polling.
+func isFinalStatus(status string) bool {
+	_, ok := finalStatuses[status]
+	return ok
+}
+
+// statusGlyph maps an outbound message status onto a WhatsApp-style
+// indicator glyph. Inbound messages return the empty string — the
+// status badge is conceptually about outbound delivery acks. Unknown
+// statuses also return empty so the bubble degrades to "no badge"
+// rather than dumping a raw label into the DOM.
+func statusGlyph(status string) string {
+	switch status {
+	case "pending":
+		return "⏱"
+	case "sent":
+		return "✓"
+	case "delivered":
+		return "✓✓"
+	case "read":
+		return "✓✓"
+	case "failed":
+		return "⚠"
+	default:
+		return ""
+	}
+}
+
+// statusLabel is the screen-reader / aria text for the status badge.
+// Server-rendered Portuguese so non-sighted users get the same context
+// the glyph carries.
+func statusLabel(status string) string {
+	switch status {
+	case "pending":
+		return "Aguardando envio"
+	case "sent":
+		return "Enviada"
+	case "delivered":
+		return "Entregue"
+	case "read":
+		return "Lida"
+	case "failed":
+		return "Falha ao enviar"
+	default:
+		return ""
+	}
 }
 
 // relativeTime renders a coarse "X seconds/minutes/hours/days ago" stamp
@@ -168,11 +231,27 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
 
 // messageBubbleTmpl is the smallest swap unit: a single message bubble
 // inside the conversation thread. POST /inbox/conversations/:id/messages
-// renders this template with the new message and uses
-// hx-swap=beforeend to append it without a full reload.
-var messageBubbleTmpl = template.Must(template.New("message_bubble").Funcs(templateFuncs).Parse(`<li class="message-bubble {{messageClass .Direction}}" data-status="{{.Status}}" role="listitem">
+// renders this template into the thread with hx-swap=beforeend;
+// GET /inbox/conversations/:id/messages/:msgID/status re-renders the
+// same template with hx-swap=outerHTML during the realtime polling loop
+// (SIN-62736 / ADR 0095). The hx-* polling attributes are emitted ONLY
+// for outbound messages in a non-final status — once the status reaches
+// "read" or "failed" the next swap drops the attributes and HTMX stops
+// polling for this bubble.
+var messageBubbleTmpl = template.Must(template.New("message_bubble").Funcs(templateFuncs).Parse(`<li id="msg-{{.ID}}" class="message-bubble {{messageClass .Direction}}" data-status="{{.Status}}" role="listitem"
+{{- if and (eq .Direction "out") (not (isFinalStatus .Status))}}
+  hx-get="/inbox/conversations/{{.ConversationID}}/messages/{{.ID}}/status?currentStatus={{.Status}}"
+  hx-trigger="every 3s"
+  hx-target="this"
+  hx-swap="outerHTML"
+{{- end}}>
   <p class="message-bubble__body">{{.Body}}</p>
   <time class="message-bubble__time" datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{relativeTime .CreatedAt}}</time>
+  {{- if eq .Direction "out"}}
+  {{- $glyph := statusGlyph .Status}}{{if $glyph}}
+  <span class="message-bubble__status message-bubble__status--{{.Status}}" aria-label="{{statusLabel .Status}}">{{$glyph}}</span>
+  {{- end}}
+  {{- end}}
 </li>
 `))
 

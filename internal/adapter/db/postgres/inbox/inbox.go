@@ -411,6 +411,46 @@ func (s *Store) ListMessages(ctx context.Context, tenantID, conversationID uuid.
 	return out, nil
 }
 
+// GetMessage returns the single message identified by
+// (tenantID, conversationID, messageID). Used by the realtime status
+// partial (SIN-62736): the HTMX bubble polls /messages/:id/status and
+// the handler reads through this method instead of ListMessages so the
+// hot path is O(1) per poll. RLS-hidden rows and rows belonging to a
+// different conversation collapse to domain.ErrNotFound — same posture
+// as GetConversation so callers cannot distinguish cross-tenant
+// existence.
+func (s *Store) GetMessage(ctx context.Context, tenantID, conversationID, messageID uuid.UUID) (*domain.Message, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: GetMessage: tenant id is nil")
+	}
+	if conversationID == uuid.Nil || messageID == uuid.Nil {
+		return nil, domain.ErrNotFound
+	}
+	var m *domain.Message
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `
+			SELECT id, tenant_id, conversation_id, direction, body, status,
+			       channel_external_id, sent_by_user_id, created_at
+			  FROM message
+			 WHERE id = $1
+			   AND conversation_id = $2
+		`, messageID, conversationID)
+		msg, err := scanMessage(row)
+		if err != nil {
+			return err
+		}
+		m = msg
+		return nil
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inbox/postgres: GetMessage: %w", err)
+	}
+	return m, nil
+}
+
 // Claim is the dedup-ledger half: insert the (channel, channelExternalID)
 // row, translating a UNIQUE violation to ErrInboundAlreadyProcessed.
 // NOT tenant-scoped — the receiver runs before tenant context exists.

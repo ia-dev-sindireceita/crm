@@ -318,6 +318,101 @@ func TestInboxAdapter_UpdateMessage_RejectsZeroTenantOrID(t *testing.T) {
 	}
 }
 
+func TestInboxAdapter_GetMessage_HappyPath(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+	contact := seedInboxContact(t, db, tenant)
+	c, _ := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), c); err != nil {
+		t.Fatalf("seed conv: %v", err)
+	}
+	m, _ := inbox.NewMessage(inbox.NewMessageInput{
+		TenantID: tenant, ConversationID: c.ID,
+		Direction: inbox.MessageDirectionOut, Body: "hi",
+		Status: inbox.MessageStatusPending,
+	})
+	if err := store.SaveMessage(context.Background(), m); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	got, err := store.GetMessage(context.Background(), tenant, c.ID, m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.ID != m.ID || got.ConversationID != c.ID || got.Status != inbox.MessageStatusPending {
+		t.Fatalf("got=%+v want id=%s conv=%s status=pending", got, m.ID, c.ID)
+	}
+}
+
+func TestInboxAdapter_GetMessage_NotFound(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+	_, err := store.GetMessage(context.Background(), tenant, uuid.New(), uuid.New())
+	if !errors.Is(err, inbox.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestInboxAdapter_GetMessage_RejectsZeroes(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	if _, err := store.GetMessage(context.Background(), uuid.Nil, uuid.New(), uuid.New()); err == nil {
+		t.Errorf("nil tenant should error")
+	}
+	if _, err := store.GetMessage(context.Background(), uuid.New(), uuid.Nil, uuid.New()); !errors.Is(err, inbox.ErrNotFound) {
+		t.Errorf("nil conversation should map to ErrNotFound, got %v", err)
+	}
+	if _, err := store.GetMessage(context.Background(), uuid.New(), uuid.New(), uuid.Nil); !errors.Is(err, inbox.ErrNotFound) {
+		t.Errorf("nil message id should map to ErrNotFound, got %v", err)
+	}
+}
+
+func TestInboxAdapter_GetMessage_WrongConversationIsNotFound(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+	contact := seedInboxContact(t, db, tenant)
+	c, _ := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), c); err != nil {
+		t.Fatalf("seed conv: %v", err)
+	}
+	m, _ := inbox.NewMessage(inbox.NewMessageInput{
+		TenantID: tenant, ConversationID: c.ID,
+		Direction: inbox.MessageDirectionOut, Body: "hi",
+	})
+	if err := store.SaveMessage(context.Background(), m); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	_, err := store.GetMessage(context.Background(), tenant, uuid.New(), m.ID)
+	if !errors.Is(err, inbox.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestInboxAdapter_GetMessage_CrossTenantIsHiddenByRLS(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenantA := seedContactsTenant(t, db)
+	contactA := seedInboxContact(t, db, tenantA)
+	convA, _ := inbox.NewConversation(tenantA, contactA.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), convA); err != nil {
+		t.Fatalf("seed conv: %v", err)
+	}
+	m, _ := inbox.NewMessage(inbox.NewMessageInput{
+		TenantID: tenantA, ConversationID: convA.ID,
+		Direction: inbox.MessageDirectionOut, Body: "hi",
+	})
+	if err := store.SaveMessage(context.Background(), m); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	tenantB := seedContactsTenant(t, db)
+	_, err := store.GetMessage(context.Background(), tenantB, convA.ID, m.ID)
+	if !errors.Is(err, inbox.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestInboxAdapter_Claim_AndMarkProcessed(t *testing.T) {
 	db := freshDBWithInboxContacts(t)
 	store := newInboxStore(t, db)

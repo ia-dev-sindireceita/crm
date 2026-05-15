@@ -67,12 +67,37 @@ func (s *stubSender) SendForView(_ context.Context, in inboxusecase.SendOutbound
 	return s.response, s.err
 }
 
+// stubGetMessage captures the GetMessage call args and returns a fixed
+// MessageView / error pair. Tests drive both the 200 (status changed)
+// and 304 (no change) branches of the realtime status partial.
+type stubGetMessage struct {
+	mu     sync.Mutex
+	in     inboxusecase.GetMessageInput
+	called bool
+	res    inboxusecase.GetMessageResult
+	err    error
+}
+
+func (s *stubGetMessage) Execute(_ context.Context, in inboxusecase.GetMessageInput) (inboxusecase.GetMessageResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.in = in
+	s.called = true
+	return s.res, s.err
+}
+
 func newHandler(t *testing.T, lister webinbox.ListConversationsUseCase, msgs webinbox.ListMessagesUseCase, sender webinbox.SendOutboundUseCase) *webinbox.Handler {
+	t.Helper()
+	return newHandlerWithGet(t, lister, msgs, sender, &stubGetMessage{})
+}
+
+func newHandlerWithGet(t *testing.T, lister webinbox.ListConversationsUseCase, msgs webinbox.ListMessagesUseCase, sender webinbox.SendOutboundUseCase, get webinbox.GetMessageUseCase) *webinbox.Handler {
 	t.Helper()
 	h, err := webinbox.New(webinbox.Deps{
 		ListConversations: lister,
 		ListMessages:      msgs,
 		SendOutbound:      sender,
+		GetMessage:        get,
 		CSRFToken:         func(*http.Request) string { return "csrf-test-token" },
 		UserID:            func(*http.Request) uuid.UUID { return uuid.Nil },
 	})
@@ -103,6 +128,7 @@ func TestNew_RequiresAllDeps(t *testing.T) {
 		ListConversations: &stubLister{},
 		ListMessages:      &stubMessages{},
 		SendOutbound:      &stubSender{},
+		GetMessage:        &stubGetMessage{},
 		CSRFToken:         func(*http.Request) string { return "tok" },
 		UserID:            func(*http.Request) uuid.UUID { return uuid.Nil },
 	}
@@ -111,11 +137,12 @@ func TestNew_RequiresAllDeps(t *testing.T) {
 		t.Fatalf("New(full): %v", err)
 	}
 	cases := map[string]webinbox.Deps{
-		"missing ListConversations": {ListMessages: full.ListMessages, SendOutbound: full.SendOutbound, CSRFToken: full.CSRFToken, UserID: full.UserID},
-		"missing ListMessages":      {ListConversations: full.ListConversations, SendOutbound: full.SendOutbound, CSRFToken: full.CSRFToken, UserID: full.UserID},
-		"missing SendOutbound":      {ListConversations: full.ListConversations, ListMessages: full.ListMessages, CSRFToken: full.CSRFToken, UserID: full.UserID},
-		"missing CSRFToken":         {ListConversations: full.ListConversations, ListMessages: full.ListMessages, SendOutbound: full.SendOutbound, UserID: full.UserID},
-		"missing UserID":            {ListConversations: full.ListConversations, ListMessages: full.ListMessages, SendOutbound: full.SendOutbound, CSRFToken: full.CSRFToken},
+		"missing ListConversations": {ListMessages: full.ListMessages, SendOutbound: full.SendOutbound, GetMessage: full.GetMessage, CSRFToken: full.CSRFToken, UserID: full.UserID},
+		"missing ListMessages":      {ListConversations: full.ListConversations, SendOutbound: full.SendOutbound, GetMessage: full.GetMessage, CSRFToken: full.CSRFToken, UserID: full.UserID},
+		"missing SendOutbound":      {ListConversations: full.ListConversations, ListMessages: full.ListMessages, GetMessage: full.GetMessage, CSRFToken: full.CSRFToken, UserID: full.UserID},
+		"missing GetMessage":        {ListConversations: full.ListConversations, ListMessages: full.ListMessages, SendOutbound: full.SendOutbound, CSRFToken: full.CSRFToken, UserID: full.UserID},
+		"missing CSRFToken":         {ListConversations: full.ListConversations, ListMessages: full.ListMessages, SendOutbound: full.SendOutbound, GetMessage: full.GetMessage, UserID: full.UserID},
+		"missing UserID":            {ListConversations: full.ListConversations, ListMessages: full.ListMessages, SendOutbound: full.SendOutbound, GetMessage: full.GetMessage, CSRFToken: full.CSRFToken},
 	}
 	for name, deps := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -209,6 +236,7 @@ func TestList_FailsWhenCSRFTokenEmpty(t *testing.T) {
 		ListConversations: lister,
 		ListMessages:      &stubMessages{},
 		SendOutbound:      &stubSender{},
+		GetMessage:        &stubGetMessage{},
 		CSRFToken:         func(*http.Request) string { return "" },
 		UserID:            func(*http.Request) uuid.UUID { return uuid.Nil },
 	})
@@ -331,6 +359,7 @@ func TestView_FailsWhenCSRFTokenEmpty(t *testing.T) {
 		ListConversations: &stubLister{},
 		ListMessages:      msgs,
 		SendOutbound:      &stubSender{},
+		GetMessage:        &stubGetMessage{},
 		CSRFToken:         func(*http.Request) string { return "" },
 		UserID:            func(*http.Request) uuid.UUID { return uuid.Nil },
 	})
@@ -365,6 +394,7 @@ func TestSend_HappyPath_RendersBubbleAndCallsUseCase(t *testing.T) {
 		ListConversations: &stubLister{},
 		ListMessages:      &stubMessages{},
 		SendOutbound:      sender,
+		GetMessage:        &stubGetMessage{},
 		CSRFToken:         func(*http.Request) string { return "tok" },
 		UserID:            func(*http.Request) uuid.UUID { return user },
 	})
@@ -511,6 +541,7 @@ func TestSend_NoUserIDPropagatesNilSentBy(t *testing.T) {
 		ListConversations: &stubLister{},
 		ListMessages:      &stubMessages{},
 		SendOutbound:      sender,
+		GetMessage:        &stubGetMessage{},
 		CSRFToken:         func(*http.Request) string { return "tok" },
 		UserID:            func(*http.Request) uuid.UUID { return uuid.Nil },
 	})
@@ -527,6 +558,278 @@ func TestSend_NoUserIDPropagatesNilSentBy(t *testing.T) {
 	}
 	if sender.in.SentByUserID != nil {
 		t.Fatalf("sent_by_user_id should be nil when UserID returns Nil; got %v", sender.in.SentByUserID)
+	}
+}
+
+// Status endpoint tests (SIN-62736 / ADR 0095). The realtime polling
+// loop on the message bubble polls this endpoint every 3 seconds while
+// the message is in a non-final state. The handler returns 304 when
+// the caller's ?currentStatus query matches the persisted status (so
+// HTMX leaves the bubble untouched), or 200 + a freshly rendered
+// bubble when the status changed.
+
+func TestStatus_Returns304WhenStatusUnchanged(t *testing.T) {
+	t.Parallel()
+	tenant := uuid.New()
+	convID := uuid.New()
+	msgID := uuid.New()
+	get := &stubGetMessage{res: inboxusecase.GetMessageResult{Message: inboxusecase.MessageView{
+		ID:             msgID,
+		ConversationID: convID,
+		Direction:      "out",
+		Body:           "olá",
+		Status:         "delivered",
+		CreatedAt:      time.Now(),
+	}}}
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, get)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	target := "/inbox/conversations/" + convID.String() + "/messages/" + msgID.String() + "/status?currentStatus=delivered"
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", tenant))
+
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status: got %d want 304; body=%q", rec.Code, rec.Body.String())
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control: got %q want no-store", cc)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("304 should have empty body, got %q", rec.Body.String())
+	}
+	if get.in.TenantID != tenant || get.in.ConversationID != convID || get.in.MessageID != msgID {
+		t.Fatalf("use-case args: %+v", get.in)
+	}
+}
+
+func TestStatus_Returns200AndBubbleWhenStatusChanged(t *testing.T) {
+	t.Parallel()
+	tenant := uuid.New()
+	convID := uuid.New()
+	msgID := uuid.New()
+	get := &stubGetMessage{res: inboxusecase.GetMessageResult{Message: inboxusecase.MessageView{
+		ID:             msgID,
+		ConversationID: convID,
+		Direction:      "out",
+		Body:           "olá",
+		Status:         "delivered",
+		CreatedAt:      time.Now(),
+	}}}
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, get)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	// Client believes status is still "sent"; persisted is "delivered" → re-render.
+	target := "/inbox/conversations/" + convID.String() + "/messages/" + msgID.String() + "/status?currentStatus=sent"
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", tenant))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control: got %q want no-store", cc)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="msg-` + msgID.String() + `"`,
+		`data-status="delivered"`,
+		// non-final outbound → still polling
+		`hx-get="/inbox/conversations/` + convID.String() + `/messages/` + msgID.String() + `/status?currentStatus=delivered"`,
+		`hx-trigger="every 3s"`,
+		`hx-swap="outerHTML"`,
+		// WhatsApp-style double check + Portuguese aria-label
+		`✓✓`,
+		`aria-label="Entregue"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\nbody=%s", want, body)
+		}
+	}
+}
+
+func TestStatus_FinalStatusStopsPolling(t *testing.T) {
+	t.Parallel()
+	tenant := uuid.New()
+	convID := uuid.New()
+	msgID := uuid.New()
+	cases := []struct {
+		status string
+		glyph  string
+		label  string
+	}{
+		{status: "read", glyph: "✓✓", label: "Lida"},
+		{status: "failed", glyph: "⚠", label: "Falha ao enviar"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.status, func(t *testing.T) {
+			t.Parallel()
+			get := &stubGetMessage{res: inboxusecase.GetMessageResult{Message: inboxusecase.MessageView{
+				ID:             msgID,
+				ConversationID: convID,
+				Direction:      "out",
+				Body:           "x",
+				Status:         tc.status,
+				CreatedAt:      time.Now(),
+			}}}
+			h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, get)
+			mux := http.NewServeMux()
+			h.Routes(mux)
+
+			rec := httptest.NewRecorder()
+			target := "/inbox/conversations/" + convID.String() + "/messages/" + msgID.String() + "/status?currentStatus=delivered"
+			mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", tenant))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status: got %d want 200", rec.Code)
+			}
+			body := rec.Body.String()
+			if strings.Contains(body, "hx-trigger") {
+				t.Errorf("final status %q must not emit hx-trigger; body=%s", tc.status, body)
+			}
+			if !strings.Contains(body, tc.glyph) {
+				t.Errorf("body missing glyph %q; body=%s", tc.glyph, body)
+			}
+			if !strings.Contains(body, `aria-label="`+tc.label+`"`) {
+				t.Errorf("body missing aria-label %q; body=%s", tc.label, body)
+			}
+		})
+	}
+}
+
+func TestStatus_InboundDoesNotPollOrShowGlyph(t *testing.T) {
+	t.Parallel()
+	tenant := uuid.New()
+	convID := uuid.New()
+	msgID := uuid.New()
+	get := &stubGetMessage{res: inboxusecase.GetMessageResult{Message: inboxusecase.MessageView{
+		ID:             msgID,
+		ConversationID: convID,
+		Direction:      "in",
+		Body:           "hi",
+		Status:         "delivered",
+		CreatedAt:      time.Now(),
+	}}}
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, get)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	target := "/inbox/conversations/" + convID.String() + "/messages/" + msgID.String() + "/status?currentStatus=pending"
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", tenant))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "hx-trigger") {
+		t.Errorf("inbound must not emit hx-trigger; body=%s", body)
+	}
+	if strings.Contains(body, "message-bubble__status") {
+		t.Errorf("inbound must not render status badge; body=%s", body)
+	}
+}
+
+func TestStatus_FailsWhenTenantMissing(t *testing.T) {
+	t.Parallel()
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, &stubGetMessage{})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	target := "/inbox/conversations/" + uuid.New().String() + "/messages/" + uuid.New().String() + "/status"
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d want 500", rec.Code)
+	}
+}
+
+func TestStatus_RejectsBadConversationID(t *testing.T) {
+	t.Parallel()
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, &stubGetMessage{})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	target := "/inbox/conversations/not-a-uuid/messages/" + uuid.New().String() + "/status"
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", uuid.New()))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", rec.Code)
+	}
+}
+
+func TestStatus_RejectsBadMessageID(t *testing.T) {
+	t.Parallel()
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, &stubGetMessage{})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	target := "/inbox/conversations/" + uuid.New().String() + "/messages/not-a-uuid/status"
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", uuid.New()))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", rec.Code)
+	}
+}
+
+func TestStatus_MapsErrNotFoundTo404(t *testing.T) {
+	t.Parallel()
+	get := &stubGetMessage{err: inboxusecase.ErrNotFound}
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, get)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	target := "/inbox/conversations/" + uuid.New().String() + "/messages/" + uuid.New().String() + "/status"
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", uuid.New()))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", rec.Code)
+	}
+}
+
+func TestStatus_MapsGenericErrorTo500(t *testing.T) {
+	t.Parallel()
+	get := &stubGetMessage{err: errors.New("boom")}
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, get)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	target := "/inbox/conversations/" + uuid.New().String() + "/messages/" + uuid.New().String() + "/status"
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", uuid.New()))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d want 500", rec.Code)
+	}
+}
+
+func TestStatus_EmptyCurrentStatusForcesRender(t *testing.T) {
+	t.Parallel()
+	// First render (no ?currentStatus= query): the handler MUST emit
+	// the bubble so the bootstrap path works even when the caller is
+	// not the polling loop.
+	tenant := uuid.New()
+	convID := uuid.New()
+	msgID := uuid.New()
+	get := &stubGetMessage{res: inboxusecase.GetMessageResult{Message: inboxusecase.MessageView{
+		ID:             msgID,
+		ConversationID: convID,
+		Direction:      "out",
+		Body:           "x",
+		Status:         "sent",
+		CreatedAt:      time.Now(),
+	}}}
+	h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, get)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	target := "/inbox/conversations/" + convID.String() + "/messages/" + msgID.String() + "/status"
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", tenant))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `data-status="sent"`) {
+		t.Errorf("missing data-status: %s", rec.Body.String())
 	}
 }
 

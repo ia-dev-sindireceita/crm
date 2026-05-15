@@ -80,6 +80,19 @@ type Repository interface {
 	// exists but has zero messages" (empty slice, nil error) from
 	// "conversation hidden by RLS" (ErrNotFound).
 	ListMessages(ctx context.Context, tenantID, conversationID uuid.UUID) ([]*Message, error)
+
+	// GetMessage returns the single message identified by (tenantID,
+	// conversationID, messageID). Used by the realtime status partial
+	// (SIN-62736) — the HTMX bubble polls the handler every few seconds
+	// and the handler reads the latest row through this method without
+	// the O(N) cost of ListMessages.
+	//
+	// Returns ErrNotFound when no row matches — either because the
+	// message id is unknown, the conversation is hidden by RLS, or the
+	// message belongs to a different conversation. The use case does
+	// not distinguish those modes to avoid leaking cross-tenant existence
+	// signals.
+	GetMessage(ctx context.Context, tenantID, conversationID, messageID uuid.UUID) (*Message, error)
 }
 
 // InboundDedupRepository is the global idempotency ledger backing the

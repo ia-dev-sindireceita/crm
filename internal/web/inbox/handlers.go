@@ -43,6 +43,15 @@ type SendOutboundUseCase interface {
 	SendForView(ctx context.Context, in inboxusecase.SendOutboundInput) (inboxusecase.MessageView, error)
 }
 
+// GetMessageUseCase is the single-message read-side that backs the
+// realtime status partial (SIN-62736). The HTMX bubble polls this
+// endpoint every few seconds while the message is in a non-final state
+// (∉ {read, failed}) so the operator sees the status transitions
+// without reloading the conversation pane.
+type GetMessageUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.GetMessageInput) (inboxusecase.GetMessageResult, error)
+}
+
 // CSRFTokenFn returns the request's CSRF token (typically sourced from
 // the session via the IAM auth middleware). The empty string is a
 // programming error: every handler runs after RequireAuth, which
@@ -61,6 +70,7 @@ type Deps struct {
 	ListConversations ListConversationsUseCase
 	ListMessages      ListMessagesUseCase
 	SendOutbound      SendOutboundUseCase
+	GetMessage        GetMessageUseCase
 	CSRFToken         CSRFTokenFn
 	UserID            UserIDFn
 	Logger            *slog.Logger
@@ -85,6 +95,9 @@ func New(deps Deps) (*Handler, error) {
 	if deps.SendOutbound == nil {
 		return nil, errors.New("web/inbox: SendOutbound is required")
 	}
+	if deps.GetMessage == nil {
+		return nil, errors.New("web/inbox: GetMessage is required")
+	}
 	if deps.CSRFToken == nil {
 		return nil, errors.New("web/inbox: CSRFToken is required")
 	}
@@ -97,13 +110,14 @@ func New(deps Deps) (*Handler, error) {
 	return &Handler{deps: deps}, nil
 }
 
-// Routes registers the three handlers on mux. Path patterns are Go
+// Routes registers the four handlers on mux. Path patterns are Go
 // 1.22 ServeMux style so the mux's longest-prefix rule wins over the
 // custom-domain catch-all at "/".
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /inbox", h.list)
 	mux.HandleFunc("GET /inbox/conversations/{id}", h.view)
 	mux.HandleFunc("POST /inbox/conversations/{id}/messages", h.send)
+	mux.HandleFunc("GET /inbox/conversations/{id}/messages/{msgID}/status", h.status)
 }
 
 // list renders the full inbox shell (left list + empty right pane).
@@ -237,6 +251,59 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := messageBubbleTmpl.Execute(w, msg); err != nil {
 		h.deps.Logger.Error("web/inbox: render bubble", "err", err)
+	}
+}
+
+// status is the realtime message-status partial that backs the bubble's
+// hx-trigger="every 3s" polling loop (SIN-62736, ADR 0095). The handler
+// looks up the message under the tenant + conversation scope and:
+//
+//   - returns 304 Not Modified when the caller's ?currentStatus= query
+//     param matches the persisted status (HTMX's default no-swap), or
+//   - returns 200 + a re-rendered message_bubble partial when the status
+//     changed. Final states (read/failed) render a bubble without the
+//     polling attrs so HTMX's outerHTML swap stops the loop.
+//
+// Cache-Control: no-store keeps intermediate caches (CDN, browser) from
+// pinning the partial — every poll MUST hit the origin so a freshly
+// reconciled status surfaces in the UI within the next poll window.
+func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	messageID, err := uuid.Parse(r.PathValue("msgID"))
+	if err != nil {
+		http.Error(w, "invalid message id", http.StatusBadRequest)
+		return
+	}
+	res, err := h.deps.GetMessage.Execute(r.Context(), inboxusecase.GetMessageInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+		MessageID:      messageID,
+	})
+	if err != nil {
+		if errors.Is(err, inboxusecase.ErrNotFound) {
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		h.fail(w, http.StatusInternalServerError, "get message", err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Query().Get("currentStatus") == res.Message.Status {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := messageBubbleTmpl.Execute(w, res.Message); err != nil {
+		h.deps.Logger.Error("web/inbox: render status bubble", "err", err)
 	}
 }
 

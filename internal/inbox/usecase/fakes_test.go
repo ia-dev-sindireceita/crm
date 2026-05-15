@@ -148,6 +148,17 @@ func (r *inMemoryRepo) ListConversations(_ context.Context, tenantID uuid.UUID, 
 	return out, nil
 }
 
+func (r *inMemoryRepo) GetMessage(_ context.Context, tenantID, conversationID, messageID uuid.UUID) (*inbox.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.messages[messageID]
+	if !ok || m.TenantID != tenantID || m.ConversationID != conversationID {
+		return nil, inbox.ErrNotFound
+	}
+	cp := *m
+	return &cp, nil
+}
+
 func (r *inMemoryRepo) ListMessages(_ context.Context, tenantID, conversationID uuid.UUID) ([]*inbox.Message, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
