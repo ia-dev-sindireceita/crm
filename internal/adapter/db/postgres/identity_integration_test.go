@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
+	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
 	"github.com/pericles-luz/crm/internal/contacts"
 )
 

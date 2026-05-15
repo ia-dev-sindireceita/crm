@@ -108,12 +108,16 @@ func DecideMerge(candidates []MergeCandidate) MergeDecision {
 		hasLeader bool
 		reason    LinkReason
 	}
+	// allIDs preserves first-seen insertion order so downstream
+	// reason-picking is deterministic even though byID is a map.
+	allIDs := make([]uuid.UUID, 0, len(candidates))
 	byID := make(map[uuid.UUID]*idMeta, len(candidates))
 	for _, c := range candidates {
 		m, ok := byID[c.IdentityID]
 		if !ok {
 			cp := idMeta{hasLeader: c.HasLeader, reason: c.Reason}
 			byID[c.IdentityID] = &cp
+			allIDs = append(allIDs, c.IdentityID)
 			continue
 		}
 		if c.HasLeader {
@@ -124,18 +128,14 @@ func DecideMerge(candidates []MergeCandidate) MergeDecision {
 		}
 	}
 
-	if len(byID) == 1 {
-		for id, m := range byID {
-			return MergeDecision{Action: MergeActionLink, TargetID: id, Reason: m.reason}
-		}
+	if len(allIDs) == 1 {
+		id := allIDs[0]
+		return MergeDecision{Action: MergeActionLink, TargetID: id, Reason: byID[id].reason}
 	}
 
-	// Collect IDs and count leader-bearing identities.
-	allIDs := make([]uuid.UUID, 0, len(byID))
 	var leaderIDs []uuid.UUID
-	for id, m := range byID {
-		allIDs = append(allIDs, id)
-		if m.hasLeader {
+	for _, id := range allIDs {
+		if byID[id].hasLeader {
 			leaderIDs = append(leaderIDs, id)
 		}
 	}
@@ -152,9 +152,9 @@ func DecideMerge(candidates []MergeCandidate) MergeDecision {
 		reason = byID[target].reason
 	} else {
 		target = smallestUUID(allIDs)
-		for _, m := range byID {
-			if reasonPriority(m.reason) > reasonPriority(reason) {
-				reason = m.reason
+		for _, id := range allIDs {
+			if reasonPriority(byID[id].reason) > reasonPriority(reason) {
+				reason = byID[id].reason
 			}
 		}
 	}

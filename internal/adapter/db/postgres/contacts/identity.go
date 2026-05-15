@@ -448,21 +448,17 @@ func (s *IdentityStore) loadIdentity(
 }
 
 // mergeInTx re-points all contact_identity_link rows from sourceID to
-// targetID and marks sourceID.merged_into_id = targetID. Uses SELECT
-// FOR UPDATE on both identity rows to prevent concurrent merge races.
+// targetID and marks sourceID.merged_into_id = targetID. Uses SELECT …
+// ORDER BY id FOR UPDATE so PostgreSQL acquires both row locks in a
+// deterministic order, preventing deadlocks when two concurrent merges
+// swap source/target.
 func (s *IdentityStore) mergeInTx(
 	ctx context.Context, tx pgx.Tx,
 	tenantID, sourceID, targetID uuid.UUID,
 ) error {
-	// Lock both identity rows in a consistent order (smallest UUID first)
-	// to prevent deadlocks when two concurrent merges swap source/target.
-	first, second := sourceID, targetID
-	if sourceID.String() > targetID.String() {
-		first, second = targetID, sourceID
-	}
 	if _, err := tx.Exec(ctx, `
-		SELECT id FROM identity WHERE id IN ($1, $2) FOR UPDATE
-	`, first, second); err != nil {
+		SELECT id FROM identity WHERE id IN ($1, $2) ORDER BY id FOR UPDATE
+	`, sourceID, targetID); err != nil {
 		return err
 	}
 
