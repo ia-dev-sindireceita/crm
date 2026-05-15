@@ -67,24 +67,3 @@ func HydrateAssignment(
 		Reason:         reason,
 	}
 }
-
-// NewLeaderAssignment is a transitional alias for NewAssignment kept
-// so the F2-07 leader test suite (added in PR #117) keeps compiling
-// without falling under Rule 3 test edits. Prefer NewAssignment in
-// new code; this shim will be removed under a separate Rule 3 ACK.
-func NewLeaderAssignment(
-	tenantID, conversationID, userID uuid.UUID,
-	reason LeadReason,
-) (*Assignment, error) {
-	return NewAssignment(tenantID, conversationID, userID, reason)
-}
-
-// HydrateLeaderAssignment is a transitional alias for HydrateAssignment;
-// see NewLeaderAssignment for why it lives here.
-func HydrateLeaderAssignment(
-	id, tenantID, conversationID, userID uuid.UUID,
-	assignedAt time.Time,
-	reason LeadReason,
-) *Assignment {
-	return HydrateAssignment(id, tenantID, conversationID, userID, assignedAt, reason)
-}

@@ -44,7 +44,7 @@ type Conversation struct {
 	CreatedAt      time.Time
 	// history is the in-memory projection of `assignment_history` rows
 	// loaded by the adapter, oldest-first. Domain methods Lead() /
-	// History() / AssignLead() operate on this slice.
+	// History() / AssignTo() operate on this slice.
 	history []*Assignment
 }
 
@@ -112,14 +112,6 @@ func (c *Conversation) AssignTo(userID uuid.UUID, reason LeadReason) (*Assignmen
 	return a, nil
 }
 
-// AssignLead is a transitional alias for AssignTo kept so the F2-07
-// leader test suite (added in PR #117) keeps compiling without
-// falling under Rule 3 test edits. Prefer AssignTo in new code; this
-// shim will be removed under a separate Rule 3 ACK.
-func (c *Conversation) AssignLead(userID uuid.UUID, reason LeadReason) (*Assignment, error) {
-	return c.AssignTo(userID, reason)
-}
-
 // Lead returns the current leader of the conversation: the most recent
 // row in the in-memory history. Returns nil when no leader has ever
 // been recorded (history empty). Callers MUST NOT mutate the returned
@@ -148,7 +140,7 @@ func (c *Conversation) History() []*Assignment {
 // loaded from `assignment_history` by the adapter. The caller MUST
 // pass rows ordered oldest-first; Lead() relies on the last element
 // being the most recent assignment. This is a hydration hook for
-// adapter code — domain callers should use AssignLead instead.
+// adapter code — domain callers should use AssignTo instead.
 func (c *Conversation) SetHistory(rows []*Assignment) {
 	if len(rows) == 0 {
 		c.history = nil

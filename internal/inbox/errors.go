@@ -46,7 +46,7 @@ var ErrConversationAlreadyOpen = errors.New("inbox: conversation already open")
 // always names a user.
 var ErrInvalidAssignee = errors.New("inbox: invalid assignee user id")
 
-// ErrInvalidLeadReason is returned by NewLeaderAssignment and
+// ErrInvalidLeadReason is returned by NewAssignment and
 // AssignmentRepository.AppendHistory when reason is not one of the
 // values listed in LeadReason. The CHECK constraint on
 // assignment_history.reason rejects anything else; this guard surfaces

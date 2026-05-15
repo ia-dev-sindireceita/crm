@@ -88,6 +88,45 @@ func TestConversation_AssignTo_RejectsClosed(t *testing.T) {
 	}
 }
 
+func TestConversation_History_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
+	if _, err := c.AssignTo(uuid.New(), inbox.LeadReasonLead); err != nil {
+		t.Fatalf("AssignTo: %v", err)
+	}
+	got := c.History()
+	got[0] = nil // mutate the returned slice
+	if len(c.History()) != 1 || c.History()[0] == nil {
+		t.Error("History returned an aliased slice; internal state was mutated")
+	}
+}
+
+func TestConversation_SetHistory_HydratesAndSyncsLeader(t *testing.T) {
+	t.Parallel()
+	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
+	u1, u2 := uuid.New(), uuid.New()
+	hydrated := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	rows := []*inbox.Assignment{
+		inbox.HydrateAssignment(uuid.New(), c.TenantID, c.ID, u1, hydrated, inbox.LeadReasonLead),
+		inbox.HydrateAssignment(uuid.New(), c.TenantID, c.ID, u2, hydrated.Add(60), inbox.LeadReasonReassign),
+	}
+	c.SetHistory(rows)
+	if c.Lead() == nil || c.Lead().UserID != u2 {
+		t.Errorf("Lead after Hydrate = %+v, want user %v", c.Lead(), u2)
+	}
+	if c.AssignedUserID == nil || *c.AssignedUserID != u2 {
+		t.Errorf("AssignedUserID = %v, want %v", c.AssignedUserID, u2)
+	}
+	if got := c.History(); len(got) != 2 {
+		t.Errorf("History len = %d, want 2", len(got))
+	}
+	// Empty rows should clear.
+	c.SetHistory(nil)
+	if c.Lead() != nil || len(c.History()) != 0 {
+		t.Errorf("after clearing: Lead=%+v History=%+v", c.Lead(), c.History())
+	}
+}
+
 func TestConversation_CloseAndReopen(t *testing.T) {
 	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
 	c.Close()
