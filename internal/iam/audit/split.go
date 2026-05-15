@@ -39,6 +39,7 @@ const (
 	SecurityEventImpersonationStop  SecurityEvent = "impersonation_stop"
 	SecurityEventMasterGrant        SecurityEvent = "master_grant"
 	SecurityEventAuthzDeny          SecurityEvent = "authz_deny"
+	SecurityEventAuthzAllow         SecurityEvent = "authz_allow"
 	SecurityEventSignatureFail      SecurityEvent = "signature_fail"
 	SecurityEventKeyRotation        SecurityEvent = "key_rotation"
 )
@@ -65,6 +66,7 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEventImpersonationStop:  {},
 	SecurityEventMasterGrant:        {},
 	SecurityEventAuthzDeny:          {},
+	SecurityEventAuthzAllow:         {},
 	SecurityEventSignatureFail:      {},
 	SecurityEventKeyRotation:        {},
 }

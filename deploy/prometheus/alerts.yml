@@ -46,3 +46,27 @@ groups:
         annotations:
           summary: "CRM 5xx ratio > 5% over 5m"
           description: "Investigate logs and recent deploys."
+
+  - name: crm-authz
+    interval: 30s
+    rules:
+      # SIN-62254 / ADR 0004 §6: horizontal probing detection. If one
+      # actor accumulates more than 10 deny decisions in any 1-minute
+      # window, treat it as probable authorization probing and page
+      # oncall. The threshold is a starting baseline — once we have
+      # 30 days of prod data, tune in alerts.yml and the runbook.
+      - alert: AuthzProbingHorizontal
+        expr: sum by (actor_user_id, tenant_id) (increase(authz_user_deny_total[1m])) > 10
+        for: 0m
+        labels:
+          severity: warning
+          channel: alerts
+        annotations:
+          summary: "Authorizer deny burst from one user (>10/min) — probable probing"
+          description: |
+            Actor {{ $labels.actor_user_id }} in tenant {{ $labels.tenant_id }}
+            accumulated {{ $value }} authorization denies in the last minute.
+            Most legitimate users see fewer than one deny per session; this
+            volume is typically a probing attempt (BOLA / IDOR) or a runaway
+            client. Investigate per docs/ops/runbook-probing-alert.md.
+          runbook: https://internal/runbooks/probing-alert

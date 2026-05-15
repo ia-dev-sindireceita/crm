@@ -53,6 +53,14 @@ func WithUserID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, ctxKeyUserID, id)
 }
 
+// RequestIDFromContext returns the request id seeded by WithRequestID,
+// or "" if none. Used by the authz wrapper (SIN-62254) to derive a
+// deterministic sampling decision on allow paths so the same request
+// stays in or out of the sample across retries.
+func RequestIDFromContext(ctx context.Context) string {
+	return ctxString(ctx, ctxKeyRequestID)
+}
+
 func ctxString(ctx context.Context, k ctxKeyType) string {
 	if ctx == nil {
 		return ""
