@@ -12,6 +12,7 @@ package inbox
 
 import (
 	"html/template"
+	"io"
 	"strings"
 	"time"
 )
@@ -190,5 +191,27 @@ func init() {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
 		}
+	}
+
+	// Force the html/template lazy-escape walk to run once now,
+	// single-threaded. html/template rewrites each parse tree on the
+	// first Execute to inject contextual escapers. Because we register
+	// the same child Trees on multiple *Template values via
+	// AddParseTree, the per-template escape mutex does not serialise
+	// concurrent first-Execute pairs on the shared trees — Go's race
+	// detector fires (see SIN-62774) and, in production, the very first
+	// concurrent request pair after boot could observe a corrupted
+	// template. Executing each root once here against io.Discard
+	// materialises the escape state before any handler runs. Data is
+	// nil because escape() runs before t.text.Execute(data), so the
+	// inevitable execution error is irrelevant — the escape walk has
+	// already settled by the time Execute returns.
+	for _, t := range []*template.Template{
+		inboxLayoutTmpl,
+		conversationListTmpl,
+		conversationViewTmpl,
+		messageBubbleTmpl,
+	} {
+		_ = t.Execute(io.Discard, nil)
 	}
 }
