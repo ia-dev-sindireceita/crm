@@ -58,6 +58,51 @@ func TestMustNewReceiveInbound_PanicsOnNil(t *testing.T) {
 	inboxusecase.MustNewReceiveInbound(nil, nil, nil)
 }
 
+// HandleInbound is the inbox.InboundChannel port shim used by carrier
+// adapters (PR6 WhatsApp webhook); it returns nil on a successful
+// persist and on a duplicate dedup hit alike — the rich
+// ReceiveInboundResult is for callers that want to differentiate.
+func TestHandleInbound_PortShim(t *testing.T) {
+	repo := newInMemoryRepo()
+	dedup := newInMemoryDedup()
+	contactsU := newStubContactUpserter()
+	u := inboxusecase.MustNewReceiveInbound(repo, dedup, contactsU)
+	tenant := uuid.New()
+	ev := inbox.InboundEvent{
+		TenantID:          tenant,
+		Channel:           "whatsapp",
+		ChannelExternalID: "wamid.handle.1",
+		SenderExternalID:  "+5511999990001",
+		SenderDisplayName: "Alice",
+		Body:              "hi",
+	}
+	if err := u.HandleInbound(context.Background(), ev); err != nil {
+		t.Fatalf("HandleInbound: %v", err)
+	}
+	// Second call → duplicate → still nil (Execute swallows dedup as success).
+	if err := u.HandleInbound(context.Background(), ev); err != nil {
+		t.Fatalf("HandleInbound (replay): %v", err)
+	}
+	// Validation failure propagates.
+	if err := u.HandleInbound(context.Background(), inbox.InboundEvent{}); err == nil {
+		t.Fatal("HandleInbound zero event must return validation error")
+	}
+}
+
+// Compile-time assertion mirroring receive_inbound.go's
+// `var _ inbox.InboundChannel = (*ReceiveInbound)(nil)` is exercised
+// implicitly by HandleInbound's signature; keep a runtime assertion
+// here too so a future refactor that breaks the port surface fails
+// loudly under go test rather than only at composition-root
+// wire-up time.
+func TestReceiveInbound_SatisfiesInboundChannel(t *testing.T) {
+	repo := newInMemoryRepo()
+	dedup := newInMemoryDedup()
+	contactsU := newStubContactUpserter()
+	u := inboxusecase.MustNewReceiveInbound(repo, dedup, contactsU)
+	var _ inbox.InboundChannel = u
+}
+
 func TestReceiveInbound_HappyPath(t *testing.T) {
 	repo := newInMemoryRepo()
 	dedup := newInMemoryDedup()

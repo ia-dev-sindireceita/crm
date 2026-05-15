@@ -176,6 +176,17 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		log.Printf("crm: webhook intake mounted on public listener")
 	}
 
+	// SIN-62731 WhatsApp Cloud-API inbound webhook. Registered after
+	// the generic ADR-0075 intake so the more-specific
+	// `POST /webhooks/whatsapp` pattern wins over the templated
+	// `POST /webhooks/{channel}/{webhook_token}` route (Go 1.22 mux
+	// already prefers the more specific pattern).
+	wa := buildWhatsAppWiring(ctx, getenv)
+	if wa != nil {
+		defer wa.Cleanup()
+		wa.Register(mux)
+	}
+
 	// SIN-62331 F51 — slug reservation wiring. Mount the master
 	// override route, the signup + tenant-rename placeholders guarded
 	// by RequireSlugAvailable, and the upload pipeline. The redirect

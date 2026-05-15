@@ -94,6 +94,22 @@ type ReceiveInboundResult struct {
 	Duplicate    bool
 }
 
+// HandleInbound implements the inbox.InboundChannel port. Carrier
+// adapters (PR6 WhatsApp webhook receiver, PR7+ webchat) call this
+// instead of Execute when they don't need the rich ReceiveInboundResult
+// — they care only about success / duplicate / error, and duplicate is
+// already encoded as a nil error (ADR 0087 §D3 step 4: the worker
+// commits and ACKs the carrier with no Message created).
+func (u *ReceiveInbound) HandleInbound(ctx context.Context, ev inbox.InboundEvent) error {
+	_, err := u.Execute(ctx, ev)
+	return err
+}
+
+// Compile-time guard: ReceiveInbound must satisfy the InboundChannel
+// port so the composition root can hand it directly to a carrier
+// adapter (e.g. the WhatsApp webhook receiver).
+var _ inbox.InboundChannel = (*ReceiveInbound)(nil)
+
 // Execute runs the inbound pipeline. See type-level doc-comment for
 // the full algorithm.
 func (u *ReceiveInbound) Execute(ctx context.Context, ev inbox.InboundEvent) (ReceiveInboundResult, error) {
