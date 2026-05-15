@@ -27,6 +27,14 @@ import (
 // lives under a t.TempDir so concurrent tests do not collide.
 func runEmbedded(t *testing.T) string {
 	t.Helper()
+	return runEmbeddedWith(t, nil)
+}
+
+// runEmbeddedWith boots an embedded server with optional auth/TLS
+// overrides applied to the options struct. Used by the [SIN-62815]
+// auth-required integration test.
+func runEmbeddedWith(t *testing.T, override func(*natsserver.Options)) string {
+	t.Helper()
 
 	port := pickFreePort(t)
 	opts := &natsserver.Options{
@@ -36,6 +44,9 @@ func runEmbedded(t *testing.T) string {
 		NoSigs:    true,
 		JetStream: true,
 		StoreDir:  t.TempDir(),
+	}
+	if override != nil {
+		override(opts)
 	}
 	s, err := natsserver.NewServer(opts)
 	if err != nil {
@@ -72,6 +83,10 @@ func connect(t *testing.T, url string) *natsadapter.SDKAdapter {
 		ConnectTimeout: 2 * time.Second,
 		ReconnectWait:  100 * time.Millisecond,
 		MaxReconnects:  0,
+		// The embedded test server runs plaintext+anonymous; opt into
+		// Insecure so the secure-by-default Connect ([SIN-62815]) does
+		// not refuse the connection.
+		Insecure: true,
 	})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -284,3 +299,79 @@ var errFake = stringErr("fake handler error")
 type stringErr string
 
 func (s stringErr) Error() string { return string(s) }
+
+// ---------------------------------------------------------------------
+// [SIN-62815] auth-enabled integration coverage
+// ---------------------------------------------------------------------
+
+// TestSDK_Embedded_Auth_TokenConnects boots an embedded server with
+// the broker-level Authorization token set and proves the SDKAdapter's
+// new auth surface plumbs the matching SDKConfig.Token through to a
+// successful Connect + Publish + Subscribe round-trip.
+//
+// This is the AC-named integration test for [SIN-62815]: a deploy with
+// auth enabled at the broker MUST refuse an anonymous client and MUST
+// accept the configured client.
+func TestSDK_Embedded_Auth_TokenConnects(t *testing.T) {
+	const token = "s3cret-token-for-test-only"
+
+	url := runEmbeddedWith(t, func(o *natsserver.Options) {
+		o.Authorization = token
+	})
+
+	// Anonymous client must be rejected by the broker. Insecure=true
+	// bypasses our client-side secure-default checks so we exercise
+	// the broker-level refusal, not our own validation.
+	if _, err := natsadapter.Connect(context.Background(), natsadapter.SDKConfig{
+		URL:            url,
+		ConnectTimeout: 2 * time.Second,
+		Insecure:       true,
+	}); err == nil {
+		t.Fatal("expected anonymous client to be rejected by token-protected broker")
+	}
+
+	// Authenticated client must connect and pass a round-trip.
+	a, err := natsadapter.Connect(context.Background(), natsadapter.SDKConfig{
+		URL:            url,
+		ConnectTimeout: 2 * time.Second,
+		Token:          token,
+		Insecure:       true, // plaintext loopback for the test
+	})
+	if err != nil {
+		t.Fatalf("authenticated Connect: %v", err)
+	}
+	t.Cleanup(a.Close)
+
+	if err := a.EnsureStream("MED_AUTH", []string{"med_auth.>"}); err != nil {
+		t.Fatalf("EnsureStream: %v", err)
+	}
+
+	var (
+		seen atomic.Int32
+		wg   sync.WaitGroup
+	)
+	wg.Add(1)
+	sub, err := a.Subscribe(context.Background(), "med_auth.s", "g", "d_auth", time.Second,
+		func(_ context.Context, d *natsadapter.Delivery) error {
+			defer wg.Done()
+			if got, want := string(d.Data()), "authed"; got != want {
+				t.Errorf("data = %q, want %q", got, want)
+			}
+			_ = d.Ack(context.Background())
+			seen.Add(1)
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	if err := a.Publish(context.Background(), "med_auth.s", []byte("authed")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	waitOrFail(t, &wg, 3*time.Second)
+	if seen.Load() != 1 {
+		t.Errorf("seen = %d, want 1", seen.Load())
+	}
+}

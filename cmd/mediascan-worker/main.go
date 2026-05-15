@@ -5,7 +5,7 @@
 // Configuration is read from the environment to keep secrets out of
 // flags and config files (12-factor):
 //
-//	NATS_URL            mandatory, e.g. nats://nats:4222
+//	NATS_URL            mandatory, e.g. tls://nats.example:4222
 //	POSTGRES_DSN        mandatory, pgxpool DSN for app_runtime
 //	CLAMD_ADDR          mandatory, host:port of clamd
 //	WORKER_CONCURRENCY  optional, default 4 (see comments below)
@@ -16,6 +16,25 @@
 //	                    wired (Fase 1 development); the production
 //	                    blob reader is the S3/MinIO adapter to be
 //	                    introduced alongside SIN-62805.
+//
+// NATS auth + TLS hardening ([SIN-62815]). Production deploys MUST set
+// one of these auth knobs (pick exactly one):
+//
+//	NATS_CREDS_FILE     path to chained .creds JWT — preferred for
+//	                    production (rotatable on disk, scoped subject).
+//	NATS_NKEY_FILE      path to NKey seed file (no JWT).
+//	NATS_TOKEN          shared-secret bearer token (legacy / dev).
+//
+// For TLS / mTLS:
+//
+//	NATS_TLS_CA         PEM bundle path; required when NATS_URL is
+//	                    tls:// or wss:// (unless NATS_INSECURE=1).
+//	NATS_TLS_CERT       optional client cert for mTLS (paired w/ KEY).
+//	NATS_TLS_KEY        optional client key for mTLS  (paired w/ CERT).
+//
+// NATS_INSECURE=1 opts the process out of the secure-by-default posture
+// (plaintext + no auth). Only acceptable for in-cluster dev rigs that
+// ride a private network; pre-deploy review blocks it for prod.
 package main
 
 import (
@@ -82,6 +101,13 @@ func run(logger *slog.Logger) error {
 		URL:           cfg.natsURL,
 		Name:          "crm-mediascan-worker",
 		MaxReconnects: -1,
+		Token:         cfg.natsToken,
+		NKeyFile:      cfg.natsNKeyFile,
+		CredsFile:     cfg.natsCredsFile,
+		TLSCAFile:     cfg.natsTLSCAFile,
+		TLSCertFile:   cfg.natsTLSCertFile,
+		TLSKeyFile:    cfg.natsTLSKeyFile,
+		Insecure:      cfg.natsInsecure,
 	})
 	if err != nil {
 		return fmt.Errorf("nats.Connect: %w", err)
@@ -120,11 +146,17 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("nats subscribe: %w", err)
 	}
 
+	// Log the security posture so an operator can audit the deploy
+	// without grepping env. Paths only; never the secret material.
 	logger.Info("mediascan-worker ready",
 		"nats", cfg.natsURL,
 		"stream", cfg.streamName,
 		"queue", cfg.queueName,
 		"concurrency", cfg.concurrency,
+		"auth", natsAuthMode(cfg),
+		"tls_ca", cfg.natsTLSCAFile,
+		"mtls", cfg.natsTLSCertFile != "" && cfg.natsTLSKeyFile != "",
+		"insecure", cfg.natsInsecure,
 	)
 
 	<-rootCtx.Done()
@@ -152,17 +184,33 @@ type config struct {
 	durableName string
 	queueName   string
 	blobBaseDir string
+
+	// NATS auth + TLS — see package doc for the env knobs ([SIN-62815]).
+	natsToken       string
+	natsNKeyFile    string
+	natsCredsFile   string
+	natsTLSCAFile   string
+	natsTLSCertFile string
+	natsTLSKeyFile  string
+	natsInsecure    bool
 }
 
 func loadConfig() (config, error) {
 	c := config{
-		natsURL:     os.Getenv("NATS_URL"),
-		postgresDSN: os.Getenv("POSTGRES_DSN"),
-		clamdAddr:   os.Getenv("CLAMD_ADDR"),
-		streamName:  envOr("MEDIA_STREAM_NAME", "MEDIA_SCAN"),
-		durableName: envOr("MEDIA_DURABLE_NAME", "mediascan-worker"),
-		queueName:   envOr("MEDIA_QUEUE_NAME", "mediascan-workers"),
-		blobBaseDir: os.Getenv("BLOB_BASE_DIR"),
+		natsURL:         os.Getenv("NATS_URL"),
+		postgresDSN:     os.Getenv("POSTGRES_DSN"),
+		clamdAddr:       os.Getenv("CLAMD_ADDR"),
+		streamName:      envOr("MEDIA_STREAM_NAME", "MEDIA_SCAN"),
+		durableName:     envOr("MEDIA_DURABLE_NAME", "mediascan-worker"),
+		queueName:       envOr("MEDIA_QUEUE_NAME", "mediascan-workers"),
+		blobBaseDir:     os.Getenv("BLOB_BASE_DIR"),
+		natsToken:       os.Getenv("NATS_TOKEN"),
+		natsNKeyFile:    os.Getenv("NATS_NKEY_FILE"),
+		natsCredsFile:   os.Getenv("NATS_CREDS_FILE"),
+		natsTLSCAFile:   os.Getenv("NATS_TLS_CA"),
+		natsTLSCertFile: os.Getenv("NATS_TLS_CERT"),
+		natsTLSKeyFile:  os.Getenv("NATS_TLS_KEY"),
+		natsInsecure:    envBool("NATS_INSECURE"),
 	}
 	missing := []string{}
 	if c.natsURL == "" {
@@ -177,6 +225,16 @@ func loadConfig() (config, error) {
 	if len(missing) > 0 {
 		return c, fmt.Errorf("missing required env: %v", missing)
 	}
+
+	// Cross-field NATS security validation. SDKConfig.validate() would
+	// catch most of this on Connect, but failing earlier with a config-
+	// level message makes the deploy error clearer to the operator and
+	// keeps the error wording aimed at env knobs rather than struct
+	// fields.
+	if err := validateNATSSecurity(c); err != nil {
+		return c, err
+	}
+
 	c.concurrency = 4
 	if v := os.Getenv("WORKER_CONCURRENCY"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -186,6 +244,69 @@ func loadConfig() (config, error) {
 		c.concurrency = n
 	}
 	return c, nil
+}
+
+// validateNATSSecurity rejects deploy mistakes at startup before any
+// socket is opened. Logging deliberately surfaces paths (so the
+// operator can fix the env) but never file contents.
+func validateNATSSecurity(c config) error {
+	authCount := 0
+	if c.natsToken != "" {
+		authCount++
+	}
+	if c.natsNKeyFile != "" {
+		authCount++
+	}
+	if c.natsCredsFile != "" {
+		authCount++
+	}
+	if authCount > 1 {
+		return errors.New("NATS auth: set at most one of NATS_TOKEN, NATS_NKEY_FILE, NATS_CREDS_FILE")
+	}
+
+	scheme := strings.ToLower(strings.SplitN(c.natsURL, "://", 2)[0])
+	switch scheme {
+	case "tls", "wss":
+		if c.natsTLSCAFile == "" && !c.natsInsecure {
+			return fmt.Errorf("NATS_URL is %s:// but NATS_TLS_CA is empty (set NATS_TLS_CA=/path/to/ca.pem or NATS_INSECURE=1 to bypass)", scheme)
+		}
+	case "nats", "ws":
+		if !c.natsInsecure {
+			return errors.New("NATS_URL is plaintext; set a tls:// URL with NATS_TLS_CA, or NATS_INSECURE=1 to acknowledge the insecure transport")
+		}
+	}
+
+	// mTLS pairing — easier to catch here than at Connect time.
+	if (c.natsTLSCertFile != "") != (c.natsTLSKeyFile != "") {
+		return errors.New("NATS mTLS: NATS_TLS_CERT and NATS_TLS_KEY must be set together")
+	}
+
+	return nil
+}
+
+// natsAuthMode reports which auth knob is wired, never the secret
+// itself. Used for the startup log line.
+func natsAuthMode(c config) string {
+	switch {
+	case c.natsCredsFile != "":
+		return "creds-file"
+	case c.natsNKeyFile != "":
+		return "nkey-file"
+	case c.natsToken != "":
+		return "token"
+	default:
+		return "none"
+	}
+}
+
+func envBool(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func envOr(key, fallback string) string {

@@ -230,7 +230,7 @@ func TestMediaScan_E2E_InfectedEICAR(t *testing.T) {
 
 	url := startEmbeddedNATS(t)
 	a, err := natsadapter.Connect(context.Background(), natsadapter.SDKConfig{
-		URL: url, ConnectTimeout: 2 * time.Second,
+		URL: url, ConnectTimeout: 2 * time.Second, Insecure: true,
 	})
 	if err != nil {
 		t.Fatalf("nats.Connect: %v", err)
@@ -322,7 +322,7 @@ func TestMediaScan_E2E_CleanFile(t *testing.T) {
 
 	url := startEmbeddedNATS(t)
 	a, err := natsadapter.Connect(context.Background(), natsadapter.SDKConfig{
-		URL: url, ConnectTimeout: 2 * time.Second,
+		URL: url, ConnectTimeout: 2 * time.Second, Insecure: true,
 	})
 	if err != nil {
 		t.Fatalf("nats.Connect: %v", err)
