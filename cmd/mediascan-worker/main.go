@@ -91,7 +91,7 @@ import (
 	natsadapter "github.com/pericles-luz/crm/internal/adapter/messaging/nats"
 	"github.com/pericles-luz/crm/internal/media/alert"
 	"github.com/pericles-luz/crm/internal/media/quarantine"
-	"github.com/pericles-luz/crm/internal/media/worker"
+	"github.com/pericles-luz/crm/internal/media/scanner"
 )
 
 func main() {
@@ -125,133 +125,56 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("messagemedia.New: %w", err)
 	}
 
-	blobs, err := buildBlobReader(cfg)
+	return runWithStore(rootCtx, cfg, store, logger)
+}
+
+// runWithStore is the testable interior of run() — it does everything
+// except dial Postgres + build the Store, which require live infra.
+// Tests drive runWithStore with an in-memory MessageMediaStore fake and
+// drive each error branch directly (bad MinIO creds, bad NATS URL,
+// invalid clamd addr, invalid Slack webhook) without standing up a
+// real Postgres / NATS / MinIO / Slack rig.
+func runWithStore(ctx context.Context, cfg config, store scanner.MessageMediaStore, logger *slog.Logger) error {
+	sharedMinioProvider, err := openMinioProvider(cfg)
+	if err != nil {
+		return fmt.Errorf("minio credentials: %w", err)
+	}
+
+	blobs, err := buildBlobReaderWithProvider(cfg, sharedMinioProvider)
 	if err != nil {
 		return fmt.Errorf("blob reader: %w", err)
 	}
 
-	scannerAdapter, err := clamavadapter.New(clamavadapter.Config{
-		Addr: cfg.clamdAddr,
-	}, blobs)
+	scannerAdapter, err := openScanner(cfg, blobs)
 	if err != nil {
 		return fmt.Errorf("clamav.New: %w", err)
 	}
 
-	natsAdapter, err := natsadapter.Connect(rootCtx, natsadapter.SDKConfig{
-		URL:           cfg.natsURL,
-		Name:          "crm-mediascan-worker",
-		MaxReconnects: -1,
-		Token:         cfg.natsToken,
-		NKeyFile:      cfg.natsNKeyFile,
-		CredsFile:     cfg.natsCredsFile,
-		TLSCAFile:     cfg.natsTLSCAFile,
-		TLSCertFile:   cfg.natsTLSCertFile,
-		TLSKeyFile:    cfg.natsTLSKeyFile,
-		Insecure:      cfg.natsInsecure,
-	})
+	natsAdapter, err := natsadapter.Connect(ctx, buildNATSConfig(cfg))
 	if err != nil {
 		return fmt.Errorf("nats.Connect: %w", err)
 	}
 	defer natsAdapter.Close()
 
-	if err := natsAdapter.EnsureStream(cfg.streamName, []string{
-		worker.SubjectRequested,
-		worker.SubjectCompleted,
-	}); err != nil {
-		return fmt.Errorf("ensure stream: %w", err)
-	}
-
-	handler, err := worker.New(scannerAdapter, store, &publisherShim{a: natsAdapter}, logger)
+	quarantiner, err := buildQuarantiner(cfg, sharedMinioProvider)
 	if err != nil {
-		return fmt.Errorf("worker.New: %w", err)
+		return fmt.Errorf("minio.New (quarantine): %w", err)
 	}
-
-	// Defense-in-depth wiring ([SIN-62805] F2-05d). The MinIO Quarantiner
-	// is mandatory when MINIO_ENDPOINT is set — its absence means the
-	// worker would silently re-serve infected blobs. The Slack alerter
-	// is optional: absence means infected verdicts page only via Loki
-	// (the worker still logs at ERROR level), which is acceptable for
-	// non-production environments.
-	if cfg.minioEndpoint != "" {
-		// The quarantine adapter and the BlobReader share the same
-		// rotating provider so the underlying STS refresh is hit at most
-		// once per cfg.minioCredsRefresh, regardless of how many sigs the
-		// worker emits in between ([SIN-62819]).
-		provider, err := buildCredentialsProvider(cfg)
-		if err != nil {
-			return fmt.Errorf("minio credentials: %w", err)
-		}
-		q, err := minioadapter.New(minioadapter.Config{
-			Endpoint:            cfg.minioEndpoint,
-			Region:              cfg.minioRegion,
-			SourceBucket:        cfg.minioSource,
-			DestinationBucket:   cfg.minioDest,
-			CredentialsProvider: provider,
-		})
-		if err != nil {
-			return fmt.Errorf("minio.New (quarantine): %w", err)
-		}
-		handler.Quarantiner = quarantine.Quarantiner(q)
-	}
-	if cfg.slackWebhookURL != "" {
-		a, err := slackadapter.NewMediaAlerter(slackadapter.Config{
-			WebhookURL: cfg.slackWebhookURL,
-		})
-		if err != nil {
-			return fmt.Errorf("slack.NewMediaAlerter: %w", err)
-		}
-		handler.Alerter = alert.Alerter(a)
-	}
-
-	// Concurrency is enforced via a buffered semaphore so the
-	// QueueSubscribe callback does not spawn unbounded goroutines on
-	// burst. AckWait is set to the slowest scan we expect to
-	// tolerate (default 30s for ClamAV INSTREAM on multi-MB blobs);
-	// graceful shutdown waits for the semaphore to drain.
-	sem := make(chan struct{}, cfg.concurrency)
-	done := make(chan struct{})
-
-	sub, err := natsAdapter.Subscribe(rootCtx, worker.SubjectRequested,
-		cfg.queueName, cfg.durableName, 30*time.Second,
-		func(ctx context.Context, d *natsadapter.Delivery) error {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			return handler.Handle(ctx, d)
-		},
-	)
+	alerter, err := buildAlerter(cfg)
 	if err != nil {
-		return fmt.Errorf("nats subscribe: %w", err)
+		return fmt.Errorf("slack.NewMediaAlerter: %w", err)
 	}
 
-	// Log the security posture so an operator can audit the deploy
-	// without grepping env. Paths only; never the secret material.
-	logger.Info("mediascan-worker ready",
-		"nats", cfg.natsURL,
-		"stream", cfg.streamName,
-		"queue", cfg.queueName,
-		"concurrency", cfg.concurrency,
-		"auth", natsAuthMode(cfg),
-		"tls_ca", cfg.natsTLSCAFile,
-		"mtls", cfg.natsTLSCertFile != "" && cfg.natsTLSKeyFile != "",
-		"insecure", cfg.natsInsecure,
-		"quarantiner", handler.Quarantiner != nil,
-		"alerter", handler.Alerter != nil,
-		"minio_creds", minioCredsMode(cfg),
-		"minio_creds_refresh", cfg.minioCredsRefresh.String(),
-	)
-
-	<-rootCtx.Done()
-	close(done)
-
-	// Stop accepting new deliveries; in-flight ones get up to
-	// AckWait to drain. Drain the NATS conn so the broker sees us
-	// leave cleanly.
-	logger.Info("mediascan-worker shutting down")
-	_ = sub.Drain()
-	if err := natsAdapter.Drain(); err != nil {
-		logger.Warn("nats drain", "err", err.Error())
-	}
-	return nil
+	return Wire(ctx, Deps{
+		Cfg:         cfg,
+		Logger:      logger,
+		Scanner:     scannerAdapter,
+		Store:       store,
+		NATS:        &natsAdapterShim{a: natsAdapter},
+		Publisher:   &publisherShim{a: natsAdapter},
+		Quarantiner: quarantiner,
+		Alerter:     alerter,
+	})
 }
 
 // config is the parsed env. Required fields are kept private to force
@@ -479,6 +402,86 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// openMinioProvider returns the shared MinIO CredentialsProvider when
+// MINIO_ENDPOINT is set, nil otherwise. The Reader and the Quarantiner
+// MUST consume the same returned value so STS refresh ([SIN-62819]) is
+// hit at most once per cfg.minioCredsRefresh.
+func openMinioProvider(cfg config) (minioadapter.CredentialsProvider, error) {
+	if cfg.minioEndpoint == "" {
+		return nil, nil
+	}
+	return buildCredentialsProvider(cfg)
+}
+
+// openScanner constructs the ClamAV MediaScanner from cfg.clamdAddr
+// plus the resolved blob reader. Thin wrap kept here so run() does not
+// need to know the adapter's Config shape; tests can drive the
+// error-path (empty Addr / nil blobs) without standing up clamd.
+func openScanner(cfg config, blobs clamavadapter.BlobReader) (scanner.MediaScanner, error) {
+	return clamavadapter.New(clamavadapter.Config{Addr: cfg.clamdAddr}, blobs)
+}
+
+// buildNATSConfig translates the parsed env config into the SDK-shaped
+// SDKConfig the natsadapter consumes. Pure data transform — no I/O —
+// so it can be exercised by unit tests without dialing NATS.
+func buildNATSConfig(cfg config) natsadapter.SDKConfig {
+	return natsadapter.SDKConfig{
+		URL:           cfg.natsURL,
+		Name:          "crm-mediascan-worker",
+		MaxReconnects: -1,
+		Token:         cfg.natsToken,
+		NKeyFile:      cfg.natsNKeyFile,
+		CredsFile:     cfg.natsCredsFile,
+		TLSCAFile:     cfg.natsTLSCAFile,
+		TLSCertFile:   cfg.natsTLSCertFile,
+		TLSKeyFile:    cfg.natsTLSKeyFile,
+		Insecure:      cfg.natsInsecure,
+	}
+}
+
+// buildQuarantiner returns the MinIO-backed Quarantiner when
+// MINIO_ENDPOINT is set, otherwise nil. The provider MUST be the same
+// CredentialsProvider passed to buildBlobReaderWithProvider so the
+// Reader and the Quarantiner share the same RotatingProvider cache
+// ([SIN-62819]).
+//
+// Defense-in-depth wiring ([SIN-62805] F2-05d). The MinIO Quarantiner
+// is mandatory when MINIO_ENDPOINT is set — its absence means the
+// worker would silently re-serve infected blobs.
+func buildQuarantiner(cfg config, provider minioadapter.CredentialsProvider) (quarantine.Quarantiner, error) {
+	if cfg.minioEndpoint == "" {
+		return nil, nil
+	}
+	q, err := minioadapter.New(minioadapter.Config{
+		Endpoint:            cfg.minioEndpoint,
+		Region:              cfg.minioRegion,
+		SourceBucket:        cfg.minioSource,
+		DestinationBucket:   cfg.minioDest,
+		CredentialsProvider: provider,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return quarantine.Quarantiner(q), nil
+}
+
+// buildAlerter returns the Slack-backed Alerter when SLACK_WEBHOOK_URL
+// is set, otherwise nil. The Slack alerter is optional: absence means
+// infected verdicts page only via Loki (the worker still logs at ERROR
+// level), which is acceptable for non-production environments.
+func buildAlerter(cfg config) (alert.Alerter, error) {
+	if cfg.slackWebhookURL == "" {
+		return nil, nil
+	}
+	a, err := slackadapter.NewMediaAlerter(slackadapter.Config{
+		WebhookURL: cfg.slackWebhookURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return alert.Alerter(a), nil
+}
+
 // buildBlobReader returns the BlobReader the ClamAV adapter uses to
 // fetch the runtime blob. Production: MinIO Reader against the runtime
 // `media` bucket. Dev/smoke without MinIO: local-fs reader rooted at
@@ -486,14 +489,33 @@ func envOr(key, fallback string) string {
 // configured; the worker fails fast at startup otherwise so a deploy
 // with both unset cannot silently re-serve infected blobs.
 //
-// The MinIO branch reuses the same CredentialsProvider as the quarantine
-// adapter ([SIN-62819]) so STS rotation rotates both signing paths off
-// the same cache.
+// This helper builds its own RotatingProvider for the MinIO branch.
+// Production wiring (run()) uses buildBlobReaderWithProvider so the
+// Reader and the Quarantiner share a single provider; this entrypoint
+// stays for tests that exercise the dev/local-fs branch and the
+// MINIO_ENDPOINT-without-BLOB_BASE_DIR error path.
 func buildBlobReader(cfg config) (clamavadapter.BlobReader, error) {
+	var provider minioadapter.CredentialsProvider
 	if cfg.minioEndpoint != "" {
-		provider, err := buildCredentialsProvider(cfg)
+		p, err := buildCredentialsProvider(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("blob reader credentials: %w", err)
+		}
+		provider = p
+	}
+	return buildBlobReaderWithProvider(cfg, provider)
+}
+
+// buildBlobReaderWithProvider is the production-side BlobReader
+// builder. When MINIO_ENDPOINT is set the caller MUST pass the same
+// CredentialsProvider it wires into the Quarantiner — that is the
+// shared-cache invariant ([SIN-62819]) the package comment promises.
+// Passing a nil provider while MINIO_ENDPOINT is set is rejected so a
+// caller cannot silently bypass the cache by forgetting the share.
+func buildBlobReaderWithProvider(cfg config, provider minioadapter.CredentialsProvider) (clamavadapter.BlobReader, error) {
+	if cfg.minioEndpoint != "" {
+		if provider == nil {
+			return nil, errors.New("blob reader: MINIO_ENDPOINT set but credentials provider is nil")
 		}
 		return minioadapter.NewReader(minioadapter.ReaderConfig{
 			Endpoint:            cfg.minioEndpoint,
