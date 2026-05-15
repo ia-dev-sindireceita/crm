@@ -82,3 +82,33 @@ var ErrInboundAlreadyProcessed = errors.New("inbox: inbound message already proc
 // has no body; those are funneled through AdvanceStatus on an existing
 // message, never through NewMessage.
 var ErrInvalidBody = errors.New("inbox: message body must not be empty")
+
+// ErrChannelDisabled is returned by an OutboundChannel adapter when the
+// tenant's feature flag for the carrier is off. The use case treats it
+// as a domain failure (the message will be marked failed); the operator
+// learns about it through the rejected outcome on the send metric and
+// can re-enable the flag without code changes.
+var ErrChannelDisabled = errors.New("inbox: channel disabled for tenant")
+
+// ErrChannelAuthFailed is returned by an OutboundChannel adapter when
+// the carrier rejected our credentials (401/403). This is an
+// infrastructure-level failure — SRE must rotate the token; the
+// per-message retry pattern cannot fix it. The use case stops here and
+// records the message as failed; alerting on this outcome is set up at
+// the dashboard layer.
+var ErrChannelAuthFailed = errors.New("inbox: channel auth failed")
+
+// ErrChannelRejected is returned by an OutboundChannel adapter when the
+// carrier rejected the message on domain grounds — invalid recipient,
+// the 24h freeform window expired, the template is not approved, etc.
+// Retries WILL NOT help. The adapter MUST preserve the carrier's
+// human-readable message in the wrapped error so the operator sees why
+// it failed without consulting the carrier dashboard.
+var ErrChannelRejected = errors.New("inbox: channel rejected message")
+
+// ErrChannelTransient is returned by an OutboundChannel adapter when
+// the carrier or the network is temporarily unavailable — 5xx, timeout,
+// connection reset. The adapter retries within its own bounded budget
+// before surfacing this; the caller decides on higher-level retries
+// (reconciler, requeue) and treats the per-message attempt as failed.
+var ErrChannelTransient = errors.New("inbox: channel transient failure")
