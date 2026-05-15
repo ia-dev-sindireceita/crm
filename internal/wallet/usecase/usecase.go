@@ -24,6 +24,28 @@ import (
 // frozen clock to make the version/updated_at fields deterministic.
 type Clock func() time.Time
 
+// MaxIdempotencyKeyLen caps the idempotency key length accepted at the
+// use-case boundary. The cap is well above the longest key the
+// well-behaved callers produce (a UUID is 36 chars; a tenant_id + nonce
+// pair fits in <80) and well below the byte budget the UNIQUE index on
+// token_ledger.idempotency_key can index without bloating B-tree pages.
+// 128 bytes is the same bound the surrounding services use for caller-
+// supplied opaque identifiers.
+const MaxIdempotencyKeyLen = 128
+
+// validateIdempotencyKey enforces the empty + length checks at the
+// boundary. Inlined into every entry point so the failure surfaces
+// before any repository call.
+func validateIdempotencyKey(key string) error {
+	if key == "" {
+		return wallet.ErrEmptyIdempotencyKey
+	}
+	if len(key) > MaxIdempotencyKeyLen {
+		return wallet.ErrIdempotencyKeyTooLong
+	}
+	return nil
+}
+
 // maxAttempts caps the optimistic-retry loop on a version conflict
 // during ApplyWithLock. The bound is the worst-case adversarial-
 // scheduling depth: under the F30 race-test (N=100 concurrent
@@ -76,8 +98,8 @@ func (s *Service) Reserve(ctx context.Context, tenantID uuid.UUID, amount int64,
 	if amount <= 0 {
 		return nil, wallet.ErrInvalidAmount
 	}
-	if idempotencyKey == "" {
-		return nil, wallet.ErrEmptyIdempotencyKey
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return nil, err
 	}
 
 	var lastErr error
@@ -166,8 +188,8 @@ func (s *Service) Commit(ctx context.Context, r *wallet.Reservation, actualAmoun
 	if actualAmount > r.Amount {
 		return wallet.ErrInvalidAmount
 	}
-	if idempotencyKey == "" {
-		return wallet.ErrEmptyIdempotencyKey
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return err
 	}
 
 	var lastErr error
@@ -249,8 +271,8 @@ func (s *Service) Release(ctx context.Context, r *wallet.Reservation, idempotenc
 	if r == nil {
 		return errors.New("wallet/usecase: reservation is nil")
 	}
-	if idempotencyKey == "" {
-		return wallet.ErrEmptyIdempotencyKey
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return err
 	}
 
 	var lastErr error
@@ -327,8 +349,8 @@ func (s *Service) Grant(ctx context.Context, tenantID uuid.UUID, amount int64, i
 	if amount <= 0 {
 		return wallet.ErrInvalidAmount
 	}
-	if idempotencyKey == "" {
-		return wallet.ErrEmptyIdempotencyKey
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return err
 	}
 
 	var lastErr error

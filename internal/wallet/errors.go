@@ -65,6 +65,14 @@ var ErrInvalidAmount = errors.New("wallet: amount must be positive")
 // trip the database. We reject earlier so the message is actionable.
 var ErrEmptyIdempotencyKey = errors.New("wallet: idempotency key must not be empty")
 
+// ErrIdempotencyKeyTooLong is returned when the caller-supplied
+// idempotency key exceeds MaxIdempotencyKeyLen. The cap bounds an
+// untrusted boundary input: the ledger table can in theory hold an
+// arbitrarily long key, and the UNIQUE index over it grows linearly
+// with the key length. Rejecting at the use-case boundary keeps an
+// attacker from forcing the database to index multi-kilobyte strings.
+var ErrIdempotencyKeyTooLong = errors.New("wallet: idempotency key exceeds maximum length")
+
 // ErrZeroTenant is returned when uuid.Nil is passed where a tenant id
 // is required. Domain code never trusts uuid.Nil as a sentinel.
 var ErrZeroTenant = errors.New("wallet: tenant id must not be uuid.Nil")

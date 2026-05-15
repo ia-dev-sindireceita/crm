@@ -1,6 +1,7 @@
 package wallet
 
 import (
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -167,8 +168,18 @@ func (w *TokenWallet) Release(amount int64, now time.Time) error {
 // the source as external_ref / kind. Negative grants are not allowed —
 // debits must go through Reserve+Commit so they are guarded by the
 // available-balance check.
+//
+// Grant refuses to wrap int64. Without the overflow check, a sufficiently
+// large amount could push balance past math.MaxInt64 and into negative
+// territory, where the database CHECK (balance >= 0) catches the wrap
+// post-update. That second-line defense surfaces as an opaque pg CHECK
+// violation; rejecting at the domain returns the actionable
+// ErrInvalidAmount so callers can map it to "amount too large".
 func (w *TokenWallet) Grant(amount int64, now time.Time) error {
 	if amount <= 0 {
+		return ErrInvalidAmount
+	}
+	if amount > math.MaxInt64-w.balance {
 		return ErrInvalidAmount
 	}
 	w.balance += amount
