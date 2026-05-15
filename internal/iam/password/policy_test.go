@@ -45,13 +45,6 @@ func (f *fakePwned) IsPwned(_ context.Context, plain string) (bool, error) {
 // behaviour boundary-stable.
 func TestPolicyCheck_AcceptanceMatrix(t *testing.T) {
 	t.Parallel()
-	pwned := &fakePwned{
-		defaultMode: "miss",
-		triggers: map[string]string{
-			"Password123!": "hit",
-		},
-	}
-	pol := &Policy{Pwned: pwned}
 
 	cases := []struct {
 		name    string
@@ -132,6 +125,16 @@ func TestPolicyCheck_AcceptanceMatrix(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			// Per-subtest fixture: shared *fakePwned pointers leak the
+			// internal `calls` counter into a parallel data race even
+			// though no subtest reads it. Keep each subtest's state
+			// independent so the race detector stays honest.
+			pol := &Policy{Pwned: &fakePwned{
+				defaultMode: "miss",
+				triggers: map[string]string{
+					"Password123!": "hit",
+				},
+			}}
 			err := pol.PolicyCheck(context.Background(), tc.plain, tc.ctx)
 			if tc.wantOK {
 				if err != nil {
