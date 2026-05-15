@@ -150,10 +150,12 @@ func (a *Adapter) handlePost(w http.ResponseWriter, r *http.Request) {
 		writeAck(w)
 		return
 	}
-	if !a.timestampInWindow(&env, a.clock.Now()) {
+	if dir := a.timestampWindowDirection(&env, a.clock.Now()); dir != "" {
 		result = "dropped_timestamp_window"
+		a.timestampWindowDrop(Channel, dir)
 		a.logger.Warn("whatsapp.timestamp_outside_window",
-			slog.String("body_sha256", hashHex(body)))
+			slog.String("body_sha256", hashHex(body)),
+			slog.String("direction", dir))
 		writeAck(w)
 		return
 	}
@@ -378,15 +380,22 @@ func (a *Adapter) verifySignature(headerVal string, body []byte) bool {
 	return hmac.Equal(gotBytes, mac.Sum(nil))
 }
 
-// timestampInWindow accepts any entry[].time that falls within
-// [now-PastWindow, now+FutureSkew]. The window is the envelope-level
-// freshness check from ADR 0075 §D3 — we trust Meta's clock here
+// timestampWindowDirection returns "" when every entry[].time falls
+// within [now-PastWindow, now+FutureSkew], or the direction label of
+// the first breach: "past" (older than PastWindow) or "future"
+// (beyond FutureSkew). The window enforces the freshness check from
+// ADR 0075 §D3 widened by ADR 0094 §3 — we trust Meta's clock here
 // because Meta signs the envelope, including the timestamp, with the
-// app secret. Empty entries return true so we still get one log line
+// app secret. Empty entries return "" so we still get one log line
 // per parse-error envelope (rare in practice but defensive).
-func (a *Adapter) timestampInWindow(env *metaEnvelope, now time.Time) bool {
+//
+// The direction label drives webhook_timestamp_window_drop_total
+// (ADR 0094 §3.1). "past" bursts indicate Meta retry budget exceeded
+// or a captured-body replay attempt at scale; "future" bursts
+// indicate clock skew on our side or a future-pivoted replay.
+func (a *Adapter) timestampWindowDirection(env *metaEnvelope, now time.Time) string {
 	if env == nil || len(env.Entry) == 0 {
-		return true
+		return ""
 	}
 	pastBound := now.Add(-a.cfg.PastWindow)
 	futureBound := now.Add(a.cfg.FutureSkew)
@@ -395,11 +404,14 @@ func (a *Adapter) timestampInWindow(env *metaEnvelope, now time.Time) bool {
 			continue
 		}
 		ts := time.Unix(e.Time, 0).UTC()
-		if ts.Before(pastBound) || ts.After(futureBound) {
-			return false
+		if ts.Before(pastBound) {
+			return "past"
+		}
+		if ts.After(futureBound) {
+			return "future"
 		}
 	}
-	return true
+	return ""
 }
 
 // writeAck sends the empty 200 Meta expects. Content-Type is JSON for

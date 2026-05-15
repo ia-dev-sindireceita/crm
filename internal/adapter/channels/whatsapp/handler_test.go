@@ -40,16 +40,44 @@ type testKit struct {
 	rate     *fakeRateLimiter
 	clock    *fakeClock
 	tenant   uuid.UUID
+	drops    *fakeTimestampDropCounter
+}
+
+// fakeTimestampDropCounter records (channel, direction) calls so the
+// ADR 0094 tests can assert the counter wire-up matches the drop
+// direction without spinning up a Prometheus registry.
+type fakeTimestampDropCounter struct {
+	mu   sync.Mutex
+	hits map[string]int
+}
+
+func newFakeTimestampDropCounter() *fakeTimestampDropCounter {
+	return &fakeTimestampDropCounter{hits: map[string]int{}}
+}
+
+func (c *fakeTimestampDropCounter) inc(channel, direction string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hits[channel+"|"+direction]++
+}
+
+func (c *fakeTimestampDropCounter) count(channel, direction string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hits[channel+"|"+direction]
 }
 
 func newTestKit(t *testing.T) *testKit {
 	t.Helper()
 	cfg := whatsapp.Config{
-		AppSecret:      testAppSecret,
-		VerifyToken:    testVerifyToken,
-		RateMaxPerMin:  10,
-		MaxBodyBytes:   1 << 20,
-		PastWindow:     5 * time.Minute,
+		AppSecret:     testAppSecret,
+		VerifyToken:   testVerifyToken,
+		RateMaxPerMin: 10,
+		MaxBodyBytes:  1 << 20,
+		// ADR 0094 §3: PastWindow widened to 24h so the test fixture
+		// exercises the new Meta-retry-budget envelope. FutureSkew
+		// unchanged at 1m — different threat class (ADR 0094 §3.3).
+		PastWindow:     24 * time.Hour,
 		FutureSkew:     time.Minute,
 		DeliverTimeout: 2 * time.Second,
 	}
@@ -60,10 +88,12 @@ func newTestKit(t *testing.T) *testKit {
 	cl := newFakeClock(time.Unix(1_700_000_000, 0).UTC())
 	tenantID := uuid.MustParse("11111111-1111-4111-8111-111111111111")
 	res.Register(testPhoneID, tenantID)
+	drops := newFakeTimestampDropCounter()
 
 	a, err := whatsapp.New(cfg, in, res, fl, rl,
 		whatsapp.WithClock(cl),
-		whatsapp.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+		whatsapp.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		whatsapp.WithTimestampWindowDropCounter(drops.inc))
 	if err != nil {
 		t.Fatalf("whatsapp.New: %v", err)
 	}
@@ -81,6 +111,7 @@ func newTestKit(t *testing.T) *testKit {
 		rate:     rl,
 		clock:    cl,
 		tenant:   tenantID,
+		drops:    drops,
 	}
 }
 
@@ -263,7 +294,9 @@ func TestPost_KnownHMACVector_Accepts(t *testing.T) {
 func TestPost_TimestampStale_Drops(t *testing.T) {
 	t.Parallel()
 	k := newTestKit(t)
-	stale := k.clock.Now().Add(-10 * time.Minute) // outside 5-min past window
+	// ADR 0094 §3: PastWindow is 24h. Use 25h ago so the envelope is
+	// unambiguously outside the new window without sitting on the edge.
+	stale := k.clock.Now().Add(-25 * time.Hour)
 	body := envelopeJSON(t, testPhoneID, stale, envMsg{WamID: "w1", From: "+1", Body: "x"})
 	resp := k.post(t, body, signBody(t, body))
 	if resp.StatusCode != http.StatusOK {
@@ -271,6 +304,33 @@ func TestPost_TimestampStale_Drops(t *testing.T) {
 	}
 	if k.inbox.PersistedCount() != 0 {
 		t.Fatalf("stale timestamp must not persist: got %d", k.inbox.PersistedCount())
+	}
+	if got := k.drops.count(whatsapp.Channel, "past"); got != 1 {
+		t.Fatalf("webhook_timestamp_window_drop_total{channel=%q,direction=past} = %d, want 1", whatsapp.Channel, got)
+	}
+}
+
+// TestPost_TimestampInsidePastWindow_PersistsAt23h is the ADR 0094
+// regression test: a payload arriving 23h59m late (well inside Meta's
+// 24h retry budget) must persist. If a future change accidentally
+// narrows PastWindow back to a Meta-incompatible value, this test
+// fires.
+func TestPost_TimestampInsidePastWindow_PersistsAt23h(t *testing.T) {
+	t.Parallel()
+	k := newTestKit(t)
+	inside := k.clock.Now().Add(-(23*time.Hour + 59*time.Minute))
+	body := envelopeJSON(t, testPhoneID, inside, envMsg{
+		WamID: "wamid.retry23h", From: "+5511955554444", Body: "late",
+	})
+	resp := k.post(t, body, signBody(t, body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if k.inbox.PersistedCount() != 1 {
+		t.Fatalf("23h59m-old delivery must persist: got %d", k.inbox.PersistedCount())
+	}
+	if got := k.drops.count(whatsapp.Channel, "past"); got != 0 {
+		t.Fatalf("inside-window delivery must not bump the past-drop counter: got %d", got)
 	}
 }
 
@@ -285,6 +345,9 @@ func TestPost_TimestampFutureBeyondSkew_Drops(t *testing.T) {
 	}
 	if k.inbox.PersistedCount() != 0 {
 		t.Fatalf("future timestamp must not persist: got %d", k.inbox.PersistedCount())
+	}
+	if got := k.drops.count(whatsapp.Channel, "future"); got != 1 {
+		t.Fatalf("webhook_timestamp_window_drop_total{channel=%q,direction=future} = %d, want 1", whatsapp.Channel, got)
 	}
 }
 
@@ -462,7 +525,7 @@ func TestPost_ConcurrentReplay_OneMessage(t *testing.T) {
 		VerifyToken:    testVerifyToken,
 		RateMaxPerMin:  100000,
 		MaxBodyBytes:   1 << 20,
-		PastWindow:     5 * time.Minute,
+		PastWindow:     24 * time.Hour,
 		FutureSkew:     time.Minute,
 		DeliverTimeout: 5 * time.Second,
 	}, k.inbox, k.resolver, k.flag, k.rate,

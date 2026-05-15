@@ -28,6 +28,12 @@ type Adapter struct {
 	handlerMetrics *handlerMetrics
 	statusUpdater  inbox.MessageStatusUpdater
 	statusMetrics  *statusMetrics
+	// timestampWindowDrop is invoked when handlePost drops a webhook
+	// because its envelope timestamp fell outside [now-PastWindow,
+	// now+FutureSkew]. Production wires obs.Metrics.WebhookTimestampWindowDrop
+	// (ADR 0094). Default is a no-op so tests that don't care about
+	// the metric stay terse.
+	timestampWindowDrop func(channel, direction string)
 }
 
 // Option mutates an Adapter at construction time. Tests use options to
@@ -94,6 +100,20 @@ func WithMetricsRegistry(reg prometheus.Registerer) Option {
 	}
 }
 
+// WithTimestampWindowDropCounter wires the callback handlePost invokes
+// when an envelope is dropped because its timestamp fell outside the
+// configured replay window. cmd/server passes
+// obs.Metrics.WebhookTimestampWindowDrop so the
+// webhook_timestamp_window_drop_total counter (ADR 0094) increments
+// per drop. A nil fn is accepted and treated as a no-op.
+func WithTimestampWindowDropCounter(fn func(channel, direction string)) Option {
+	return func(a *Adapter) {
+		if fn != nil {
+			a.timestampWindowDrop = fn
+		}
+	}
+}
+
 // New constructs an Adapter. Required dependencies are validated up
 // front so a misconfigured composition root panics at startup rather
 // than emitting a 500 on the first webhook delivery.
@@ -117,13 +137,14 @@ func New(cfg Config, in inbox.InboundChannel, t TenantResolver, f FeatureFlag, r
 		return nil, errors.New("whatsapp: RateLimiter is nil")
 	}
 	a := &Adapter{
-		cfg:     cfg,
-		inbox:   in,
-		tenants: t,
-		flag:    f,
-		rate:    r,
-		clock:   systemClock{},
-		logger:  slog.Default(),
+		cfg:                 cfg,
+		inbox:               in,
+		tenants:             t,
+		flag:                f,
+		rate:                r,
+		clock:               systemClock{},
+		logger:              slog.Default(),
+		timestampWindowDrop: func(string, string) {},
 	}
 	for _, opt := range opts {
 		opt(a)

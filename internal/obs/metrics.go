@@ -35,6 +35,17 @@ func IncRLSMiss() {
 	}
 }
 
+// WebhookTimestampWindowDrop is the package-level shortcut for
+// Metrics.WebhookTimestampWindowDrop. No-op when SetDefault has not
+// yet been called, so webhook adapters (notably channels/whatsapp)
+// can wire this as their drop callback without depending on a
+// concrete *Metrics reference. ADR 0094 §3.1.
+func WebhookTimestampWindowDrop(channel, direction string) {
+	if m := defaultMetrics.Load(); m != nil {
+		m.WebhookTimestampWindowDrop(channel, direction)
+	}
+}
+
 // Metrics is the small Prometheus surface SIN-62218 exposes. One
 // instance is constructed at boot and shared via package-level
 // helpers; tests that need isolation construct their own with
@@ -51,6 +62,18 @@ type Metrics struct {
 	// deliberately excluded — the offending IP / email lives in the
 	// log line, not the metric.
 	AuthRateLimitDenies *prometheus.CounterVec
+	// WebhookTimestampWindowDrops counts inbound webhook deliveries
+	// dropped because the envelope timestamp fell outside the
+	// configured replay window (ADR 0094). Labels are channel
+	// (e.g. "whatsapp") + direction ("past" — older than PastWindow,
+	// or "future" — beyond FutureSkew). tenant_id is intentionally
+	// absent: the drop happens before tenant resolution, so labelling
+	// it would either be empty or leak unauthenticated input
+	// (ADR 0075 §D4 invariant). Sustained `direction="past"` rate
+	// indicates Meta's retry budget was exceeded OR a captured-body
+	// replay at scale — alert rule lives at
+	// deploy/prometheus/webhook-rules.yml.
+	WebhookTimestampWindowDrops *prometheus.CounterVec
 }
 
 // NewMetrics builds a fresh registry plus the three SIN-62218
@@ -77,8 +100,12 @@ func NewMetrics() *Metrics {
 			Name: "auth_ratelimit_deny_total",
 			Help: "HTTP rate-limit 429s emitted by the auth middleware, partitioned by policy and bucket.",
 		}, []string{"policy", "bucket"}),
+		WebhookTimestampWindowDrops: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "webhook_timestamp_window_drop_total",
+			Help: "Inbound webhook drops because the envelope timestamp fell outside the configured replay window (ADR 0094). direction=past means older than PastWindow (Meta retry budget exceeded OR captured-body replay); direction=future means beyond FutureSkew (clock-skew or future-pivot replay).",
+		}, []string{"channel", "direction"}),
 	}
-	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies)
+	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies, m.WebhookTimestampWindowDrops)
 	return m
 }
 
@@ -92,6 +119,19 @@ func (m *Metrics) AuthRateLimitDeny(policy, bucket, _key string, _retryAfter tim
 		return
 	}
 	m.AuthRateLimitDenies.WithLabelValues(policy, bucket).Inc()
+}
+
+// WebhookTimestampWindowDrop is the canonical increment callback for
+// webhook adapters that drop a delivery because its envelope timestamp
+// fell outside the replay window (ADR 0094). channel is the adapter's
+// canonical name (e.g. "whatsapp"); direction is "past" or "future".
+// Safe with a nil receiver so wireup that omits Metrics still
+// compiles.
+func (m *Metrics) WebhookTimestampWindowDrop(channel, direction string) {
+	if m == nil {
+		return
+	}
+	m.WebhookTimestampWindowDrops.WithLabelValues(channel, direction).Inc()
 }
 
 // Handler returns the http.Handler that exposes m's registry over

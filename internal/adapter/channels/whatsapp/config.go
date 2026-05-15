@@ -14,14 +14,24 @@ import (
 // subscription handshake. Both are required; an empty value at startup
 // is a misconfiguration (cmd/server fails fast).
 const (
-	EnvAppSecret             = "META_APP_SECRET"
-	EnvVerifyToken           = "META_VERIFY_TOKEN"
-	EnvWhatsAppEnabled       = "FEATURE_WHATSAPP_ENABLED"
-	EnvWhatsAppTenantAllow   = "FEATURE_WHATSAPP_TENANTS"
-	EnvWhatsAppRateMax       = "WHATSAPP_RATE_MAX_PER_MIN"
-	defaultRateMaxPerMinute  = 600
-	defaultMaxBodyBytes      = 1 << 20 // 1 MiB
-	defaultReplayWindowPast  = 5 * time.Minute
+	EnvAppSecret            = "META_APP_SECRET"
+	EnvVerifyToken          = "META_VERIFY_TOKEN"
+	EnvWhatsAppEnabled      = "FEATURE_WHATSAPP_ENABLED"
+	EnvWhatsAppTenantAllow  = "FEATURE_WHATSAPP_TENANTS"
+	EnvWhatsAppRateMax      = "WHATSAPP_RATE_MAX_PER_MIN"
+	defaultRateMaxPerMinute = 600
+	defaultMaxBodyBytes     = 1 << 20 // 1 MiB
+	// defaultReplayWindowPast matches Meta Cloud API's documented 24h
+	// retry budget — ADR 0094 §3. The 5min predecessor converted any
+	// partition longer than 5 minutes into silent customer message loss
+	// because Meta would mark the retry "delivered" on our 200 OK.
+	//
+	// INVARIANT: dedup_retention (inbound_message_dedup, 30 days per
+	// ADR 0089 §4) > defaultReplayWindowPast (24h). If retention is
+	// ever shortened below 24h, this ADR must be reopened — the
+	// captured-body-replay defense decomposition in ADR 0094 §1 / §6
+	// rests on dedup outlasting the window.
+	defaultReplayWindowPast  = 24 * time.Hour
 	defaultReplayWindowSkew  = time.Minute
 	defaultDeliverTimeoutSec = 4
 )

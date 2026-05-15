@@ -41,6 +41,7 @@ import (
 	pgstore "github.com/pericles-luz/crm/internal/adapter/store/postgres"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
+	"github.com/pericles-luz/crm/internal/obs"
 )
 
 // whatsappWiring bundles the artifacts buildWhatsAppWiring produces.
@@ -131,7 +132,12 @@ func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *gored
 		// (whatsapp_handler_elapsed_seconds) on the global registry so
 		// scrape endpoints under /metrics include it. Runbook:
 		// docs/runbooks/whatsapp-inbound-latency.md.
-		whatsapp.WithMetricsRegistry(prometheus.DefaultRegisterer))
+		whatsapp.WithMetricsRegistry(prometheus.DefaultRegisterer),
+		// SIN-62763 / ADR 0094: wire the webhook_timestamp_window_drop_total
+		// callback through obs.SetDefault — the package-level helper
+		// is a no-op until cmd/server installs an obs.Metrics
+		// instance, matching the existing IncRLSMiss pattern.
+		whatsapp.WithTimestampWindowDropCounter(obs.WebhookTimestampWindowDrop))
 	if err != nil {
 		return nil, nil, err
 	}

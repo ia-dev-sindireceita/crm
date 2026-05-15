@@ -212,6 +212,47 @@ func TestNewMetrics_TwoInstancesAreIndependent(t *testing.T) {
 	}
 }
 
+func TestWebhookTimestampWindowDrop_IncrementsLabelledCounter(t *testing.T) {
+	t.Parallel()
+	m := obs.NewMetrics()
+	m.WebhookTimestampWindowDrop("whatsapp", "past")
+	m.WebhookTimestampWindowDrop("whatsapp", "past")
+	m.WebhookTimestampWindowDrop("whatsapp", "future")
+
+	if got := testutil.ToFloat64(m.WebhookTimestampWindowDrops.WithLabelValues("whatsapp", "past")); got != 2 {
+		t.Errorf(`{channel="whatsapp",direction="past"} = %v, want 2`, got)
+	}
+	if got := testutil.ToFloat64(m.WebhookTimestampWindowDrops.WithLabelValues("whatsapp", "future")); got != 1 {
+		t.Errorf(`{channel="whatsapp",direction="future"} = %v, want 1`, got)
+	}
+}
+
+func TestWebhookTimestampWindowDrop_NilReceiver_NoPanic(t *testing.T) {
+	t.Parallel()
+	var m *obs.Metrics
+	m.WebhookTimestampWindowDrop("whatsapp", "past") // must not panic
+}
+
+func TestPackageDefault_WebhookTimestampWindowDrop(t *testing.T) {
+	// Cannot run in parallel — mutates the package-level default.
+	prev := obs.Default()
+	t.Cleanup(func() { obs.SetDefault(prev) })
+
+	obs.SetDefault(nil)
+	obs.WebhookTimestampWindowDrop("whatsapp", "past") // no panic when default is nil
+
+	m := obs.NewMetrics()
+	obs.SetDefault(m)
+	obs.WebhookTimestampWindowDrop("whatsapp", "past")
+	obs.WebhookTimestampWindowDrop("whatsapp", "future")
+	if got := testutil.ToFloat64(m.WebhookTimestampWindowDrops.WithLabelValues("whatsapp", "past")); got != 1 {
+		t.Errorf(`{channel="whatsapp",direction="past"} = %v, want 1`, got)
+	}
+	if got := testutil.ToFloat64(m.WebhookTimestampWindowDrops.WithLabelValues("whatsapp", "future")); got != 1 {
+		t.Errorf(`{channel="whatsapp",direction="future"} = %v, want 1`, got)
+	}
+}
+
 // Confirms that the response writer wrapper does not corrupt the
 // downstream Write chain.
 func TestStatusRecorder_WritesPropagate(t *testing.T) {

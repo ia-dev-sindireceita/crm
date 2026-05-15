@@ -112,3 +112,50 @@ groups:
             channel association (e.g. Meta phone_number_id) without
             registering it in tenant_channel_associations. Page on-call.
           runbook_url: "docs/adr/0075-webhook-security.md#5-observabilidade-gate-de-prod"
+
+      # ADR 0094 — past-window drop alert. After widening PastWindow to
+      # 24h to match Meta's retry budget, ANY sustained drop on
+      # direction=past means either Meta extended its retry envelope
+      # beyond 24h (rare; warrants a new ADR) OR a captured-body replay
+      # attempt is hitting the endpoint at scale. Baseline is 0.
+      - alert: WebhookTimestampWindowDropPastBurst
+        expr: sum by (channel) (rate(webhook_timestamp_window_drop_total{direction="past"}[15m])) > 0.05
+        for: 15m
+        labels:
+          severity: page
+          team: platform
+          adr: "0094"
+        annotations:
+          summary: "Past-window drops >0.05/s on {{ $labels.channel }} (ADR 0094)"
+          description: |
+            rate(webhook_timestamp_window_drop_total{direction="past"}[15m])
+            is {{ printf "%.4f" $value }}/s on channel {{ $labels.channel }},
+            sustained for 15 minutes. Either Meta's retry budget was
+            exceeded (partner-side incident) OR a captured-body replay
+            attempt is being mounted at scale. Baseline is 0. Page on-call:
+            check Meta status page first, then audit recent
+            webhook_idempotency conflicts.
+          runbook_url: "docs/adr/0094-webhook-timestamp-past-window.md"
+
+      # ADR 0094 §3.2 — symmetric future-skew alert. direction=future
+      # bursts catch CRM-clock-drift bugs (NTP stopped, hypervisor
+      # clock-step) or a future-pivoted replay against the
+      # dedup-GC horizon. Baseline is 0; threshold matches the past
+      # alert so the on-call response posture stays consistent.
+      - alert: WebhookTimestampWindowDropFutureBurst
+        expr: sum by (channel) (rate(webhook_timestamp_window_drop_total{direction="future"}[15m])) > 0.05
+        for: 15m
+        labels:
+          severity: page
+          team: platform
+          adr: "0094"
+        annotations:
+          summary: "Future-skew drops >0.05/s on {{ $labels.channel }} (ADR 0094)"
+          description: |
+            rate(webhook_timestamp_window_drop_total{direction="future"}[15m])
+            is {{ printf "%.4f" $value }}/s on channel {{ $labels.channel }},
+            sustained for 15 minutes. Either our process clock drifted past
+            FutureSkew (1m) OR an attacker is pivoting a captured body
+            toward the dedup-GC horizon. Page on-call: compare
+            time.Now() on the CRM host to a reliable NTP source first.
+          runbook_url: "docs/adr/0094-webhook-timestamp-past-window.md"
