@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -112,6 +113,63 @@ func (r *inMemoryRepo) FindMessageByChannelExternalID(_ context.Context, tenantI
 		return &cp, nil
 	}
 	return nil, inbox.ErrNotFound
+}
+
+func (r *inMemoryRepo) ListConversations(_ context.Context, tenantID uuid.UUID, state inbox.ConversationState, limit int) ([]*inbox.Conversation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*inbox.Conversation, 0)
+	for _, c := range r.conversations {
+		if c.TenantID != tenantID {
+			continue
+		}
+		if state != "" && c.State != state {
+			continue
+		}
+		cp := *c
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ai, aj := out[i].LastMessageAt, out[j].LastMessageAt
+		if ai.IsZero() {
+			ai = out[i].CreatedAt
+		}
+		if aj.IsZero() {
+			aj = out[j].CreatedAt
+		}
+		if !ai.Equal(aj) {
+			return ai.After(aj)
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *inMemoryRepo) ListMessages(_ context.Context, tenantID, conversationID uuid.UUID) ([]*inbox.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	conv, ok := r.conversations[conversationID]
+	if !ok || conv.TenantID != tenantID {
+		return nil, inbox.ErrNotFound
+	}
+	out := make([]*inbox.Message, 0)
+	for _, m := range r.messages {
+		if m.TenantID != tenantID || m.ConversationID != conversationID {
+			continue
+		}
+		cp := *m
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	return out, nil
 }
 
 func (r *inMemoryRepo) messageCount() int {

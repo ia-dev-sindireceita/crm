@@ -9,6 +9,7 @@ COMPOSE := docker compose --project-directory $(COMPOSE_DIR) -f $(COMPOSE_DIR)/c
 GO ?= go
 NOTENANT_BIN := $(CURDIR)/bin/notenant
 FORBIDIMPORT_BIN := $(CURDIR)/bin/forbidimport
+FORBIDWEBBOUNDARY_BIN := $(CURDIR)/bin/forbidwebboundary
 
 # golang-migrate CLI shipped as a one-shot container; see migrations/*.sql
 # (SIN-62209). Versioned so CI and devs share the same binary.
@@ -26,7 +27,7 @@ ITEST_COVER_THRESHOLD ?= 85.0
 
 .PHONY: help up down logs test test-integration test-integration-cover \
         lint lint-aicache lint-customdomainnet lint-imports lint-postgres-adapter-tests \
-        notenant forbidimport \
+        lint-webboundary notenant forbidimport forbidwebboundary \
         migrate-up migrate-down seed-stg smoke-alert verify-vendor
 
 help: ## Show available targets
@@ -79,7 +80,7 @@ test-integration-cover: ## Run unit + integration with combined coverage and enf
 			exit 1; \
 		}
 
-lint: notenant lint-imports lint-postgres-adapter-tests ## Run go vet + the notenant + forbidimport analyzers + adapter-test guard (SIN-62232 / ADR 0071, SIN-62216, SIN-62750)
+lint: notenant lint-imports lint-postgres-adapter-tests lint-webboundary ## Run go vet + the notenant + forbidimport + forbidwebboundary analyzers + adapter-test guard (SIN-62232 / ADR 0071, SIN-62216, SIN-62750, SIN-62735)
 	$(GO) vet ./...
 	$(GO) vet -vettool=$(NOTENANT_BIN) ./internal/...
 
@@ -98,6 +99,12 @@ forbidimport: ## Build the forbidimport analyzer binary into bin/ (SIN-62216)
 
 lint-imports: forbidimport ## Forbid database/sql + pgx + lib/pq outside the postgres adapter (SIN-62216)
 	$(GO) vet -vettool=$(FORBIDIMPORT_BIN) ./internal/...
+
+forbidwebboundary: ## Build the forbidwebboundary analyzer binary into bin/ (SIN-62735)
+	$(GO) build -o $(FORBIDWEBBOUNDARY_BIN) ./tools/lint/forbidwebboundary/cmd/forbidwebboundary
+
+lint-webboundary: forbidwebboundary ## Forbid imports of internal/inbox from internal/web/... (SIN-62735)
+	$(GO) vet -vettool=$(FORBIDWEBBOUNDARY_BIN) ./internal/web/...
 
 lint-aicache: ## Run the SIN-62236 aicache analyzer over internal/ai/ as a vet tool
 	$(GO) build -o ./bin/aicache ./cmd/aicache

@@ -297,6 +297,120 @@ func (s *Store) FindMessageByChannelExternalID(ctx context.Context, tenantID uui
 	return m, nil
 }
 
+// ListConversations returns up to `limit` conversations under the tenant
+// scope, newest-last-message-first. The state filter is optional: pass
+// the empty value to include both open and closed; pass
+// domain.ConversationStateOpen to restrict. RLS-hidden rows from other
+// tenants are simply absent from the result set.
+func (s *Store) ListConversations(ctx context.Context, tenantID uuid.UUID, state domain.ConversationState, limit int) ([]*domain.Conversation, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: ListConversations: tenant id is nil")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("inbox/postgres: ListConversations: limit must be > 0")
+	}
+	const maxLimit = 200
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	var out []*domain.Conversation
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		var (
+			rows pgx.Rows
+			err  error
+		)
+		if state == "" {
+			rows, err = tx.Query(ctx, `
+				SELECT id, tenant_id, contact_id, channel, state,
+				       assigned_user_id, last_message_at, created_at
+				  FROM conversation
+				 ORDER BY COALESCE(last_message_at, created_at) DESC, id ASC
+				 LIMIT $1
+			`, limit)
+		} else {
+			rows, err = tx.Query(ctx, `
+				SELECT id, tenant_id, contact_id, channel, state,
+				       assigned_user_id, last_message_at, created_at
+				  FROM conversation
+				 WHERE state = $1
+				 ORDER BY COALESCE(last_message_at, created_at) DESC, id ASC
+				 LIMIT $2
+			`, string(state), limit)
+		}
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			conv, err := scanConversation(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, conv)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inbox/postgres: ListConversations: %w", err)
+	}
+	return out, nil
+}
+
+// ListMessages returns the messages for a conversation under the tenant
+// scope, ordered oldest-first by created_at so the inbox renders the
+// chat top→bottom. Returns ErrNotFound when the conversation itself is
+// hidden by RLS (so callers cannot tell "RLS reject" from "empty thread"
+// without first asserting GetConversation succeeded).
+func (s *Store) ListMessages(ctx context.Context, tenantID, conversationID uuid.UUID) ([]*domain.Message, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: ListMessages: tenant id is nil")
+	}
+	if conversationID == uuid.Nil {
+		return nil, domain.ErrNotFound
+	}
+	var out []*domain.Message
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		// Guard: confirm the conversation exists under this tenant before
+		// streaming messages, so a caller asking for an RLS-hidden id
+		// gets ErrNotFound rather than a silent empty list.
+		var exists bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM conversation WHERE id = $1)
+		`, conversationID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return domain.ErrNotFound
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT id, tenant_id, conversation_id, direction, body, status,
+			       channel_external_id, sent_by_user_id, created_at
+			  FROM message
+			 WHERE conversation_id = $1
+			 ORDER BY created_at ASC, id ASC
+		`, conversationID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			m, err := scanMessage(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, m)
+		}
+		return rows.Err()
+	})
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inbox/postgres: ListMessages: %w", err)
+	}
+	return out, nil
+}
+
 // Claim is the dedup-ledger half: insert the (channel, channelExternalID)
 // row, translating a UNIQUE violation to ErrInboundAlreadyProcessed.
 // NOT tenant-scoped — the receiver runs before tenant context exists.
@@ -366,36 +480,6 @@ func (s *Store) MarkProcessed(ctx context.Context, channel, channelExternalID st
 	return nil
 }
 
-// scanMessage materialises a message row read by
-// FindMessageByChannelExternalID. The column order MUST match the
-// SELECT in that method.
-func scanMessage(row pgx.Row) (*domain.Message, error) {
-	var (
-		id, tenantID, conversationID uuid.UUID
-		direction, body, status      string
-		channelExternalID            *string
-		sentByUserID                 *uuid.UUID
-		createdAt                    time.Time
-	)
-	if err := row.Scan(&id, &tenantID, &conversationID, &direction, &body,
-		&status, &channelExternalID, &sentByUserID, &createdAt); err != nil {
-		return nil, err
-	}
-	ext := ""
-	if channelExternalID != nil {
-		ext = *channelExternalID
-	}
-	return domain.HydrateMessage(
-		id, tenantID, conversationID,
-		domain.MessageDirection(direction),
-		body,
-		domain.MessageStatus(status),
-		ext,
-		sentByUserID,
-		createdAt,
-	), nil
-}
-
 func scanConversation(row pgx.Row) (*domain.Conversation, error) {
 	var (
 		id, tenantID, contactID uuid.UUID
@@ -415,6 +499,33 @@ func scanConversation(row pgx.Row) (*domain.Conversation, error) {
 	return domain.HydrateConversation(
 		id, tenantID, contactID, channel,
 		domain.ConversationState(state), assignedUserID, last, createdAt,
+	), nil
+}
+
+// scanMessage materialises a message row into the domain shape. It
+// keeps the column order in lock-step with the ORDER BY in ListMessages
+// so a future schema change trips a fast scan failure here rather than
+// surprising the use case downstream.
+func scanMessage(row pgx.Row) (*domain.Message, error) {
+	var (
+		id, tenantID, conversationID uuid.UUID
+		direction, body, status      string
+		channelExternalID            *string
+		sentByUserID                 *uuid.UUID
+		createdAt                    time.Time
+	)
+	if err := row.Scan(&id, &tenantID, &conversationID, &direction, &body, &status,
+		&channelExternalID, &sentByUserID, &createdAt); err != nil {
+		return nil, err
+	}
+	cext := ""
+	if channelExternalID != nil {
+		cext = *channelExternalID
+	}
+	return domain.HydrateMessage(
+		id, tenantID, conversationID,
+		domain.MessageDirection(direction), body,
+		domain.MessageStatus(status), cext, sentByUserID, createdAt,
 	), nil
 }
 

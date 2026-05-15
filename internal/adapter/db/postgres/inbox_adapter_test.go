@@ -671,6 +671,149 @@ func TestInboxAdapter_SaveMessage_HonorsRLS(t *testing.T) {
 	}
 }
 
+// TestInboxAdapter_ListConversations_OrderedAndScoped exercises the
+// SIN-62735 PR9 list path: ordering is newest-last-message-first,
+// tenant isolation comes from RLS, and the optional state filter
+// restricts to open/closed when supplied.
+func TestInboxAdapter_ListConversations_OrderedAndScoped(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenantA := seedContactsTenant(t, db)
+	tenantB := seedContactsTenant(t, db)
+	contactA := seedInboxContact(t, db, tenantA)
+
+	older, _ := inbox.NewConversation(tenantA, contactA.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), older); err != nil {
+		t.Fatalf("CreateConversation older: %v", err)
+	}
+	newer, _ := inbox.NewConversation(tenantA, contactA.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), newer); err != nil {
+		t.Fatalf("CreateConversation newer: %v", err)
+	}
+	// Bump last_message_at via SaveMessage so the ORDER BY has a basis.
+	mOlder, _ := inbox.NewMessage(inbox.NewMessageInput{
+		TenantID: tenantA, ConversationID: older.ID,
+		Direction: inbox.MessageDirectionIn, Body: "older",
+	})
+	if err := store.SaveMessage(context.Background(), mOlder); err != nil {
+		t.Fatalf("SaveMessage older: %v", err)
+	}
+	mNewer, _ := inbox.NewMessage(inbox.NewMessageInput{
+		TenantID: tenantA, ConversationID: newer.ID,
+		Direction: inbox.MessageDirectionIn, Body: "newer",
+	})
+	if err := store.SaveMessage(context.Background(), mNewer); err != nil {
+		t.Fatalf("SaveMessage newer: %v", err)
+	}
+	// Close the older conversation to exercise the state filter.
+	if _, err := db.AdminPool().Exec(context.Background(),
+		`UPDATE conversation SET state = 'closed' WHERE id = $1`, older.ID); err != nil {
+		t.Fatalf("close older: %v", err)
+	}
+
+	got, err := store.ListConversations(context.Background(), tenantA, "", 10)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].ID != newer.ID {
+		t.Errorf("first row = %s, want %s (newer)", got[0].ID, newer.ID)
+	}
+
+	openOnly, err := store.ListConversations(context.Background(), tenantA, inbox.ConversationStateOpen, 10)
+	if err != nil {
+		t.Fatalf("ListConversations open: %v", err)
+	}
+	if len(openOnly) != 1 || openOnly[0].ID != newer.ID {
+		t.Errorf("open filter = %+v, want [newer]", openOnly)
+	}
+
+	// Cross-tenant: tenant B sees nothing of tenant A's rows under RLS.
+	others, err := store.ListConversations(context.Background(), tenantB, "", 10)
+	if err != nil {
+		t.Fatalf("ListConversations B: %v", err)
+	}
+	if len(others) != 0 {
+		t.Errorf("tenant B saw %d rows, want 0", len(others))
+	}
+}
+
+// TestInboxAdapter_ListConversations_RejectsBadInput covers the
+// validation branches.
+func TestInboxAdapter_ListConversations_RejectsBadInput(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	if _, err := store.ListConversations(context.Background(), uuid.Nil, "", 10); err == nil {
+		t.Error("zero tenant err = nil")
+	}
+	tenant := seedContactsTenant(t, db)
+	if _, err := store.ListConversations(context.Background(), tenant, "", 0); err == nil {
+		t.Error("limit=0 err = nil")
+	}
+	// Limit clamp: an absurd page does not error and is silently capped.
+	if _, err := store.ListConversations(context.Background(), tenant, "", 999999); err != nil {
+		t.Errorf("clamp err = %v", err)
+	}
+}
+
+// TestInboxAdapter_ListMessages_ReturnsOrderedThread covers the
+// SIN-62735 PR9 conversation view path: messages return oldest-first.
+func TestInboxAdapter_ListMessages_ReturnsOrderedThread(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+	contact := seedInboxContact(t, db, tenant)
+
+	c, _ := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), c); err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	m1, _ := inbox.NewMessage(inbox.NewMessageInput{
+		TenantID: tenant, ConversationID: c.ID,
+		Direction: inbox.MessageDirectionIn, Body: "first",
+	})
+	if err := store.SaveMessage(context.Background(), m1); err != nil {
+		t.Fatalf("SaveMessage first: %v", err)
+	}
+	m2, _ := inbox.NewMessage(inbox.NewMessageInput{
+		TenantID: tenant, ConversationID: c.ID,
+		Direction: inbox.MessageDirectionOut, Body: "second",
+	})
+	if err := store.SaveMessage(context.Background(), m2); err != nil {
+		t.Fatalf("SaveMessage second: %v", err)
+	}
+
+	got, err := store.ListMessages(context.Background(), tenant, c.ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Body != "first" || got[1].Body != "second" {
+		t.Errorf("order: %+v", got)
+	}
+}
+
+// TestInboxAdapter_ListMessages_NotFoundOnUnknownConversation covers
+// the RLS-hidden / non-existent paths.
+func TestInboxAdapter_ListMessages_NotFoundOnUnknownConversation(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+	if _, err := store.ListMessages(context.Background(), tenant, uuid.New()); !errors.Is(err, inbox.ErrNotFound) {
+		t.Errorf("unknown id err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.ListMessages(context.Background(), tenant, uuid.Nil); !errors.Is(err, inbox.ErrNotFound) {
+		t.Errorf("nil id err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.ListMessages(context.Background(), uuid.Nil, uuid.New()); err == nil {
+		t.Error("zero tenant err = nil")
+	}
+}
+
 // countingWallet is a documented in-memory implementation of
 // inbox.WalletDebitor. PR5 (SIN-62727) will ship the Postgres wallet
 // adapter and the production composition root will swap it in; PR4

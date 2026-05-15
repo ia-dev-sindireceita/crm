@@ -62,6 +62,24 @@ type Repository interface {
 	// for an unknown wamid, or because RLS hid the row from the
 	// reconciler's tenant.
 	FindMessageByChannelExternalID(ctx context.Context, tenantID uuid.UUID, channel, channelExternalID string) (*Message, error)
+
+	// ListConversations returns up to `limit` conversations under the
+	// tenant scope, newest-last-message-first. The state filter is
+	// optional: a zero-value state returns both open and closed; passing
+	// ConversationStateOpen restricts to open conversations. The hot
+	// inbox query (PR9) uses (tenant_id, state, last_message_at DESC),
+	// covered by the composite index added in migration 0088. limit must
+	// be > 0; the adapter clamps to a sensible upper bound to keep the
+	// page lightweight.
+	ListConversations(ctx context.Context, tenantID uuid.UUID, state ConversationState, limit int) ([]*Conversation, error)
+
+	// ListMessages returns the messages for the conversation under the
+	// tenant scope, oldest-first (so the inbox view renders top→bottom
+	// like a chat). Returns ErrNotFound when no conversation matches the
+	// (tenantID, conversationID) pair — distinguishes "conversation
+	// exists but has zero messages" (empty slice, nil error) from
+	// "conversation hidden by RLS" (ErrNotFound).
+	ListMessages(ctx context.Context, tenantID, conversationID uuid.UUID) ([]*Message, error)
 }
 
 // InboundDedupRepository is the global idempotency ledger backing the

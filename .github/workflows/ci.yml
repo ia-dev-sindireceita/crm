@@ -50,6 +50,12 @@ jobs:
         run: go vet -vettool=$(pwd)/bin/forbidimport ./internal/...
       - name: forbidimport analyzer self-test
         run: go test ./tools/lint/forbidimport/... -count=1
+      - name: build forbidwebboundary analyzer (SIN-62735)
+        run: go build -o bin/forbidwebboundary ./tools/lint/forbidwebboundary/cmd/forbidwebboundary
+      - name: forbidwebboundary analyzer (./internal/web/...)
+        run: go vet -vettool=$(pwd)/bin/forbidwebboundary ./internal/web/...
+      - name: forbidwebboundary analyzer self-test
+        run: go test ./tools/lint/forbidwebboundary/... -count=1
       - name: reject subpackage *_test.go under internal/adapter/db/postgres (SIN-62750)
         run: ./scripts/check-postgres-adapter-tests.sh
 

@@ -191,3 +191,15 @@ func (u *SendOutbound) Execute(ctx context.Context, in SendOutboundInput) (SendO
 
 	return SendOutboundResult{Message: m}, nil
 }
+
+// SendForView is the web-facing wrapper that runs Execute and projects
+// the resulting domain Message onto a MessageView. The HTMX inbox
+// handler (internal/web/inbox) calls this variant so it does not import
+// the inbox domain root — keeping forbidwebboundary happy.
+func (u *SendOutbound) SendForView(ctx context.Context, in SendOutboundInput) (MessageView, error) {
+	res, err := u.Execute(ctx, in)
+	if err != nil {
+		return MessageView{}, err
+	}
+	return messageToView(res.Message), nil
+}
