@@ -105,6 +105,15 @@ type Deps struct {
 	// exactly as it did pre-PR10 — useful for tests that don't want
 	// to assert against Prometheus output.
 	Metrics *obs.Metrics
+	// Authorizer is the production iam.Authorizer routes use through
+	// middleware.RequireAction. SIN-62765 wires this to the
+	// authz.AuditingAuthorizer so every recorded Decision flows into
+	// audit_log_security and Prometheus. The router itself does not
+	// consult it — it is exposed here so per-handler RequireAction
+	// wireup picks up the audited instance instead of a bare
+	// *RBACAuthorizer. Nil is permitted for tests that don't gate any
+	// route on RequireAction.
+	Authorizer iam.Authorizer
 	// Master, when non-zero, mounts the /m/* master-console routes.
 	// Zero value skips the group.
 	Master MasterDeps

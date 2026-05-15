@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
@@ -97,6 +98,19 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string) (http.Hand
 	sessions := postgresadapter.NewSessionStore(pool)
 	logger := slog.Default()
 
+	// SIN-62765 — wrap the RBAC inner authorizer with the audit
+	// decorator so every recorded Decision lands in audit_log_security
+	// + the authz_* Prometheus counters. Failure to build the wrapper
+	// is fatal at boot: F10 is a security-bar finding and silently
+	// running without audit coverage is worse than refusing to serve.
+	audited, err := newAuditedAuthorizer(pool, prometheus.DefaultRegisterer, getenv, logger)
+	if err != nil {
+		pool.Close()
+		cleanup()
+		log.Printf("crm: IAM handler disabled — authz audit wrap: %v", err)
+		return nil, noop
+	}
+
 	h := httpapi.NewRouter(httpapi.Deps{
 		IAM: iamAdapter{
 			tenants:  tenants,
@@ -111,6 +125,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string) (http.Hand
 		Logger:         logger,
 		Policies:       policies,
 		RateLimiter:    limiter,
+		Authorizer:     audited,
 		// SessionToucher is nil — Activity middleware deferred to batch
 		// that lands the session role/last_activity DB columns (0077).
 		// Master MFA deps deferred to batch 17 (SIN-62526).
