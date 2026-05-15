@@ -59,7 +59,9 @@ tags = ["instagram", "graph-api", "high-severity", "inbound-channel"]
 [[rules]]
 id = "meta-app-secret"
 description = "Meta App Secret (32-hex, webhook HMAC key). HIGH sensitivity. Leak nullifies signature verification."
-regex = '''(?i)(?:meta[_-]?app[_-]?secret|app[_-]?secret|appsecret)["'\s:=]{1,8}["']?\b([a-f0-9]{32})\b'''
+# Separator class deliberately excludes newline/CR so the match cannot cross lines and
+# capture an unrelated identifier on the next line (see SIN-62758).
+regex = '''(?i)(?:meta[_-]?app[_-]?secret|app[_-]?secret|appsecret)["' \t:=]{1,8}["']?\b([a-f0-9]{32})\b'''
 secretGroup = 1
 keywords = ["app_secret", "appsecret", "app-secret"]
 tags = ["meta", "app-secret", "hmac", "high-severity", "webhook-signature"]
@@ -76,7 +78,9 @@ tags = ["meta", "app-secret", "hmac", "high-severity", "webhook-signature"]
 [[rules]]
 id = "whatsapp-verify-token"
 description = "WhatsApp webhook verify_token (operator-chosen). HIGH sensitivity in combination with Cloud API token."
-regex = '''(?i)(?:whatsapp[_-]?verify[_-]?token|wa[_-]?verify[_-]?token|meta[_-]?verify[_-]?token)["'\s:=]{1,8}["']?([A-Za-z0-9_\-]{12,})'''
+# Separator class deliberately excludes newline/CR so the match cannot cross lines and
+# capture an unrelated identifier on the next line (see SIN-62758).
+regex = '''(?i)(?:whatsapp[_-]?verify[_-]?token|wa[_-]?verify[_-]?token|meta[_-]?verify[_-]?token)["' \t:=]{1,8}["']?([A-Za-z0-9_\-]{12,})'''
 secretGroup = 1
 keywords = ["whatsapp_verify_token", "wa_verify_token", "meta_verify_token"]
 tags = ["whatsapp", "verify-token", "webhook-registration", "high-severity"]

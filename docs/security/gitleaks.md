@@ -29,6 +29,38 @@ The `meta-app-secret` and `whatsapp-verify-token` rules are deliberately **conte
 
 If a future leak vector emerges that bypasses the anchor (e.g., a config file that puts the secret in a JSON key not in our keyword list), tighten the rule before extending the allowlist.
 
+### Separator class — must NOT span lines ([SIN-62758](/SIN/issues/SIN-62758))
+
+The separator character class between the keyword and the captured value is `["' \t:=]{1,8}` in both context-anchored rules. The earlier form `["'\s:=]{1,8}` was incorrect: `\s` includes `\n`, which let the engine consume the newline after the keyword and then capture an unrelated identifier from the *next* line as the "secret". A const block like
+
+```go
+const (
+    EnvAppSecret   = "META_APP_SECRET"
+    EnvVerifyToken = "META_VERIFY_TOKEN"
+    EnvWhatsAppEnabled = "FEATURE_WHATSAPP_ENABLED"
+)
+```
+
+fired `whatsapp-verify-token` because the engine matched `META_VERIFY_TOKEN`, consumed `"\n\t` (3 separator chars), and captured `EnvWhatsAppEnabled` (18 chars). Entropy 3.7, false positive.
+
+When editing either rule's regex, do **not** reintroduce `\s` (or any character class that contains `\n` or `\r`) into the separator. Keep it explicit: `["' \t:=]`. The keyword and the value must be on the **same line**.
+
+### Regression bed (positive + negative per rule)
+
+Future rule edits must be sanity-checked against this minimum set before merging. The exemplar lines below intentionally use placeholder words instead of patterns that would themselves trip the rule, so this file does not depend on the allowlist for its own contents — but the allowlist still exempts `docs/security/gitleaks.md` as defence in depth.
+
+#### `whatsapp-verify-token`
+
+- **Positive (must fire):** a single line of the shape `KEYWORD = "VALUE"` where `KEYWORD` is one of `whatsapp_verify_token` / `wa_verify_token` / `meta_verify_token` (any case, `-` or `_` separators) and `VALUE` matches `[A-Za-z0-9_\-]{12,}`. The rule must catch this; if it does not, the regex was over-tightened.
+- **Negative (must NOT fire):** the Go const-block fixture above. After this fix, the engine cannot consume the newline between `EnvVerifyToken = "META_VERIFY_TOKEN"` and the next line, so the rule terminates at end-of-line and finds no `{12,}` capture on the same line.
+
+#### `meta-app-secret`
+
+- **Positive (must fire):** a single line of the shape `KEYWORD = "HEX32"` where `KEYWORD` is one of `meta_app_secret` / `app_secret` / `appsecret` (any case, `-` or `_` separators) and `HEX32` matches `[a-f0-9]{32}`.
+- **Negative (must NOT fire):** a const block where `EnvAppSecret = "META_APP_SECRET"` is followed on the next line by a name that happens to be 32 hex characters (for example a SHA-256 digest literal declared right after the env-var-name constant). With newline excluded from the separator, the match cannot reach the next line.
+
+If you change either regex, recompute these four cases locally (`gitleaks detect --no-git --source=<scratch-dir>` against a small fixture directory) before opening the PR.
+
 ## Allowlist
 
 Paths suppressed by `[allowlist]`:
