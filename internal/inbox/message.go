@@ -84,6 +84,14 @@ var validOutboundStatuses = map[MessageStatus]bool{
 // responsible for invariants that cross multiple messages (e.g.
 // LastMessageAt); Message owns the per-message state machine via
 // AdvanceStatus.
+//
+// Media is the optional attachment summary for messages that carry a
+// file payload (image, document, audio). It is nil for text-only
+// messages. The fields are populated by the inbox repository when the
+// underlying `message.media` jsonb column is non-null; the projector at
+// internal/inbox/usecase/views.go (messageToView) reads from here to
+// build the read-only MessageMediaView the HTMX bubble template renders.
+// See [SIN-62805] F2-05d for the UI hide-flag wiring.
 type Message struct {
 	ID                uuid.UUID
 	TenantID          uuid.UUID
@@ -94,6 +102,22 @@ type Message struct {
 	ChannelExternalID string
 	SentByUserID      *uuid.UUID
 	CreatedAt         time.Time
+	Media             *MessageMedia
+}
+
+// MessageMedia is the closed metadata block the inbox read path uses to
+// render attachments. Stored in the `message.media` jsonb column
+// (migration 0092). Adapters fill it by parsing the jsonb document;
+// the domain code only reads it.
+//
+// Hash is the content-addressed identifier the static-origin route
+// (`GET /t/{tenant}/m/{hash}`) consumes. Format is the closed Format
+// enum value (e.g. "png", "pdf"). ScanStatus is one of "pending",
+// "clean", "infected" — matches the enum in internal/media/scanner.Status.
+type MessageMedia struct {
+	Hash       string
+	Format     string
+	ScanStatus string
 }
 
 // NewMessageInput is the constructor argument for NewMessage. Required
@@ -156,7 +180,9 @@ func NewMessage(in NewMessageInput) (*Message, error) {
 
 // HydrateMessage rebuilds a Message from stored fields without running
 // the constructor's invariants. Adapter code uses it to materialise
-// rows. Domain code MUST use NewMessage.
+// rows. Domain code MUST use NewMessage. Media is left nil — adapters
+// that project the `message.media` jsonb call AttachMedia separately so
+// existing call sites keep their nine-argument shape.
 func HydrateMessage(id, tenantID, conversationID uuid.UUID, direction MessageDirection,
 	body string, status MessageStatus, channelExternalID string, sentByUserID *uuid.UUID,
 	createdAt time.Time) *Message {
@@ -171,6 +197,22 @@ func HydrateMessage(id, tenantID, conversationID uuid.UUID, direction MessageDir
 		SentByUserID:      sentByUserID,
 		CreatedAt:         createdAt,
 	}
+}
+
+// AttachMedia sets m.Media with the projected `message.media` document.
+// hash/format/scanStatus may be empty when the underlying jsonb omits
+// the field; the projector at internal/inbox/usecase/views.go re-applies
+// the "Sem expor a key infectada" rule (Hash is dropped on infected /
+// pending verdicts) so any sensitive fallback handling lives there.
+//
+// Passing scanStatus == "" leaves m.Media nil so text-only messages
+// stay free of an empty media block. Returns m for fluent chaining.
+func (m *Message) AttachMedia(hash, format, scanStatus string) *Message {
+	if scanStatus == "" && hash == "" && format == "" {
+		return m
+	}
+	m.Media = &MessageMedia{Hash: hash, Format: format, ScanStatus: scanStatus}
+	return m
 }
 
 // AdvanceStatus moves the message forward in its lifecycle. The

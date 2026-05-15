@@ -1,21 +1,38 @@
 // mediascan-worker is the standalone process described in SIN-62804
-// (F2-05c): it subscribes to media.scan.requested, dispatches each
-// delivery to the worker handler, and exits cleanly on SIGTERM.
+// (F2-05c) + SIN-62805 (F2-05d): it subscribes to media.scan.requested,
+// dispatches each delivery to the worker handler, and exits cleanly on
+// SIGTERM. On infected verdicts the handler moves the blob into the
+// quarantine bucket via the MinIO adapter and pages #security via the
+// Slack adapter — both wired here at the entrypoint so the worker
+// package stays vendor-SDK-free.
 //
 // Configuration is read from the environment to keep secrets out of
 // flags and config files (12-factor):
 //
-//	NATS_URL            mandatory, e.g. tls://nats.example:4222
-//	POSTGRES_DSN        mandatory, pgxpool DSN for app_runtime
-//	CLAMD_ADDR          mandatory, host:port of clamd
-//	WORKER_CONCURRENCY  optional, default 4 (see comments below)
-//	MEDIA_STREAM_NAME   optional, default "MEDIA_SCAN"
-//	MEDIA_DURABLE_NAME  optional, default "mediascan-worker"
-//	MEDIA_QUEUE_NAME    optional, default "mediascan-workers"
-//	BLOB_BASE_DIR       optional, local fs root used when no S3 is
-//	                    wired (Fase 1 development); the production
-//	                    blob reader is the S3/MinIO adapter to be
-//	                    introduced alongside SIN-62805.
+//	NATS_URL                  mandatory, e.g. tls://nats.example:4222
+//	POSTGRES_DSN              mandatory, pgxpool DSN for app_runtime
+//	CLAMD_ADDR                mandatory, host:port of clamd
+//	WORKER_CONCURRENCY        optional, default 4 (see comments below)
+//	MEDIA_STREAM_NAME         optional, default "MEDIA_SCAN"
+//	MEDIA_DURABLE_NAME        optional, default "mediascan-worker"
+//	MEDIA_QUEUE_NAME          optional, default "mediascan-workers"
+//	BLOB_BASE_DIR             optional, local fs root for dev — used
+//	                          ONLY when MINIO_ENDPOINT is unset (e.g.
+//	                          unit / smoke runs without MinIO).
+//	MINIO_ENDPOINT            mandatory in production; absent enables
+//	                          the local-fs BlobReader for dev.
+//	MINIO_REGION              optional, default "us-east-1".
+//	MINIO_QUARANTINE_SOURCE   mandatory when MINIO_ENDPOINT is set,
+//	                          runtime media bucket (e.g. "media").
+//	MINIO_QUARANTINE_DEST     mandatory when MINIO_ENDPOINT is set,
+//	                          quarantine bucket (e.g. "media-quarantine").
+//	MINIO_ACCESS_KEY_ID       mandatory when MINIO_ENDPOINT is set.
+//	MINIO_SECRET_ACCESS_KEY   mandatory when MINIO_ENDPOINT is set.
+//	MINIO_SESSION_TOKEN       optional; set when credentials came from
+//	                          MinIO STS assume-role (production).
+//	SLACK_WEBHOOK_URL         optional; when set, infected verdicts
+//	                          page the #security channel. Absent keeps
+//	                          the alerter nil (worker skips notify).
 //
 // NATS auth + TLS hardening ([SIN-62815]). Production deploys MUST set
 // one of these auth knobs (pick exactly one):
@@ -53,9 +70,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	slackadapter "github.com/pericles-luz/crm/internal/adapter/alert/slack"
 	pgmessagemedia "github.com/pericles-luz/crm/internal/adapter/db/postgres/messagemedia"
 	clamavadapter "github.com/pericles-luz/crm/internal/adapter/media/clamav"
+	minioadapter "github.com/pericles-luz/crm/internal/adapter/media/minio"
 	natsadapter "github.com/pericles-luz/crm/internal/adapter/messaging/nats"
+	"github.com/pericles-luz/crm/internal/media/alert"
+	"github.com/pericles-luz/crm/internal/media/quarantine"
 	"github.com/pericles-luz/crm/internal/media/worker"
 )
 
@@ -90,9 +111,14 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("messagemedia.New: %w", err)
 	}
 
+	blobs, err := buildBlobReader(cfg)
+	if err != nil {
+		return fmt.Errorf("blob reader: %w", err)
+	}
+
 	scannerAdapter, err := clamavadapter.New(clamavadapter.Config{
 		Addr: cfg.clamdAddr,
-	}, &localBlobs{root: cfg.blobBaseDir})
+	}, blobs)
 	if err != nil {
 		return fmt.Errorf("clamav.New: %w", err)
 	}
@@ -126,6 +152,37 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("worker.New: %w", err)
 	}
 
+	// Defense-in-depth wiring ([SIN-62805] F2-05d). The MinIO Quarantiner
+	// is mandatory when MINIO_ENDPOINT is set — its absence means the
+	// worker would silently re-serve infected blobs. The Slack alerter
+	// is optional: absence means infected verdicts page only via Loki
+	// (the worker still logs at ERROR level), which is acceptable for
+	// non-production environments.
+	if cfg.minioEndpoint != "" {
+		q, err := minioadapter.New(minioadapter.Config{
+			Endpoint:          cfg.minioEndpoint,
+			Region:            cfg.minioRegion,
+			SourceBucket:      cfg.minioSource,
+			DestinationBucket: cfg.minioDest,
+			AccessKeyID:       cfg.minioAccessKey,
+			SecretAccessKey:   cfg.minioSecretKey,
+			SessionToken:      cfg.minioSessionToken,
+		})
+		if err != nil {
+			return fmt.Errorf("minio.New (quarantine): %w", err)
+		}
+		handler.Quarantiner = quarantine.Quarantiner(q)
+	}
+	if cfg.slackWebhookURL != "" {
+		a, err := slackadapter.NewMediaAlerter(slackadapter.Config{
+			WebhookURL: cfg.slackWebhookURL,
+		})
+		if err != nil {
+			return fmt.Errorf("slack.NewMediaAlerter: %w", err)
+		}
+		handler.Alerter = alert.Alerter(a)
+	}
+
 	// Concurrency is enforced via a buffered semaphore so the
 	// QueueSubscribe callback does not spawn unbounded goroutines on
 	// burst. AckWait is set to the slowest scan we expect to
@@ -157,6 +214,8 @@ func run(logger *slog.Logger) error {
 		"tls_ca", cfg.natsTLSCAFile,
 		"mtls", cfg.natsTLSCertFile != "" && cfg.natsTLSKeyFile != "",
 		"insecure", cfg.natsInsecure,
+		"quarantiner", handler.Quarantiner != nil,
+		"alerter", handler.Alerter != nil,
 	)
 
 	<-rootCtx.Done()
@@ -193,24 +252,47 @@ type config struct {
 	natsTLSCertFile string
 	natsTLSKeyFile  string
 	natsInsecure    bool
+
+	// MinIO/S3 defense-in-depth wiring. When minioEndpoint is empty,
+	// the local-fs BlobReader is used and the Quarantiner stays nil
+	// (worker logs infected verdicts but does not move the blob).
+	minioEndpoint     string
+	minioRegion       string
+	minioSource       string
+	minioDest         string
+	minioAccessKey    string
+	minioSecretKey    string
+	minioSessionToken string
+
+	// Slack #security webhook (optional). When empty the Alerter stays
+	// nil and infected verdicts are visible only in worker logs.
+	slackWebhookURL string
 }
 
 func loadConfig() (config, error) {
 	c := config{
-		natsURL:         os.Getenv("NATS_URL"),
-		postgresDSN:     os.Getenv("POSTGRES_DSN"),
-		clamdAddr:       os.Getenv("CLAMD_ADDR"),
-		streamName:      envOr("MEDIA_STREAM_NAME", "MEDIA_SCAN"),
-		durableName:     envOr("MEDIA_DURABLE_NAME", "mediascan-worker"),
-		queueName:       envOr("MEDIA_QUEUE_NAME", "mediascan-workers"),
-		blobBaseDir:     os.Getenv("BLOB_BASE_DIR"),
-		natsToken:       os.Getenv("NATS_TOKEN"),
-		natsNKeyFile:    os.Getenv("NATS_NKEY_FILE"),
-		natsCredsFile:   os.Getenv("NATS_CREDS_FILE"),
-		natsTLSCAFile:   os.Getenv("NATS_TLS_CA"),
-		natsTLSCertFile: os.Getenv("NATS_TLS_CERT"),
-		natsTLSKeyFile:  os.Getenv("NATS_TLS_KEY"),
-		natsInsecure:    envBool("NATS_INSECURE"),
+		natsURL:           os.Getenv("NATS_URL"),
+		postgresDSN:       os.Getenv("POSTGRES_DSN"),
+		clamdAddr:         os.Getenv("CLAMD_ADDR"),
+		streamName:        envOr("MEDIA_STREAM_NAME", "MEDIA_SCAN"),
+		durableName:       envOr("MEDIA_DURABLE_NAME", "mediascan-worker"),
+		queueName:         envOr("MEDIA_QUEUE_NAME", "mediascan-workers"),
+		blobBaseDir:       os.Getenv("BLOB_BASE_DIR"),
+		natsToken:         os.Getenv("NATS_TOKEN"),
+		natsNKeyFile:      os.Getenv("NATS_NKEY_FILE"),
+		natsCredsFile:     os.Getenv("NATS_CREDS_FILE"),
+		natsTLSCAFile:     os.Getenv("NATS_TLS_CA"),
+		natsTLSCertFile:   os.Getenv("NATS_TLS_CERT"),
+		natsTLSKeyFile:    os.Getenv("NATS_TLS_KEY"),
+		natsInsecure:      envBool("NATS_INSECURE"),
+		minioEndpoint:     os.Getenv("MINIO_ENDPOINT"),
+		minioRegion:       envOr("MINIO_REGION", "us-east-1"),
+		minioSource:       os.Getenv("MINIO_QUARANTINE_SOURCE"),
+		minioDest:         os.Getenv("MINIO_QUARANTINE_DEST"),
+		minioAccessKey:    os.Getenv("MINIO_ACCESS_KEY_ID"),
+		minioSecretKey:    os.Getenv("MINIO_SECRET_ACCESS_KEY"),
+		minioSessionToken: os.Getenv("MINIO_SESSION_TOKEN"),
+		slackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
 	}
 	missing := []string{}
 	if c.natsURL == "" {
@@ -222,6 +304,26 @@ func loadConfig() (config, error) {
 	if c.clamdAddr == "" {
 		missing = append(missing, "CLAMD_ADDR")
 	}
+	if c.minioEndpoint != "" {
+		// MINIO_ENDPOINT presence promotes the rest to required —
+		// half-configured S3 would be a worse failure mode than no S3.
+		if c.minioSource == "" {
+			missing = append(missing, "MINIO_QUARANTINE_SOURCE")
+		}
+		if c.minioDest == "" {
+			missing = append(missing, "MINIO_QUARANTINE_DEST")
+		}
+		if c.minioAccessKey == "" {
+			missing = append(missing, "MINIO_ACCESS_KEY_ID")
+		}
+		if c.minioSecretKey == "" {
+			missing = append(missing, "MINIO_SECRET_ACCESS_KEY")
+		}
+	}
+	// Note: the "BLOB_BASE_DIR or MINIO_ENDPOINT+credentials" requirement
+	// is enforced by buildBlobReader at startup (run()), not here, so
+	// loadConfig stays a pure env-parsing step and tests that only
+	// exercise NATS/concurrency knobs do not have to set blob env.
 	if len(missing) > 0 {
 		return c, fmt.Errorf("missing required env: %v", missing)
 	}
@@ -316,6 +418,29 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// buildBlobReader returns the BlobReader the ClamAV adapter uses to
+// fetch the runtime blob. Production: MinIO Reader against the runtime
+// `media` bucket. Dev/smoke without MinIO: local-fs reader rooted at
+// BLOB_BASE_DIR. Exactly one of MINIO_ENDPOINT or BLOB_BASE_DIR must be
+// configured; the worker fails fast at startup otherwise so a deploy
+// with both unset cannot silently re-serve infected blobs.
+func buildBlobReader(cfg config) (clamavadapter.BlobReader, error) {
+	if cfg.minioEndpoint != "" {
+		return minioadapter.NewReader(minioadapter.ReaderConfig{
+			Endpoint:        cfg.minioEndpoint,
+			Region:          cfg.minioRegion,
+			Bucket:          cfg.minioSource,
+			AccessKeyID:     cfg.minioAccessKey,
+			SecretAccessKey: cfg.minioSecretKey,
+			SessionToken:    cfg.minioSessionToken,
+		})
+	}
+	if cfg.blobBaseDir == "" {
+		return nil, errors.New("blob reader: set BLOB_BASE_DIR (dev) or MINIO_ENDPOINT + credentials (prod)")
+	}
+	return &localBlobs{root: cfg.blobBaseDir}, nil
+}
+
 // publisherShim adapts SDKAdapter.Publish to the worker.Publisher
 // interface — the worker is intentionally unaware of NATS so this
 // glue lives at the wire-up boundary.
@@ -327,10 +452,10 @@ func (p *publisherShim) Publish(ctx context.Context, subject string, body []byte
 	return p.a.Publish(ctx, subject, body)
 }
 
-// localBlobs is the Fase 1 BlobReader for ClamAV: reads the media
-// blob from a local directory. Production (SIN-62805) swaps this for
-// an S3/MinIO adapter; the indirection lives in main so neither the
-// worker nor the ClamAV adapter depends on a specific blob backend.
+// localBlobs is the dev BlobReader for ClamAV: reads the media blob
+// from a local directory. Production swaps it for the MinIO Reader
+// above; the indirection lives in main so neither the worker nor the
+// ClamAV adapter depends on a specific blob backend.
 type localBlobs struct{ root string }
 
 func (l *localBlobs) Open(_ context.Context, key string) (io.ReadCloser, error) {

@@ -91,8 +91,15 @@ func conversationToView(c *inbox.Conversation) ConversationView {
 }
 
 // messageToView projects an inbox.Message onto the read-only view shape.
+//
+// MessageMedia is projected when the domain entity carries a non-nil
+// Media block (i.e. the row had a non-null `message.media` jsonb
+// payload). The projector drops the content-addressed Hash whenever
+// ScanStatus is anything but "clean" — the inbox UI must never render
+// a deep link to a pending-or-infected payload, and centralising the
+// rule here keeps it out of every template branch.
 func messageToView(m *inbox.Message) MessageView {
-	return MessageView{
+	v := MessageView{
 		ID:                m.ID,
 		ConversationID:    m.ConversationID,
 		Direction:         string(m.Direction),
@@ -102,4 +109,16 @@ func messageToView(m *inbox.Message) MessageView {
 		SentByUserID:      m.SentByUserID,
 		CreatedAt:         m.CreatedAt,
 	}
+	if m.Media != nil {
+		hash := m.Media.Hash
+		if m.Media.ScanStatus != "clean" {
+			hash = ""
+		}
+		v.Media = &MessageMediaView{
+			Hash:       hash,
+			Format:     m.Media.Format,
+			ScanStatus: m.Media.ScanStatus,
+		}
+	}
+	return v
 }

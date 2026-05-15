@@ -35,7 +35,13 @@ var inboxTableNames = []string{
 }
 
 // freshDBWithInboxContacts applies 0004 (tenants) → 0005 (users) → 0088
-// (this migration) on top of the harness default 0001-0003.
+// (this migration) → 0092 (message.media jsonb, [SIN-62805] F2-05d
+// integration: scanMessage now SELECTs media) on top of the harness
+// default 0001-0003.
+//
+// 0092 is purely additive (ADD COLUMN IF NOT EXISTS media jsonb on the
+// message table) — every existing test stays passing because the column
+// is nullable and unreferenced by their query paths.
 func freshDBWithInboxContacts(t *testing.T) *testpg.DB {
 	t.Helper()
 	db := harness.DB(t)
@@ -45,6 +51,7 @@ func freshDBWithInboxContacts(t *testing.T) *testpg.DB {
 		"0004_create_tenant.up.sql",
 		"0005_create_users.up.sql",
 		"0088_inbox_contacts.up.sql",
+		"0092_message_media_scan_status.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
