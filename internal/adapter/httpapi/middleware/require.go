@@ -63,14 +63,27 @@ type ResourceResolver func(*http.Request) iam.Resource
 // the given Action. RequireAuth MUST precede it — RequireAction reads
 // the Principal from context and fails closed when absent.
 //
-// On allow: forwards. On deny: 403 Forbidden with a generic
-// "forbidden" body. The ReasonCode is intentionally NOT echoed to the
-// client because policy names (denied_master_pii_step_up, denied_rbac,
-// …) leak the existence and shape of internal authorization gates to
-// external tenants — see [SIN-62756]. The full Decision (including
-// ReasonCode, TargetKind, TargetID) is written to the request context
-// so downstream audit middleware ([SIN-62254]) preserves the reason
-// for internal troubleshooting without exposing it on the wire.
+// On allow: forwards with the Decision attached via WithDecision so
+// inner handlers (and any downstream middleware) can read it via
+// DecisionFromContext.
+//
+// On deny: 403 Forbidden with a generic "forbidden" body. The
+// ReasonCode is intentionally NOT echoed to the client because policy
+// names (denied_master_pii_step_up, denied_rbac, …) leak the existence
+// and shape of internal authorization gates to external tenants — see
+// [SIN-62756]. The full Decision (including ReasonCode, TargetKind,
+// TargetID) still travels via WithDecision on the ctx for inner
+// readers and via the outer DecisionRecorder (below) for the audit
+// path, so internal troubleshooting and dashboards are unaffected.
+//
+// On BOTH paths: if an OUTER middleware (the audit chain in
+// [SIN-62254]) attached a DecisionRecorder via WithDecisionRecorder,
+// the Decision is recorded into it BEFORE any response is written.
+// This is what lets a request that is denied still be audited — Go
+// context values only flow inward, and the deny path returns early
+// via http.Error without ever calling next.ServeHTTP with the
+// updated request, so DecisionFromContext alone is invisible to the
+// outer chain.
 func RequireAction(authz iam.Authorizer, action iam.Action, resolve ResourceResolver) func(http.Handler) http.Handler {
 	if authz == nil {
 		panic("middleware: RequireAction Authorizer is nil")
@@ -87,6 +100,9 @@ func RequireAction(authz iam.Authorizer, action iam.Action, resolve ResourceReso
 				res = resolve(r)
 			}
 			d := authz.Can(r.Context(), p, action, res)
+			if rec, ok := DecisionRecorderFromContext(r.Context()); ok {
+				rec.Record(d)
+			}
 			ctx := WithDecision(r.Context(), d)
 			if !d.Allow {
 				http.Error(w, "forbidden", http.StatusForbidden)
