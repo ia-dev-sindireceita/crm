@@ -12,6 +12,7 @@ package inbox
 
 import (
 	"html/template"
+	"io"
 	"strings"
 	"time"
 )
@@ -269,5 +270,18 @@ func init() {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
 		}
+	}
+
+	// Prime html/template's lazy escaper on every template now, before any
+	// concurrent goroutine can race on the first Execute call. The escaper
+	// mutates internal state on first execution; warming it here (single-
+	// goroutine init) makes all subsequent concurrent executions read-only.
+	for _, t := range []*template.Template{
+		messageBubbleTmpl,
+		conversationListTmpl,
+		conversationViewTmpl,
+		inboxLayoutTmpl,
+	} {
+		_ = t.Execute(io.Discard, nil)
 	}
 }
