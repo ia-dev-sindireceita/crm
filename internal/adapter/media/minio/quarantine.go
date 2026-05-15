@@ -15,8 +15,10 @@
 // from MinIO's STS assume-role flow ([SIN-62805] AC) so the long-lived
 // admin credentials never reach the worker container. This adapter does
 // not implement STS itself — it only consumes (AccessKeyID, SecretKey,
-// SessionToken) as plain strings via Config. Rotation is the caller's
-// responsibility (e.g. wire a `func() Credentials` provider).
+// SessionToken) via the Config.CredentialsProvider hook ([SIN-62819]).
+// Rotation is the caller's responsibility: wire a RotatingProvider
+// backed by NewFileRefresher (or another refresh func) so the triple is
+// re-read every ~50min without recreating the adapter.
 package minio
 
 import (
@@ -61,9 +63,10 @@ type Config struct {
 	// DestinationBucket is the quarantine bucket (e.g. "media-quarantine").
 	DestinationBucket string
 
-	// AccessKeyID / SecretAccessKey come from MinIO STS. Rotate by
-	// recreating the adapter; the field is read on every Sign so a
-	// future Provider-based mutation would also work.
+	// AccessKeyID / SecretAccessKey / SessionToken are the static
+	// credentials used when CredentialsProvider is nil. They are
+	// ignored when CredentialsProvider is set so a rotating triple does
+	// not collide with stale envs.
 	AccessKeyID     string
 	SecretAccessKey string
 
@@ -71,6 +74,13 @@ type Config struct {
 	// from an STS assume-role call. Empty when long-lived credentials
 	// are used (only acceptable in local dev).
 	SessionToken string
+
+	// CredentialsProvider rotates the SigV4 triple on each sign. When
+	// non-nil, the static AccessKeyID/SecretAccessKey/SessionToken
+	// fields are ignored. Production wires a RotatingProvider here
+	// ([SIN-62819]); dev / tests can pass StaticProvider or leave nil
+	// and rely on the static triple.
+	CredentialsProvider CredentialsProvider
 
 	// HTTPClient is optional; tests inject an httptest server's Client.
 	// Production callers should leave it nil to use http.DefaultClient.
@@ -83,15 +93,19 @@ type Config struct {
 
 // Quarantiner is the S3-compatible adapter. Construct via New.
 type Quarantiner struct {
-	cfg Config
-	hc  *http.Client
-	now func() time.Time
+	cfg   Config
+	hc    *http.Client
+	now   func() time.Time
+	creds CredentialsProvider
 }
 
 var _ quarantine.Quarantiner = (*Quarantiner)(nil)
 
 // New validates cfg and returns a Quarantiner ready for use. Returns
-// an error when any required field is empty.
+// an error when any required field is empty. Exactly one of (a) the
+// static AccessKeyID/SecretAccessKey pair or (b) CredentialsProvider
+// MUST be supplied; supplying both is rejected so an operator does not
+// silently fall back to stale envs after wiring a rotating provider.
 func New(cfg Config) (*Quarantiner, error) {
 	if cfg.Endpoint == "" {
 		return nil, errors.New("minio: Config.Endpoint is required")
@@ -102,8 +116,9 @@ func New(cfg Config) (*Quarantiner, error) {
 	if cfg.DestinationBucket == "" {
 		return nil, errors.New("minio: Config.DestinationBucket is required")
 	}
-	if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
-		return nil, errors.New("minio: Config.AccessKeyID and Config.SecretAccessKey are required")
+	provider, err := resolveProvider(cfg.CredentialsProvider, cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
@@ -116,7 +131,29 @@ func New(cfg Config) (*Quarantiner, error) {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return &Quarantiner{cfg: cfg, hc: hc, now: nowFn}, nil
+	return &Quarantiner{cfg: cfg, hc: hc, now: nowFn, creds: provider}, nil
+}
+
+// resolveProvider centralises the "static triple or rotating provider"
+// resolution used by both Quarantiner and Reader. Either source MUST be
+// supplied; supplying both is rejected so a misconfigured deploy fails
+// fast at startup instead of silently using stale envs after the
+// rotating provider was meant to take over.
+func resolveProvider(provider CredentialsProvider, ak, sk, st string) (CredentialsProvider, error) {
+	if provider != nil {
+		if ak != "" || sk != "" || st != "" {
+			return nil, errors.New("minio: set either CredentialsProvider or static AccessKeyID/SecretAccessKey/SessionToken, not both")
+		}
+		return provider, nil
+	}
+	if ak == "" || sk == "" {
+		return nil, errors.New("minio: AccessKeyID and SecretAccessKey are required when CredentialsProvider is nil")
+	}
+	return StaticProvider(Credentials{
+		AccessKeyID:     ak,
+		SecretAccessKey: sk,
+		SessionToken:    st,
+	})
 }
 
 // Move performs CopyObject (Source→Destination) then DeleteObject on
@@ -210,7 +247,14 @@ func urlEscapeKey(key string) string {
 // sign attaches the AWS SigV4 Authorization header (and the
 // x-amz-date / x-amz-content-sha256 / x-amz-security-token headers it
 // references) to req. The body is empty for both operations we issue.
+// The credential triple is fetched from CredentialsProvider on every
+// sign so STS rotation takes effect on the next request without
+// recreating the adapter ([SIN-62819]).
 func (q *Quarantiner) sign(req *http.Request) error {
+	c, err := q.creds()
+	if err != nil {
+		return fmt.Errorf("minio: credentials: %w", err)
+	}
 	now := q.now().UTC()
 	amzDate := now.Format("20060102T150405Z")
 	dateStamp := now.Format("20060102")
@@ -218,8 +262,8 @@ func (q *Quarantiner) sign(req *http.Request) error {
 	req.Header.Set("Host", req.URL.Host)
 	req.Header.Set("x-amz-date", amzDate)
 	req.Header.Set("x-amz-content-sha256", emptyPayloadSHA256)
-	if q.cfg.SessionToken != "" {
-		req.Header.Set("x-amz-security-token", q.cfg.SessionToken)
+	if c.SessionToken != "" {
+		req.Header.Set("x-amz-security-token", c.SessionToken)
 	}
 
 	signedHeaders, canonicalHeaders := canonicalHeaders(req.Header)
@@ -240,11 +284,11 @@ func (q *Quarantiner) sign(req *http.Request) error {
 		hexHash([]byte(canonicalRequest)),
 	}, "\n")
 
-	signingKey := deriveSigningKey(q.cfg.SecretAccessKey, dateStamp, q.cfg.Region, "s3")
+	signingKey := deriveSigningKey(c.SecretAccessKey, dateStamp, q.cfg.Region, "s3")
 	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
 
 	auth := "AWS4-HMAC-SHA256 " +
-		"Credential=" + q.cfg.AccessKeyID + "/" + credentialScope + ", " +
+		"Credential=" + c.AccessKeyID + "/" + credentialScope + ", " +
 		"SignedHeaders=" + signedHeaders + ", " +
 		"Signature=" + signature
 	req.Header.Set("Authorization", auth)

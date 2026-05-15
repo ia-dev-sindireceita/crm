@@ -1,6 +1,6 @@
 # MinIO bucket policy — runtime + quarantine isolation
 
-- Issue: [SIN-62805](/SIN/issues/SIN-62805) (F2-05d)
+- Issue: [SIN-62805](/SIN/issues/SIN-62805) (F2-05d), [SIN-62819](/SIN/issues/SIN-62819) (STS rotation hook + tenant-prefix gate decision)
 - ADR: 0080 (uploads), 0072 (RLS), depends on [SIN-62804](/SIN/issues/SIN-62804) (worker)
 
 The mediascan pipeline runs across two buckets. The application (`app_runtime`)
@@ -123,7 +123,7 @@ back. Audit reads use a separate admin identity.
 
 `mediascan-worker` runs without long-lived MinIO credentials. The deployment
 provides a single "STS bootstrap" identity whose only permission is to call
-`AssumeRole` against the `worker_quarantine` role; the worker performs an
+`AssumeRole` against the `worker_quarantine` role; a sidecar performs an
 `AssumeRole` at startup and refreshes the resulting `(AccessKeyID,
 SecretAccessKey, SessionToken)` triple ~10 minutes before its 1-hour TTL.
 
@@ -137,19 +137,64 @@ mc admin user svcacct add \
   REPLACE_MINIO_ALIAS \
   worker_quarantine
 
-# Inside the worker container, on boot
+# Sidecar loop (runs in the worker pod, every ~50min)
 mc admin sts assume-role \
   --duration 1h \
   --policy /etc/mediascan/quarantine.policy.json \
   REPLACE_MINIO_ALIAS \
-  --output json
-# → returns {AccessKey, SecretKey, SessionToken, Expiration}
+  --output json > /etc/mediascan/creds.json.tmp \
+  && mv /etc/mediascan/creds.json.tmp /etc/mediascan/creds.json
+# JSON: {"accessKey","secretKey","sessionToken","expiration"}
 ```
 
-`cmd/mediascan-worker` consumes those three strings via the
-`internal/adapter/media/minio` adapter (see `Config.{AccessKeyID,
-SecretAccessKey, SessionToken}`). Rotation is the deployment harness's
-responsibility — the adapter is stateless across renews.
+`cmd/mediascan-worker` reads the JSON triple at signing time via the
+adapter's `CredentialsProvider` hook ([SIN-62819]). Wire it with:
+
+| Env knob              | Default | Purpose                                                       |
+|-----------------------|---------|---------------------------------------------------------------|
+| `MINIO_CREDS_FILE`    | unset   | Path to the JSON file the sidecar rewrites. When set, static AK/SK envs are forbidden. |
+| `MINIO_CREDS_REFRESH` | `50m`   | Cache TTL — the rotating provider re-reads the file at most once per interval. Must be ≤ the STS TTL minus a safety margin. |
+
+Operationally:
+
+- Dev / smoke (no STS): set `MINIO_ACCESS_KEY_ID` + `MINIO_SECRET_ACCESS_KEY`
+  (and optionally `MINIO_SESSION_TOKEN`). The adapter wraps these in a static
+  provider and never re-reads disk.
+- Production: set `MINIO_CREDS_FILE=/etc/mediascan/creds.json` (or any path the
+  sidecar owns). Leave `MINIO_ACCESS_KEY_ID`/`MINIO_SECRET_ACCESS_KEY`/
+  `MINIO_SESSION_TOKEN` unset — the worker rejects the half-configured combo
+  at boot so a stale env cannot leak past a rotation. Both the Quarantiner
+  and the BlobReader share the same `RotatingProvider`, so the file is hit at
+  most once per `MINIO_CREDS_REFRESH` regardless of throughput.
+
+On a refresh error (file missing, parse failure, empty triple), the next sign
+call surfaces the error and the worker NACKs the NATS delivery. JetStream's
+redelivery covers transient sidecar lag; persistent failures page #security
+via the existing alerter wiring.
+
+## Cross-tenant isolation (tenant-prefix gate — [SIN-62819] decision)
+
+The [SIN-62805](/SIN/issues/SIN-62805) review left a `presignGet`/`presignPut`
+tenant-prefix AC open. After auditing the codebase, the gate is **N/A here**:
+no `presignGet`/`presignPut` exists in the runtime media path. Tenant
+isolation on serving is enforced one layer up, inside the store:
+
+- `Store.LookupHash(ctx, tenantID, hash)` (see `internal/media/serve/serve.go`)
+  refuses to return a media row whose `tenant_id` does not match the
+  caller-supplied `tenantID`. The check uses Postgres RLS (ADR 0072) plus a
+  direct `tenantID == row.TenantID` comparison.
+- Cross-tenant access surfaces as `ErrNotFound` (not `403`), so existence is
+  not leaked across tenants. This is covered by
+  `internal/media/serve/serve_test.go:TestServe_ContentCrossTenantIsolation_404`.
+- The mediascan worker does not own a tenant-aware code path that issues a
+  presigned URL — it operates on object keys already produced by the upload
+  path, which lives behind the same `LookupHash` enforcement.
+
+Operational equivalence is therefore: the cross-tenant guard required by the
+deferred AC is realised by `Store.LookupHash` returning `ErrNotFound`, not by
+a `strings.HasPrefix(key, tenantID+"/")` gate inside the adapter. Should a
+future change introduce a presigned-URL path, re-open this section and add
+the explicit prefix gate (option (b) in [SIN-62819](/SIN/issues/SIN-62819)).
 
 ## Bucket creation
 

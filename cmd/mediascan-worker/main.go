@@ -26,10 +26,24 @@
 //	                          runtime media bucket (e.g. "media").
 //	MINIO_QUARANTINE_DEST     mandatory when MINIO_ENDPOINT is set,
 //	                          quarantine bucket (e.g. "media-quarantine").
-//	MINIO_ACCESS_KEY_ID       mandatory when MINIO_ENDPOINT is set.
-//	MINIO_SECRET_ACCESS_KEY   mandatory when MINIO_ENDPOINT is set.
+//	MINIO_ACCESS_KEY_ID       mandatory when MINIO_ENDPOINT is set AND
+//	                          MINIO_CREDS_FILE is unset; otherwise the
+//	                          adapter pulls the triple from the file.
+//	MINIO_SECRET_ACCESS_KEY   same conditional as MINIO_ACCESS_KEY_ID.
 //	MINIO_SESSION_TOKEN       optional; set when credentials came from
-//	                          MinIO STS assume-role (production).
+//	                          MinIO STS assume-role (production). Ignored
+//	                          when MINIO_CREDS_FILE is set.
+//	MINIO_CREDS_FILE          optional; path to a JSON file containing
+//	                          {accessKey, secretKey, sessionToken}.
+//	                          Production STS rotation [SIN-62819]: a
+//	                          sidecar rewrites this file every
+//	                          MINIO_CREDS_REFRESH minutes; the adapter
+//	                          re-reads it inside RotatingProvider so no
+//	                          long-lived creds live in the container.
+//	MINIO_CREDS_REFRESH       optional Go duration, default 50m. Cache
+//	                          TTL for credentials read from
+//	                          MINIO_CREDS_FILE — matches a 1h STS triple
+//	                          with a 10-minute safety margin.
 //	SLACK_WEBHOOK_URL         optional; when set, infected verdicts
 //	                          page the #security channel. Absent keeps
 //	                          the alerter nil (worker skips notify).
@@ -159,14 +173,20 @@ func run(logger *slog.Logger) error {
 	// (the worker still logs at ERROR level), which is acceptable for
 	// non-production environments.
 	if cfg.minioEndpoint != "" {
+		// The quarantine adapter and the BlobReader share the same
+		// rotating provider so the underlying STS refresh is hit at most
+		// once per cfg.minioCredsRefresh, regardless of how many sigs the
+		// worker emits in between ([SIN-62819]).
+		provider, err := buildCredentialsProvider(cfg)
+		if err != nil {
+			return fmt.Errorf("minio credentials: %w", err)
+		}
 		q, err := minioadapter.New(minioadapter.Config{
-			Endpoint:          cfg.minioEndpoint,
-			Region:            cfg.minioRegion,
-			SourceBucket:      cfg.minioSource,
-			DestinationBucket: cfg.minioDest,
-			AccessKeyID:       cfg.minioAccessKey,
-			SecretAccessKey:   cfg.minioSecretKey,
-			SessionToken:      cfg.minioSessionToken,
+			Endpoint:            cfg.minioEndpoint,
+			Region:              cfg.minioRegion,
+			SourceBucket:        cfg.minioSource,
+			DestinationBucket:   cfg.minioDest,
+			CredentialsProvider: provider,
 		})
 		if err != nil {
 			return fmt.Errorf("minio.New (quarantine): %w", err)
@@ -216,6 +236,8 @@ func run(logger *slog.Logger) error {
 		"insecure", cfg.natsInsecure,
 		"quarantiner", handler.Quarantiner != nil,
 		"alerter", handler.Alerter != nil,
+		"minio_creds", minioCredsMode(cfg),
+		"minio_creds_refresh", cfg.minioCredsRefresh.String(),
 	)
 
 	<-rootCtx.Done()
@@ -264,6 +286,13 @@ type config struct {
 	minioSecretKey    string
 	minioSessionToken string
 
+	// minioCredsFile points to a JSON triple rotated by a sidecar; when
+	// non-empty, it overrides the static AccessKey/SecretKey/SessionToken
+	// fields. minioCredsRefresh is the cache TTL applied to that file —
+	// see RotatingProvider in the minio adapter ([SIN-62819]).
+	minioCredsFile    string
+	minioCredsRefresh time.Duration
+
 	// Slack #security webhook (optional). When empty the Alerter stays
 	// nil and infected verdicts are visible only in worker logs.
 	slackWebhookURL string
@@ -292,6 +321,7 @@ func loadConfig() (config, error) {
 		minioAccessKey:    os.Getenv("MINIO_ACCESS_KEY_ID"),
 		minioSecretKey:    os.Getenv("MINIO_SECRET_ACCESS_KEY"),
 		minioSessionToken: os.Getenv("MINIO_SESSION_TOKEN"),
+		minioCredsFile:    os.Getenv("MINIO_CREDS_FILE"),
 		slackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
 	}
 	missing := []string{}
@@ -313,11 +343,19 @@ func loadConfig() (config, error) {
 		if c.minioDest == "" {
 			missing = append(missing, "MINIO_QUARANTINE_DEST")
 		}
-		if c.minioAccessKey == "" {
-			missing = append(missing, "MINIO_ACCESS_KEY_ID")
-		}
-		if c.minioSecretKey == "" {
-			missing = append(missing, "MINIO_SECRET_ACCESS_KEY")
+		// MINIO_CREDS_FILE overrides the static AK/SK envs: a sidecar
+		// rotates the on-disk JSON every MINIO_CREDS_REFRESH. Either path
+		// must produce a non-empty triple — half-configured creds are
+		// rejected for the same reason as half-configured S3.
+		if c.minioCredsFile == "" {
+			if c.minioAccessKey == "" {
+				missing = append(missing, "MINIO_ACCESS_KEY_ID")
+			}
+			if c.minioSecretKey == "" {
+				missing = append(missing, "MINIO_SECRET_ACCESS_KEY")
+			}
+		} else if c.minioAccessKey != "" || c.minioSecretKey != "" || c.minioSessionToken != "" {
+			return c, errors.New("MINIO_CREDS_FILE overrides MINIO_ACCESS_KEY_ID / MINIO_SECRET_ACCESS_KEY / MINIO_SESSION_TOKEN — unset the static envs when using the rotating file")
 		}
 	}
 	// Note: the "BLOB_BASE_DIR or MINIO_ENDPOINT+credentials" requirement
@@ -344,6 +382,15 @@ func loadConfig() (config, error) {
 			return c, fmt.Errorf("WORKER_CONCURRENCY %q: must be positive integer", v)
 		}
 		c.concurrency = n
+	}
+
+	c.minioCredsRefresh = 50 * time.Minute
+	if v := os.Getenv("MINIO_CREDS_REFRESH"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return c, fmt.Errorf("MINIO_CREDS_REFRESH %q: must be positive Go duration (e.g. 50m)", v)
+		}
+		c.minioCredsRefresh = d
 	}
 	return c, nil
 }
@@ -386,6 +433,20 @@ func validateNATSSecurity(c config) error {
 	return nil
 }
 
+// minioCredsMode reports the credentials source for the MinIO adapter
+// without logging the secret material. "none" means MINIO_ENDPOINT was
+// not set and the worker is running against the local-fs blob reader.
+func minioCredsMode(c config) string {
+	switch {
+	case c.minioEndpoint == "":
+		return "none"
+	case c.minioCredsFile != "":
+		return "rotating-file"
+	default:
+		return "static-env"
+	}
+}
+
 // natsAuthMode reports which auth knob is wired, never the secret
 // itself. Used for the startup log line.
 func natsAuthMode(c config) string {
@@ -424,21 +485,51 @@ func envOr(key, fallback string) string {
 // BLOB_BASE_DIR. Exactly one of MINIO_ENDPOINT or BLOB_BASE_DIR must be
 // configured; the worker fails fast at startup otherwise so a deploy
 // with both unset cannot silently re-serve infected blobs.
+//
+// The MinIO branch reuses the same CredentialsProvider as the quarantine
+// adapter ([SIN-62819]) so STS rotation rotates both signing paths off
+// the same cache.
 func buildBlobReader(cfg config) (clamavadapter.BlobReader, error) {
 	if cfg.minioEndpoint != "" {
+		provider, err := buildCredentialsProvider(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("blob reader credentials: %w", err)
+		}
 		return minioadapter.NewReader(minioadapter.ReaderConfig{
-			Endpoint:        cfg.minioEndpoint,
-			Region:          cfg.minioRegion,
-			Bucket:          cfg.minioSource,
-			AccessKeyID:     cfg.minioAccessKey,
-			SecretAccessKey: cfg.minioSecretKey,
-			SessionToken:    cfg.minioSessionToken,
+			Endpoint:            cfg.minioEndpoint,
+			Region:              cfg.minioRegion,
+			Bucket:              cfg.minioSource,
+			CredentialsProvider: provider,
 		})
 	}
 	if cfg.blobBaseDir == "" {
 		return nil, errors.New("blob reader: set BLOB_BASE_DIR (dev) or MINIO_ENDPOINT + credentials (prod)")
 	}
 	return &localBlobs{root: cfg.blobBaseDir}, nil
+}
+
+// buildCredentialsProvider returns the CredentialsProvider used by both
+// the Quarantiner and the Reader. When MINIO_CREDS_FILE is set the
+// returned provider re-reads the file every cfg.minioCredsRefresh — the
+// production path against an STS sidecar. Without the file, a static
+// triple is returned (dev / smoke) so the same wiring works in both
+// environments.
+func buildCredentialsProvider(cfg config) (minioadapter.CredentialsProvider, error) {
+	if cfg.minioCredsFile != "" {
+		refresh, err := minioadapter.NewFileRefresher(cfg.minioCredsFile)
+		if err != nil {
+			return nil, err
+		}
+		return minioadapter.NewRotatingProvider(minioadapter.RotatingProviderConfig{
+			Refresh:  refresh,
+			Interval: cfg.minioCredsRefresh,
+		})
+	}
+	return minioadapter.StaticProvider(minioadapter.Credentials{
+		AccessKeyID:     cfg.minioAccessKey,
+		SecretAccessKey: cfg.minioSecretKey,
+		SessionToken:    cfg.minioSessionToken,
+	})
 }
 
 // publisherShim adapts SDKAdapter.Publish to the worker.Publisher

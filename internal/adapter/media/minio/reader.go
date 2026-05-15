@@ -21,8 +21,9 @@ import (
 )
 
 // ReaderConfig configures a BlobReader against an S3-compatible
-// endpoint. All fields are required except SessionToken (only set when
-// using STS credentials).
+// endpoint. Either the static AccessKeyID/SecretAccessKey pair OR the
+// CredentialsProvider hook MUST be provided; supplying both is rejected
+// at NewReader.
 type ReaderConfig struct {
 	Endpoint        string
 	Region          string
@@ -30,16 +31,25 @@ type ReaderConfig struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
-	HTTPClient      *http.Client
-	Now             func() time.Time
+
+	// CredentialsProvider rotates the SigV4 triple on each request.
+	// Production wires a RotatingProvider here so STS-issued creds
+	// expire and rotate cleanly without recreating the Reader. When
+	// nil, the static AccessKeyID/SecretAccessKey/SessionToken fields
+	// are required (dev / tests).
+	CredentialsProvider CredentialsProvider
+
+	HTTPClient *http.Client
+	Now        func() time.Time
 }
 
 // Reader implements clamav.BlobReader against an S3-compatible endpoint
 // (MinIO in production). Concrete construction lives in NewReader.
 type Reader struct {
-	cfg ReaderConfig
-	hc  *http.Client
-	now func() time.Time
+	cfg   ReaderConfig
+	hc    *http.Client
+	now   func() time.Time
+	creds CredentialsProvider
 }
 
 // NewReader validates cfg and returns a Reader ready for use.
@@ -50,8 +60,9 @@ func NewReader(cfg ReaderConfig) (*Reader, error) {
 	if cfg.Bucket == "" {
 		return nil, errors.New("minio: ReaderConfig.Bucket is required")
 	}
-	if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
-		return nil, errors.New("minio: ReaderConfig.AccessKeyID and ReaderConfig.SecretAccessKey are required")
+	provider, err := resolveProvider(cfg.CredentialsProvider, cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
@@ -64,7 +75,7 @@ func NewReader(cfg ReaderConfig) (*Reader, error) {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return &Reader{cfg: cfg, hc: hc, now: nowFn}, nil
+	return &Reader{cfg: cfg, hc: hc, now: nowFn, creds: provider}, nil
 }
 
 // Open issues a signed GET against Endpoint/Bucket/key and returns an
@@ -112,7 +123,14 @@ func (r *Reader) bucketURL(key string) (string, error) {
 // duplicate the small wrapper rather than coupling the two structs so a
 // future change to one signing path (e.g. presigned URLs for Reader)
 // does not entangle the Quarantiner's CopyObject/DeleteObject signatures.
+// Like Quarantiner.sign, the credential triple comes from
+// CredentialsProvider on every call so STS rotation propagates without
+// recreating the Reader ([SIN-62819]).
 func (r *Reader) sign(req *http.Request) error {
+	c, err := r.creds()
+	if err != nil {
+		return fmt.Errorf("minio: credentials: %w", err)
+	}
 	now := r.now().UTC()
 	amzDate := now.Format("20060102T150405Z")
 	dateStamp := now.Format("20060102")
@@ -120,8 +138,8 @@ func (r *Reader) sign(req *http.Request) error {
 	req.Header.Set("Host", req.URL.Host)
 	req.Header.Set("x-amz-date", amzDate)
 	req.Header.Set("x-amz-content-sha256", emptyPayloadSHA256)
-	if r.cfg.SessionToken != "" {
-		req.Header.Set("x-amz-security-token", r.cfg.SessionToken)
+	if c.SessionToken != "" {
+		req.Header.Set("x-amz-security-token", c.SessionToken)
 	}
 
 	signedHeaders, canonicalHeaderBlock := canonicalHeaders(req.Header)
@@ -142,11 +160,11 @@ func (r *Reader) sign(req *http.Request) error {
 		hexHash([]byte(canonicalRequest)),
 	}, "\n")
 
-	signingKey := deriveSigningKey(r.cfg.SecretAccessKey, dateStamp, r.cfg.Region, "s3")
+	signingKey := deriveSigningKey(c.SecretAccessKey, dateStamp, r.cfg.Region, "s3")
 	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
 
 	auth := "AWS4-HMAC-SHA256 " +
-		"Credential=" + r.cfg.AccessKeyID + "/" + credentialScope + ", " +
+		"Credential=" + c.AccessKeyID + "/" + credentialScope + ", " +
 		"SignedHeaders=" + signedHeaders + ", " +
 		"Signature=" + signature
 	req.Header.Set("Authorization", auth)
