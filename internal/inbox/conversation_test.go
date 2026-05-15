@@ -58,17 +58,24 @@ func TestNewConversation_LowercasesChannel(t *testing.T) {
 func TestConversation_AssignTo(t *testing.T) {
 	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
 	user := uuid.New()
-	if err := c.AssignTo(user); err != nil {
+	a, err := c.AssignTo(user, inbox.LeadReasonLead)
+	if err != nil {
 		t.Fatalf("AssignTo: %v", err)
+	}
+	if a == nil || a.UserID != user || a.Reason != inbox.LeadReasonLead {
+		t.Errorf("returned assignment = %+v", a)
 	}
 	if c.AssignedUserID == nil || *c.AssignedUserID != user {
 		t.Errorf("AssignedUserID = %v, want %v", c.AssignedUserID, user)
+	}
+	if c.Lead() == nil || c.Lead().UserID != user {
+		t.Errorf("Lead = %+v, want user %v", c.Lead(), user)
 	}
 }
 
 func TestConversation_AssignTo_RejectsZeroUser(t *testing.T) {
 	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
-	if err := c.AssignTo(uuid.Nil); !errors.Is(err, inbox.ErrInvalidAssignee) {
+	if _, err := c.AssignTo(uuid.Nil, inbox.LeadReasonLead); !errors.Is(err, inbox.ErrInvalidAssignee) {
 		t.Errorf("err = %v, want ErrInvalidAssignee", err)
 	}
 }
@@ -76,7 +83,7 @@ func TestConversation_AssignTo_RejectsZeroUser(t *testing.T) {
 func TestConversation_AssignTo_RejectsClosed(t *testing.T) {
 	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
 	c.Close()
-	if err := c.AssignTo(uuid.New()); !errors.Is(err, inbox.ErrConversationClosed) {
+	if _, err := c.AssignTo(uuid.New(), inbox.LeadReasonLead); !errors.Is(err, inbox.ErrConversationClosed) {
 		t.Errorf("err = %v, want ErrConversationClosed", err)
 	}
 }

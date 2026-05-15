@@ -20,15 +20,17 @@ func TestNewAssignment_Validates(t *testing.T) {
 		tenant         uuid.UUID
 		conversationID uuid.UUID
 		userID         uuid.UUID
+		reason         inbox.LeadReason
 		wantErr        error
 	}{
-		{"zero tenant", uuid.Nil, conv, user, inbox.ErrInvalidTenant},
-		{"zero conversation", tenant, uuid.Nil, user, inbox.ErrInvalidContact},
-		{"zero user", tenant, conv, uuid.Nil, inbox.ErrInvalidAssignee},
+		{"zero tenant", uuid.Nil, conv, user, inbox.LeadReasonLead, inbox.ErrInvalidTenant},
+		{"zero conversation", tenant, uuid.Nil, user, inbox.LeadReasonLead, inbox.ErrInvalidContact},
+		{"zero user", tenant, conv, uuid.Nil, inbox.LeadReasonLead, inbox.ErrInvalidAssignee},
+		{"empty reason", tenant, conv, user, inbox.LeadReason(""), inbox.ErrInvalidLeadReason},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := inbox.NewAssignment(tc.tenant, tc.conversationID, tc.userID)
+			_, err := inbox.NewAssignment(tc.tenant, tc.conversationID, tc.userID, tc.reason)
 			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -40,7 +42,7 @@ func TestNewAssignment_PopulatesFields(t *testing.T) {
 	tenant := uuid.New()
 	conv := uuid.New()
 	user := uuid.New()
-	a, err := inbox.NewAssignment(tenant, conv, user)
+	a, err := inbox.NewAssignment(tenant, conv, user, inbox.LeadReasonLead)
 	if err != nil {
 		t.Fatalf("NewAssignment: %v", err)
 	}
@@ -50,30 +52,8 @@ func TestNewAssignment_PopulatesFields(t *testing.T) {
 	if a.AssignedAt.IsZero() {
 		t.Error("AssignedAt is zero")
 	}
-	if a.UnassignedAt != nil {
-		t.Errorf("UnassignedAt = %v, want nil", a.UnassignedAt)
-	}
-}
-
-func TestAssignment_MarkUnassigned(t *testing.T) {
-	a, err := inbox.NewAssignment(uuid.New(), uuid.New(), uuid.New())
-	if err != nil {
-		t.Fatalf("NewAssignment: %v", err)
-	}
-	when := time.Now().UTC().Truncate(time.Second)
-	if err := a.MarkUnassigned(when); err != nil {
-		t.Fatalf("MarkUnassigned: %v", err)
-	}
-	if a.UnassignedAt == nil || !a.UnassignedAt.Equal(when) {
-		t.Errorf("UnassignedAt = %v, want %v", a.UnassignedAt, when)
-	}
-	// Idempotent on the same value.
-	if err := a.MarkUnassigned(when); err != nil {
-		t.Errorf("MarkUnassigned same value err = %v, want nil", err)
-	}
-	// Different time on a closed assignment is rejected.
-	if err := a.MarkUnassigned(when.Add(time.Minute)); err == nil {
-		t.Error("MarkUnassigned different time err = nil, want error")
+	if a.Reason != inbox.LeadReasonLead {
+		t.Errorf("Reason = %q, want %q", a.Reason, inbox.LeadReasonLead)
 	}
 }
 
@@ -83,10 +63,9 @@ func TestHydrateAssignment_Roundtrip(t *testing.T) {
 	conv := uuid.New()
 	user := uuid.New()
 	assigned := time.Now().UTC().Truncate(time.Second)
-	unassigned := assigned.Add(time.Hour)
-	a := inbox.HydrateAssignment(id, tenant, conv, user, assigned, &unassigned)
+	a := inbox.HydrateAssignment(id, tenant, conv, user, assigned, inbox.LeadReasonReassign)
 	if a.ID != id || a.TenantID != tenant || a.ConversationID != conv || a.UserID != user ||
-		!a.AssignedAt.Equal(assigned) || a.UnassignedAt == nil || !a.UnassignedAt.Equal(unassigned) {
+		!a.AssignedAt.Equal(assigned) || a.Reason != inbox.LeadReasonReassign {
 		t.Errorf("Hydrate mismatch: %+v", a)
 	}
 }

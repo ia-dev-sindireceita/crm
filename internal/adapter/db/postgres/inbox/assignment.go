@@ -37,7 +37,7 @@ func (s *Store) AppendHistory(
 	if !reason.Valid() {
 		return nil, domain.ErrInvalidLeadReason
 	}
-	a, err := domain.NewLeaderAssignment(tenantID, conversationID, userID, reason)
+	a, err := domain.NewAssignment(tenantID, conversationID, userID, reason)
 	if err != nil {
 		return nil, fmt.Errorf("inbox/postgres: AppendHistory: %w", err)
 	}
@@ -90,7 +90,7 @@ func (s *Store) LatestAssignment(
 			}
 			return err
 		}
-		out = domain.HydrateLeaderAssignment(id, tenantID, conversationID, userID, at.UTC(), domain.LeadReason(reason))
+		out = domain.HydrateAssignment(id, tenantID, conversationID, userID, at.UTC(), domain.LeadReason(reason))
 		return nil
 	})
 	if err != nil {
@@ -136,7 +136,7 @@ func (s *Store) ListHistory(
 			if err := rows.Scan(&id, &userID, &at, &reason); err != nil {
 				return err
 			}
-			out = append(out, domain.HydrateLeaderAssignment(id, tenantID, conversationID, userID, at.UTC(), domain.LeadReason(reason)))
+			out = append(out, domain.HydrateAssignment(id, tenantID, conversationID, userID, at.UTC(), domain.LeadReason(reason)))
 		}
 		return rows.Err()
 	})

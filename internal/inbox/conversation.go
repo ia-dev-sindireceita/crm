@@ -90,37 +90,19 @@ func HydrateConversation(id, tenantID, contactID uuid.UUID, channel string,
 	}
 }
 
-// AssignTo records that userID is now the responsible operator for
-// this conversation. Returns ErrConversationClosed if the conversation
-// is not open and ErrInvalidAssignee if userID is uuid.Nil.
+// AssignTo is the F2-07 leader-attribution mutator: it builds a fresh
+// assignment_history row via NewAssignment, appends it to the in-memory
+// history slice, and refreshes AssignedUserID. The returned Assignment
+// is what the caller MUST hand to AssignmentRepository.AppendHistory
+// for persistence.
 //
-// The change is in-memory; the caller is responsible for persisting it
-// (typically via a Repository.SaveConversation or an Assignment row).
-func (c *Conversation) AssignTo(userID uuid.UUID) error {
-	if c.State != ConversationStateOpen {
-		return ErrConversationClosed
-	}
-	if userID == uuid.Nil {
-		return ErrInvalidAssignee
-	}
-	uid := userID
-	c.AssignedUserID = &uid
-	return nil
-}
-
-// AssignLead is the F2-07 leader-attribution mutator: it builds a fresh
-// assignment_history row via NewLeaderAssignment, appends it to the
-// in-memory history slice, and refreshes AssignedUserID. The returned
-// Assignment is what the caller MUST hand to
-// AssignmentRepository.AppendHistory for persistence.
-//
-// Errors mirror NewLeaderAssignment plus ErrConversationClosed when
-// the conversation has been closed.
-func (c *Conversation) AssignLead(userID uuid.UUID, reason LeadReason) (*Assignment, error) {
+// Errors mirror NewAssignment plus ErrConversationClosed when the
+// conversation has been closed.
+func (c *Conversation) AssignTo(userID uuid.UUID, reason LeadReason) (*Assignment, error) {
 	if c.State != ConversationStateOpen {
 		return nil, ErrConversationClosed
 	}
-	a, err := NewLeaderAssignment(c.TenantID, c.ID, userID, reason)
+	a, err := NewAssignment(c.TenantID, c.ID, userID, reason)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +110,14 @@ func (c *Conversation) AssignLead(userID uuid.UUID, reason LeadReason) (*Assignm
 	uid := userID
 	c.AssignedUserID = &uid
 	return a, nil
+}
+
+// AssignLead is a transitional alias for AssignTo kept so the F2-07
+// leader test suite (added in PR #117) keeps compiling without
+// falling under Rule 3 test edits. Prefer AssignTo in new code; this
+// shim will be removed under a separate Rule 3 ACK.
+func (c *Conversation) AssignLead(userID uuid.UUID, reason LeadReason) (*Assignment, error) {
+	return c.AssignTo(userID, reason)
 }
 
 // Lead returns the current leader of the conversation: the most recent

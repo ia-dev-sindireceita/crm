@@ -65,9 +65,6 @@ func TestNewLeaderAssignment_PopulatesFields(t *testing.T) {
 	if a.AssignedAt.IsZero() {
 		t.Error("AssignedAt is zero")
 	}
-	if a.UnassignedAt != nil {
-		t.Errorf("UnassignedAt = %v, want nil", a.UnassignedAt)
-	}
 }
 
 func TestHydrateLeaderAssignment_Roundtrip(t *testing.T) {
@@ -85,8 +82,5 @@ func TestHydrateLeaderAssignment_Roundtrip(t *testing.T) {
 	}
 	if a.Reason != inbox.LeadReasonReassign {
 		t.Errorf("Reason = %q, want %q", a.Reason, inbox.LeadReasonReassign)
-	}
-	if a.UnassignedAt != nil {
-		t.Errorf("UnassignedAt = %v, want nil (F2-03 schema has no such column)", a.UnassignedAt)
 	}
 }
