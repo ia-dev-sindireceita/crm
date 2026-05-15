@@ -18,7 +18,7 @@ func TestGrant_RejectsOverflow(t *testing.T) {
 	t.Parallel()
 
 	// Start near the int64 ceiling so the next Grant can wrap.
-	w := wallet.Hydrate(uuid.New(), uuid.New(), math.MaxInt64-10, 0, 0, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), math.MaxInt64-10, 0, 0, fixedTime, fixedTime)
 
 	// 11 is one past the headroom: balance(MaxInt64-10) + 11 overflows.
 	if err := w.Grant(11, fixedTime); !errors.Is(err, wallet.ErrInvalidAmount) {
@@ -29,7 +29,7 @@ func TestGrant_RejectsOverflow(t *testing.T) {
 	}
 
 	// MaxInt64 itself against a non-zero balance also wraps.
-	w2 := wallet.Hydrate(uuid.New(), uuid.New(), 1, 0, 0, fixedTime, fixedTime)
+	w2 := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 1, 0, 0, fixedTime, fixedTime)
 	if err := w2.Grant(math.MaxInt64, fixedTime); !errors.Is(err, wallet.ErrInvalidAmount) {
 		t.Errorf("Grant(MaxInt64) on balance=1: got %v, want ErrInvalidAmount", err)
 	}
@@ -43,7 +43,7 @@ func TestGrant_RejectsOverflow(t *testing.T) {
 // strict-greater-than (no wrap).
 func TestGrant_ExactHeadroomSucceeds(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), math.MaxInt64-10, 0, 0, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), math.MaxInt64-10, 0, 0, fixedTime, fixedTime)
 	if err := w.Grant(10, fixedTime); err != nil {
 		t.Fatalf("Grant(10) at MaxInt64-10 headroom: got %v, want nil", err)
 	}

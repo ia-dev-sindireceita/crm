@@ -47,7 +47,7 @@ func TestHydrate_RoundTripsState(t *testing.T) {
 	t.Parallel()
 	id := uuid.New()
 	tid := uuid.New()
-	w := wallet.Hydrate(id, tid, 100, 30, 7, fixedTime, fixedTime.Add(time.Minute))
+	w := wallet.NewHydrator().Hydrate(id, tid, 100, 30, 7, fixedTime, fixedTime.Add(time.Minute))
 	if w.ID() != id || w.TenantID() != tid {
 		t.Fatalf("ID/TenantID mismatch")
 	}
@@ -64,7 +64,7 @@ func TestHydrate_RoundTripsState(t *testing.T) {
 
 func TestReserve_HappyPath(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), 100, 0, 0, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, 0, 0, fixedTime, fixedTime)
 	if err := w.Reserve(40, fixedTime.Add(time.Second)); err != nil {
 		t.Fatalf("Reserve(40): %v", err)
 	}
@@ -80,7 +80,7 @@ func TestReserve_RejectsBadAmount(t *testing.T) {
 	t.Parallel()
 	cases := []int64{0, -1, -100}
 	for _, amt := range cases {
-		w := wallet.Hydrate(uuid.New(), uuid.New(), 100, 0, 0, fixedTime, fixedTime)
+		w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, 0, 0, fixedTime, fixedTime)
 		if err := w.Reserve(amt, fixedTime); !errors.Is(err, wallet.ErrInvalidAmount) {
 			t.Errorf("Reserve(%d): got %v, want ErrInvalidAmount", amt, err)
 		}
@@ -92,7 +92,7 @@ func TestReserve_RejectsBadAmount(t *testing.T) {
 
 func TestReserve_InsufficientFunds(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), 50, 20, 1, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 50, 20, 1, fixedTime, fixedTime)
 	if err := w.Reserve(31, fixedTime); !errors.Is(err, wallet.ErrInsufficientFunds) {
 		t.Fatalf("Reserve(31) over available=30: got %v, want ErrInsufficientFunds", err)
 	}
@@ -104,7 +104,7 @@ func TestReserve_InsufficientFunds(t *testing.T) {
 
 func TestReserve_ExactlyAvailable(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), 50, 20, 0, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 50, 20, 0, fixedTime, fixedTime)
 	if err := w.Reserve(30, fixedTime); err != nil {
 		t.Fatalf("Reserve(30) at exact available: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestReserve_ExactlyAvailable(t *testing.T) {
 
 func TestCommit_HappyPath(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), 100, 40, 5, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, 40, 5, fixedTime, fixedTime)
 	if err := w.Commit(25, 40, fixedTime); err != nil {
 		t.Fatalf("Commit(25, reserved=40): %v", err)
 	}
@@ -132,7 +132,7 @@ func TestCommit_HappyPath(t *testing.T) {
 
 func TestCommit_FullReservation(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), 100, 40, 5, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, 40, 5, fixedTime, fixedTime)
 	if err := w.Commit(40, 40, fixedTime); err != nil {
 		t.Fatalf("Commit(40, 40): %v", err)
 	}
@@ -159,7 +159,7 @@ func TestCommit_RejectsBadInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			w := wallet.Hydrate(uuid.New(), uuid.New(), 100, c.walletReserved, 0, fixedTime, fixedTime)
+			w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, c.walletReserved, 0, fixedTime, fixedTime)
 			err := w.Commit(c.commit, c.reservedAt, fixedTime)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("got %v, want %v", err, c.want)
@@ -173,7 +173,7 @@ func TestCommit_RejectsBadInput(t *testing.T) {
 
 func TestRelease_HappyPath(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), 100, 25, 3, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, 25, 3, fixedTime, fixedTime)
 	if err := w.Release(25, fixedTime); err != nil {
 		t.Fatalf("Release(25): %v", err)
 	}
@@ -190,7 +190,7 @@ func TestRelease_HappyPath(t *testing.T) {
 
 func TestRelease_RejectsBadInput(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), 100, 10, 0, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, 10, 0, fixedTime, fixedTime)
 	if err := w.Release(0, fixedTime); !errors.Is(err, wallet.ErrInvalidAmount) {
 		t.Errorf("Release(0): got %v, want ErrInvalidAmount", err)
 	}
@@ -204,7 +204,7 @@ func TestRelease_RejectsBadInput(t *testing.T) {
 
 func TestGrant_HappyPath(t *testing.T) {
 	t.Parallel()
-	w := wallet.Hydrate(uuid.New(), uuid.New(), 100, 10, 4, fixedTime, fixedTime)
+	w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, 10, 4, fixedTime, fixedTime)
 	if err := w.Grant(500, fixedTime); err != nil {
 		t.Fatalf("Grant(500): %v", err)
 	}
@@ -222,7 +222,7 @@ func TestGrant_HappyPath(t *testing.T) {
 func TestGrant_RejectsBadAmount(t *testing.T) {
 	t.Parallel()
 	for _, amt := range []int64{0, -1, -100} {
-		w := wallet.Hydrate(uuid.New(), uuid.New(), 100, 0, 0, fixedTime, fixedTime)
+		w := wallet.NewHydrator().Hydrate(uuid.New(), uuid.New(), 100, 0, 0, fixedTime, fixedTime)
 		if err := w.Grant(amt, fixedTime); !errors.Is(err, wallet.ErrInvalidAmount) {
 			t.Errorf("Grant(%d): got %v, want ErrInvalidAmount", amt, err)
 		}

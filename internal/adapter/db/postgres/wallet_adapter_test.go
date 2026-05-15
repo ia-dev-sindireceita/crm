@@ -590,7 +590,7 @@ func TestApplyWithLock_NotFound(t *testing.T) {
 	repo, _ := walletadapter.NewRepository(db.RuntimePool())
 	// Forge a wallet that doesn't exist in the DB.
 	now := time.Now()
-	ghost := wallet.Hydrate(uuid.New(), tenantID, 0, 0, 1, now, now)
+	ghost := wallet.NewHydrator().Hydrate(uuid.New(), tenantID, 0, 0, 1, now, now)
 	if err := repo.ApplyWithLock(newWalletCtx(t), ghost, nil); !errors.Is(err, wallet.ErrNotFound) {
 		t.Fatalf("ApplyWithLock(ghost): got %v, want ErrNotFound", err)
 	}
@@ -609,7 +609,7 @@ func TestApplyWithLock_VersionConflict(t *testing.T) {
 		t.Fatalf("LoadByTenant: %v", err)
 	}
 	// Persisted version is 0; we send version=5 (delta != 1).
-	bogus := wallet.Hydrate(w.ID(), w.TenantID(), w.Balance(), w.Reserved(), 5, w.CreatedAt(), w.UpdatedAt())
+	bogus := wallet.NewHydrator().Hydrate(w.ID(), w.TenantID(), w.Balance(), w.Reserved(), 5, w.CreatedAt(), w.UpdatedAt())
 	if err := repo.ApplyWithLock(ctx, bogus, nil); !errors.Is(err, wallet.ErrVersionConflict) {
 		t.Fatalf("ApplyWithLock(version=5 vs persisted=0): got %v, want ErrVersionConflict", err)
 	}

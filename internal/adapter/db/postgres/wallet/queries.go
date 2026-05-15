@@ -71,7 +71,7 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanWallet(s rowScanner) (*wallet.TokenWallet, error) {
+func (r *Repository) scanWallet(s rowScanner) (*wallet.TokenWallet, error) {
 	var (
 		id, tenantID               uuid.UUID
 		balance, reserved, version int64
@@ -83,7 +83,7 @@ func scanWallet(s rowScanner) (*wallet.TokenWallet, error) {
 		}
 		return nil, err
 	}
-	return wallet.Hydrate(id, tenantID, balance, reserved, version, createdAt, updatedAt), nil
+	return r.hydrator.Hydrate(id, tenantID, balance, reserved, version, createdAt, updatedAt), nil
 }
 
 func scanLedger(s rowScanner) (wallet.LedgerEntry, error) {

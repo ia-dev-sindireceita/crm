@@ -29,8 +29,15 @@ var _ wallet.Repository = (*Repository)(nil)
 // app_runtime pool; the pool's role triggers the RLS policies on
 // token_wallet and token_ledger so a missing WithTenant scope
 // collapses every query to zero rows.
+//
+// hydrator is the wallet.Hydrator builder used to rebuild aggregates
+// from row state. Holding it as a field keeps the call site
+// syntactically visible — wallet.Hydrate is unexported in the domain
+// package, so adapter code can only rebuild a TokenWallet through
+// this named seam.
 type Repository struct {
 	runtimePool *pgxpool.Pool
+	hydrator    wallet.Hydrator
 }
 
 // NewRepository constructs a wallet repository over the runtime pool.
@@ -40,7 +47,10 @@ func NewRepository(runtime *pgxpool.Pool) (*Repository, error) {
 	if runtime == nil {
 		return nil, postgresadapter.ErrNilPool
 	}
-	return &Repository{runtimePool: runtime}, nil
+	return &Repository{
+		runtimePool: runtime,
+		hydrator:    wallet.NewHydrator(),
+	}, nil
 }
 
 // LoadByTenant returns the wallet for tenantID. RLS on token_wallet
@@ -53,7 +63,7 @@ func (r *Repository) LoadByTenant(ctx context.Context, tenantID uuid.UUID) (*wal
 	}
 	var w *wallet.TokenWallet
 	err := postgresadapter.WithTenant(ctx, r.runtimePool, tenantID, func(tx pgx.Tx) error {
-		got, err := scanWallet(tx.QueryRow(ctx, selectWalletByTenant, tenantID))
+		got, err := r.scanWallet(tx.QueryRow(ctx, selectWalletByTenant, tenantID))
 		if err != nil {
 			return err
 		}

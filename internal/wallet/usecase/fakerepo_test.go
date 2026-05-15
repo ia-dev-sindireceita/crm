@@ -74,7 +74,7 @@ func (r *fakeRepo) LoadByTenant(ctx context.Context, tenantID uuid.UUID) (*walle
 		return nil, wallet.ErrNotFound
 	}
 	row := r.wallets[wid]
-	return wallet.Hydrate(row.id, row.tenantID, row.balance, row.reserved, row.version, row.createdAt, row.updatedAt), nil
+	return wallet.NewHydrator().Hydrate(row.id, row.tenantID, row.balance, row.reserved, row.version, row.createdAt, row.updatedAt), nil
 }
 
 func (r *fakeRepo) ApplyWithLock(ctx context.Context, w *wallet.TokenWallet, entries []wallet.LedgerEntry) error {

@@ -30,12 +30,31 @@ type TokenWallet struct {
 	updatedAt time.Time
 }
 
+// Hydrator is the named constructor for rebuilding a TokenWallet from
+// durable state. It exists as a typed builder rather than a bare
+// package-level function so call sites are syntactically visible:
+// callers must spell out wallet.NewHydrator().Hydrate(...) instead of
+// the easier-to-misuse wallet.Hydrate(...). The compiler does not
+// otherwise enforce the "adapters only" rule; this builder is a
+// defense-in-depth layer on top of the existing invariant guards
+// (New, RLS, version stamp, DB CHECK).
+type Hydrator struct{}
+
+// NewHydrator returns the canonical Hydrator. The type is stateless
+// today; the constructor exists so adapters can hold it as a field
+// and future wiring (audit logging, tracing) has a single seam.
+func NewHydrator() Hydrator { return Hydrator{} }
+
 // Hydrate reconstructs a TokenWallet from durable state. Only adapters
-// call this; passing trusted persisted values bypasses the invariants
-// that New enforces because the database already vetted them (the
-// CHECK constraints from migration 0089). Callers that want to
-// construct a fresh wallet for a brand-new tenant should use New.
-func Hydrate(id, tenantID uuid.UUID, balance, reserved, version int64, createdAt, updatedAt time.Time) *TokenWallet {
+// should reach this path; passing trusted persisted values bypasses
+// the invariants that New enforces because the database already vetted
+// them (the CHECK constraints from migration 0089). Callers that want
+// to construct a fresh wallet for a brand-new tenant should use New.
+func (Hydrator) Hydrate(id, tenantID uuid.UUID, balance, reserved, version int64, createdAt, updatedAt time.Time) *TokenWallet {
+	return hydrate(id, tenantID, balance, reserved, version, createdAt, updatedAt)
+}
+
+func hydrate(id, tenantID uuid.UUID, balance, reserved, version int64, createdAt, updatedAt time.Time) *TokenWallet {
 	return &TokenWallet{
 		id:        id,
 		tenantID:  tenantID,
