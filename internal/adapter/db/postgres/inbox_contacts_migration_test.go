@@ -51,7 +51,7 @@ func freshDBWithInboxContacts(t *testing.T) *testpg.DB {
 		"0004_create_tenant.up.sql",
 		"0005_create_users.up.sql",
 		"0088_inbox_contacts.up.sql",
-		"0092_message_media_scan_status.up.sql",
+		"0094_message_media_scan_status.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)

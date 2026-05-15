@@ -1,4 +1,4 @@
--- 0092_message_media_scan_status.up.sql
+-- 0094_message_media_scan_status.up.sql
 -- SIN-62801 / SIN-62788 F2-05a: persist the async media-scan verdict
 -- for each `message` row.
 --
@@ -24,7 +24,7 @@
 -- row.
 --
 -- Idempotent (ADD COLUMN IF NOT EXISTS). Safe to re-run.
--- Reversible: see 0092_message_media_scan_status.down.sql.
+-- Reversible: see 0094_message_media_scan_status.down.sql.
 
 BEGIN;
 

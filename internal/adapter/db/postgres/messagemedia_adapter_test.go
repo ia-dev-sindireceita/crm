@@ -24,20 +24,20 @@ import (
 )
 
 // freshDBForMessageMedia applies the inbox-contacts stack and then the
-// 0092_message_media_scan_status migration that adds the jsonb column
+// 0094_message_media_scan_status migration that adds the jsonb column
 // the adapter writes to.
 func freshDBForMessageMedia(t *testing.T) *testpg.DB {
 	t.Helper()
 	db := freshDBWithInboxContacts(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	path := filepath.Join(harness.MigrationsDir(), "0092_message_media_scan_status.up.sql")
+	path := filepath.Join(harness.MigrationsDir(), "0094_message_media_scan_status.up.sql")
 	body, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read 0092: %v", err)
+		t.Fatalf("read 0094: %v", err)
 	}
 	if _, err := db.AdminPool().Exec(ctx, string(body)); err != nil {
-		t.Fatalf("apply 0092: %v", err)
+		t.Fatalf("apply 0094: %v", err)
 	}
 	return db
 }
