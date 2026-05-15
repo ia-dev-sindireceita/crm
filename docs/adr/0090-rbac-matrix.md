@@ -123,6 +123,27 @@ A PR that ships one without the other two fails CI: contract test
 breaks if (1) and (2) disagree; lint ([ADR 0091](0091-authz-lint.md))
 breaks if a handler references an unknown `Action`.
 
+### M7. Route → Action wireup pattern (first protected route).
+
+[SIN-62767](/SIN/issues/SIN-62767) mounts the first production
+`RequireAction` gate on `GET /hello-tenant` with
+`iam.ActionTenantContactRead` via the
+[SIN-62765](/SIN/issues/SIN-62765) audited `Deps.Authorizer` seam.
+Route additions follow the same shape: chain
+`middleware.RequireAuth → middleware.RequireAction(deps.Authorizer,
+<action>, <resourceResolver>)` inside the authenticated tenant group
+in `internal/adapter/httpapi/router.go`. The audited authorizer is
+the single seam — handlers MUST NOT take a bare `*RBACAuthorizer`,
+or `audit_log_security` writes silently miss the route.
+
+Action choice for the first-route is `ActionTenantContactRead` —
+the most-permissive tenant-scope read entry, so the three tenant
+roles keep their pre-PR access while empty-role / cross-role probes
+(the F10 horizontal-probing pattern) produce 403 + audit row +
+`authz_user_deny_total` increment. Future routes pick the action
+that matches the handler's actual operation; the matrix in M2
+remains authoritative.
+
 ## Consequences
 
 - Every authz check produces a `Decision` with a closed-set

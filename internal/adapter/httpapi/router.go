@@ -25,7 +25,20 @@
 //	GET  /login                — render form          (tenant scope, no auth)
 //	POST /login                — submit credentials    (tenant scope, no auth)
 //	POST /logout               — clear session cookie  (tenant scope + auth + CSRF)
-//	GET  /hello-tenant         — protected page        (tenant scope + auth)
+//	GET  /hello-tenant         — protected page        (tenant scope + auth + RequireAuth + RequireAction[tenant.contact.read])
+//
+// SIN-62767 mounts the first production RequireAction gate on
+// /hello-tenant. The action is iam.ActionTenantContactRead — the
+// most-permissive tenant-scope read in the ADR 0090 matrix, so the
+// three tenant roles (common/atendente/gerente) keep their
+// pre-SIN-62767 access while empty-role / cross-role probes (the
+// horizontal-probing pattern F10 is meant to surface) now produce a
+// 403 + an audit_log_security row + an authz_user_deny_total
+// increment via Deps.Authorizer (the SIN-62765 AuditingAuthorizer).
+// The gate is conditional on Deps.Authorizer != nil so router tests
+// that don't wire one keep behaving exactly as they did pre-PR; nil
+// in production is impossible because cmd/server fails boot if the
+// audit wrap cannot be constructed.
 //
 //	GET|POST /m/login               — master login form / submit (no auth)
 //	GET      /m/logout              — master logout (no auth)
@@ -249,7 +262,19 @@ func NewRouter(deps Deps) http.Handler {
 				AllowedHosts: csrfAllowedHosts(deps.MasterHost),
 				OnReject:     deps.CSRFRejectMetric,
 			}))
-			authed.Get("/hello-tenant", handler.HelloTenant)
+			// SIN-62767 — gate the first protected production route on
+			// RequireAction(audited, ActionTenantContactRead). When
+			// Deps.Authorizer is nil (router tests that don't exercise
+			// the authz seam), the route mounts unchanged so existing
+			// suites keep their pre-PR behaviour. The header docstring
+			// covers the rationale (action choice, gating condition).
+			helloTenant := http.Handler(http.HandlerFunc(handler.HelloTenant))
+			if deps.Authorizer != nil {
+				helloTenant = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+					middleware.RequireAction(deps.Authorizer, iam.ActionTenantContactRead, nil)(helloTenant),
+				)
+			}
+			authed.Method(http.MethodGet, "/hello-tenant", helloTenant)
 			authed.Method(http.MethodPost, "/logout", handler.Logout(deps.IAM))
 		})
 	})
