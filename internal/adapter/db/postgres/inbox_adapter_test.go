@@ -425,10 +425,19 @@ func TestInboxAdapter_ReceiveInbound_Idempotent(t *testing.T) {
 	}
 }
 
-// TestInboxAdapter_ReceiveInbound_ConcurrentIdempotent races 50
+// TestInboxAdapter_ReceiveInbound_ConcurrentIdempotent races 100
 // callers on the same dedup key against the real Postgres UNIQUE
 // constraint. Exactly one message + one contact must end up
-// persisted; the other 49 callers report Duplicate.
+// persisted; the other 99 callers report Duplicate.
+//
+// This is the AC#2 anchor for SIN-62731 ("Idempotência testada:
+// replay do mesmo wamid 100x concorrente → 1 message persistida no
+// DB"). The whatsapp adapter test
+// `TestPost_ConcurrentReplay_OneMessage` covers the HTTP fan-out side
+// with a mutex-guarded in-memory fake; this test covers the
+// `inbound_message_dedup(channel, channel_external_id)` UNIQUE
+// constraint at the SQL layer, which the in-memory fake by
+// construction cannot reach.
 func TestInboxAdapter_ReceiveInbound_ConcurrentIdempotent(t *testing.T) {
 	db := freshDBWithInboxContacts(t)
 	store := newInboxStore(t, db)
@@ -447,7 +456,7 @@ func TestInboxAdapter_ReceiveInbound_ConcurrentIdempotent(t *testing.T) {
 		SenderDisplayName: "Alice",
 		Body:              "hello",
 	}
-	const n = 50
+	const n = 100
 	var wg sync.WaitGroup
 	var dups atomic.Int64
 	var firstErr atomic.Value
@@ -484,6 +493,27 @@ func TestInboxAdapter_ReceiveInbound_ConcurrentIdempotent(t *testing.T) {
 	}
 	if msgs != 1 {
 		t.Errorf("messages = %d, want 1", msgs)
+	}
+	// AC#2 also requires exactly 1 contact persisted (one inbound
+	// sender, deduped via contacts.UpsertContactByChannel + the
+	// dedup ledger). Asserting the count here closes the gap between
+	// "concurrent callers" and "Postgres-side uniqueness".
+	var contacts int
+	if err := db.AdminPool().QueryRow(context.Background(),
+		`SELECT count(*) FROM contact WHERE tenant_id = $1`, tenant).Scan(&contacts); err != nil {
+		t.Fatalf("count contacts: %v", err)
+	}
+	if contacts != 1 {
+		t.Errorf("contacts = %d, want 1", contacts)
+	}
+	var dedupRows int
+	if err := db.AdminPool().QueryRow(context.Background(),
+		`SELECT count(*) FROM inbound_message_dedup WHERE channel = $1 AND channel_external_id = $2`,
+		ev.Channel, ev.ChannelExternalID).Scan(&dedupRows); err != nil {
+		t.Fatalf("count dedup rows: %v", err)
+	}
+	if dedupRows != 1 {
+		t.Errorf("inbound_message_dedup rows = %d, want 1", dedupRows)
 	}
 }
 
