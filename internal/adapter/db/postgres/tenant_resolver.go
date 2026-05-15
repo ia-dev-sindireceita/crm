@@ -51,6 +51,17 @@ const tenantByHostSQL = `SELECT id, name, host FROM tenants WHERE host = $1`
 
 const tenantByIDSQL = `SELECT id, name, host FROM tenants WHERE id = $1`
 
+// tenantDefaultLeadSQL serves the F2-07.2 read path (SIN-62833) — the
+// inbox receive_inbound use-case calls DefaultLeadUserID(ctx, tenantID)
+// after creating a fresh conversation and consults this single column.
+// Lives separately from the canonical tenant SELECT so the
+// host/id-lookup query (consumed by tenant resolution middleware) does
+// not depend on the new migration — keeping bootstrap-only test
+// harnesses (those that apply only 0004) green and respecting the
+// adapter's documented "minimal columns" invariant from the type
+// doc-comment above.
+const tenantDefaultLeadSQL = `SELECT default_lead_user_id FROM tenants WHERE id = $1`
+
 // ResolveByHost runs the host lookup. Misses become tenancy.ErrTenantNotFound
 // so the middleware can render the secure-by-default 404.
 func (r *TenantResolver) ResolveByHost(ctx context.Context, host string) (*tenancy.Tenant, error) {
@@ -100,4 +111,31 @@ func (r *TenantResolver) ResolveByID(ctx context.Context, id uuid.UUID) (*tenanc
 		return nil, fmt.Errorf("postgres: tenant by id lookup: %w", err)
 	}
 	return &tenancy.Tenant{ID: gotID, Name: name, Host: gotHost}, nil
+}
+
+// DefaultLeadUserID returns tenants.default_lead_user_id for the given
+// tenant id, or nil when the tenant has no default leader configured.
+// SIN-62833 (F2-07.2) auto-attribution: the inbox receive_inbound
+// use-case calls this after creating a fresh Conversation and, when a
+// non-nil user id comes back, appends an assignment_history row with
+// reason='lead'.
+//
+// uuid.Nil and a missing tenant both collapse to ErrTenantNotFound so
+// the caller cannot confuse "tenant gone" with "no default lead".
+func (r *TenantResolver) DefaultLeadUserID(ctx context.Context, tenantID uuid.UUID) (*uuid.UUID, error) {
+	if r == nil || r.db == nil {
+		return nil, ErrNilPool
+	}
+	if tenantID == uuid.Nil {
+		return nil, tenancy.ErrTenantNotFound
+	}
+	var defaultLead *uuid.UUID
+	row := r.db.QueryRow(ctx, tenantDefaultLeadSQL, tenantID)
+	if err := row.Scan(&defaultLead); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, tenancy.ErrTenantNotFound
+		}
+		return nil, fmt.Errorf("postgres: tenant default_lead_user_id lookup: %w", err)
+	}
+	return defaultLead, nil
 }

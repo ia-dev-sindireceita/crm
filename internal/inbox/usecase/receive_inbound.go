@@ -30,6 +30,19 @@ import (
 	"github.com/pericles-luz/crm/internal/inbox"
 )
 
+// TenantLeadPolicy is the slim port the F2-07.2 auto-attribution path
+// reads. Production wiring binds it to the postgres TenantResolver's
+// DefaultLeadUserID method, which serves `SELECT default_lead_user_id
+// FROM tenants WHERE id = $1`. Returns:
+//
+//   - (&user, nil)  : the tenant has a default leader configured
+//   - (nil,   nil)  : the tenant exists but has no default leader
+//     (UI shows "sem líder")
+//   - (nil,   err)  : tenant missing, lookup transient error, etc.
+type TenantLeadPolicy interface {
+	DefaultLeadUserID(ctx context.Context, tenantID uuid.UUID) (*uuid.UUID, error)
+}
+
 // ContactUpserter is the slim subset of contacts/usecase the
 // receive-inbound flow needs. Decoupling on the method signature lets
 // tests inject a fake contact resolver without spinning up Postgres.
@@ -53,14 +66,21 @@ type ContactUpserter interface {
 // (channel, channel_external_id) MUST result in exactly one persisted
 // message and exactly one persisted contact (AC #4).
 type ReceiveInbound struct {
-	repo     inbox.Repository
-	dedup    inbox.InboundDedupRepository
-	contacts ContactUpserter
+	repo        inbox.Repository
+	dedup       inbox.InboundDedupRepository
+	contacts    ContactUpserter
+	leadPolicy  TenantLeadPolicy
+	assignments inbox.AssignmentRepository
 }
 
 // NewReceiveInbound wires the use case to its dependencies. nil port
 // arguments are programming errors caught at construction so the
 // process crashes before serving the first request.
+//
+// Built without the F2-07.2 leadership path: conversations created
+// through this constructor stay unassigned. The composition root MUST
+// use NewReceiveInboundWithLeadership so tenant.default_lead_user_id
+// is honoured.
 func NewReceiveInbound(repo inbox.Repository, dedup inbox.InboundDedupRepository, c ContactUpserter) (*ReceiveInbound, error) {
 	if repo == nil {
 		return nil, errors.New("inbox/usecase: repo must not be nil")
@@ -78,6 +98,55 @@ func NewReceiveInbound(repo inbox.Repository, dedup inbox.InboundDedupRepository
 // composition root.
 func MustNewReceiveInbound(repo inbox.Repository, dedup inbox.InboundDedupRepository, c ContactUpserter) *ReceiveInbound {
 	u, err := NewReceiveInbound(repo, dedup, c)
+	if err != nil {
+		panic(err)
+	}
+	return u
+}
+
+// NewReceiveInboundWithLeadership is the production constructor (F2-07.2,
+// SIN-62833) that wires the auto-attribution policy. After a conversation
+// is freshly created, Execute consults leadPolicy.DefaultLeadUserID for the
+// event's TenantID and — when default_lead_user_id is set — appends an
+// assignment_history row with reason='lead' so the conversation lands on
+// the configured operator. When default_lead_user_id is nil the path is a
+// no-op (the legacy "sem líder" UI state is preserved).
+//
+// nil leadPolicy/assignments arguments are programming errors. Callers that
+// genuinely want no leadership policy (mostly tests) must use
+// NewReceiveInbound instead.
+func NewReceiveInboundWithLeadership(
+	repo inbox.Repository,
+	dedup inbox.InboundDedupRepository,
+	c ContactUpserter,
+	leadPolicy TenantLeadPolicy,
+	assignments inbox.AssignmentRepository,
+) (*ReceiveInbound, error) {
+	u, err := NewReceiveInbound(repo, dedup, c)
+	if err != nil {
+		return nil, err
+	}
+	if leadPolicy == nil {
+		return nil, errors.New("inbox/usecase: tenant lead policy must not be nil")
+	}
+	if assignments == nil {
+		return nil, errors.New("inbox/usecase: assignments repo must not be nil")
+	}
+	u.leadPolicy = leadPolicy
+	u.assignments = assignments
+	return u, nil
+}
+
+// MustNewReceiveInboundWithLeadership is the panic-on-error variant for
+// the composition root.
+func MustNewReceiveInboundWithLeadership(
+	repo inbox.Repository,
+	dedup inbox.InboundDedupRepository,
+	c ContactUpserter,
+	leadPolicy TenantLeadPolicy,
+	assignments inbox.AssignmentRepository,
+) *ReceiveInbound {
+	u, err := NewReceiveInboundWithLeadership(repo, dedup, c, leadPolicy, assignments)
 	if err != nil {
 		panic(err)
 	}
@@ -160,6 +229,13 @@ func (u *ReceiveInbound) Execute(ctx context.Context, ev inbox.InboundEvent) (Re
 		if err := u.repo.CreateConversation(ctx, conv); err != nil {
 			return ReceiveInboundResult{}, err
 		}
+		// F2-07.2 (SIN-62833): apply tenant.default_lead_user_id as the
+		// initial leadership when configured. Only runs when the leadership
+		// constructor was used; legacy NewReceiveInbound callers leave the
+		// conversation unassigned (UI shows "sem líder").
+		if err := u.attributeInitialLead(ctx, conv); err != nil {
+			return ReceiveInboundResult{}, err
+		}
 	}
 
 	// 4. Persist the message and bump LastMessageAt.
@@ -194,6 +270,43 @@ func (u *ReceiveInbound) Execute(ctx context.Context, ev inbox.InboundEvent) (Re
 		Contact:      res.Contact,
 		Duplicate:    false,
 	}, nil
+}
+
+// attributeInitialLead implements the F2-07.2 auto-attribution policy.
+// When leadership ports are wired and tenant.default_lead_user_id is
+// populated, it appends an assignment_history row (reason='lead') for
+// the freshly-created Conversation and refreshes the in-memory
+// aggregate via Conversation.SetHistory.
+//
+// When the leadership ports are nil (NewReceiveInbound path) the call
+// is a no-op. A nil DefaultLeadUserID is also a no-op — the
+// conversation legitimately has no default lead and the UI surfaces it
+// as "sem líder". Policy-lookup errors are surfaced to the caller so a
+// transient DB hiccup does not silently land the conversation
+// unassigned; ErrTenantNotFound at this point would mean the tenant
+// row that authenticated the inbound event has since vanished, which
+// is a system-integrity bug worth failing loudly on.
+func (u *ReceiveInbound) attributeInitialLead(ctx context.Context, conv *inbox.Conversation) error {
+	if u.leadPolicy == nil || u.assignments == nil {
+		return nil
+	}
+	leadUserID, err := u.leadPolicy.DefaultLeadUserID(ctx, conv.TenantID)
+	if err != nil {
+		return err
+	}
+	if leadUserID == nil {
+		return nil
+	}
+	a, err := u.assignments.AppendHistory(ctx, conv.TenantID, conv.ID, *leadUserID, inbox.LeadReasonLead)
+	if err != nil {
+		return err
+	}
+	// Hydrate the in-memory aggregate with the exact row the adapter
+	// persisted so callers downstream observe the same id/AssignedAt
+	// the database wrote. SetHistory also refreshes AssignedUserID for
+	// legacy callers that read the denormalised field.
+	conv.SetHistory([]*inbox.Assignment{a})
+	return nil
 }
 
 // fallbackDisplay picks a display name when the carrier did not send

@@ -16,8 +16,17 @@ import "github.com/google/uuid"
 // request has been associated with a customer. id is the uuid persisted
 // on every tenanted row; host is the customer-facing hostname that
 // resolved to this tenant (subdomain or custom domain).
+//
+// DefaultLeadUserID is the F2-07.2 attribution policy: when a new
+// Conversation is created on an inbound event the inbox use-case
+// consults this field and, if non-nil, records the configured user as
+// the initial leader (reason='lead'). nil means "no default" — the
+// conversation stays unassigned (UI shows "sem líder"). The column is
+// nullable in storage and surfaces here as a pointer so the absence of
+// a value is unambiguous (no implicit uuid.Nil sentinel).
 type Tenant struct {
-	ID   uuid.UUID
-	Name string
-	Host string
+	ID                uuid.UUID
+	Name              string
+	Host              string
+	DefaultLeadUserID *uuid.UUID
 }
