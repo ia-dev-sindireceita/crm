@@ -2,7 +2,6 @@ package whatsapp
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,17 +14,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/adapter/channels/metashared"
 	"github.com/pericles-luz/crm/internal/inbox"
 )
 
 // SignatureHeader is the Meta-defined header carrying the HMAC-SHA256
-// signature in lowercase hex. The "sha256=" prefix is optional in the
-// wire format but ubiquitous; the verifier strips it case-sensitively
-// because Meta documents lowercase.
-const (
-	SignatureHeader = "X-Hub-Signature-256"
-	signaturePrefix = "sha256="
-)
+// signature in lowercase hex. We re-export the shared constant from
+// metashared so existing whatsapp callers (tests, cmd/server wire)
+// stay source-compatible after the SIN-62791 refactor.
+const SignatureHeader = metashared.SignatureHeader
 
 // ErrUnknownPhoneNumberID is returned by TenantResolver implementations
 // when no tenant_channel_associations row matches the supplied
@@ -134,10 +131,11 @@ func (a *Adapter) handlePost(w http.ResponseWriter, r *http.Request) {
 		writeAck(w)
 		return
 	}
-	if !a.verifySignature(r.Header.Get(SignatureHeader), body) {
+	if err := metashared.VerifySignature(a.cfg.AppSecret, body, r.Header.Get(SignatureHeader)); err != nil {
 		result = "dropped_signature"
 		a.logger.Warn("whatsapp.signature_invalid",
-			slog.String("body_sha256", hashHex(body)))
+			slog.String("body_sha256", hashHex(body)),
+			slog.String("err", err.Error()))
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -359,25 +357,6 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pnID, 
 		slog.String("wamid", wamid),
 		slog.Int64("deliver_elapsed_ms", deliverElapsed.Milliseconds()))
 	agg.delivered++
-}
-
-// verifySignature compares the supplied X-Hub-Signature-256 hex
-// digest against HMAC-SHA256(body, AppSecret). The comparison is
-// constant-time via hmac.Equal. Returns false for missing/blank
-// headers, bad hex, or mismatched bytes.
-func (a *Adapter) verifySignature(headerVal string, body []byte) bool {
-	got := strings.TrimSpace(headerVal)
-	if got == "" {
-		return false
-	}
-	got = strings.TrimPrefix(got, signaturePrefix)
-	gotBytes, err := hex.DecodeString(got)
-	if err != nil {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(a.cfg.AppSecret))
-	_, _ = mac.Write(body)
-	return hmac.Equal(gotBytes, mac.Sum(nil))
 }
 
 // timestampWindowDirection returns "" when every entry[].time falls
