@@ -18,6 +18,14 @@ type PlanCatalog interface {
 
 	// GetBySlug returns the plan with the given slug, or ErrNotFound.
 	GetBySlug(ctx context.Context, slug string) (Plan, error)
+
+	// GetPlanByID returns the plan with the given UUID, or ErrNotFound.
+	// Used by consumers that receive only a PlanID on the wire (e.g.
+	// the wallet allocator that decodes subscription.renewed events).
+	// The method is named GetPlanByID rather than GetByID so a single
+	// Store can implement both PlanCatalog and InvoiceRepository
+	// (which has a tenant-scoped GetByID with a different signature).
+	GetPlanByID(ctx context.Context, id uuid.UUID) (Plan, error)
 }
 
 // SubscriptionRepository is the persistence port for Subscription.

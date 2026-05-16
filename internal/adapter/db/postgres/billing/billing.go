@@ -92,6 +92,25 @@ func (s *Store) GetBySlug(ctx context.Context, slug string) (billing.Plan, error
 	return p, nil
 }
 
+// GetPlanByID returns the plan with the given UUID, or billing.ErrNotFound.
+func (s *Store) GetPlanByID(ctx context.Context, id uuid.UUID) (billing.Plan, error) {
+	if id == uuid.Nil {
+		return billing.Plan{}, billing.ErrNotFound
+	}
+	var p billing.Plan
+	err := s.runtimePool.QueryRow(ctx,
+		`SELECT id, slug, name, price_cents_brl, monthly_token_quota, created_at, updated_at
+		   FROM plan WHERE id = $1`, id,
+	).Scan(&p.ID, &p.Slug, &p.Name, &p.PriceCentsBRL, &p.MonthlyTokenQuota, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return billing.Plan{}, billing.ErrNotFound
+		}
+		return billing.Plan{}, fmt.Errorf("billing/postgres: get plan by id: %w", err)
+	}
+	return p, nil
+}
+
 // ---------------------------------------------------------------------------
 // SubscriptionRepository
 // ---------------------------------------------------------------------------

@@ -328,6 +328,21 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		}()
 	}
 
+	// SIN-62881 wallet allocator — consumes subscription.renewed and
+	// credits the tenant wallet idempotently. Same lifecycle pattern;
+	// Cleanup drains the JetStream conn before closing pools.
+	walloc := buildWalletAllocatorWiring(ctx, getenv)
+	if walloc != nil {
+		defer walloc.Cleanup()
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			if err := walloc.RunWorker(ctx); err != nil {
+				recordWorkerErr(err)
+			}
+		}()
+	}
+
 	log.Printf("crm: public listener on %s", addr)
 	srvErr := srv.ListenAndServe()
 	workerWG.Wait()

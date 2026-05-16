@@ -135,6 +135,37 @@ func TestBilling_PlanCRUD(t *testing.T) {
 			t.Errorf("expected ErrNotFound, got %v", err)
 		}
 	})
+
+	t.Run("get by id roundtrips quota", func(t *testing.T) {
+		seed, err := store.GetBySlug(ctx, "pro-billing")
+		if err != nil {
+			t.Fatalf("get by slug to capture id: %v", err)
+		}
+		p, err := store.GetPlanByID(ctx, seed.ID)
+		if err != nil {
+			t.Fatalf("get by id: %v", err)
+		}
+		if p.Slug != "pro-billing" {
+			t.Errorf("slug = %q, want pro-billing", p.Slug)
+		}
+		if p.MonthlyTokenQuota != 1000000 {
+			t.Errorf("quota = %d, want 1000000", p.MonthlyTokenQuota)
+		}
+	})
+
+	t.Run("get by id not found", func(t *testing.T) {
+		_, err := store.GetPlanByID(ctx, uuid.New())
+		if !errors.Is(err, billing.ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("get by id zero uuid", func(t *testing.T) {
+		_, err := store.GetPlanByID(ctx, uuid.Nil)
+		if !errors.Is(err, billing.ErrNotFound) {
+			t.Errorf("expected ErrNotFound for zero id, got %v", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
