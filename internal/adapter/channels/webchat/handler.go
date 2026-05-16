@@ -178,9 +178,18 @@ func (a *Adapter) handleMessage(w http.ResponseWriter, r *http.Request) {
 // handleStream implements GET /widget/v1/stream (SSE).
 // Reconnection via Last-Event-ID is acknowledged but replay requires
 // the Postgres session store (follow-up).
+//
+// The session id may arrive via the X-Webchat-Session header (preferred
+// for server-to-server callers and Go integration tests) or via the
+// session_id query parameter (required for browser EventSource clients,
+// which cannot set custom request headers). The CSRF token is not
+// required for the read-only stream — it gates POSTs only.
 func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	sessID := r.Header.Get(HeaderSession)
+	if sessID == "" {
+		sessID = r.URL.Query().Get("session_id")
+	}
 	if sessID == "" {
 		http.Error(w, "", http.StatusUnauthorized)
 		return

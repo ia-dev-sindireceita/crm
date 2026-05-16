@@ -5,6 +5,10 @@
 /bin/
 /dist/
 
+# Built webchat widget (SIN-62800). Rebuilt by `make widget`; source
+# lives in widget/v1/.
+/static/widget/
+
 # Local env (NEVER commit)
 deploy/compose/.env
 .env

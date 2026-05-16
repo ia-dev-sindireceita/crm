@@ -1,0 +1,106 @@
+/* Sindireceita CRM Webchat Widget — minimal CSS (SIN-62800). */
+#sindcrm-widget-root {
+	position: fixed;
+	bottom: 16px;
+	right: 16px;
+	font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+	font-size: 14px;
+	z-index: 2147483600;
+}
+.sindcrm-toggle {
+	background: #1f4f8b;
+	color: #fff;
+	border: 0;
+	border-radius: 999px;
+	padding: 12px 18px;
+	cursor: pointer;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.sindcrm-toggle:focus-visible {
+	outline: 2px solid #ffbf47;
+	outline-offset: 2px;
+}
+.sindcrm-panel {
+	width: 320px;
+	height: 420px;
+	background: #fff;
+	border: 1px solid #d8d8d8;
+	border-radius: 8px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	position: absolute;
+	bottom: 56px;
+	right: 0;
+}
+.sindcrm-hidden {
+	display: none;
+}
+.sindcrm-panel-header {
+	background: #1f4f8b;
+	color: #fff;
+	padding: 10px 12px;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+.sindcrm-close {
+	background: transparent;
+	color: #fff;
+	border: 0;
+	font-size: 18px;
+	cursor: pointer;
+}
+.sindcrm-log {
+	flex: 1;
+	overflow-y: auto;
+	padding: 10px 12px;
+	background: #f7f9fc;
+}
+.sindcrm-row {
+	margin-bottom: 8px;
+	display: flex;
+}
+.sindcrm-row-visitor {
+	justify-content: flex-end;
+}
+.sindcrm-row-agent,
+.sindcrm-row-system {
+	justify-content: flex-start;
+}
+.sindcrm-bubble {
+	max-width: 80%;
+	padding: 8px 10px;
+	border-radius: 12px;
+	background: #e6edf6;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+}
+.sindcrm-row-visitor .sindcrm-bubble {
+	background: #1f4f8b;
+	color: #fff;
+}
+.sindcrm-row-system .sindcrm-bubble {
+	background: #fff2cc;
+	color: #4a3500;
+	font-style: italic;
+}
+.sindcrm-form {
+	display: flex;
+	border-top: 1px solid #d8d8d8;
+}
+.sindcrm-input {
+	flex: 1;
+	border: 0;
+	padding: 10px 12px;
+	font: inherit;
+	outline: none;
+}
+.sindcrm-send {
+	background: #1f4f8b;
+	color: #fff;
+	border: 0;
+	padding: 0 14px;
+	cursor: pointer;
+}

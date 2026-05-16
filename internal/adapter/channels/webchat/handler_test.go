@@ -313,3 +313,59 @@ func TestHandleStream_SSEDelivery(t *testing.T) {
 
 	_ = bytes.NewReader(nil) // avoid unused import
 }
+
+// Browser EventSource cannot set custom headers, so the session id must
+// be accepted via the session_id query parameter. This test pins that
+// contract — the SSE handler MUST authenticate the stream via either
+// the header or the query string.
+func TestHandleStream_SessionIDFromQueryParam(t *testing.T) {
+	fi := &fakeInbox{}
+	a, broker := newAdapter(t, &fakeFlag{on: true}, webchat.NewInMemoryRateLimiter(0), &fakeOrigins{allowAll: true, sig: "s"}, fi)
+	mux := http.NewServeMux()
+	a.Register(mux)
+
+	tenantID := uuid.New()
+	sessID, _ := createSession(t, mux, tenantID)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	sseReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/widget/v1/stream?session_id="+sessID, nil)
+	resp, err := http.DefaultClient.Do(sseReq)
+	if err != nil {
+		t.Fatalf("SSE connect: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Errorf("want text/event-stream, got %q", resp.Header.Get("Content-Type"))
+	}
+
+	done := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "data: ") {
+				done <- strings.TrimPrefix(line, "data: ")
+				return
+			}
+		}
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	broker.Publish(sessID, `{"text":"hello via query"}`)
+
+	select {
+	case payload := <-done:
+		if !strings.Contains(payload, "hello via query") {
+			t.Errorf("unexpected payload: %q", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("timeout waiting for SSE event")
+	}
+}

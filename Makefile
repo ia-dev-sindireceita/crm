@@ -28,7 +28,13 @@ ITEST_COVER_THRESHOLD ?= 85.0
 .PHONY: help up down logs test test-integration test-integration-cover \
         lint lint-aicache lint-customdomainnet lint-imports lint-postgres-adapter-tests \
         lint-webboundary notenant forbidimport forbidwebboundary \
-        migrate-up migrate-down seed-stg smoke-alert verify-vendor
+        migrate-up migrate-down seed-stg smoke-alert verify-vendor \
+        widget widget-test
+
+# Pinned esbuild version for the webchat widget build (SIN-62800). npx
+# fetches it into its own cache the first time so no `npm install` step
+# and no node_modules are required at build time.
+ESBUILD_VERSION ?= 0.24.0
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -146,3 +152,13 @@ smoke-alert: ## Inject a synthetic alert into Slack #alerts (wired in PR10)
 
 verify-vendor: ## Verify SRI sha-384 hashes for web/static/vendor/** (SIN-62284)
 	./scripts/verify-vendor-checksums.sh
+
+widget: ## Build the webchat widget into static/widget/widget.js (minified, SIN-62800)
+	@mkdir -p static/widget
+	@cp widget/v1/widget.css static/widget/widget.css
+	npx --yes esbuild@$(ESBUILD_VERSION) widget/v1/widget.js \
+		--minify --bundle --target=es2018 \
+		--outfile=static/widget/widget.js
+
+widget-test: ## Run the widget unit tests via node --test (SIN-62800)
+	node --test widget/v1/widget.test.js
