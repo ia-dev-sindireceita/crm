@@ -51,6 +51,42 @@ loses outgoing email.
   `InsecureSkipVerify`). HTTP Basic auth uses the literal username
   `api` and the API key as password — standard Mailgun convention.
 
+## Rotating `MAILGUN_API_KEY`
+
+Routine secret rotation for the production sending account. Cross-reference
+the secret-rotation policy in [ADR 0073](../adr/0073-csrf-and-session.md).
+Trigger this runbook on the scheduled cadence, after an incident, or on
+operator offboarding.
+
+1. In the Mailgun console (Sending → Domain settings → API keys for the
+   active sending domain), create a new region-private API key. **Leave
+   the previous key active** so in-flight sends and the rollback window
+   keep working.
+2. Update `deploy/compose/.env` on the VPS:
+   `MAILGUN_API_KEY=<new-key>`. Keep the previous value commented out
+   in the same file for the rollback window — do not delete it yet.
+3. Restart the app process so the factory re-reads the env:
+   `docker compose -f deploy/compose/compose.yml restart app`.
+4. Confirm a real send succeeds: trigger an email-emitting flow
+   (e.g. password reset for a test account) and verify the
+   `mailgun: send ok` log line appears with a fresh `provider_id`
+   (Mailgun message-id). If you only see `email send failure`, you are
+   on the rollback path — see below.
+5. Once step 4 is green, revoke the previous key in the Mailgun console
+   and delete the commented-out value from `deploy/compose/.env`.
+6. Record the rotation in the secret-rotation log (per ADR 0073):
+   date, operator, reason (scheduled / incident / offboarding), and the
+   first 4 characters of the new key fingerprint (never the full key).
+
+### Rollback
+
+If step 4 fails (auth error, wrong region, or the new key was minted on
+the wrong domain), re-enable the previous key in the Mailgun console
+panel from step 1, restore the previous `MAILGUN_API_KEY` value in
+`deploy/compose/.env`, and re-run step 3 with the old value. No
+application code changes are needed for rollback — the factory re-reads
+env at boot and every call site talks to the port, not the adapter.
+
 ## Integration tests against a real Mailgun account
 
 Optional. Gated by `MAILGUN_INTEGRATION_TESTS=1`; skipped in CI. To
