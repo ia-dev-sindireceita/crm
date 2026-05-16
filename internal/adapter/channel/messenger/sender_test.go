@@ -178,6 +178,10 @@ func TestSendMessage_ImageAttachment(t *testing.T) {
 	if att["type"] != "image" {
 		t.Errorf("expected attachment type image, got %v", att["type"])
 	}
+	payload, _ := att["payload"].(map[string]any)
+	if payload["is_reusable"] != true {
+		t.Errorf("is_reusable: expected bool true, got %T(%v)", payload["is_reusable"], payload["is_reusable"])
+	}
 }
 
 func TestSendMessage_VideoAttachment(t *testing.T) {

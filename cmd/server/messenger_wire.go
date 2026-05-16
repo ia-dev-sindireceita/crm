@@ -13,7 +13,8 @@ package main
 //
 // Outbound path (OutboundChannel / SendMessage):
 //   - Resolves per-tenant PageID via a reverse lookup against
-//     tenant_channel_associations (channel="messenger_outbound").
+//     tenant_channel_associations with channel="messenger" (single-key pattern,
+//     same as WhatsApp uses for phone_number_id in the same table).
 //   - META_GRAPH_TOKEN is the system-user token (shared with WhatsApp sender).
 //
 // Both paths gate on META_APP_SECRET and DATABASE_URL; any missing dep
@@ -43,10 +44,12 @@ import (
 )
 
 // messengerWiring bundles the artifacts buildMessengerWiring produces.
+// The outbound Sender is constructed during assembly but exposed only to
+// the send-outbound dispatcher when that dispatcher is wired (follow-up
+// issue covers Messenger + WhatsApp dispatcher alignment).
 type messengerWiring struct {
-	Register        func(*http.ServeMux)
-	OutboundChannel *channelmessenger.Sender
-	Cleanup         func()
+	Register func(*http.ServeMux)
+	Cleanup  func()
 }
 
 // buildMessengerWiring assembles the production Messenger adapter (inbound
@@ -78,7 +81,8 @@ func buildMessengerWiring(ctx context.Context, getenv func(string) string) *mess
 		adapter.Register(mux)
 	}
 	log.Printf("crm: messenger intake mounted on public listener")
-	return &messengerWiring{Register: register, OutboundChannel: sender, Cleanup: cleanup}
+	_ = sender // retained for future dispatcher wiring; not yet consumed (mirrors whatsapp_wire.go)
+	return &messengerWiring{Register: register, Cleanup: cleanup}
 }
 
 // assembleMessengerAdapter constructs the adapter from already-connected

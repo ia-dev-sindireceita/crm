@@ -274,7 +274,7 @@ func encodePayload(m inbox.OutboundMessage) ([]byte, error) {
 		envelope["message"] = map[string]any{
 			"attachment": map[string]any{
 				"type":    attType,
-				"payload": map[string]string{"url": url, "is_reusable": "true"},
+				"payload": map[string]any{"url": url, "is_reusable": true},
 			},
 		}
 	} else {
