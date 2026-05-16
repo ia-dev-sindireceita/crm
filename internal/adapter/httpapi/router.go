@@ -189,6 +189,18 @@ type Deps struct {
 	//   GET  /funnel/conversations/{id}/history
 	//   GET  /funnel/modal/close
 	WebFunnel http.Handler
+
+	// WebPrivacy is the HTMX privacy / DPA disclosure handler from
+	// internal/web/privacy (SIN-62354 / Fase 3, decisão #8). When
+	// non-nil, the two GET-only routes are mounted in the authed group
+	// so they inherit TenantScope + Auth + RequireAuth. The page is
+	// read-only (no POST surface), so the CSRF middleware short-circuits
+	// on GET — the page never reaches the CSRF rejection path.
+	//
+	// Routes mounted:
+	//   GET /settings/privacy
+	//   GET /settings/privacy/dpa.md
+	WebPrivacy http.Handler
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -327,6 +339,17 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/funnel/transitions", webFunnel)
 				authed.Method(http.MethodGet, "/funnel/conversations/{id}/history", webFunnel)
 				authed.Method(http.MethodGet, "/funnel/modal/close", webFunnel)
+			}
+
+			// SIN-62354 — HTMX privacy / DPA disclosure (Fase 3, decisão #8).
+			// Same envelope as WebContacts / WebFunnel. The two routes are
+			// GET-only so the CSRF middleware short-circuits naturally.
+			// AC #1: any authenticated tenant user reaches the page — no
+			// extra RequireAction check beyond the inherited RequireAuth.
+			if deps.WebPrivacy != nil {
+				webPrivacy := middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebPrivacy)
+				authed.Method(http.MethodGet, "/settings/privacy", webPrivacy)
+				authed.Method(http.MethodGet, "/settings/privacy/dpa.md", webPrivacy)
 			}
 		})
 	})

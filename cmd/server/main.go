@@ -218,6 +218,14 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webFunnelHandler, webFunnelCleanup := buildWebFunnelHandler(ctx, getenv)
 	defer webFunnelCleanup()
 
+	// SIN-62354 — HTMX privacy / DPA page (Fase 3, decisão #8 /
+	// SIN-62203). Read-only LGPD disclosure; the wire takes no DB
+	// dependency today (the active-model lookup falls back to the
+	// migration 0098 default until SIN-62351's cascade resolver
+	// lands), so the handler is always non-nil here.
+	webPrivacyHandler, webPrivacyCleanup := buildWebPrivacyHandler(ctx, getenv)
+	defer webPrivacyCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
@@ -225,6 +233,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv, iamHandlerOpts{
 		WebContacts: webContactsHandler,
 		WebFunnel:   webFunnelHandler,
+		WebPrivacy:  webPrivacyHandler,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

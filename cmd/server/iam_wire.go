@@ -53,6 +53,12 @@ const envSlackWebhook = "SLACK_WEBHOOK_URL"
 //   - "/funnel/" matches the three sub-routes (transitions, conversations/{id}/history,
 //     modal/close); Go's mux prefers the longer pattern, so the exact
 //     "/funnel" still wins for GET /funnel.
+//
+// SIN-62354 adds the privacy / DPA disclosure UI (Fase 3, decisão #8):
+//   - "/settings/privacy" matches the page itself.
+//   - "/settings/privacy/dpa.md" matches the DPA download. The longer
+//     pattern wins by Go 1.22 mux specificity, so the exact page route
+//     still hits the page handler.
 var iamRoutes = []string{
 	"/login",
 	"/logout",
@@ -60,6 +66,8 @@ var iamRoutes = []string{
 	"/contacts/",
 	"/funnel",
 	"/funnel/",
+	"/settings/privacy",
+	"/settings/privacy/dpa.md",
 	"/m/",
 	"/metrics",
 }
@@ -79,6 +87,12 @@ type iamHandlerOpts struct {
 	// four /funnel* routes unmounted (chi emits 404) so cmd/server boots
 	// cleanly when DATABASE_URL is unset.
 	WebFunnel http.Handler
+
+	// WebPrivacy is the SIN-62354 HTMX privacy / DPA disclosure mux.
+	// Nil keeps the two /settings/privacy* routes unmounted; the wire
+	// in privacy_wire.go takes no DB dependency so this is non-nil
+	// whenever the privacy_wire factory succeeded.
+	WebPrivacy http.Handler
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -166,6 +180,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		// Master MFA deps deferred to batch 17 (SIN-62526).
 		WebContacts: opts.WebContacts,
 		WebFunnel:   opts.WebFunnel,
+		WebPrivacy:  opts.WebPrivacy,
 	})
 
 	fullCleanup := func() {
