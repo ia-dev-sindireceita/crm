@@ -71,6 +71,36 @@ func TestRBACAuthorizer_ContractMatrix(t *testing.T) {
 
 		// Non-master attempting master.* — denied.
 		{"gerente-master-create-DENY", iam.RoleTenantGerente, iam.ActionMasterTenantCreate, false, iam.ReasonDeniedRBAC},
+
+		// SIN-62880 — master.subscription.* allowed only for master.
+		{"master-subscription-assign-plan-ALLOW", iam.RoleMaster, iam.ActionMasterSubscriptionAssignPlan, true, iam.ReasonAllowedMaster},
+		{"master-subscription-cancel-ALLOW", iam.RoleMaster, iam.ActionMasterSubscriptionCancel, true, iam.ReasonAllowedMaster},
+		{"gerente-subscription-assign-plan-DENY", iam.RoleTenantGerente, iam.ActionMasterSubscriptionAssignPlan, false, iam.ReasonDeniedRBAC},
+		{"gerente-subscription-cancel-DENY", iam.RoleTenantGerente, iam.ActionMasterSubscriptionCancel, false, iam.ReasonDeniedRBAC},
+		{"atendente-subscription-assign-plan-DENY", iam.RoleTenantAtendente, iam.ActionMasterSubscriptionAssignPlan, false, iam.ReasonDeniedRBAC},
+		{"common-subscription-cancel-DENY", iam.RoleTenantCommon, iam.ActionMasterSubscriptionCancel, false, iam.ReasonDeniedRBAC},
+
+		// SIN-62880 — master.grant_courtesy.* allowed only for master.
+		{"master-grant-free-period-ALLOW", iam.RoleMaster, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, true, iam.ReasonAllowedMaster},
+		{"master-grant-extra-tokens-ALLOW", iam.RoleMaster, iam.ActionMasterGrantCourtesyExtraTokens, true, iam.ReasonAllowedMaster},
+		{"master-grant-revoke-ALLOW", iam.RoleMaster, iam.ActionMasterGrantCourtesyRevoke, true, iam.ReasonAllowedMaster},
+		{"gerente-grant-free-period-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, false, iam.ReasonDeniedRBAC},
+		{"gerente-grant-extra-tokens-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantCourtesyExtraTokens, false, iam.ReasonDeniedRBAC},
+		{"gerente-grant-revoke-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantCourtesyRevoke, false, iam.ReasonDeniedRBAC},
+		{"atendente-grant-extra-tokens-DENY", iam.RoleTenantAtendente, iam.ActionMasterGrantCourtesyExtraTokens, false, iam.ReasonDeniedRBAC},
+		{"common-grant-revoke-DENY", iam.RoleTenantCommon, iam.ActionMasterGrantCourtesyRevoke, false, iam.ReasonDeniedRBAC},
+
+		// SIN-62880 — tenant.billing.view + tenant.wallet.view_ledger
+		// allowed only for tenant_gerente; atendente, common, and master
+		// (without impersonation) are denied.
+		{"gerente-billing-view-ALLOW", iam.RoleTenantGerente, iam.ActionTenantBillingView, true, iam.ReasonAllowedRBAC},
+		{"gerente-wallet-view-ledger-ALLOW", iam.RoleTenantGerente, iam.ActionTenantWalletViewLedger, true, iam.ReasonAllowedRBAC},
+		{"atendente-billing-view-DENY", iam.RoleTenantAtendente, iam.ActionTenantBillingView, false, iam.ReasonDeniedRBAC},
+		{"atendente-wallet-view-ledger-DENY", iam.RoleTenantAtendente, iam.ActionTenantWalletViewLedger, false, iam.ReasonDeniedRBAC},
+		{"common-billing-view-DENY", iam.RoleTenantCommon, iam.ActionTenantBillingView, false, iam.ReasonDeniedRBAC},
+		{"common-wallet-view-ledger-DENY", iam.RoleTenantCommon, iam.ActionTenantWalletViewLedger, false, iam.ReasonDeniedRBAC},
+		{"master-billing-view-DENY", iam.RoleMaster, iam.ActionTenantBillingView, false, iam.ReasonDeniedRBAC},
+		{"master-wallet-view-ledger-DENY", iam.RoleMaster, iam.ActionTenantWalletViewLedger, false, iam.ReasonDeniedRBAC},
 	}
 
 	for _, tc := range tests {

@@ -34,6 +34,24 @@ const (
 	ActionMasterTenantUpdate      Action = "master.tenant.update"
 	ActionMasterTenantDelete      Action = "master.tenant.delete"
 	ActionMasterTenantImpersonate Action = "master.tenant.impersonate"
+
+	// Fase 2.5 — billing / wallet additions (SIN-62880). Master ops on
+	// subscription plan + courtesy grant lifecycle; the wallet/billing
+	// domain types live in internal/billing and internal/wallet, but
+	// these action identifiers are pure strings — handlers in C9–C11
+	// consume billing/wallet ports and resolve the resource separately.
+	ActionMasterSubscriptionAssignPlan              Action = "master.subscription.assign_plan"
+	ActionMasterSubscriptionCancel                  Action = "master.subscription.cancel"
+	ActionMasterGrantCourtesyFreeSubscriptionPeriod Action = "master.grant_courtesy.free_subscription_period"
+	ActionMasterGrantCourtesyExtraTokens            Action = "master.grant_courtesy.extra_tokens"
+	ActionMasterGrantCourtesyRevoke                 Action = "master.grant_courtesy.revoke"
+
+	// Tenant-scope billing/wallet reads. Restricted to gerente — atendente
+	// and common do not see the wallet ledger or invoice history. RLS in
+	// internal/db/postgres scopes the underlying tables by company_id;
+	// this gate is the application-layer second link of defense-in-depth.
+	ActionTenantBillingView      Action = "tenant.billing.view"
+	ActionTenantWalletViewLedger Action = "tenant.wallet.view_ledger"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -142,6 +160,19 @@ func defaultRolesByAction() map[Action][]Role {
 		ActionMasterTenantUpdate:      {RoleMaster},
 		ActionMasterTenantDelete:      {RoleMaster},
 		ActionMasterTenantImpersonate: {RoleMaster},
+
+		// Fase 2.5 — master billing/courtesy ops (SIN-62880).
+		ActionMasterSubscriptionAssignPlan:              {RoleMaster},
+		ActionMasterSubscriptionCancel:                  {RoleMaster},
+		ActionMasterGrantCourtesyFreeSubscriptionPeriod: {RoleMaster},
+		ActionMasterGrantCourtesyExtraTokens:            {RoleMaster},
+		ActionMasterGrantCourtesyRevoke:                 {RoleMaster},
+
+		// Fase 2.5 — tenant billing/wallet reads (SIN-62880). Gerente
+		// only: atendente and common do not see the wallet ledger or
+		// invoice history.
+		ActionTenantBillingView:      {RoleTenantGerente},
+		ActionTenantWalletViewLedger: {RoleTenantGerente},
 	}
 }
 
@@ -155,6 +186,16 @@ func defaultMasterActions() map[Action]struct{} {
 		ActionMasterTenantUpdate:      {},
 		ActionMasterTenantDelete:      {},
 		ActionMasterTenantImpersonate: {},
+
+		// Fase 2.5 — master billing/courtesy ops (SIN-62880). These are
+		// master-scope: a master can invoke them without impersonating a
+		// tenant. tenant.billing.view / tenant.wallet.view_ledger are
+		// tenant-scope and do NOT belong here.
+		ActionMasterSubscriptionAssignPlan:              {},
+		ActionMasterSubscriptionCancel:                  {},
+		ActionMasterGrantCourtesyFreeSubscriptionPeriod: {},
+		ActionMasterGrantCourtesyExtraTokens:            {},
+		ActionMasterGrantCourtesyRevoke:                 {},
 	}
 }
 

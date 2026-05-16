@@ -68,6 +68,26 @@ func TestAuthz_Contract_RoleActionMatrix(t *testing.T) {
 
 		{"master-master-action-ALLOW", iam.RoleMaster, iam.ActionMasterTenantImpersonate, http.StatusOK},
 		{"master-tenant-action-DENY", iam.RoleMaster, iam.ActionTenantContactRead, http.StatusForbidden},
+
+		// SIN-62880 — master billing/courtesy ops (master only).
+		{"master-subscription-assign-plan-ALLOW", iam.RoleMaster, iam.ActionMasterSubscriptionAssignPlan, http.StatusOK},
+		{"master-subscription-cancel-ALLOW", iam.RoleMaster, iam.ActionMasterSubscriptionCancel, http.StatusOK},
+		{"master-grant-free-period-ALLOW", iam.RoleMaster, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, http.StatusOK},
+		{"master-grant-extra-tokens-ALLOW", iam.RoleMaster, iam.ActionMasterGrantCourtesyExtraTokens, http.StatusOK},
+		{"master-grant-revoke-ALLOW", iam.RoleMaster, iam.ActionMasterGrantCourtesyRevoke, http.StatusOK},
+		{"gerente-subscription-assign-plan-DENY", iam.RoleTenantGerente, iam.ActionMasterSubscriptionAssignPlan, http.StatusForbidden},
+		{"gerente-grant-revoke-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantCourtesyRevoke, http.StatusForbidden},
+		{"atendente-grant-extra-tokens-DENY", iam.RoleTenantAtendente, iam.ActionMasterGrantCourtesyExtraTokens, http.StatusForbidden},
+
+		// SIN-62880 — tenant billing/wallet reads (gerente only).
+		{"gerente-billing-view-ALLOW", iam.RoleTenantGerente, iam.ActionTenantBillingView, http.StatusOK},
+		{"gerente-wallet-view-ledger-ALLOW", iam.RoleTenantGerente, iam.ActionTenantWalletViewLedger, http.StatusOK},
+		{"atendente-billing-view-DENY", iam.RoleTenantAtendente, iam.ActionTenantBillingView, http.StatusForbidden},
+		{"atendente-wallet-view-ledger-DENY", iam.RoleTenantAtendente, iam.ActionTenantWalletViewLedger, http.StatusForbidden},
+		{"common-billing-view-DENY", iam.RoleTenantCommon, iam.ActionTenantBillingView, http.StatusForbidden},
+		{"common-wallet-view-ledger-DENY", iam.RoleTenantCommon, iam.ActionTenantWalletViewLedger, http.StatusForbidden},
+		{"master-billing-view-DENY", iam.RoleMaster, iam.ActionTenantBillingView, http.StatusForbidden},
+		{"master-wallet-view-ledger-DENY", iam.RoleMaster, iam.ActionTenantWalletViewLedger, http.StatusForbidden},
 	}
 
 	for _, tc := range cases {
