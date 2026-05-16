@@ -182,11 +182,11 @@ func (p *fakeMediaPublisher) FailWith(err error) {
 
 // Compile-time guards.
 var (
-	_ inbox.InboundChannel          = (*fakeInbox)(nil)
-	_ messenger.TenantResolver      = (*fakeResolver)(nil)
-	_ messenger.FeatureFlag         = (*fakeFlag)(nil)
-	_ messenger.Clock               = (*fakeClock)(nil)
-	_ messenger.MediaScanPublisher  = (*fakeMediaPublisher)(nil)
+	_ inbox.InboundChannel         = (*fakeInbox)(nil)
+	_ messenger.TenantResolver     = (*fakeResolver)(nil)
+	_ messenger.FeatureFlag        = (*fakeFlag)(nil)
+	_ messenger.Clock              = (*fakeClock)(nil)
+	_ messenger.MediaScanPublisher = (*fakeMediaPublisher)(nil)
 )
 
 var errInjected = errors.New("messenger_test: injected")
