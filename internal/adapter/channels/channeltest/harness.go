@@ -122,8 +122,17 @@ func boot() (*Harness, error) {
 // migrations are applied so the harness is independent of any earlier
 // binary that ran against the same DSN — in CI, `make
 // test-integration-cover` (the webhook suite) runs first against the
-// same Postgres service and its cleanup leaves residue (custom types,
-// extension objects) that collides with our re-application otherwise.
+// same Postgres service and its cleanup leaves residue that collides
+// with our re-application otherwise.
+//
+// Extensions are dropped explicitly before the schema reset because
+// PostgreSQL's CASCADE walks pg_depend from schema → schema-resident
+// objects, but the pg_extension catalog row is the parent of its
+// functions — not a dependent — so it survives DROP SCHEMA public
+// CASCADE. The orphaned row then trips pg_extension_name_index when
+// 0001 runs CREATE EXTENSION IF NOT EXISTS pgcrypto. Dropping the
+// extensions first ensures the catalog row is gone before the next
+// CREATE EXTENSION runs.
 func openExternal(dsn, migrationsDir string) (*Harness, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -144,7 +153,12 @@ func openExternal(dsn, migrationsDir string) (*Harness, error) {
 			pool.Close()
 		},
 	}
-	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+	if _, err := pool.Exec(ctx, `
+		DROP EXTENSION IF EXISTS pgcrypto CASCADE;
+		DROP EXTENSION IF EXISTS citext   CASCADE;
+		DROP SCHEMA    IF EXISTS public   CASCADE;
+		CREATE SCHEMA public;
+	`); err != nil {
 		h.cleanup()
 		return nil, fmt.Errorf("reset public schema: %w", err)
 	}
