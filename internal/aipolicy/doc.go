@@ -14,5 +14,13 @@
 // which has AIEnabled = false so the use-case denies the call (LGPD
 // opt-in, ADR-0041).
 //
-// SIN-62351 (Fase 3 W2A, child of SIN-62196).
+// The audit pipeline (SIN-62353 / decisão #8) plugs in via the
+// AuditLogger port plus the RecordingRepository decorator: every
+// Upsert that goes through RecordingRepository.Upsert emits one
+// AuditEvent per changed field (or one FieldCreated event when no
+// prior row existed), attributing the change to the Actor pulled
+// from request context. The pgx adapter for AuditLogger lives in
+// internal/adapter/db/postgres/aipolicy (migration 0099 backs it).
+//
+// SIN-62351 (Fase 3 W2A, child of SIN-62196) + SIN-62353 (Fase 3 H1).
 package aipolicy

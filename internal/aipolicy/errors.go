@@ -18,3 +18,10 @@ var ErrInvalidScopeType = errors.New("aipolicy: invalid scope type")
 // scope_id is NOT NULL in migration 0098; the domain pre-validates so
 // the adapter does not have to translate a generic NOT NULL violation.
 var ErrInvalidScopeID = errors.New("aipolicy: invalid scope id")
+
+// ErrMissingActor is returned by RecordingRepository.Upsert when the
+// call site did not seed the request-scope Actor (UserID == uuid.Nil).
+// Audit non-repudiation requires every mutation to name a human
+// actor; the decorator refuses to write a policy change it cannot
+// attribute.
+var ErrMissingActor = errors.New("aipolicy: missing audit actor")

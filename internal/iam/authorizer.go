@@ -47,11 +47,25 @@ const (
 	ActionMasterGrantCourtesyRevoke                 Action = "master.grant_courtesy.revoke"
 
 	// Tenant-scope billing/wallet reads. Restricted to gerente — atendente
-	// and common do not see the wallet ledger or invoice history. RLS in
+	// and common do not see the wallet ledger or invoke history. RLS in
 	// internal/db/postgres scopes the underlying tables by company_id;
 	// this gate is the application-layer second link of defense-in-depth.
 	ActionTenantBillingView      Action = "tenant.billing.view"
 	ActionTenantWalletViewLedger Action = "tenant.wallet.view_ledger"
+
+	// Fase 3 H1 — ai-policy config + audit (SIN-62353, decisão #8).
+	// Write is restricted to gerente because flipping ai_enabled is a
+	// privacy-sensitive control (LGPD opt-in, ADR-0041). Audit read
+	// shares the role per spec ("default = mesmo papel que
+	// ai-policy.write"); master operators see the cross-tenant slice
+	// via the master.audit.read action below.
+	ActionTenantAIPolicyWrite     Action = "tenant.ai_policy.write"
+	ActionTenantAIPolicyAuditRead Action = "tenant.ai_policy.audit.read"
+
+	// Master-scope audit read: cross-tenant slice of ai_policy_audit
+	// served at /admin/audit?tenant=...&module=ai-policy. Master only;
+	// the gate runs alongside the standard master.* surface.
+	ActionMasterAuditRead Action = "master.audit.read"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -173,6 +187,11 @@ func defaultRolesByAction() map[Action][]Role {
 		// invoice history.
 		ActionTenantBillingView:      {RoleTenantGerente},
 		ActionTenantWalletViewLedger: {RoleTenantGerente},
+
+		// Fase 3 H1 — ai-policy + audit (SIN-62353, decisão #8).
+		ActionTenantAIPolicyWrite:     {RoleTenantGerente},
+		ActionTenantAIPolicyAuditRead: {RoleTenantGerente},
+		ActionMasterAuditRead:         {RoleMaster},
 	}
 }
 
@@ -196,6 +215,9 @@ func defaultMasterActions() map[Action]struct{} {
 		ActionMasterGrantCourtesyFreeSubscriptionPeriod: {},
 		ActionMasterGrantCourtesyExtraTokens:            {},
 		ActionMasterGrantCourtesyRevoke:                 {},
+
+		// Fase 3 H1 — master cross-tenant audit reader (SIN-62353).
+		ActionMasterAuditRead: {},
 	}
 }
 
