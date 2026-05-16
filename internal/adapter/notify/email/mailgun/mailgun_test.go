@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -424,5 +425,128 @@ func TestWithTimeout_NegativeFallsBackToDefault(t *testing.T) {
 	s := newSender(t, srv).WithTimeout(-1 * time.Second)
 	if err := s.Send(context.Background(), validMessage()); err != nil {
 		t.Fatalf("Send: %v", err)
+	}
+}
+
+// capturingHandler records every slog.Record it receives so the test can
+// assert on the exact attributes that would land in the log sink.
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *capturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+func (h *capturingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// findAttr returns the string value of the first attribute matching key
+// or "" if the record does not carry it.
+func findAttr(r slog.Record, key string) string {
+	var out string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			out = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return out
+}
+
+// TestSend_RedactsRecipientEmailInFailureLog verifies that a 4xx body
+// echoing a recipient address does not leak that address into the
+// structured failure log's `cause` attribute (SIN-62851).
+func TestSend_RedactsRecipientEmailInFailureLog(t *testing.T) {
+	t.Parallel()
+	const victim = "victim@example.com"
+	body := `{"message":"'to' parameter is not a valid address. address=` + victim + `: unknown email host"}`
+	srv := newServer(t, http.StatusBadRequest, body)
+
+	cap := &capturingHandler{}
+	s, err := mailgun.New(mailgun.Config{
+		APIKey:  "secret-key",
+		Domain:  "mg.acme.com",
+		BaseURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s = s.WithClient(srv.Client()).WithLogger(slog.New(cap))
+
+	err = s.Send(context.Background(), validMessage())
+	if !errors.Is(err, email.ErrPermanent) {
+		t.Fatalf("Send err = %v, want wrap ErrPermanent", err)
+	}
+	if strings.Contains(err.Error(), victim) {
+		t.Fatalf("error message leaked recipient address: %v", err)
+	}
+
+	if len(cap.records) == 0 {
+		t.Fatal("expected at least one log record from the failure path")
+	}
+	var failRec *slog.Record
+	for i := range cap.records {
+		if cap.records[i].Message == "mailgun: send failed" {
+			failRec = &cap.records[i]
+			break
+		}
+	}
+	if failRec == nil {
+		t.Fatalf("did not find failure record; got: %+v", cap.records)
+	}
+
+	cause := findAttr(*failRec, "cause")
+	if cause == "" {
+		t.Fatal("failure record missing cause attr")
+	}
+	if strings.Contains(cause, victim) {
+		t.Fatalf("cause attr leaked recipient address: %q", cause)
+	}
+	if !strings.Contains(cause, "[redacted-email]") {
+		t.Fatalf("cause attr missing redaction marker: %q", cause)
+	}
+}
+
+// TestSend_FailureCauseIsBoundedInSize verifies that an oversized
+// response body does not drag the entire body into the cause attribute.
+func TestSend_FailureCauseIsBoundedInSize(t *testing.T) {
+	t.Parallel()
+	srv := newServer(t, http.StatusBadGateway, strings.Repeat("x", 4096))
+
+	cap := &capturingHandler{}
+	s, err := mailgun.New(mailgun.Config{
+		APIKey:  "secret-key",
+		Domain:  "mg.acme.com",
+		BaseURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s = s.WithClient(srv.Client()).WithLogger(slog.New(cap))
+
+	if err := s.Send(context.Background(), validMessage()); err == nil {
+		t.Fatal("expected error on 502")
+	}
+
+	var failRec *slog.Record
+	for i := range cap.records {
+		if cap.records[i].Message == "mailgun: send failed" {
+			failRec = &cap.records[i]
+			break
+		}
+	}
+	if failRec == nil {
+		t.Fatalf("did not find failure record; got: %+v", cap.records)
+	}
+	cause := findAttr(*failRec, "cause")
+	// 256-char cap + ellipsis rune (3 bytes in UTF-8).
+	if len(cause) > 256+len("…") {
+		t.Fatalf("cause length = %d, want ≤ %d", len(cause), 256+len("…"))
 	}
 }

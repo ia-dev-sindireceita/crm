@@ -34,6 +34,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"regexp"
 	"strings"
 	"time"
 
@@ -221,8 +222,34 @@ func (s *Sender) Send(ctx context.Context, msg email.Message) error {
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	bucket := classify(resp.StatusCode)
-	s.logSendFailure(msg, resp.StatusCode, errors.New(string(respBody)))
-	return fmt.Errorf("%w: mailgun status %d: %s", bucket, resp.StatusCode, strings.TrimSpace(string(respBody)))
+	safe := sanitiseCause(string(respBody))
+	s.logSendFailure(msg, resp.StatusCode, errors.New(safe))
+	return fmt.Errorf("%w: mailgun status %d: %s", bucket, resp.StatusCode, safe)
+}
+
+// emailAddressRe matches RFC-5321-ish addresses well enough to scrub
+// recipients echoed back in Mailgun's 4xx JSON bodies. It is intentionally
+// permissive (no validation) — false positives are fine, false negatives
+// are not, since the goal is to keep recipient PII out of logs.
+var emailAddressRe = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
+// maxCauseLen bounds the sanitised cause string passed to logSendFailure
+// and the error return. Mailgun's "message" field is typically short; a
+// runaway 4 KB body would otherwise drag a whole response into the log
+// line. Operators who need the full body should route it through
+// log.LogRawEvent.
+const maxCauseLen = 256
+
+// sanitiseCause strips email addresses and bounds the size of a Mailgun
+// response body so that recipient PII never lands in the cause attribute
+// of a structured failure log. Defense in depth — the redactor in
+// internal/log only matches on attribute *keys*, not values.
+func sanitiseCause(body string) string {
+	cleaned := emailAddressRe.ReplaceAllString(strings.TrimSpace(body), "[redacted-email]")
+	if len(cleaned) > maxCauseLen {
+		cleaned = cleaned[:maxCauseLen] + "…"
+	}
+	return cleaned
 }
 
 // classify maps a non-2xx HTTP status onto the port's transient /
