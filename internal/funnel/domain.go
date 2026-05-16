@@ -60,3 +60,37 @@ type ConversationMovedEvent struct {
 // every funnel transition (F2-08 emits it; F2-12 board hot-swaps on it;
 // Fase 4 automatic-rules subscribe to it).
 const EventNameConversationMoved = "funnel.conversation_moved"
+
+// ConversationCard is a read-side projection of a conversation in its
+// current funnel stage. The card is denormalised from conversation +
+// contact + funnel_transition so the board renders one row per
+// conversation without a second round trip.
+//
+// The fields are deliberately UI-shaped: DisplayName is the contact's
+// rendered name; Channel is the conversation's source carrier;
+// LastMessageAt drives the column sort. The funnel domain owns the
+// shape so the bounded-context boundary stays explicit — the board
+// adapter materialises the JOIN result into this struct, and no
+// downstream consumer ever sees a raw conversation or contact row.
+type ConversationCard struct {
+	ConversationID uuid.UUID
+	ContactID      uuid.UUID
+	DisplayName    string
+	Channel        string
+	LastMessageAt  time.Time
+}
+
+// BoardColumn is one stage on the F2-12 board: the stage definition
+// plus the cards currently in it. Cards are ordered most-recent-first
+// so the operator's eye lands on the freshest activity.
+type BoardColumn struct {
+	Stage Stage
+	Cards []ConversationCard
+}
+
+// Board is the full read-side projection the GET /funnel handler
+// renders. Columns are ordered by Stage.Position ascending so the
+// board reads left-to-right "novo → qualificando → … → perdido".
+type Board struct {
+	Columns []BoardColumn
+}

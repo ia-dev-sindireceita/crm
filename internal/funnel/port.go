@@ -28,6 +28,20 @@ type TransitionRepository interface {
 	// it with a fresh uuid and a TransitionedAt timestamp from the
 	// service clock — the repository never invents either.
 	Create(ctx context.Context, t *Transition) error
+
+	// ListForConversation returns every transition recorded for the
+	// conversation, ordered oldest-first. The history modal (F2-12)
+	// reads this to render the per-conversation funnel ledger; an
+	// empty slice (nil error) is the natural "no history" outcome.
+	ListForConversation(ctx context.Context, tenantID, conversationID uuid.UUID) ([]*Transition, error)
+}
+
+// BoardReader is the read-side port for the funnel board UI (F2-12).
+// The adapter joins funnel_stage with each conversation's latest
+// transition in a single query so GET /funnel does one round-trip per
+// render.
+type BoardReader interface {
+	Board(ctx context.Context, tenantID uuid.UUID) (Board, error)
 }
 
 // EventPublisher fan-outs domain events to downstream consumers. The

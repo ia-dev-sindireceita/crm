@@ -95,6 +95,13 @@ func (f *fakeTransitionRepo) Create(_ context.Context, t *funnel.Transition) err
 	return nil
 }
 
+// ListForConversation is a no-op stub so fakeTransitionRepo continues
+// to satisfy the port after F2-12 extended it; the existing
+// MoveConversation scenarios do not exercise the history read path.
+func (f *fakeTransitionRepo) ListForConversation(_ context.Context, _ uuid.UUID, _ uuid.UUID) ([]*funnel.Transition, error) {
+	return nil, nil
+}
+
 // fakePublisher captures published events so tests can assert payload
 // shape and ordering.
 type fakePublisher struct {
