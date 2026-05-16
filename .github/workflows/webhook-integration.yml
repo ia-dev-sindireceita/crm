@@ -71,7 +71,7 @@ jobs:
       # the package is measured in isolation).
       - name: channel adapter integration suite
         run: |
-          go test -tags integration -count=1 -timeout 300s \
+          go test -tags integration -count=1 -timeout 300s -p 1 \
             -coverpkg=./internal/adapter/channels/whatsapp,./internal/adapter/channels/instagram,./internal/adapter/channels/channeltest \
             -coverprofile=coverage.channels.itest.out \
             ./internal/adapter/channels/whatsapp/... \
