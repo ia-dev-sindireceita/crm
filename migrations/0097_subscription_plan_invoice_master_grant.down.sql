@@ -5,7 +5,8 @@
 -- Order matters: drop the token_ledger extensions FIRST (the new FK on
 -- master_grant_id needs to disappear before master_grant can be dropped),
 -- then drop invoice (FK→subscription), subscription (FK→plan), plan,
--- and master_grant last. tenants is owned by 0004 and stays intact.
+-- master_grant_request (no FK dependents), and master_grant last.
+-- tenants/users are owned by 0004/0005 and stay intact.
 
 BEGIN;
 
@@ -44,6 +45,14 @@ DROP TABLE IF EXISTS subscription;
 -- ---------------------------------------------------------------------------
 
 DROP TABLE IF EXISTS plan;
+
+-- ---------------------------------------------------------------------------
+-- master_grant_request: drop trigger then table. Done before
+-- master_grant only for symmetry; there is no FK between the two.
+-- ---------------------------------------------------------------------------
+
+DROP TRIGGER IF EXISTS master_grant_request_master_ops_audit ON master_grant_request;
+DROP TABLE IF EXISTS master_grant_request;
 
 -- ---------------------------------------------------------------------------
 -- master_grant: drop trigger, policy, table LAST so token_ledger.FK is

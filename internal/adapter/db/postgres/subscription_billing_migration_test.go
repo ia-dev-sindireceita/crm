@@ -7,9 +7,10 @@ package postgres_test
 //   #3 subscription partial UNIQUE rejects a second active row per tenant
 //   #4 invoice partial UNIQUE allows a fresh pending row after a master cancel,
 //      rejects a second active row in the same period
-//   #5 master_grant CHECK constraints (reason length, payload pairing,
-//      revocation consistency)
+//   #5 master_grant CHECK constraints (reason length, revoke consistency
+//      including revoked_by_user_id) — ADR-0098 §D1
 //   #6 token_ledger.source CHECK + master_grant_id pairing
+//   #7 master_grant_request 4-eyes state machine — ADR-0098 §D5
 //
 // Tests live in the parent postgres_test package (not a per-table subpackage
 // or a new test binary) so they share the shared-cluster ALTER ROLE
@@ -41,6 +42,7 @@ var billingTableNames = []string{
 	"subscription",
 	"invoice",
 	"master_grant",
+	"master_grant_request",
 }
 
 // freshDBWithBilling applies 0004 (tenants), 0005 (users), 0089
@@ -260,11 +262,12 @@ func TestBillingRLS_NoTenantSetReturnsZero(t *testing.T) {
 	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
 		_, e := tx.Exec(ctx,
 			`INSERT INTO master_grant
-			   (id, tenant_id, created_by_user_id, kind, reason, period_days)
+			   (external_id, tenant_id, created_by_user_id, kind, reason, payload)
 			 VALUES ('01HXXX0CHECKZEROBYRUNTIME', $1, $2,
 			         'free_subscription_period',
-			         'no-tenant-guc smoke check', 30)`,
-			tenantA, masterID.String())
+			         'no-tenant-guc smoke check',
+			         '{"months": 1, "plan_slug": "free"}'::jsonb)`,
+			tenantA, masterID)
 		return e
 	}); err != nil {
 		t.Fatalf("seed master_grant: %v", err)
@@ -316,7 +319,7 @@ func TestBillingForceRLS_AppliesToOwner(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	for _, table := range []string{"subscription", "invoice", "master_grant"} {
+	for _, table := range []string{"subscription", "invoice", "master_grant", "master_grant_request"} {
 		var force bool
 		row := db.SuperuserPool().QueryRow(ctx,
 			`SELECT relforcerowsecurity FROM pg_class WHERE relname = $1`, table)
@@ -528,10 +531,12 @@ func TestInvoiceCancelledReason_RequiresMinLength(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AC #5 — master_grant CHECK constraints
+// AC #5 — master_grant CHECK constraints (ADR-0098 §D1)
 // ---------------------------------------------------------------------------
 
-// TestMasterGrant_ReasonTooShortRejected: reason must be ≥ 10 chars.
+// TestMasterGrant_ReasonTooShortRejected: reason must be ≥ 10 chars
+// (ADR-0098 §D1: prevents the worst class of bad audit entry — "ok",
+// "fix", empty string).
 func TestMasterGrant_ReasonTooShortRejected(t *testing.T) {
 	db := freshDBWithBilling(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -542,10 +547,11 @@ func TestMasterGrant_ReasonTooShortRejected(t *testing.T) {
 	err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
 		_, e := tx.Exec(ctx,
 			`INSERT INTO master_grant
-			   (id, tenant_id, created_by_user_id, kind, reason, period_days)
+			   (external_id, tenant_id, created_by_user_id, kind, reason, payload)
 			 VALUES ('01HXXSHORTREASON0000000001', $1, $2,
-			         'free_subscription_period', 'too short', 30)`,
-			tenantA, masterID.String())
+			         'free_subscription_period', 'too short',
+			         '{"months": 1, "plan_slug": "free"}'::jsonb)`,
+			tenantA, masterID)
 		return e
 	})
 	if err == nil {
@@ -557,10 +563,12 @@ func TestMasterGrant_ReasonTooShortRejected(t *testing.T) {
 	}
 }
 
-// TestMasterGrant_PayloadPairing: kind drives which payload column is
-// required. extra_tokens needs amount (no period_days);
-// free_subscription_period needs period_days (no amount).
-func TestMasterGrant_PayloadPairing(t *testing.T) {
+// TestMasterGrant_PayloadIsOpaqueJSONB: payload is opaque JSONB at the
+// schema layer (ADR-0098 §D1 + §D6 — shape validation lives in the
+// domain, not the DB). The schema accepts both kind-specific shapes
+// the writer is expected to emit; future grant kinds (D7 reservation)
+// can extend the JSON without a migration.
+func TestMasterGrant_PayloadIsOpaqueJSONB(t *testing.T) {
 	db := freshDBWithBilling(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -568,122 +576,178 @@ func TestMasterGrant_PayloadPairing(t *testing.T) {
 	tenantA, masterID := seedTenantUserMaster(t, db)
 
 	cases := []struct {
-		name      string
-		kind      string
-		amount    any
-		period    any
-		shouldErr bool
+		name    string
+		extID   string
+		kind    string
+		payload string
 	}{
-		{"extra_tokens with amount", "extra_tokens", int64(1_000_000), nil, false},
-		{"free_period with days", "free_subscription_period", nil, 30, false},
-		{"extra_tokens missing amount", "extra_tokens", nil, nil, true},
-		{"extra_tokens with stray period_days", "extra_tokens", int64(1), 7, true},
-		{"free_period missing days", "free_subscription_period", nil, nil, true},
-		{"free_period with stray amount", "free_subscription_period", int64(1), 30, true},
+		{
+			"extra_tokens tokens-only payload",
+			"01HXXPAYLOADTOKENS0000000A",
+			"extra_tokens",
+			`{"tokens": 100000}`,
+		},
+		{
+			"free_subscription_period months payload",
+			"01HXXPAYLOADMONTHS0000000A",
+			"free_subscription_period",
+			`{"months": 3, "plan_slug": "pro"}`,
+		},
+		{
+			"extra_tokens payload with extra metadata",
+			"01HXXPAYLOADEXTRA00000000A",
+			"extra_tokens",
+			`{"tokens": 50000, "compensates_grant_id": "01HXXCOMPENSATES0000000000"}`,
+		},
 	}
-	for i, tc := range cases {
-		i, tc := i, tc
+	for _, tc := range cases {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			id := fmt.Sprintf("01HXXPAYLOAD%014d", i)
 			err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
 				_, e := tx.Exec(ctx,
 					`INSERT INTO master_grant
-					   (id, tenant_id, created_by_user_id, kind, reason,
-					    amount, period_days)
+					   (external_id, tenant_id, created_by_user_id, kind, reason, payload)
 					 VALUES ($1, $2, $3, $4,
-					         'reason long enough for the check', $5, $6)`,
-					id, tenantA, masterID.String(), tc.kind, tc.amount, tc.period)
+					         'reason long enough for the check', $5::jsonb)`,
+					tc.extID, tenantA, masterID, tc.kind, tc.payload)
 				return e
 			})
-			if tc.shouldErr && err == nil {
-				t.Fatalf("%s: expected check-violation, got nil", tc.name)
-			}
-			if tc.shouldErr && !strings.Contains(strings.ToLower(err.Error()), "master_grant_payload_for_kind") {
-				t.Errorf("%s: expected payload-for-kind error, got: %v", tc.name, err)
-			}
-			if !tc.shouldErr && err != nil {
-				t.Errorf("%s: expected success, got: %v", tc.name, err)
+			if err != nil {
+				t.Errorf("%s: rejected: %v", tc.name, err)
 			}
 		})
 	}
 }
 
-// TestMasterGrant_RevocationConsistency: revoked_at requires revoked_reason
-// (≥10 chars) and is only legal while consumed_at IS NULL.
-func TestMasterGrant_RevocationConsistency(t *testing.T) {
+// TestMasterGrant_RevokeConsistency: master_grant_revoke_consistency
+// CHECK from ADR-0098 §D1. revoked_at MUST be paired with
+// revoked_by_user_id AND a revoke_reason ≥ 10 chars, AND is only
+// legal while consumed_at IS NULL. Five branches the constraint must
+// reject; one legal revocation; one revoke-after-consume rejection.
+func TestMasterGrant_RevokeConsistency(t *testing.T) {
 	db := freshDBWithBilling(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	tenantA, masterID := seedTenantUserMaster(t, db)
 
-	// Seed one grant we can mutate.
+	// Seed a pending grant we can mutate.
+	pendingExt := "01HXXREVOK00000000000000001"
 	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
 		_, e := tx.Exec(ctx,
 			`INSERT INTO master_grant
-			   (id, tenant_id, created_by_user_id, kind, reason, period_days)
-			 VALUES ('01HXXREVOK00000000000000001', $1, $2,
+			   (external_id, tenant_id, created_by_user_id, kind, reason, payload)
+			 VALUES ($1, $2, $3,
 			         'free_subscription_period',
-			         'manual onboarding for staging', 30)`,
-			tenantA, masterID.String())
+			         'manual onboarding for staging',
+			         '{"months": 1, "plan_slug": "free"}'::jsonb)`,
+			pendingExt, tenantA, masterID)
 		return e
 	}); err != nil {
 		t.Fatalf("seed grant: %v", err)
 	}
 
-	// revoked_at without reason: rejected.
-	err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
-		_, e := tx.Exec(ctx,
-			`UPDATE master_grant SET revoked_at = now() WHERE id = '01HXXREVOK00000000000000001'`)
-		return e
-	})
-	if err == nil {
-		t.Fatal("expected check-violation for revoke without reason, got nil")
+	type partial struct {
+		name string
+		set  string
+		args []any
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "master_grant_revocation_consistent") {
-		t.Errorf("expected revocation-consistency error, got: %v", err)
+	partials := []partial{
+		{
+			"revoked_at without by + reason",
+			`SET revoked_at = now()`,
+			nil,
+		},
+		{
+			"revoked_at + by without reason",
+			`SET revoked_at = now(), revoked_by_user_id = $2`,
+			[]any{masterID},
+		},
+		{
+			"revoked_at + reason without by",
+			`SET revoked_at = now(), revoke_reason = 'master revoked unused grant'`,
+			nil,
+		},
+		{
+			"reason too short",
+			`SET revoked_at = now(), revoked_by_user_id = $2, revoke_reason = 'short'`,
+			[]any{masterID},
+		},
+		{
+			"reason is NULL (UNKNOWN-trap regression)",
+			`SET revoked_at = now(), revoked_by_user_id = $2, revoke_reason = NULL`,
+			[]any{masterID},
+		},
+	}
+	for _, p := range partials {
+		p := p
+		t.Run(p.name, func(t *testing.T) {
+			err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+				args := append([]any{pendingExt}, p.args...)
+				_, e := tx.Exec(ctx,
+					`UPDATE master_grant `+p.set+` WHERE external_id = $1`,
+					args...)
+				return e
+			})
+			if err == nil {
+				t.Fatalf("%s: expected check-violation, got nil", p.name)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "master_grant_revoke_consistency") {
+				t.Errorf("%s: expected master_grant_revoke_consistency error, got: %v", p.name, err)
+			}
+		})
 	}
 
-	// revoked_at with valid reason and consumed_at NULL: accepted.
+	// Legal revocation: all three fields populated, consumed_at IS NULL.
 	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
 		_, e := tx.Exec(ctx,
 			`UPDATE master_grant
 			    SET revoked_at = now(),
-			        revoked_reason = 'master revoked unused grant'
-			  WHERE id = '01HXXREVOK00000000000000001'`)
+			        revoked_by_user_id = $2,
+			        revoke_reason = 'master revoked unused grant'
+			  WHERE external_id = $1`,
+			pendingExt, masterID)
 		return e
 	}); err != nil {
 		t.Errorf("legal revocation rejected: %v", err)
 	}
 
-	// Seed a second grant, mark it consumed, then try to revoke: rejected.
+	// Seed a consumed grant, then try to revoke it: rejected even with
+	// all three revoke fields populated (consumed grants are terminal
+	// per §D4; only a compensating grant offsets them).
+	consumedExt := "01HXXCONSUMED0000000000002"
 	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
 		_, e := tx.Exec(ctx,
 			`INSERT INTO master_grant
-			   (id, tenant_id, created_by_user_id, kind, reason, amount,
-			    consumed_at)
-			 VALUES ('01HXXCONSUMED0000000000002', $1, $2,
+			   (external_id, tenant_id, created_by_user_id, kind, reason, payload,
+			    consumed_at, consumed_ref)
+			 VALUES ($1, $2, $3,
 			         'extra_tokens',
-			         'bonus tokens already applied', 5000, now())`,
-			tenantA, masterID.String())
+			         'bonus tokens already applied',
+			         '{"tokens": 5000}'::jsonb,
+			         now(),
+			         '01HXXLEDGERCONSUMEDREF0001')`,
+			consumedExt, tenantA, masterID)
 		return e
 	}); err != nil {
 		t.Fatalf("seed consumed grant: %v", err)
 	}
 
-	err = postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+	err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
 		_, e := tx.Exec(ctx,
 			`UPDATE master_grant
 			    SET revoked_at = now(),
-			        revoked_reason = 'too late, already consumed'
-			  WHERE id = '01HXXCONSUMED0000000000002'`)
+			        revoked_by_user_id = $2,
+			        revoke_reason = 'too late, already consumed'
+			  WHERE external_id = $1`,
+			consumedExt, masterID)
 		return e
 	})
 	if err == nil {
 		t.Fatal("expected check-violation for revoke-after-consume, got nil")
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "master_grant_revocation_consistent") {
-		t.Errorf("expected revocation-consistency error, got: %v", err)
+	if !strings.Contains(strings.ToLower(err.Error()), "master_grant_revoke_consistency") {
+		t.Errorf("expected revoke-consistency error, got: %v", err)
 	}
 }
 
@@ -713,21 +777,25 @@ func TestTokenLedgerSource_RejectsUnknownValue(t *testing.T) {
 
 // TestTokenLedgerSource_MasterGrantPairing: source='master_grant'
 // requires master_grant_id; non-master_grant sources MUST have NULL FK.
+// master_grant.id is now a UUID (ADR-0098 §D1), so master_grant_id is a
+// UUID too — we capture the auto-generated id from the seed INSERT.
 func TestTokenLedgerSource_MasterGrantPairing(t *testing.T) {
 	db := freshDBWithBilling(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	tenantA, masterID := seedTenantUserMaster(t, db)
-	grantID := "01HXXLEDGERPAIRING000000001"
+	var grantID uuid.UUID
 	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
-		_, e := tx.Exec(ctx,
+		return tx.QueryRow(ctx,
 			`INSERT INTO master_grant
-			   (id, tenant_id, created_by_user_id, kind, reason, amount)
-			 VALUES ($1, $2, $3, 'extra_tokens',
-			         'ledger pairing fixture grant', 1000)`,
-			grantID, tenantA, masterID.String())
-		return e
+			   (external_id, tenant_id, created_by_user_id, kind, reason, payload)
+			 VALUES ('01HXXLEDGERPAIRING000000001', $1, $2,
+			         'extra_tokens',
+			         'ledger pairing fixture grant',
+			         '{"tokens": 1000}'::jsonb)
+			 RETURNING id`,
+			tenantA, masterID).Scan(&grantID)
 	}); err != nil {
 		t.Fatalf("seed grant: %v", err)
 	}
@@ -859,5 +927,215 @@ func TestPlanSeedFile_Idempotent(t *testing.T) {
 		if !got[want] {
 			t.Errorf("seed plan %q missing after two applies", want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AC #7 — master_grant_request 4-eyes state machine (ADR-0098 §D5)
+// ---------------------------------------------------------------------------
+
+// seedSecondMaster inserts a second master user (distinct from masterID)
+// so the 4-eyes tests have a legal approver. ADR-0098 §D5 requires the
+// approver and requester to be different rows in users.
+func seedSecondMaster(t *testing.T, ctx context.Context, db *testpg.DB) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := db.AdminPool().Exec(ctx,
+		`INSERT INTO users (id, tenant_id, email, password_hash, role, is_master)
+		 VALUES ($1, NULL, $2, 'x', 'master', true)`,
+		id, fmt.Sprintf("master2-%s@x", id)); err != nil {
+		t.Fatalf("seed second master: %v", err)
+	}
+	return id
+}
+
+// TestMasterGrantRequest_InsertAwaiting: a fresh awaiting_approval request
+// is legal with no approver / no decided_at; rejected when those fields
+// are pre-set (state machine entry invariant).
+func TestMasterGrantRequest_InsertAwaiting(t *testing.T) {
+	db := freshDBWithBilling(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tenantA, masterID := seedTenantUserMaster(t, db)
+
+	// Awaiting_approval with no approver / no decided_at: accepted.
+	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO master_grant_request
+			   (external_id, tenant_id, kind, payload, reason,
+			    created_by_user_id, state)
+			 VALUES ('01HXXREQAWAITING000000001', $1,
+			         'extra_tokens',
+			         '{"tokens": 50000000}'::jsonb,
+			         'over-cap bonus for legacy client onboarding',
+			         $2, 'awaiting_approval')`,
+			tenantA, masterID)
+		return e
+	}); err != nil {
+		t.Errorf("legal awaiting_approval insert rejected: %v", err)
+	}
+
+	// Awaiting_approval with a pre-filled approver: rejected by the
+	// state-consistency CHECK.
+	approver := seedSecondMaster(t, ctx, db)
+	err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO master_grant_request
+			   (external_id, tenant_id, kind, payload, reason,
+			    created_by_user_id, requires_second_approver_id, state)
+			 VALUES ('01HXXREQBADAWAIT0000000001', $1,
+			         'extra_tokens',
+			         '{"tokens": 50000000}'::jsonb,
+			         'over-cap bonus for legacy client onboarding',
+			         $2, $3, 'awaiting_approval')`,
+			tenantA, masterID, approver)
+		return e
+	})
+	if err == nil {
+		t.Fatal("expected check-violation for awaiting_approval with approver, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "master_grant_request_state_consistency") {
+		t.Errorf("expected state-consistency error, got: %v", err)
+	}
+}
+
+// TestMasterGrantRequest_ApproveTransition: an awaiting request can be
+// updated to 'approved' only when requires_second_approver_id AND
+// decided_at are both populated.
+func TestMasterGrantRequest_ApproveTransition(t *testing.T) {
+	db := freshDBWithBilling(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tenantA, masterID := seedTenantUserMaster(t, db)
+	approver := seedSecondMaster(t, ctx, db)
+
+	extID := "01HXXREQAPPROVED000000001"
+	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO master_grant_request
+			   (external_id, tenant_id, kind, payload, reason,
+			    created_by_user_id, state)
+			 VALUES ($1, $2, 'extra_tokens',
+			         '{"tokens": 50000000}'::jsonb,
+			         'enterprise migration overage credit',
+			         $3, 'awaiting_approval')`,
+			extID, tenantA, masterID)
+		return e
+	}); err != nil {
+		t.Fatalf("seed request: %v", err)
+	}
+
+	// Approve without decided_at: rejected.
+	err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`UPDATE master_grant_request
+			    SET state = 'approved',
+			        requires_second_approver_id = $2
+			  WHERE external_id = $1`,
+			extID, approver)
+		return e
+	})
+	if err == nil {
+		t.Fatal("expected check-violation for approve without decided_at, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "master_grant_request_state_consistency") {
+		t.Errorf("expected state-consistency error, got: %v", err)
+	}
+
+	// Approve with both approver + decided_at: accepted.
+	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`UPDATE master_grant_request
+			    SET state = 'approved',
+			        requires_second_approver_id = $2,
+			        decided_at = now()
+			  WHERE external_id = $1`,
+			extID, approver)
+		return e
+	}); err != nil {
+		t.Errorf("legal approve rejected: %v", err)
+	}
+}
+
+// TestMasterGrantRequest_ApproverDistinctFromRequester: ADR-0098 §D5
+// 4-eyes invariant — the second approver cannot be the requester. The
+// CHECK fires on UPDATE when requires_second_approver_id is filled.
+func TestMasterGrantRequest_ApproverDistinctFromRequester(t *testing.T) {
+	db := freshDBWithBilling(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tenantA, masterID := seedTenantUserMaster(t, db)
+
+	extID := "01HXXREQSELFAPPROVE000001"
+	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO master_grant_request
+			   (external_id, tenant_id, kind, payload, reason,
+			    created_by_user_id, state)
+			 VALUES ($1, $2, 'extra_tokens',
+			         '{"tokens": 50000000}'::jsonb,
+			         'attempted self-approval regression check',
+			         $3, 'awaiting_approval')`,
+			extID, tenantA, masterID)
+		return e
+	}); err != nil {
+		t.Fatalf("seed request: %v", err)
+	}
+
+	// requester == approver: rejected by the distinct-approver CHECK.
+	err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`UPDATE master_grant_request
+			    SET state = 'approved',
+			        requires_second_approver_id = $2,
+			        decided_at = now()
+			  WHERE external_id = $1`,
+			extID, masterID)
+		return e
+	})
+	if err == nil {
+		t.Fatal("expected check-violation for self-approval, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "master_grant_request_distinct_approver") {
+		t.Errorf("expected distinct-approver error, got: %v", err)
+	}
+}
+
+// TestMasterGrantRequest_RuntimeCannotSelect: master_grant_request is
+// master-only — runtime pool has no SELECT grant. ADR-0098 §D5: requests
+// are internal master plumbing, not tenant-visible until promoted.
+func TestMasterGrantRequest_RuntimeCannotSelect(t *testing.T) {
+	db := freshDBWithBilling(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tenantA, masterID := seedTenantUserMaster(t, db)
+	if err := postgresadapter.WithMasterOps(ctx, db.MasterOpsPool(), masterID, func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO master_grant_request
+			   (external_id, tenant_id, kind, payload, reason,
+			    created_by_user_id, state)
+			 VALUES ('01HXXREQRUNTIMEHIDE00001', $1, 'extra_tokens',
+			         '{"tokens": 50000000}'::jsonb,
+			         'runtime visibility regression check',
+			         $2, 'awaiting_approval')`,
+			tenantA, masterID)
+		return e
+	}); err != nil {
+		t.Fatalf("seed request: %v", err)
+	}
+
+	err := postgresadapter.WithTenant(ctx, db.RuntimePool(), tenantA, func(tx pgx.Tx) error {
+		var n int
+		return tx.QueryRow(ctx, `SELECT count(*) FROM master_grant_request`).Scan(&n)
+	})
+	if err == nil {
+		t.Fatal("expected permission denied for runtime SELECT on master_grant_request, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		t.Errorf("expected permission-denied error, got: %v", err)
 	}
 }
