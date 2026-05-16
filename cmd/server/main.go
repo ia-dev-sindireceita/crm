@@ -287,16 +287,34 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		workerMu  sync.Mutex
 		workerErr error
 	)
+	recordWorkerErr := func(err error) {
+		workerMu.Lock()
+		defer workerMu.Unlock()
+		if workerErr == nil {
+			workerErr = err
+		}
+	}
 	if wh != nil && wh.RunWorker != nil {
 		workerWG.Add(1)
 		go func() {
 			defer workerWG.Done()
 			if err := wh.RunWorker(ctx); err != nil {
-				workerMu.Lock()
-				if workerErr == nil {
-					workerErr = err
-				}
-				workerMu.Unlock()
+				recordWorkerErr(err)
+			}
+		}()
+	}
+
+	// SIN-62879 billing renewer — same lifecycle as the webhook
+	// reconciler. Cleanup runs after the goroutine exits so the
+	// master_ops pool stays open for in-flight ticks.
+	br := buildBillingRenewerWiring(ctx, getenv)
+	if br != nil {
+		defer br.Cleanup()
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			if err := br.RunWorker(ctx); err != nil {
+				recordWorkerErr(err)
 			}
 		}()
 	}
