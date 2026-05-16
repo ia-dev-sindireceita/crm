@@ -17,12 +17,12 @@ import (
 )
 
 var forbiddenImports = map[string]string{
-	"github.com/pericles-luz/crm/internal/inbox/usecase":                 "use the inbox.InboundChannel port, not the use-case struct directly",
-	"github.com/pericles-luz/crm/internal/adapter/db":                    "adapter must not import db/* — wire concrete stores at the composition root",
-	"github.com/pericles-luz/crm/internal/adapter/store":                 "adapter must not import store/* — wire concrete stores at the composition root",
-	"github.com/pericles-luz/crm/internal/adapter/channels/whatsapp":     "messenger must not import sibling channel adapter",
-	"github.com/pericles-luz/crm/internal/adapter/channels/instagram":    "messenger must not import sibling channel adapter",
-	"github.com/pericles-luz/crm/internal/adapter/channels/webchat":      "messenger must not import sibling channel adapter",
+	"github.com/pericles-luz/crm/internal/inbox/usecase":              "use the inbox.InboundChannel port, not the use-case struct directly",
+	"github.com/pericles-luz/crm/internal/adapter/db":                 "adapter must not import db/* — wire concrete stores at the composition root",
+	"github.com/pericles-luz/crm/internal/adapter/store":              "adapter must not import store/* — wire concrete stores at the composition root",
+	"github.com/pericles-luz/crm/internal/adapter/channels/whatsapp":  "messenger must not import sibling channel adapter",
+	"github.com/pericles-luz/crm/internal/adapter/channels/instagram": "messenger must not import sibling channel adapter",
+	"github.com/pericles-luz/crm/internal/adapter/channels/webchat":   "messenger must not import sibling channel adapter",
 }
 
 // allowedInboxImports whitelists the only inbox sub-import permitted

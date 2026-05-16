@@ -41,9 +41,9 @@ func TestConfigFromEnv_NilGetenv(t *testing.T) {
 func TestConfigFromEnv_RequiresSecrets(t *testing.T) {
 	t.Parallel()
 	cases := []map[string]string{
-		{messenger.EnvVerifyToken: "v"},                        // missing app secret
+		{messenger.EnvVerifyToken: "v"},                               // missing app secret
 		{messenger.EnvAppSecret: "  ", messenger.EnvVerifyToken: "v"}, // whitespace-only secret
-		{messenger.EnvAppSecret: "s"},                          // missing verify token
+		{messenger.EnvAppSecret: "s"},                                 // missing verify token
 		{messenger.EnvAppSecret: "s", messenger.EnvVerifyToken: ""},   // empty verify
 	}
 	for i, env := range cases {

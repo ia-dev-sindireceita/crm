@@ -8,7 +8,7 @@
 // coupling permitted is InboundChannel / InboundEvent from
 // internal/inbox/port_inbound.go.
 //
-// Wire format
+// # Wire format
 //
 // The Messenger envelope shape differs from the WhatsApp one: the
 // per-entry collection key is `messaging[]` (not `changes[].value`),
@@ -18,7 +18,7 @@
 // is opaque from Meta's side; it maps 1:1 to a Contact via the
 // Identity hook (channel="messenger", external_id=psid).
 //
-// Tenant resolution
+// # Tenant resolution
 //
 // The recipient (`entry[].id`, the page id) is the tenant association
 // key: a Facebook Page is owned by exactly one tenant in

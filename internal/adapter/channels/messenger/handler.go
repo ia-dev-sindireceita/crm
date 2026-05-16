@@ -35,8 +35,8 @@ type messengerEnvelope struct {
 }
 
 type envelEntry struct {
-	ID        string         `json:"id"`        // page id
-	Time      int64          `json:"time"`      // milliseconds since epoch
+	ID        string         `json:"id"`   // page id
+	Time      int64          `json:"time"` // milliseconds since epoch
 	Messaging []envelMessage `json:"messaging"`
 }
 
