@@ -201,6 +201,24 @@ type Deps struct {
 	//   GET /settings/privacy
 	//   GET /settings/privacy/dpa.md
 	WebPrivacy http.Handler
+
+	// WebAIPolicy is the HTMX admin UI handler for AI policy
+	// configuration from internal/web/aipolicy (SIN-62906 / Fase 3
+	// W4A). Mounted in the authed group with the same envelope as
+	// WebContacts/WebFunnel plus an extra
+	// RequireAction(iam.ActionTenantAIPolicyWrite) gate that applies
+	// to every method (read and write — the admin who can mutate is
+	// the only one who needs to see the page).
+	//
+	// Routes mounted:
+	//   GET    /settings/ai-policy
+	//   GET    /settings/ai-policy/new
+	//   GET    /settings/ai-policy/preview
+	//   GET    /settings/ai-policy/{scope_type}/{scope_id}/edit
+	//   POST   /settings/ai-policy
+	//   PATCH  /settings/ai-policy/{scope_type}/{scope_id}
+	//   DELETE /settings/ai-policy/{scope_type}/{scope_id}
+	WebAIPolicy http.Handler
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -350,6 +368,38 @@ func NewRouter(deps Deps) http.Handler {
 				webPrivacy := middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebPrivacy)
 				authed.Method(http.MethodGet, "/settings/privacy", webPrivacy)
 				authed.Method(http.MethodGet, "/settings/privacy/dpa.md", webPrivacy)
+			}
+
+			// SIN-62906 — HTMX AI policy admin UI (Fase 3 W4A). Same
+			// envelope as the other web/* handlers plus an explicit
+			// RequireAction gate on every method (the admin who can
+			// mutate the configuration is the only one who needs to
+			// see it). The gate is mounted only when Authorizer is
+			// wired; router tests that don't exercise authz keep their
+			// pre-PR behaviour.
+			if deps.WebAIPolicy != nil {
+				// RequireAuth runs OUTSIDE RequireAction so the
+				// principal is in context when the authz gate
+				// consults it. Mirrors the /hello-tenant wireup
+				// above. When Authorizer is nil (router tests),
+				// the route mounts with RequireAuth only — the
+				// gate skips and the handler still sees a
+				// Principal.
+				webAIPolicy := http.Handler(deps.WebAIPolicy)
+				if deps.Authorizer != nil {
+					webAIPolicy = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantAIPolicyWrite, nil)(webAIPolicy),
+					)
+				} else {
+					webAIPolicy = middleware.RequireAuth(middleware.RequireAuthDeps{})(webAIPolicy)
+				}
+				authed.Method(http.MethodGet, "/settings/ai-policy", webAIPolicy)
+				authed.Method(http.MethodGet, "/settings/ai-policy/new", webAIPolicy)
+				authed.Method(http.MethodGet, "/settings/ai-policy/preview", webAIPolicy)
+				authed.Method(http.MethodGet, "/settings/ai-policy/{scope_type}/{scope_id}/edit", webAIPolicy)
+				authed.Method(http.MethodPost, "/settings/ai-policy", webAIPolicy)
+				authed.Method(http.MethodPatch, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
+				authed.Method(http.MethodDelete, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
 			}
 		})
 	})

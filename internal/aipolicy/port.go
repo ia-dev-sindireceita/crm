@@ -28,4 +28,20 @@ type Repository interface {
 	// rejects zero values with a typed error so a misconfigured admin
 	// form does not silently write a wildcard policy.
 	Upsert(ctx context.Context, policy Policy) error
+
+	// List returns every policy row for tenantID, ordered by
+	// (scope_type, scope_id). The admin list page in SIN-62906
+	// consumes this verbatim. The slice is empty (not nil) when the
+	// tenant has not configured any policy yet; the resolver's
+	// SourceDefault fallback applies in that case.
+	List(ctx context.Context, tenantID uuid.UUID) ([]Policy, error)
+
+	// Delete removes the policy row at (tenantID, scopeType, scopeID).
+	// The bool reports whether a row was actually deleted: false +
+	// nil error means "no such row" and the caller may treat that as
+	// an idempotent success. Transport / driver failures bubble up
+	// wrapped. Removing a row makes the cascade fall through to the
+	// parent scope; the resolver is the authority on the resulting
+	// effective policy.
+	Delete(ctx context.Context, tenantID uuid.UUID, scopeType ScopeType, scopeID string) (bool, error)
 }

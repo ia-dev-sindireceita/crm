@@ -50,6 +50,14 @@ func (f *fakeRepo) Upsert(_ context.Context, _ aipolicy.Policy) error {
 	return errors.New("fakeRepo: Upsert not used in resolver tests")
 }
 
+func (f *fakeRepo) List(_ context.Context, _ uuid.UUID) ([]aipolicy.Policy, error) {
+	return nil, errors.New("fakeRepo: List not used in resolver tests")
+}
+
+func (f *fakeRepo) Delete(_ context.Context, _ uuid.UUID, _ aipolicy.ScopeType, _ string) (bool, error) {
+	return false, errors.New("fakeRepo: Delete not used in resolver tests")
+}
+
 func mkPolicy(t *testing.T, tenant uuid.UUID, scope aipolicy.ScopeType, scopeID, model string) aipolicy.Policy {
 	t.Helper()
 	return aipolicy.Policy{

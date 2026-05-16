@@ -226,6 +226,13 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webPrivacyHandler, webPrivacyCleanup := buildWebPrivacyHandler(ctx, getenv)
 	defer webPrivacyCleanup()
 
+	// SIN-62906 — HTMX AI policy admin UI (Fase 3 W4A). Same fail-soft
+	// pattern as web/contacts and web/funnel: a nil handler leaves the
+	// /settings/ai-policy routes unmounted when the pgxpool / aipolicy
+	// store cannot be built.
+	webAIPolicyHandler, webAIPolicyCleanup := buildWebAIPolicyHandler(ctx, getenv)
+	defer webAIPolicyCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
@@ -234,6 +241,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		WebContacts: webContactsHandler,
 		WebFunnel:   webFunnelHandler,
 		WebPrivacy:  webPrivacyHandler,
+		WebAIPolicy: webAIPolicyHandler,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

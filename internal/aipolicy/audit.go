@@ -203,6 +203,69 @@ func (r *RecordingRepository) Get(ctx context.Context, tenantID uuid.UUID, scope
 	return r.inner.Get(ctx, tenantID, scopeType, scopeID)
 }
 
+// List delegates to the wrapped Repository. Reads are not audited.
+func (r *RecordingRepository) List(ctx context.Context, tenantID uuid.UUID) ([]Policy, error) {
+	return r.inner.List(ctx, tenantID)
+}
+
+// Delete delegates to the wrapped Repository and, on success, emits
+// one FieldDeleted AuditEvent that captures the prior policy snapshot
+// in OldValue. A no-op delete (no row at scope) skips the audit event
+// and returns (false, nil) verbatim — there is nothing to attribute.
+//
+// Same caveat as Upsert: the audit insert runs after the underlying
+// Delete commits. A failure to record returns the error to the caller
+// so the operator can retry; the policy row is already gone.
+func (r *RecordingRepository) Delete(ctx context.Context, tenantID uuid.UUID, scopeType ScopeType, scopeID string) (bool, error) {
+	if tenantID == uuid.Nil {
+		return false, ErrInvalidTenant
+	}
+	if !scopeType.IsValid() {
+		return false, ErrInvalidScopeType
+	}
+	actor, ok := r.actor(ctx)
+	if !ok {
+		return false, ErrMissingActor
+	}
+	if !actor.IsValid() {
+		return false, ErrMissingActor
+	}
+
+	prev, hadPrev, err := r.inner.Get(ctx, tenantID, scopeType, scopeID)
+	if err != nil {
+		return false, err
+	}
+	if !hadPrev {
+		// Idempotent miss: nothing to delete, nothing to audit.
+		removed, err := r.inner.Delete(ctx, tenantID, scopeType, scopeID)
+		return removed, err
+	}
+	removed, err := r.inner.Delete(ctx, tenantID, scopeType, scopeID)
+	if err != nil {
+		return removed, err
+	}
+	if !removed {
+		// Race: the row was already gone between Get and Delete.
+		// No audit row — we did not change state.
+		return false, nil
+	}
+	event := AuditEvent{
+		TenantID:   tenantID,
+		ScopeType:  scopeType,
+		ScopeID:    scopeID,
+		Field:      FieldDeleted,
+		OldValue:   policySnapshot(prev),
+		NewValue:   nil,
+		Actor:      actor,
+		OccurredAt: r.now(),
+	}
+	if err := r.audit.Record(ctx, event); err != nil {
+		return removed, err
+	}
+	r.metrics.Observe(event)
+	return removed, nil
+}
+
 // Upsert delegates to the wrapped Repository and, on success, emits
 // one AuditEvent per changed field (or FieldCreated when no prior row
 // existed). A failure to record any event rolls the entire call back

@@ -452,3 +452,216 @@ func TestAIPolicyAdapter_ResolverCascadeAgainstRealDB(t *testing.T) {
 		t.Errorf("channel Model = %q, want channel-model", pol.Model)
 	}
 }
+
+// TestAIPolicyAdapter_List_ReturnsTenantRowsOrdered confirms List
+// returns every row for the tenant in (scope_type, scope_id) order
+// and excludes rows of other tenants under RLS.
+func TestAIPolicyAdapter_List_ReturnsTenantRowsOrdered(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithAIPolicyAdapter(t)
+	store := newAIPolicyStore(t, db)
+	tenantA := seedAIPolicyTenant(t, db.AdminPool())
+	tenantB := seedAIPolicyTenant(t, db.AdminPool())
+	ctx := context.Background()
+
+	mk := func(tid uuid.UUID, scope aipolicy.ScopeType, scopeID, model string) aipolicy.Policy {
+		return aipolicy.Policy{
+			TenantID: tid, ScopeType: scope, ScopeID: scopeID,
+			Model: model, PromptVersion: "v1", Tone: "neutro",
+			Language: "pt-BR", AIEnabled: true, Anonymize: true, OptIn: true,
+		}
+	}
+
+	// Tenant A: three rows, intentionally inserted in reverse alpha order.
+	if err := store.Upsert(ctx, mk(tenantA, aipolicy.ScopeTenant, tenantA.String(), "openrouter/a-tenant")); err != nil {
+		t.Fatalf("seed A tenant: %v", err)
+	}
+	if err := store.Upsert(ctx, mk(tenantA, aipolicy.ScopeChannel, "whatsapp", "openrouter/a-channel")); err != nil {
+		t.Fatalf("seed A channel: %v", err)
+	}
+	if err := store.Upsert(ctx, mk(tenantA, aipolicy.ScopeTeam, "team-aaa", "openrouter/a-team")); err != nil {
+		t.Fatalf("seed A team: %v", err)
+	}
+	// Tenant B: one row that MUST NOT appear in A's list.
+	if err := store.Upsert(ctx, mk(tenantB, aipolicy.ScopeTenant, tenantB.String(), "openrouter/b-tenant")); err != nil {
+		t.Fatalf("seed B tenant: %v", err)
+	}
+
+	got, err := store.List(ctx, tenantA)
+	if err != nil {
+		t.Fatalf("List A: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(List A) = %d, want 3", len(got))
+	}
+	// Expected order: channel < team < tenant (lexicographic on scope_type).
+	wantOrder := []aipolicy.ScopeType{aipolicy.ScopeChannel, aipolicy.ScopeTeam, aipolicy.ScopeTenant}
+	for i, p := range got {
+		if p.ScopeType != wantOrder[i] {
+			t.Errorf("got[%d].ScopeType = %q, want %q", i, p.ScopeType, wantOrder[i])
+		}
+		if p.TenantID != tenantA {
+			t.Errorf("got[%d].TenantID = %v, want %v (RLS leak)", i, p.TenantID, tenantA)
+		}
+	}
+
+	// And B sees only its own row.
+	gotB, err := store.List(ctx, tenantB)
+	if err != nil {
+		t.Fatalf("List B: %v", err)
+	}
+	if len(gotB) != 1 {
+		t.Fatalf("len(List B) = %d, want 1 (RLS leak from A)", len(gotB))
+	}
+}
+
+// TestAIPolicyAdapter_List_RejectsNilTenant fails fast on the
+// programmer-error input that would otherwise issue an unscoped query.
+func TestAIPolicyAdapter_List_RejectsNilTenant(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithAIPolicyAdapter(t)
+	store := newAIPolicyStore(t, db)
+	if _, err := store.List(context.Background(), uuid.Nil); err == nil {
+		t.Fatal("List(uuid.Nil) err = nil, want validation error")
+	}
+}
+
+// TestAIPolicyAdapter_List_EmptyTenantReturnsEmptySlice asserts the
+// "no policy configured" case returns a non-nil empty slice so the
+// admin handler can call len() without a guard.
+func TestAIPolicyAdapter_List_EmptyTenantReturnsEmptySlice(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithAIPolicyAdapter(t)
+	store := newAIPolicyStore(t, db)
+	tenant := seedAIPolicyTenant(t, db.AdminPool())
+	got, err := store.List(context.Background(), tenant)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got == nil {
+		t.Fatal("List returned nil; want empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("len(List) = %d, want 0", len(got))
+	}
+}
+
+// TestAIPolicyAdapter_Delete_RemovesRow confirms Delete returns
+// removed=true on a hit and the next Get returns false.
+func TestAIPolicyAdapter_Delete_RemovesRow(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithAIPolicyAdapter(t)
+	store := newAIPolicyStore(t, db)
+	tenant := seedAIPolicyTenant(t, db.AdminPool())
+	ctx := context.Background()
+
+	if err := store.Upsert(ctx, aipolicy.Policy{
+		TenantID: tenant, ScopeType: aipolicy.ScopeChannel, ScopeID: "whatsapp",
+		Model: "openrouter/auto", PromptVersion: "v1", Tone: "neutro",
+		Language: "pt-BR", AIEnabled: true, Anonymize: true, OptIn: true,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	removed, err := store.Delete(ctx, tenant, aipolicy.ScopeChannel, "whatsapp")
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !removed {
+		t.Fatal("removed = false, want true")
+	}
+	_, ok, err := store.Get(ctx, tenant, aipolicy.ScopeChannel, "whatsapp")
+	if err != nil {
+		t.Fatalf("Get after Delete: %v", err)
+	}
+	if ok {
+		t.Fatal("Get ok = true after Delete; want false")
+	}
+}
+
+// TestAIPolicyAdapter_Delete_MissReturnsFalseNoError exercises the
+// idempotent miss path.
+func TestAIPolicyAdapter_Delete_MissReturnsFalseNoError(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithAIPolicyAdapter(t)
+	store := newAIPolicyStore(t, db)
+	tenant := seedAIPolicyTenant(t, db.AdminPool())
+
+	removed, err := store.Delete(context.Background(), tenant, aipolicy.ScopeChannel, "whatsapp")
+	if err != nil {
+		t.Fatalf("Delete miss: %v", err)
+	}
+	if removed {
+		t.Fatal("removed = true on miss, want false")
+	}
+}
+
+// TestAIPolicyAdapter_Delete_RejectsInvalidArgs documents the early
+// validation: nil tenant, bad scope type, blank scope id.
+func TestAIPolicyAdapter_Delete_RejectsInvalidArgs(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithAIPolicyAdapter(t)
+	store := newAIPolicyStore(t, db)
+	tenant := seedAIPolicyTenant(t, db.AdminPool())
+
+	cases := []struct {
+		name      string
+		tenantID  uuid.UUID
+		scopeType aipolicy.ScopeType
+		scopeID   string
+	}{
+		{"nil tenant", uuid.Nil, aipolicy.ScopeTenant, "x"},
+		{"bad scope type", tenant, aipolicy.ScopeType("global"), "x"},
+		{"blank scope id", tenant, aipolicy.ScopeTenant, ""},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := store.Delete(context.Background(), c.tenantID, c.scopeType, c.scopeID); err == nil {
+				t.Errorf("Delete(%s) err = nil, want validation error", c.name)
+			}
+		})
+	}
+}
+
+// TestAIPolicyAdapter_Delete_RLSCannotCrossTenant confirms RLS hides
+// other tenants' rows from Delete just like Get. Deleting tenant B's
+// row from a session scoped to tenant A returns removed=false because
+// the row is invisible.
+func TestAIPolicyAdapter_Delete_RLSCannotCrossTenant(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithAIPolicyAdapter(t)
+	store := newAIPolicyStore(t, db)
+	tenantA := seedAIPolicyTenant(t, db.AdminPool())
+	tenantB := seedAIPolicyTenant(t, db.AdminPool())
+	ctx := context.Background()
+
+	// B owns the row.
+	if err := store.Upsert(ctx, aipolicy.Policy{
+		TenantID: tenantB, ScopeType: aipolicy.ScopeChannel, ScopeID: "whatsapp",
+		Model: "openrouter/auto", PromptVersion: "v1", Tone: "neutro",
+		Language: "pt-BR", AIEnabled: true, Anonymize: true, OptIn: true,
+	}); err != nil {
+		t.Fatalf("Upsert B: %v", err)
+	}
+
+	// A attempts to delete it. WithTenant scopes the session to A; B's
+	// row is invisible and the DELETE matches zero rows.
+	removed, err := store.Delete(ctx, tenantA, aipolicy.ScopeChannel, "whatsapp")
+	if err != nil {
+		t.Fatalf("Delete cross-tenant: %v", err)
+	}
+	if removed {
+		t.Fatal("removed = true on cross-tenant Delete; RLS leak")
+	}
+
+	// B can still see its row.
+	_, ok, err := store.Get(ctx, tenantB, aipolicy.ScopeChannel, "whatsapp")
+	if err != nil {
+		t.Fatalf("Get B: %v", err)
+	}
+	if !ok {
+		t.Fatal("Get B ok = false; row was deleted across tenants")
+	}
+}

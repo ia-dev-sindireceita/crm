@@ -21,6 +21,19 @@ type decoratorFakeRepo struct {
 	getErr    error
 	upsertErr error
 	upserts   []aipolicy.Policy
+	// Delete-side toggles. deleteRowsAffected is the return value the
+	// fake reports; deleteErr is the synthetic error.
+	deleteRemoved bool
+	deleteErr     error
+	deletes       []decoratorDeleteCall
+	listErr       error
+	listResult    []aipolicy.Policy
+}
+
+type decoratorDeleteCall struct {
+	tenantID  uuid.UUID
+	scopeType aipolicy.ScopeType
+	scopeID   string
 }
 
 func (f *decoratorFakeRepo) Get(_ context.Context, _ uuid.UUID, _ aipolicy.ScopeType, _ string) (aipolicy.Policy, bool, error) {
@@ -30,6 +43,15 @@ func (f *decoratorFakeRepo) Get(_ context.Context, _ uuid.UUID, _ aipolicy.Scope
 func (f *decoratorFakeRepo) Upsert(_ context.Context, p aipolicy.Policy) error {
 	f.upserts = append(f.upserts, p)
 	return f.upsertErr
+}
+
+func (f *decoratorFakeRepo) List(_ context.Context, _ uuid.UUID) ([]aipolicy.Policy, error) {
+	return f.listResult, f.listErr
+}
+
+func (f *decoratorFakeRepo) Delete(_ context.Context, tenantID uuid.UUID, scopeType aipolicy.ScopeType, scopeID string) (bool, error) {
+	f.deletes = append(f.deletes, decoratorDeleteCall{tenantID: tenantID, scopeType: scopeType, scopeID: scopeID})
+	return f.deleteRemoved, f.deleteErr
 }
 
 // fakeLogger captures every Record call so tests can assert on the
@@ -488,5 +510,153 @@ func TestRecordingRepository_GetFailureBubbles(t *testing.T) {
 	}
 	if len(repo.upserts) != 0 {
 		t.Fatalf("inner.Upsert called after Get failure")
+	}
+}
+
+// TestRecordingRepository_List is a transparent pass-through.
+func TestRecordingRepository_List(t *testing.T) {
+	want := []aipolicy.Policy{{Model: "m1"}, {Model: "m2"}}
+	repo := &decoratorFakeRepo{listResult: want}
+	dec := aipolicy.NewRecordingRepository(repo, &fakeLogger{}, aipolicy.RecordingConfig{
+		ActorFromContext: func(context.Context) (aipolicy.Actor, bool) { return actorTenant(), true },
+	})
+	got, err := dec.List(context.Background(), tenantID(t))
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("List = %+v, want %+v", got, want)
+	}
+}
+
+// TestRecordingRepository_DeleteEmitsFieldDeleted captures the
+// snapshot in OldValue, NewValue is nil, and Field == FieldDeleted.
+func TestRecordingRepository_DeleteEmitsFieldDeleted(t *testing.T) {
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	prev := aipolicy.Policy{
+		TenantID: tenantID(t), ScopeType: aipolicy.ScopeChannel, ScopeID: "whatsapp",
+		Model: "claude-haiku", PromptVersion: "v1", Tone: "formal", Language: "pt-BR",
+		AIEnabled: true, Anonymize: true, OptIn: true,
+	}
+	repo := &decoratorFakeRepo{getFound: true, getPolicy: prev, deleteRemoved: true}
+	logger := &fakeLogger{}
+	dec := aipolicy.NewRecordingRepository(repo, logger, aipolicy.RecordingConfig{
+		Now: func() time.Time { return now },
+		ActorFromContext: func(context.Context) (aipolicy.Actor, bool) {
+			return actorTenant(), true
+		},
+	})
+	removed, err := dec.Delete(context.Background(), tenantID(t), aipolicy.ScopeChannel, "whatsapp")
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !removed {
+		t.Fatal("removed = false, want true")
+	}
+	if len(logger.events) != 1 {
+		t.Fatalf("want 1 audit event, got %d", len(logger.events))
+	}
+	ev := logger.events[0]
+	if ev.Field != aipolicy.FieldDeleted {
+		t.Fatalf("field = %s, want %s", ev.Field, aipolicy.FieldDeleted)
+	}
+	if ev.NewValue != nil {
+		t.Fatalf("NewValue = %v, want nil", ev.NewValue)
+	}
+	if ev.OldValue == nil {
+		t.Fatalf("OldValue = nil, want snapshot")
+	}
+	snap, ok := ev.OldValue.(map[string]any)
+	if !ok {
+		t.Fatalf("OldValue type = %T, want map[string]any", ev.OldValue)
+	}
+	if snap["model"] != "claude-haiku" {
+		t.Fatalf("snap[model] = %v, want claude-haiku", snap["model"])
+	}
+	if !ev.OccurredAt.Equal(now) {
+		t.Fatalf("OccurredAt = %v, want %v", ev.OccurredAt, now)
+	}
+	if ev.Actor.UserID != actorTenant().UserID {
+		t.Fatalf("Actor.UserID = %v, want %v", ev.Actor.UserID, actorTenant().UserID)
+	}
+}
+
+// TestRecordingRepository_DeleteMissNoAudit asserts that deleting a
+// row that does not exist is idempotent and emits no audit event —
+// the inner Delete is still called (so the test fake records it) but
+// the audit logger sees nothing.
+func TestRecordingRepository_DeleteMissNoAudit(t *testing.T) {
+	repo := &decoratorFakeRepo{getFound: false, deleteRemoved: false}
+	logger := &fakeLogger{}
+	dec := aipolicy.NewRecordingRepository(repo, logger, aipolicy.RecordingConfig{
+		ActorFromContext: func(context.Context) (aipolicy.Actor, bool) { return actorTenant(), true },
+	})
+	removed, err := dec.Delete(context.Background(), tenantID(t), aipolicy.ScopeChannel, "whatsapp")
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if removed {
+		t.Fatal("removed = true, want false")
+	}
+	if len(logger.events) != 0 {
+		t.Fatalf("audit emitted on idempotent miss: %+v", logger.events)
+	}
+	if len(repo.deletes) != 1 {
+		t.Fatalf("inner.Delete called %d times, want 1", len(repo.deletes))
+	}
+}
+
+// TestRecordingRepository_DeleteRejectsInvalid documents the early
+// returns the decorator enforces before touching the inner repo.
+func TestRecordingRepository_DeleteRejectsInvalid(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		tenantID  uuid.UUID
+		scopeType aipolicy.ScopeType
+		scopeID   string
+		actorOK   bool
+		actor     aipolicy.Actor
+		want      error
+	}{
+		{"nil-tenant", uuid.Nil, aipolicy.ScopeTenant, "x", true, actorTenant(), aipolicy.ErrInvalidTenant},
+		{"invalid-scope", tenantID(t), aipolicy.ScopeType("nope"), "x", true, actorTenant(), aipolicy.ErrInvalidScopeType},
+		{"no-actor", tenantID(t), aipolicy.ScopeTenant, "x", false, aipolicy.Actor{}, aipolicy.ErrMissingActor},
+		{"zero-actor", tenantID(t), aipolicy.ScopeTenant, "x", true, aipolicy.Actor{}, aipolicy.ErrMissingActor},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo := &decoratorFakeRepo{deleteRemoved: true, getFound: true}
+			dec := aipolicy.NewRecordingRepository(repo, &fakeLogger{}, aipolicy.RecordingConfig{
+				ActorFromContext: func(context.Context) (aipolicy.Actor, bool) { return c.actor, c.actorOK },
+			})
+			_, err := dec.Delete(context.Background(), c.tenantID, c.scopeType, c.scopeID)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+			if len(repo.deletes) != 0 {
+				t.Fatalf("inner.Delete called after early-reject: %+v", repo.deletes)
+			}
+		})
+	}
+}
+
+// TestRecordingRepository_DeleteAuditFailureBubbles documents that an
+// audit-insert failure surfaces to the caller even though the row is
+// already gone from inner.
+func TestRecordingRepository_DeleteAuditFailureBubbles(t *testing.T) {
+	prev := aipolicy.Policy{TenantID: tenantID(t), ScopeType: aipolicy.ScopeTenant, ScopeID: tenantID(t).String()}
+	repo := &decoratorFakeRepo{getFound: true, getPolicy: prev, deleteRemoved: true}
+	logger := &fakeLogger{err: errors.New("audit insert failed")}
+	dec := aipolicy.NewRecordingRepository(repo, logger, aipolicy.RecordingConfig{
+		ActorFromContext: func(context.Context) (aipolicy.Actor, bool) { return actorTenant(), true },
+	})
+	removed, err := dec.Delete(context.Background(), tenantID(t), aipolicy.ScopeTenant, tenantID(t).String())
+	if err == nil {
+		t.Fatal("err = nil, want bubble-up of audit failure")
+	}
+	if !removed {
+		t.Fatal("removed = false, want true (the row was deleted before audit failed)")
 	}
 }

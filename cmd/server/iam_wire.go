@@ -93,6 +93,12 @@ type iamHandlerOpts struct {
 	// in privacy_wire.go takes no DB dependency so this is non-nil
 	// whenever the privacy_wire factory succeeded.
 	WebPrivacy http.Handler
+
+	// WebAIPolicy is the SIN-62906 HTMX AI policy admin UI mux. Nil
+	// keeps the /settings/ai-policy* routes unmounted; the wire in
+	// ai_policy_wire.go owns its own pgxpool and returns nil when the
+	// DB / aipolicy store cannot be built.
+	WebAIPolicy http.Handler
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -181,6 +187,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebContacts: opts.WebContacts,
 		WebFunnel:   opts.WebFunnel,
 		WebPrivacy:  opts.WebPrivacy,
+		WebAIPolicy: opts.WebAIPolicy,
 	})
 
 	fullCleanup := func() {

@@ -157,3 +157,93 @@ func (s *Store) Upsert(ctx context.Context, p domain.Policy) error {
 		return nil
 	})
 }
+
+// List returns every ai_policy row for tenantID, ordered by
+// (scope_type, scope_id) so the admin list page renders deterministically.
+// RLS scopes the SELECT to the tenant; the explicit tenant_id predicate is
+// belt-and-braces for the case where RLS is bypassed (master tooling).
+func (s *Store) List(ctx context.Context, tenantID uuid.UUID) ([]domain.Policy, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("aipolicy/postgres: List: %w", domain.ErrInvalidTenant)
+	}
+
+	var out []domain.Policy
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT tenant_id, scope_type, scope_id,
+			       model, prompt_version, tone, language,
+			       ai_enabled, anonymize, opt_in,
+			       created_at, updated_at
+			  FROM ai_policy
+			 ORDER BY scope_type, scope_id
+		`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p domain.Policy
+			var scopeStr string
+			if err := rows.Scan(
+				&p.TenantID,
+				&scopeStr,
+				&p.ScopeID,
+				&p.Model,
+				&p.PromptVersion,
+				&p.Tone,
+				&p.Language,
+				&p.AIEnabled,
+				&p.Anonymize,
+				&p.OptIn,
+				&p.CreatedAt,
+				&p.UpdatedAt,
+			); err != nil {
+				return err
+			}
+			p.ScopeType = domain.ScopeType(scopeStr)
+			out = append(out, p)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("aipolicy/postgres: List: %w", err)
+	}
+	if out == nil {
+		out = []domain.Policy{}
+	}
+	return out, nil
+}
+
+// Delete removes the ai_policy row keyed by (tenantID, scopeType,
+// scopeID). The bool reports whether a row was actually removed:
+// false + nil error means "no such row" so callers can treat the
+// idempotent miss as success without an extra Get round-trip.
+func (s *Store) Delete(ctx context.Context, tenantID uuid.UUID, scopeType domain.ScopeType, scopeID string) (bool, error) {
+	if tenantID == uuid.Nil {
+		return false, fmt.Errorf("aipolicy/postgres: Delete: %w", domain.ErrInvalidTenant)
+	}
+	if !scopeType.IsValid() {
+		return false, fmt.Errorf("aipolicy/postgres: Delete: %w", domain.ErrInvalidScopeType)
+	}
+	if strings.TrimSpace(scopeID) == "" {
+		return false, fmt.Errorf("aipolicy/postgres: Delete: %w", domain.ErrInvalidScopeID)
+	}
+
+	var removed bool
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			DELETE FROM ai_policy
+			 WHERE scope_type = $1
+			   AND scope_id   = $2
+		`, string(scopeType), scopeID)
+		if err != nil {
+			return err
+		}
+		removed = tag.RowsAffected() > 0
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("aipolicy/postgres: Delete: %w", err)
+	}
+	return removed, nil
+}
