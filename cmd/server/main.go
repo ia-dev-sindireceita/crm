@@ -187,6 +187,13 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		wa.Register(mux)
 	}
 
+	// SIN-62844 Messenger inbound webhook + outbound sender (F2-10 follow-up).
+	ms := buildMessengerWiring(ctx, getenv)
+	if ms != nil {
+		defer ms.Cleanup()
+		ms.Register(mux)
+	}
+
 	// SIN-62331 F51 — slug reservation wiring. Mount the master
 	// override route, the signup + tenant-rename placeholders guarded
 	// by RequireSlugAvailable, and the upload pipeline. The redirect
