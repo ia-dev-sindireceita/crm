@@ -6,6 +6,10 @@ package main
 // disclosure cannot fail-soft), assembleWebPrivacyHandler rejects nil
 // deps, the assembled mux mounts both routes, and the static model
 // resolver returns the documented fallback.
+//
+// SIN-62916 adds the static-asset coverage: the privacy template
+// references /static/css/privacy.css, and a missing file there
+// silently 404s without surfacing in any handler-level test.
 
 import (
 	"context"
@@ -105,5 +109,51 @@ func TestStaticModelResolver_ReturnsConfiguredModel(t *testing.T) {
 	}
 	if got != "openrouter/anthropic/haiku" {
 		t.Errorf("ActiveModel = %q, want %q", got, "openrouter/anthropic/haiku")
+	}
+}
+
+// TestPrivacyStylesheet_ServedAsCSS is the SIN-62916 regression
+// guard: the privacy page template references
+// /static/css/privacy.css; if the file is missing, the link tag
+// 404s silently and the page renders unstyled. Spinning up the
+// same FileServer setup that customdomain_wire.go mounts in
+// production proves the asset exists on disk and is served as
+// text/css through the registered static handler. AC #1.
+func TestPrivacyStylesheet_ServedAsCSS(t *testing.T) {
+	t.Parallel()
+	// cmd/server lives two levels below the repo root, so the
+	// web/static tree is at ../../web/static when go test runs
+	// from the package directory.
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../../web/static"))))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/static/css/privacy.css", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — web/static/css/privacy.css must exist", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/css") {
+		t.Errorf("Content-Type = %q, want it to contain %q", got, "text/css")
+	}
+	body := rec.Body.String()
+	if len(body) == 0 {
+		t.Fatal("served body is empty — privacy.css must have rules")
+	}
+	// Spot-check a class actually used by the template so a
+	// future template rename does not silently desync from the
+	// stylesheet. The four most load-bearing class names below
+	// each gate a distinct visual concern (shell, lede, model
+	// callout, pending row tint).
+	for _, needle := range []string{
+		".privacy-shell",
+		".privacy-lede",
+		".privacy-model__value",
+		".privacy-row--pending",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("privacy.css missing required selector %q", needle)
+		}
 	}
 }

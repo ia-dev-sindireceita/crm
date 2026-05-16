@@ -1,0 +1,190 @@
+/* SIN-62916 / Fase 3 — privacy disclosure styles for the page
+   served by internal/web/privacy. Plain CSS, no preprocessor, no
+   framework, no @import — boring tech (AC #3). Mirrors the
+   conventions used by funnel.css (system-ui font, #e5e7eb borders,
+   #6b7280 muted text) so the privacy page reads as part of the
+   same product, not a one-off skin.
+
+   Accessibility:
+     - color contrast >= 4.5:1 for body text (#111827 on #ffffff,
+       #374151 on #f9fafb).
+     - focus-visible outlines on every link so keyboard users can
+       follow tab order through the page.
+     - active vs pending sub-processor differs by background AND a
+       textual "—" + aria-label "A definir" in the policy column,
+       so the distinction is not color-only (WCAG 1.4.1).
+
+   Responsive:
+     - the sub-processors table is the only horizontally-dense
+       element. Below 600px it scrolls horizontally inside its
+       section wrapper instead of wrapping cells — wrapping the
+       four-column DPA-required fields would hurt scan-ability
+       more than panning does.
+*/
+
+.privacy-shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #111827;
+  line-height: 1.5;
+}
+
+.privacy-header h1 {
+  margin: 0 0 12px;
+  font-size: 24px;
+}
+
+.privacy-lede {
+  margin: 0 0 24px;
+  color: #374151;
+  font-size: 15px;
+}
+
+.privacy-lede a {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.privacy-lede a:focus-visible,
+.privacy-table a:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.privacy-model {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 16px;
+  margin: 0 0 24px;
+}
+
+.privacy-model h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.privacy-model p {
+  margin: 0 0 8px;
+}
+
+.privacy-model p:last-child {
+  margin-bottom: 0;
+}
+
+.privacy-model__value {
+  display: inline-block;
+  background: #111827;
+  color: #f9fafb;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.privacy-model__note {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.privacy-subprocessors {
+  margin: 0 0 24px;
+}
+
+.privacy-subprocessors h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.privacy-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.privacy-table thead {
+  background: #f3f4f6;
+}
+
+.privacy-table th,
+.privacy-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: top;
+}
+
+.privacy-table th {
+  font-weight: 600;
+  color: #374151;
+}
+
+.privacy-table a {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.privacy-row--active td {
+  background: #ffffff;
+}
+
+.privacy-row--pending td {
+  background: #fffbeb;
+}
+
+.privacy-pending {
+  color: #92400e;
+  font-style: italic;
+}
+
+.privacy-rights {
+  background: #f9fafb;
+  border-left: 3px solid #2563eb;
+  padding: 12px 16px;
+  margin: 0 0 24px;
+}
+
+.privacy-rights h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.privacy-rights p {
+  margin: 0;
+  color: #374151;
+}
+
+.privacy-footer {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 16px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.privacy-footer p {
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .privacy-shell {
+    padding: 16px 12px 32px;
+  }
+
+  .privacy-header h1 {
+    font-size: 20px;
+  }
+
+  /* Horizontal scroll for the DPA-required four-column table on
+     narrow viewports. Wrapping cells loses scan-ability faster
+     than panning does. */
+  .privacy-subprocessors {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .privacy-table {
+    min-width: 560px;
+  }
+}
