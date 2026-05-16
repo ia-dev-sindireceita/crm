@@ -35,6 +35,26 @@ const (
 	KindGrant LedgerKind = "grant"
 )
 
+// LedgerSource identifies the origin of a token_ledger row. Mirrors
+// the source CHECK constraint added in migration 0097 (ADR-0097).
+type LedgerSource string
+
+const (
+	// SourceConsumption is the legacy default: reserve/commit/release
+	// cycles driven by LLM consumption. All rows written before
+	// migration 0097 carry this source.
+	SourceConsumption LedgerSource = "consumption"
+
+	// SourceMonthlyAlloc is set on the grant row written by
+	// AllocateMonthlyQuota at the start of each billing period.
+	SourceMonthlyAlloc LedgerSource = "monthly_alloc"
+
+	// SourceMasterGrant is set on grant rows tied to an approved
+	// master_grant (kind=extra_tokens). MasterGrantID must be non-nil
+	// when this source is used.
+	SourceMasterGrant LedgerSource = "master_grant"
+)
+
 // LedgerEntry is one row of token_ledger in the wallet-aware lane
 // (wallet_id IS NOT NULL). The append-only nature is enforced by
 // REVOKE UPDATE on the table (migration 0089 only grants INSERT/SELECT
@@ -48,6 +68,10 @@ const (
 // the original ReservationID for a Commit/Release follow-up). Both
 // the reconciler and the operator UI use it to thread reserve →
 // commit pairs together.
+//
+// Source and MasterGrantID were added in migration 0097. Source
+// defaults to SourceConsumption for all pre-0097 rows; MasterGrantID
+// is only set when Source == SourceMasterGrant.
 type LedgerEntry struct {
 	ID             uuid.UUID
 	WalletID       uuid.UUID
@@ -56,6 +80,8 @@ type LedgerEntry struct {
 	Amount         int64
 	IdempotencyKey string
 	ExternalRef    string
+	Source         LedgerSource
+	MasterGrantID  *uuid.UUID
 	OccurredAt     time.Time
 	CreatedAt      time.Time
 }
