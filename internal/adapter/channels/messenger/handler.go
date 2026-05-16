@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -160,9 +159,12 @@ func (a *Adapter) deliverEntry(ctx context.Context, entry envelEntry) {
 // (channel="messenger", external_id=psid) — see contacts.IdentityRepository.
 //
 // A duplicate mid is a dedup hit on the inbound_message_dedup ledger;
-// the use case returns ErrInboundAlreadyProcessed which we log at
+// the materialiser reports Duplicate=true (nil error) which we log at
 // debug only — that is the success path under carrier retry, not a
-// failure to surface.
+// failure to surface. On duplicate we deliberately skip republishing
+// media.scan.requested envelopes: the original delivery already fanned
+// them out, and re-publishing with the same MessageID would race the
+// in-flight scan and risk overwriting a pending row (SIN-62848 AC #4).
 func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pageID string, m envelMessage) {
 	mid := strings.TrimSpace(m.Message.MID)
 	if mid == "" {
@@ -188,17 +190,12 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pageID
 		SenderExternalID:  psid,
 		Body:              extractBody(m.Message),
 		OccurredAt:        msToTime(m.Timestamp),
+		HasAttachments:    len(m.Message.Attachments) > 0,
 	}
 	deliverCtx, cancel := context.WithTimeout(ctx, a.cfg.DeliverTimeout)
 	defer cancel()
-	err := a.inbox.HandleInbound(deliverCtx, ev)
+	res, err := a.inbox.MaterialiseInbound(deliverCtx, ev)
 	if err != nil {
-		if errors.Is(err, inbox.ErrInboundAlreadyProcessed) {
-			a.logger.Debug("messenger.duplicate_mid",
-				slog.String("tenant_id", tenantID.String()),
-				slog.String("mid", mid))
-			return
-		}
 		a.logger.Error("messenger.deliver_failed",
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("page_id", pageID),
@@ -206,20 +203,33 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pageID
 			slog.String("err", err.Error()))
 		return
 	}
+	if res.Duplicate {
+		a.logger.Debug("messenger.duplicate_mid",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("mid", mid))
+		return
+	}
 	a.logger.Info("messenger.delivered",
 		slog.String("tenant_id", tenantID.String()),
 		slog.String("page_id", pageID),
-		slog.String("mid", mid))
-	a.requestMediaScans(ctx, tenantID, mid, m.Message.Attachments)
+		slog.String("mid", mid),
+		slog.String("message_id", res.MessageID.String()))
+	a.requestMediaScans(ctx, tenantID, res.MessageID, mid, m.Message.Attachments)
 }
 
 // requestMediaScans publishes one media.scan.requested envelope per
 // attachment. The message stays in the "pending" state until the
 // MediaScanner worker delivers a clean verdict (F2-05). The storage key
 // mirrors the Instagram adapter: tenantID/mid/index/type so retries are
-// idempotent. MessageID is uuid.Nil for Fase 2 — message-id wiring
-// lands in the follow-up post-clean re-materialisation PR.
-func (a *Adapter) requestMediaScans(ctx context.Context, tenantID uuid.UUID, mid string, atts []envelMsgAttachment) {
+// idempotent.
+//
+// SIN-62848 AC #2: messageID is the persisted message row's id, surfaced
+// by inbox.InboundMessageMaterialiser. A uuid.Nil messageID is dropped
+// by the worker as poison (it cannot patch `message.media` without a
+// row id), so the handler refuses to publish in that case — better to
+// log a hard warn than to publish envelopes the worker will silently
+// discard.
+func (a *Adapter) requestMediaScans(ctx context.Context, tenantID, messageID uuid.UUID, mid string, atts []envelMsgAttachment) {
 	if len(atts) == 0 {
 		return
 	}
@@ -230,11 +240,23 @@ func (a *Adapter) requestMediaScans(ctx context.Context, tenantID uuid.UUID, mid
 			slog.Int("attachments", len(atts)))
 		return
 	}
+	if messageID == uuid.Nil {
+		// Defensive — the materialiser never returns Nil on a non-duplicate
+		// path, and the duplicate path short-circuits before we get here.
+		// Log loudly so a regression in the materialiser surface trips a
+		// dashboard alert instead of a silent worker drop.
+		a.logger.Warn("messenger.media_scan_missing_message_id",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("mid", mid),
+			slog.Int("attachments", len(atts)))
+		return
+	}
 	for i, att := range atts {
 		key := mediaKey(tenantID, mid, i, att.Type)
-		if err := a.media.PublishScanRequest(ctx, tenantID, uuid.Nil, key); err != nil {
+		if err := a.media.PublishScanRequest(ctx, tenantID, messageID, key); err != nil {
 			a.logger.Warn("messenger.media_scan_publish_failed",
 				slog.String("tenant_id", tenantID.String()),
+				slog.String("message_id", messageID.String()),
 				slog.String("mid", mid),
 				slog.Int("attachment_index", i),
 				slog.String("err", err.Error()))
@@ -242,6 +264,7 @@ func (a *Adapter) requestMediaScans(ctx context.Context, tenantID uuid.UUID, mid
 		}
 		a.logger.Info("messenger.media_scan_requested",
 			slog.String("tenant_id", tenantID.String()),
+			slog.String("message_id", messageID.String()),
 			slog.String("mid", mid),
 			slog.Int("attachment_index", i),
 			slog.String("type", att.Type))

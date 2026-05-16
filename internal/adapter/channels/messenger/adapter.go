@@ -20,9 +20,16 @@ var ErrUnknownPageID = errors.New("messenger: unknown page_id")
 // The struct is constructed once at startup from validated env config;
 // no field is mutated after construction so the adapter is safe to
 // share across the request goroutines spawned by net/http.
+//
+// inbox is the richer InboundMessageMaterialiser port: messenger
+// requires the persisted MessageID to publish media.scan.requested
+// envelopes with a non-nil message_id (SIN-62848 AC #2 — without it
+// the worker drops the envelope as poison and the scan verdict never
+// reaches the row). The composition root binds the same
+// *inboxusecase.ReceiveInbound the other channels use to InboundChannel.
 type Adapter struct {
 	cfg     Config
-	inbox   inbox.InboundChannel
+	inbox   inbox.InboundMessageMaterialiser
 	tenants TenantResolver
 	flag    FeatureFlag
 	media   MediaScanPublisher
@@ -71,8 +78,12 @@ func WithLogger(l *slog.Logger) Option {
 
 // New constructs an Adapter. Required dependencies are validated up
 // front so a misconfigured composition root panics at startup rather
-// than emitting a 500 on the first webhook delivery.
-func New(cfg Config, in inbox.InboundChannel, t TenantResolver, f FeatureFlag, opts ...Option) (*Adapter, error) {
+// than emitting a 500 on the first webhook delivery. `in` MUST be the
+// richer InboundMessageMaterialiser port — *inboxusecase.ReceiveInbound
+// satisfies it transparently — because messenger's media-scan
+// fan-out depends on the persisted MessageID returned by
+// MaterialiseInbound (SIN-62848).
+func New(cfg Config, in inbox.InboundMessageMaterialiser, t TenantResolver, f FeatureFlag, opts ...Option) (*Adapter, error) {
 	if cfg.AppSecret == "" {
 		return nil, errors.New("messenger: AppSecret is empty")
 	}
@@ -80,7 +91,7 @@ func New(cfg Config, in inbox.InboundChannel, t TenantResolver, f FeatureFlag, o
 		return nil, errors.New("messenger: VerifyToken is empty")
 	}
 	if in == nil {
-		return nil, errors.New("messenger: InboundChannel is nil")
+		return nil, errors.New("messenger: InboundMessageMaterialiser is nil")
 	}
 	if t == nil {
 		return nil, errors.New("messenger: TenantResolver is nil")

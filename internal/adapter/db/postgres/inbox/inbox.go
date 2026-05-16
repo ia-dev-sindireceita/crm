@@ -184,6 +184,13 @@ func (s *Store) FindOpenConversation(ctx context.Context, tenantID, contactID uu
 // conversation's last_message_at. Both operations run in the same
 // tenant-scoped transaction so a crash between them cannot leave the
 // conversation's pointer behind.
+//
+// When m.Media is non-nil the JSON document is written to
+// `message.media` at insert time (SIN-62848 AC #1: messages with
+// attachments materialise with scan_status="pending" so the inbox
+// view never renders an unscanned blob). Hash/Format are serialised
+// only when populated so the persisted document stays minimal until
+// the MediaScanner worker re-materialises the row.
 func (s *Store) SaveMessage(ctx context.Context, m *domain.Message) error {
 	if m == nil {
 		return fmt.Errorf("inbox/postgres: SaveMessage: nil message")
@@ -198,16 +205,20 @@ func (s *Store) SaveMessage(ctx context.Context, m *domain.Message) error {
 	if created.IsZero() {
 		created = s.nowUTC()
 	}
+	mediaJSON, err := marshalMessageMedia(m.Media)
+	if err != nil {
+		return fmt.Errorf("inbox/postgres: SaveMessage marshal media: %w", err)
+	}
 	return postgres.WithTenant(ctx, s.pool, m.TenantID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO message
 			  (id, tenant_id, conversation_id, direction, body, status,
-			   channel_external_id, sent_by_user_id, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			   channel_external_id, sent_by_user_id, created_at, media)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		`,
 			m.ID, m.TenantID, m.ConversationID, string(m.Direction), m.Body,
 			string(m.Status), nullString(m.ChannelExternalID),
-			m.SentByUserID, created)
+			m.SentByUserID, created, mediaJSON)
 		if err != nil {
 			return fmt.Errorf("inbox/postgres: SaveMessage insert: %w", err)
 		}
@@ -621,4 +632,29 @@ func nullString(s string) any {
 		return nil
 	}
 	return s
+}
+
+// marshalMessageMedia serialises the domain MessageMedia into the
+// `message.media` jsonb shape (see migration 0094). A nil pointer
+// yields nil (NULL in Postgres) so text-only messages keep an empty
+// media column. Empty fields are omitted so the persisted document
+// stays minimal until the MediaScanner worker patches a verdict in.
+func marshalMessageMedia(m *domain.MessageMedia) (any, error) {
+	if m == nil {
+		return nil, nil
+	}
+	payload := map[string]string{}
+	if m.Hash != "" {
+		payload["hash"] = m.Hash
+	}
+	if m.Format != "" {
+		payload["format"] = m.Format
+	}
+	if m.ScanStatus != "" {
+		payload["scan_status"] = m.ScanStatus
+	}
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(payload)
 }

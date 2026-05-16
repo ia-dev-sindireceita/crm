@@ -41,6 +41,10 @@ func freshDBWithDefaultLead(t *testing.T) *testpg.DB {
 		"0005_create_users.up.sql",
 		"0088_inbox_contacts.up.sql",
 		"0092_identity_link_assignment_history.up.sql",
+		// 0094 adds message.media (jsonb) — SaveMessage now writes the
+		// column unconditionally so even text-only inbound flows in this
+		// fixture need the schema applied (SIN-62848).
+		"0094_message_media_scan_status.up.sql",
 		"0095_tenants_default_lead_user_id.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)

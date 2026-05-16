@@ -28,6 +28,7 @@ import (
 	"github.com/pericles-luz/crm/internal/contacts"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	"github.com/pericles-luz/crm/internal/inbox"
+	"github.com/pericles-luz/crm/internal/media/scanner"
 )
 
 // TenantLeadPolicy is the slim port the F2-07.2 auto-attribution path
@@ -174,10 +175,33 @@ func (u *ReceiveInbound) HandleInbound(ctx context.Context, ev inbox.InboundEven
 	return err
 }
 
-// Compile-time guard: ReceiveInbound must satisfy the InboundChannel
-// port so the composition root can hand it directly to a carrier
-// adapter (e.g. the WhatsApp webhook receiver).
-var _ inbox.InboundChannel = (*ReceiveInbound)(nil)
+// MaterialiseInbound implements inbox.InboundMessageMaterialiser. It
+// runs the same dedup/contact/save pipeline as Execute and surfaces
+// the persisted message id so adapters that fan out per-message work
+// (e.g. messenger.requestMediaScans → MediaScanPublisher.PublishScanRequest)
+// can correlate `message.media` rows with the NATS envelope. On a
+// duplicate redelivery the result carries Duplicate=true and a zero
+// MessageID — callers MUST treat that as "previous delivery already
+// fanned out" and skip republishing (SIN-62848 AC #4).
+func (u *ReceiveInbound) MaterialiseInbound(ctx context.Context, ev inbox.InboundEvent) (inbox.MaterialisedInbound, error) {
+	res, err := u.Execute(ctx, ev)
+	if err != nil {
+		return inbox.MaterialisedInbound{}, err
+	}
+	if res.Duplicate {
+		return inbox.MaterialisedInbound{Duplicate: true}, nil
+	}
+	return inbox.MaterialisedInbound{MessageID: res.Message.ID}, nil
+}
+
+// Compile-time guards: ReceiveInbound satisfies both inbox-side ports
+// so the composition root can hand it to either a thin
+// (HandleInbound-only) or rich (MaterialiseInbound) adapter without
+// re-wiring.
+var (
+	_ inbox.InboundChannel             = (*ReceiveInbound)(nil)
+	_ inbox.InboundMessageMaterialiser = (*ReceiveInbound)(nil)
+)
 
 // Execute runs the inbound pipeline. See type-level doc-comment for
 // the full algorithm.
@@ -251,6 +275,16 @@ func (u *ReceiveInbound) Execute(ctx context.Context, ev inbox.InboundEvent) (Re
 	}
 	if !ev.OccurredAt.IsZero() {
 		m.CreatedAt = ev.OccurredAt
+	}
+	// SIN-62848 AC #1: messages with attachments materialise with
+	// scan_status="pending" so the inbox view never renders an
+	// unscanned blob. Hash/Format stay empty until the MediaScanner
+	// worker patches the row to "clean" (post-clean re-materialisation
+	// owns Hash/Format wiring); the views projector already drops the
+	// hash for any non-clean status, so a pending row UI-renders as a
+	// "scanning" placeholder rather than a deep-link.
+	if ev.HasAttachments {
+		m.AttachMedia("", "", string(scanner.StatusPending))
 	}
 	if err := conv.RecordMessage(m); err != nil {
 		return ReceiveInboundResult{}, err
