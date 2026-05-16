@@ -48,24 +48,32 @@ set of `Role` values that may invoke it. The table is built at
 construction (`NewRBACAuthorizer`), not in a package-level `var`, so
 tests can build alternative instances without mutating shared state.
 
-The matrix (Fase 1 starting set; extensions follow the issue-thread
+The matrix (Fase 1 starting set + Fase 2.5 billing/wallet delta from
+[SIN-62880](/SIN/issues/SIN-62880); extensions follow the issue-thread
 process below):
 
-| Action                                 | master | gerente | atendente | common |
-|----------------------------------------|:-:|:-:|:-:|:-:|
-| `tenant.contact.read`                  |   | ✓ | ✓ | ✓ |
-| `tenant.contact.read_pii` (PII)        |   | ✓ |   |   |
-| `tenant.contact.create`                |   | ✓ |   |   |
-| `tenant.contact.update`                |   | ✓ | ✓ |   |
-| `tenant.contact.delete`                |   | ✓ |   |   |
-| `tenant.conversation.read`             |   | ✓ | ✓ | ✓ |
-| `tenant.message.read`                  |   | ✓ | ✓ | ✓ |
-| `tenant.message.send`                  |   | ✓ | ✓ |   |
-| `master.tenant.create`                 | ✓ |   |   |   |
-| `master.tenant.read`                   | ✓ |   |   |   |
-| `master.tenant.update`                 | ✓ |   |   |   |
-| `master.tenant.delete`                 | ✓ |   |   |   |
-| `master.tenant.impersonate`            | ✓ |   |   |   |
+| Action                                            | master | gerente | atendente | common |
+|---------------------------------------------------|:-:|:-:|:-:|:-:|
+| `tenant.contact.read`                             |   | ✓ | ✓ | ✓ |
+| `tenant.contact.read_pii` (PII)                   |   | ✓ |   |   |
+| `tenant.contact.create`                           |   | ✓ |   |   |
+| `tenant.contact.update`                           |   | ✓ | ✓ |   |
+| `tenant.contact.delete`                           |   | ✓ |   |   |
+| `tenant.conversation.read`                        |   | ✓ | ✓ | ✓ |
+| `tenant.message.read`                             |   | ✓ | ✓ | ✓ |
+| `tenant.message.send`                             |   | ✓ | ✓ |   |
+| `tenant.billing.view`                             |   | ✓ |   |   |
+| `tenant.wallet.view_ledger`                       |   | ✓ |   |   |
+| `master.tenant.create`                            | ✓ |   |   |   |
+| `master.tenant.read`                              | ✓ |   |   |   |
+| `master.tenant.update`                            | ✓ |   |   |   |
+| `master.tenant.delete`                            | ✓ |   |   |   |
+| `master.tenant.impersonate`                       | ✓ |   |   |   |
+| `master.subscription.assign_plan`                 | ✓ |   |   |   |
+| `master.subscription.cancel`                      | ✓ |   |   |   |
+| `master.grant_courtesy.free_subscription_period`  | ✓ |   |   |   |
+| `master.grant_courtesy.extra_tokens`              | ✓ |   |   |   |
+| `master.grant_courtesy.revoke`                    | ✓ |   |   |   |
 
 An `Action` absent from the map denies for every role (deny by
 default) and returns `ReasonDeniedUnknownAction`.
