@@ -138,9 +138,11 @@ func openExternal(dsn, migrationsDir string) (*Harness, error) {
 		return nil, fmt.Errorf("parse DSN %q: %w", dsn, err)
 	}
 
-	// Derive the channel-test database name and a DSN for the admin database
-	// (postgres) so we can CREATE DATABASE without being connected to it.
-	channelDB := cfg.ConnConfig.Database + "_channels"
+	// Derive a per-process channel-test database name. Including the PID
+	// ensures that when go test runs multiple package binaries concurrently
+	// (the default) each binary gets a unique, isolated database instead of
+	// racing to CREATE the same name.
+	channelDB := fmt.Sprintf("%s_channels_%d", cfg.ConnConfig.Database, os.Getpid())
 	adminCfg := cfg.Copy()
 	adminCfg.ConnConfig.Database = "postgres"
 
