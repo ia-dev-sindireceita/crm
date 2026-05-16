@@ -212,12 +212,19 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webContactsHandler, webContactsCleanup := buildWebContactsHandler(ctx, getenv)
 	defer webContactsCleanup()
 
+	// SIN-62862 — HTMX funnel board UI (SIN-62797 follow-up). Same
+	// fail-soft pattern as the contacts wire: when DATABASE_URL is
+	// unset the handler is nil and the /funnel* routes stay unmounted.
+	webFunnelHandler, webFunnelCleanup := buildWebFunnelHandler(ctx, getenv)
+	defer webFunnelCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
 	// catch-all handler.
 	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv, iamHandlerOpts{
 		WebContacts: webContactsHandler,
+		WebFunnel:   webFunnelHandler,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

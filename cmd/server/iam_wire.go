@@ -47,11 +47,19 @@ const envSlackWebhook = "SLACK_WEBHOOK_URL"
 // handles it inside the authed group when Deps.WebContacts is wired.
 // The trailing slash makes it a stdlib subtree pattern that catches
 // /contacts/{id} and /contacts/identity/split.
+//
+// SIN-62862 adds the funnel HTMX UI:
+//   - "/funnel" matches the exact board path GET /funnel.
+//   - "/funnel/" matches the three sub-routes (transitions, conversations/{id}/history,
+//     modal/close); Go's mux prefers the longer pattern, so the exact
+//     "/funnel" still wins for GET /funnel.
 var iamRoutes = []string{
 	"/login",
 	"/logout",
 	"/hello-tenant",
 	"/contacts/",
+	"/funnel",
+	"/funnel/",
 	"/m/",
 	"/metrics",
 }
@@ -66,6 +74,11 @@ type iamHandlerOpts struct {
 	// the /contacts/{contactID} + /contacts/identity/split routes
 	// unmounted; the chi router emits 404 for those paths.
 	WebContacts http.Handler
+
+	// WebFunnel is the SIN-62862 HTMX funnel board mux. Nil keeps the
+	// four /funnel* routes unmounted (chi emits 404) so cmd/server boots
+	// cleanly when DATABASE_URL is unset.
+	WebFunnel http.Handler
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -152,6 +165,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		// that lands the session role/last_activity DB columns (0077).
 		// Master MFA deps deferred to batch 17 (SIN-62526).
 		WebContacts: opts.WebContacts,
+		WebFunnel:   opts.WebFunnel,
 	})
 
 	fullCleanup := func() {

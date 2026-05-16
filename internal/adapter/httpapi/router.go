@@ -175,6 +175,20 @@ type Deps struct {
 	// builds this via the SIN-62855 htmx wire and leaves it nil when
 	// DATABASE_URL is unset (consistent with the IAM/internal handlers).
 	WebContacts http.Handler
+
+	// WebFunnel is the HTMX drag-and-drop funnel board handler from
+	// internal/web/funnel (SIN-62797 / Fase 2 F2-12). When non-nil, the
+	// four routes are mounted in the authed group so they inherit
+	// TenantScope + Auth + CSRF + RequireAuth (same security envelope as
+	// WebContacts). cmd/server builds this via the SIN-62862 funnel wire
+	// and leaves it nil when DATABASE_URL is unset.
+	//
+	// Routes mounted:
+	//   GET  /funnel
+	//   POST /funnel/transitions
+	//   GET  /funnel/conversations/{id}/history
+	//   GET  /funnel/modal/close
+	WebFunnel http.Handler
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -297,6 +311,22 @@ func NewRouter(deps Deps) http.Handler {
 				webContacts := middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebContacts)
 				authed.Method(http.MethodGet, "/contacts/{contactID}", webContacts)
 				authed.Method(http.MethodPost, "/contacts/identity/split", webContacts)
+			}
+
+			// SIN-62862 — HTMX funnel board UI (SIN-62797 follow-up).
+			// Same envelope as WebContacts: the chi authed group already
+			// stitches TenantScope + Auth + CSRF; RequireAuth installs
+			// iam.Principal in context before the inner handler runs. The
+			// inner http.Handler is a stdlib *http.ServeMux produced by
+			// web/funnel.Handler.Routes — Go 1.22 method+pattern syntax
+			// re-matches each route inside the mux so r.PathValue("id")
+			// resolves for the history modal.
+			if deps.WebFunnel != nil {
+				webFunnel := middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebFunnel)
+				authed.Method(http.MethodGet, "/funnel", webFunnel)
+				authed.Method(http.MethodPost, "/funnel/transitions", webFunnel)
+				authed.Method(http.MethodGet, "/funnel/conversations/{id}/history", webFunnel)
+				authed.Method(http.MethodGet, "/funnel/modal/close", webFunnel)
 			}
 		})
 	})
