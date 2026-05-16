@@ -70,33 +70,26 @@ func (h *Harness) DSN() string {
 
 // Truncate clears every inbox / dedup / tenant table touched by a webhook
 // E2E so a follow-up test starts from a known empty state. The schema is
-// preserved. CASCADE handles the FKs between tenant → contact →
-// conversation → message → assignment_history.
+// preserved. Every TRUNCATE uses CASCADE so dependent tables not in the
+// list (assignment, funnel_transition, identity_link, identity, …) get
+// wiped via FK propagation instead of erroring out mid-list.
 func (h *Harness) Truncate(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stmts := []string{
-		`TRUNCATE TABLE inbound_message_dedup`,
-		`TRUNCATE TABLE assignment_history`,
-		`TRUNCATE TABLE message`,
-		`TRUNCATE TABLE conversation`,
-		`TRUNCATE TABLE contact_channel_identity`,
-		`TRUNCATE TABLE contact`,
-		`TRUNCATE TABLE tenant_channel_associations`,
-		// users + tenants live behind FKs from rows we just dropped; cascade
-		// keeps the slate clean for the next case.
+		`TRUNCATE TABLE inbound_message_dedup CASCADE`,
+		`TRUNCATE TABLE assignment_history CASCADE`,
+		`TRUNCATE TABLE message CASCADE`,
+		`TRUNCATE TABLE conversation CASCADE`,
+		`TRUNCATE TABLE contact_channel_identity CASCADE`,
+		`TRUNCATE TABLE contact CASCADE`,
+		`TRUNCATE TABLE tenant_channel_associations CASCADE`,
 		`TRUNCATE TABLE users CASCADE`,
 		`TRUNCATE TABLE tenants CASCADE`,
 	}
 	for _, s := range stmts {
 		if _, err := h.pool.Exec(ctx, s); err != nil {
-			// Some tables may not exist on very early migration cuts; skip
-			// silently rather than failing the suite — the per-test schema
-			// invariant comes from later migrations.
-			if strings.Contains(err.Error(), "does not exist") {
-				continue
-			}
 			t.Fatalf("channeltest: truncate %q: %v", s, err)
 		}
 	}
@@ -125,9 +118,12 @@ func boot() (*Harness, error) {
 }
 
 // openExternal opens a pool against a DSN the caller supplies (CI service
-// container, bring-your-own dev DB). Migrations are applied unconditionally
-// and the cleanup hook rolls them back, so re-runs against a shared DB
-// stay safe.
+// container, bring-your-own dev DB). The public schema is reset before
+// migrations are applied so the harness is independent of any earlier
+// binary that ran against the same DSN — in CI, `make
+// test-integration-cover` (the webhook suite) runs first against the
+// same Postgres service and its cleanup leaves residue (custom types,
+// extension objects) that collides with our re-application otherwise.
 func openExternal(dsn, migrationsDir string) (*Harness, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -147,6 +143,10 @@ func openExternal(dsn, migrationsDir string) (*Harness, error) {
 			_ = applyMigrations(context.Background(), pool, migrationsDir, "down")
 			pool.Close()
 		},
+	}
+	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+		h.cleanup()
+		return nil, fmt.Errorf("reset public schema: %w", err)
 	}
 	if err := applyMigrations(ctx, pool, migrationsDir, "up"); err != nil {
 		h.cleanup()
