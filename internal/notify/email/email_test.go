@@ -71,6 +71,46 @@ func TestMessage_Validate(t *testing.T) {
 		{"clean custom header allowed", func(m *email.Message) {
 			m.Headers = map[string]string{"X-Tag": "billing"}
 		}, true, ""},
+		{"crlf in from name rejected", func(m *email.Message) {
+			m.From.Name = "Acme\r\nBcc: evil@x"
+		}, false, "forbidden control character"},
+		{"crlf in from email rejected", func(m *email.Message) {
+			m.From.Email = "noreply@acme.com\r\nBcc: evil@x"
+		}, false, "forbidden control character"},
+		{"nul in from email rejected", func(m *email.Message) {
+			m.From.Email = "noreply@acme.com\x00evil"
+		}, false, "forbidden control character"},
+		{"crlf in to name rejected", func(m *email.Message) {
+			m.To = []email.Address{{Email: "alice@example.com", Name: "Alice\r\nBcc: evil@x"}}
+		}, false, "forbidden control character"},
+		{"crlf in to email rejected", func(m *email.Message) {
+			m.To = []email.Address{{Email: "alice@example.com\r\nBcc: evil@x"}}
+		}, false, "forbidden control character"},
+		{"crlf in reply-to email rejected", func(m *email.Message) {
+			m.ReplyTo = &email.Address{Email: "reply@example.com\r\nBcc: evil@x"}
+		}, false, "forbidden control character"},
+		{"crlf in cc rejected", func(m *email.Message) {
+			m.Cc = []email.Address{{Email: "cc@example.com\r\nBcc: evil@x"}}
+		}, false, "forbidden control character"},
+		{"crlf in bcc rejected", func(m *email.Message) {
+			m.Bcc = []email.Address{{Email: "bcc@example.com\r\nBcc: evil@x"}}
+		}, false, "forbidden control character"},
+		{"empty cc email rejected", func(m *email.Message) {
+			m.Cc = []email.Address{{Name: "Cc"}}
+		}, false, "empty email"},
+		{"empty bcc email rejected", func(m *email.Message) {
+			m.Bcc = []email.Address{{Name: "Bcc"}}
+		}, false, "empty email"},
+		{"empty reply-to email rejected", func(m *email.Message) {
+			m.ReplyTo = &email.Address{Name: "Replies"}
+		}, false, "empty email"},
+		{"clean reply-to allowed", func(m *email.Message) {
+			m.ReplyTo = &email.Address{Email: "reply@example.com", Name: "Replies"}
+		}, true, ""},
+		{"clean cc and bcc allowed", func(m *email.Message) {
+			m.Cc = []email.Address{{Email: "cc@example.com"}}
+			m.Bcc = []email.Address{{Email: "bcc@example.com"}}
+		}, true, ""},
 	}
 
 	for _, tc := range cases {

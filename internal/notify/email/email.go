@@ -90,19 +90,64 @@ var reservedHeaders = map[string]struct{}{
 	"content-type": {},
 }
 
+// addrForbiddenRunes are the control characters that, if allowed
+// through an Address, would let an attacker break out of a provider
+// form field into raw SMTP headers (CR/LF) or terminate the field
+// early in C-string parsers (NUL). Mailgun-style adapters materialise
+// From/To/Cc/Bcc/Reply-To form fields as the matching SMTP headers on
+// the outbound message, so the port boundary is the right place to
+// reject the class.
+//
+// Only raw CR/LF/NUL are blocked. Unicode line separators (U+2028,
+// U+2029) and RFC 2047 encoded-word forms are not rejected here —
+// current providers treat them as plain text, but if a future
+// provider treats them as line endings, revisit this allowlist.
+const addrForbiddenRunes = "\r\n\x00"
+
+// validate checks that an Address is structurally safe to hand to a
+// provider. role identifies the field for error messages (e.g.
+// "from", "to[0]", "reply-to").
+func (a Address) validate(role string) error {
+	if a.Email == "" {
+		return invalidf("%s address has empty email", role)
+	}
+	if strings.ContainsAny(a.Email, addrForbiddenRunes) {
+		return invalidf("%s email contains forbidden control character", role)
+	}
+	if strings.ContainsAny(a.Name, addrForbiddenRunes) {
+		return invalidf("%s name contains forbidden control character", role)
+	}
+	return nil
+}
+
 // Validate returns an error wrapping ErrInvalidMessage if the message
 // is unsendable. Adapters call this first so a malformed payload
 // never reaches the network.
 func (m Message) Validate() error {
-	if m.From.Email == "" {
-		return invalidf("from address is required")
+	if err := m.From.validate("from"); err != nil {
+		return err
 	}
 	if len(m.To) == 0 {
 		return invalidf("at least one To recipient is required")
 	}
 	for i, a := range m.To {
-		if a.Email == "" {
-			return invalidf("To recipient %d has empty email", i)
+		if err := a.validate(fmt.Sprintf("to[%d]", i)); err != nil {
+			return err
+		}
+	}
+	for i, a := range m.Cc {
+		if err := a.validate(fmt.Sprintf("cc[%d]", i)); err != nil {
+			return err
+		}
+	}
+	for i, a := range m.Bcc {
+		if err := a.validate(fmt.Sprintf("bcc[%d]", i)); err != nil {
+			return err
+		}
+	}
+	if m.ReplyTo != nil {
+		if err := m.ReplyTo.validate("reply-to"); err != nil {
+			return err
 		}
 	}
 	if m.Subject == "" {
