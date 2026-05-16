@@ -42,18 +42,40 @@ const envSlackWebhook = "SLACK_WEBHOOK_URL"
 // iamRoutes lists the path patterns the chi router handles on the public mux.
 // Registering them explicitly keeps the stdlib mux in control of dispatch
 // order — custom-domain catch-all at "/" still fires last.
+//
+// SIN-62855 added the /contacts/ subtree (web/contacts HTMX UI) — chi
+// handles it inside the authed group when Deps.WebContacts is wired.
+// The trailing slash makes it a stdlib subtree pattern that catches
+// /contacts/{id} and /contacts/identity/split.
 var iamRoutes = []string{
 	"/login",
 	"/logout",
 	"/hello-tenant",
+	"/contacts/",
 	"/m/",
 	"/metrics",
+}
+
+// iamHandlerOpts bundles the optional dependencies the chi router needs
+// to mount feature-specific routes inside its authed group. Each field is
+// nil-safe so cmd/server can degrade individual subsystems independently
+// (DB unavailable, env var missing, etc.) without losing the rest of the
+// public surface.
+type iamHandlerOpts struct {
+	// WebContacts is the SIN-62855 HTMX identity-split mux. Nil keeps
+	// the /contacts/{contactID} + /contacts/identity/split routes
+	// unmounted; the chi router emits 404 for those paths.
+	WebContacts http.Handler
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
 // cleanup function. Returns (nil, no-op) when DATABASE_URL or REDIS_URL is
 // unset. The caller MUST defer the cleanup to release pool + Redis.
-func buildIAMHandler(ctx context.Context, getenv func(string) string) (http.Handler, func()) {
+//
+// opts carries optional handlers mounted inside the authed group (see
+// iamHandlerOpts). Pass the zero value when no extras are wired — the
+// router still serves /login, /logout, /hello-tenant unchanged.
+func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHandlerOpts) (http.Handler, func()) {
 	noop := func() {}
 	dsn := getenv(postgresadapter.EnvDSN)
 	redisURL := getenv(envRedisURL)
@@ -129,6 +151,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string) (http.Hand
 		// SessionToucher is nil — Activity middleware deferred to batch
 		// that lands the session role/last_activity DB columns (0077).
 		// Master MFA deps deferred to batch 17 (SIN-62526).
+		WebContacts: opts.WebContacts,
 	})
 
 	fullCleanup := func() {

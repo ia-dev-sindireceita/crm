@@ -166,6 +166,15 @@ type Deps struct {
 	// by the RequireCSRF middleware. cmd/server wires this to a
 	// Prometheus counter; tests can record the reasons directly.
 	CSRFRejectMetric func(*http.Request, csrfmw.Reason)
+
+	// WebContacts is the HTMX identity-split UI handler from
+	// internal/web/contacts (SIN-62799 / Fase 2 F2-13). When non-nil,
+	// the routes GET /contacts/{contactID} and
+	// POST /contacts/identity/split are mounted in the authed group so
+	// they inherit TenantScope + Auth + CSRF + RequireAuth. cmd/server
+	// builds this via the SIN-62855 htmx wire and leaves it nil when
+	// DATABASE_URL is unset (consistent with the IAM/internal handlers).
+	WebContacts http.Handler
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -276,6 +285,19 @@ func NewRouter(deps Deps) http.Handler {
 			}
 			authed.Method(http.MethodGet, "/hello-tenant", helloTenant)
 			authed.Method(http.MethodPost, "/logout", handler.Logout(deps.IAM))
+
+			// SIN-62855 — HTMX identity-split UI (SIN-62799 follow-up).
+			// Mount inside RequireAuth so the inner handler runs with an
+			// iam.Principal in context (matches the security envelope of
+			// /hello-tenant). The handler is the stdlib *http.ServeMux
+			// returned by web/contacts.Handler.Routes; chi does the
+			// outer route match, the inner mux re-matches via Go 1.22
+			// patterns and sets r.PathValue("contactID").
+			if deps.WebContacts != nil {
+				webContacts := middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebContacts)
+				authed.Method(http.MethodGet, "/contacts/{contactID}", webContacts)
+				authed.Method(http.MethodPost, "/contacts/identity/split", webContacts)
+			}
 		})
 	})
 

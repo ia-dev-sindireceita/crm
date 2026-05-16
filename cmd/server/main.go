@@ -205,11 +205,20 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	registerUploadRoutes(mux)
 	log.Printf("crm: slug reservation + upload routes mounted on public listener")
 
+	// SIN-62855 — HTMX identity-split UI (SIN-62799 follow-up). Built
+	// before buildIAMHandler so the handler can be threaded into the
+	// chi authed group via opts.WebContacts. The cleanup releases this
+	// wire's pgxpool independently of the IAM pool.
+	webContactsHandler, webContactsCleanup := buildWebContactsHandler(ctx, getenv)
+	defer webContactsCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
 	// catch-all handler.
-	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv)
+	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv, iamHandlerOpts{
+		WebContacts: webContactsHandler,
+	})
 	defer iamCleanup()
 	if iamHandler != nil {
 		for _, pattern := range iamRoutes {
