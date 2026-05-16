@@ -22,11 +22,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/uuid"
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
+	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	"github.com/pericles-luz/crm/internal/inbox"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
-	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
-	"github.com/google/uuid"
 )
 
 func TestInboxAdapter_Receive_HasAttachments_PersistsPendingMedia(t *testing.T) {
