@@ -141,12 +141,52 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
+// fakeMediaPublisher records each PublishScanRequest call.
+type fakeMediaPublisher struct {
+	mu    sync.Mutex
+	calls []mediaCall
+	err   error
+}
+
+type mediaCall struct {
+	TenantID  uuid.UUID
+	MessageID uuid.UUID
+	Key       string
+}
+
+func newFakeMediaPublisher() *fakeMediaPublisher { return &fakeMediaPublisher{} }
+
+func (p *fakeMediaPublisher) PublishScanRequest(_ context.Context, tenantID, messageID uuid.UUID, key string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err != nil {
+		return p.err
+	}
+	p.calls = append(p.calls, mediaCall{TenantID: tenantID, MessageID: messageID, Key: key})
+	return nil
+}
+
+func (p *fakeMediaPublisher) Calls() []mediaCall {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]mediaCall, len(p.calls))
+	copy(out, p.calls)
+	return out
+}
+
+func (p *fakeMediaPublisher) FailWith(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.err = err
+}
+
 // Compile-time guards.
 var (
-	_ inbox.InboundChannel     = (*fakeInbox)(nil)
-	_ messenger.TenantResolver = (*fakeResolver)(nil)
-	_ messenger.FeatureFlag    = (*fakeFlag)(nil)
-	_ messenger.Clock          = (*fakeClock)(nil)
+	_ inbox.InboundChannel          = (*fakeInbox)(nil)
+	_ messenger.TenantResolver      = (*fakeResolver)(nil)
+	_ messenger.FeatureFlag         = (*fakeFlag)(nil)
+	_ messenger.Clock               = (*fakeClock)(nil)
+	_ messenger.MediaScanPublisher  = (*fakeMediaPublisher)(nil)
 )
 
 var errInjected = errors.New("messenger_test: injected")

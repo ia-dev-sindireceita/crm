@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -58,7 +59,12 @@ type envelMsgBody struct {
 }
 
 type envelMsgAttachment struct {
-	Type string `json:"type"`
+	Type    string                 `json:"type"`
+	Payload envelAttachmentPayload `json:"payload"`
+}
+
+type envelAttachmentPayload struct {
+	URL string `json:"url"`
 }
 
 // handlePost is POST /webhooks/messenger. Steps:
@@ -204,6 +210,53 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pageID
 		slog.String("tenant_id", tenantID.String()),
 		slog.String("page_id", pageID),
 		slog.String("mid", mid))
+	a.requestMediaScans(ctx, tenantID, mid, m.Message.Attachments)
+}
+
+// requestMediaScans publishes one media.scan.requested envelope per
+// attachment. The message stays in the "pending" state until the
+// MediaScanner worker delivers a clean verdict (F2-05). The storage key
+// mirrors the Instagram adapter: tenantID/mid/index/type so retries are
+// idempotent. MessageID is uuid.Nil for Fase 2 — message-id wiring
+// lands in the follow-up post-clean re-materialisation PR.
+func (a *Adapter) requestMediaScans(ctx context.Context, tenantID uuid.UUID, mid string, atts []envelMsgAttachment) {
+	if len(atts) == 0 {
+		return
+	}
+	if a.media == nil {
+		a.logger.Warn("messenger.media_publisher_unwired",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("mid", mid),
+			slog.Int("attachments", len(atts)))
+		return
+	}
+	for i, att := range atts {
+		key := mediaKey(tenantID, mid, i, att.Type)
+		if err := a.media.PublishScanRequest(ctx, tenantID, uuid.Nil, key); err != nil {
+			a.logger.Warn("messenger.media_scan_publish_failed",
+				slog.String("tenant_id", tenantID.String()),
+				slog.String("mid", mid),
+				slog.Int("attachment_index", i),
+				slog.String("err", err.Error()))
+			continue
+		}
+		a.logger.Info("messenger.media_scan_requested",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("mid", mid),
+			slog.Int("attachment_index", i),
+			slog.String("type", att.Type))
+	}
+}
+
+// mediaKey produces a deterministic storage key fragment for an inbound
+// attachment. Format mirrors the Instagram adapter so the MediaScanner
+// worker can process both channels uniformly.
+func mediaKey(tenantID uuid.UUID, mid string, index int, attType string) string {
+	t := strings.TrimSpace(attType)
+	if t == "" {
+		t = "attachment"
+	}
+	return strings.Join([]string{"messenger", tenantID.String(), mid, fmt.Sprintf("%d", index), t}, "/")
 }
 
 // timestampWindowDirection returns "" when entryTimeMs falls inside

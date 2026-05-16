@@ -25,6 +25,7 @@ type Adapter struct {
 	inbox   inbox.InboundChannel
 	tenants TenantResolver
 	flag    FeatureFlag
+	media   MediaScanPublisher
 	clock   Clock
 	logger  *slog.Logger
 }
@@ -40,6 +41,19 @@ func WithClock(c Clock) Option {
 	return func(a *Adapter) {
 		if c != nil {
 			a.clock = c
+		}
+	}
+}
+
+// WithMediaScanPublisher wires the MediaScanPublisher the handler
+// invokes when an inbound message carries attachments. Optional: when
+// nil, the handler still persists the placeholder body but no
+// `media.scan.requested` envelope is emitted (logged at warn). The
+// composition root passes a NATS-backed publisher in production.
+func WithMediaScanPublisher(p MediaScanPublisher) Option {
+	return func(a *Adapter) {
+		if p != nil {
+			a.media = p
 		}
 	}
 }

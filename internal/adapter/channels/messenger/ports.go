@@ -36,6 +36,16 @@ type FeatureFlag interface {
 	Enabled(ctx context.Context, tenantID uuid.UUID) (bool, error)
 }
 
+// MediaScanPublisher is the port the handler uses to fan-out
+// `media.scan.requested` envelopes (F2-05/MediaScanner). One Publish
+// call per attachment. Implementations marshal the envelope and write
+// to the NATS subject; a nil publisher fails closed (handler logs a
+// warn and counts the drop, but the message itself still persists with
+// the placeholder body).
+type MediaScanPublisher interface {
+	PublishScanRequest(ctx context.Context, tenantID, messageID uuid.UUID, key string) error
+}
+
 // Clock decouples time.Now from the timestamp-window check so unit
 // tests can pin "now" without sleeping. Production uses systemClock.
 type Clock interface {
