@@ -118,49 +118,87 @@ func boot() (*Harness, error) {
 }
 
 // openExternal opens a pool against a DSN the caller supplies (CI service
-// container, bring-your-own dev DB). The public schema is reset before
-// migrations are applied so the harness is independent of any earlier
-// binary that ran against the same DSN — in CI, `make
-// test-integration-cover` (the webhook suite) runs first against the
-// same Postgres service and its cleanup leaves residue that collides
-// with our re-application otherwise.
+// container, bring-your-own dev DB). To isolate from the webhook
+// integration suite that CI runs first against the same TEST_POSTGRES_DSN,
+// the channel suite creates its own dedicated database (<original>_channels).
 //
-// Extensions are dropped explicitly before the schema reset because
-// PostgreSQL's CASCADE walks pg_depend from schema → schema-resident
-// objects, but the pg_extension catalog row is the parent of its
-// functions — not a dependent — so it survives DROP SCHEMA public
-// CASCADE. The orphaned row then trips pg_extension_name_index when
-// 0001 runs CREATE EXTENSION IF NOT EXISTS pgcrypto. Dropping the
-// extensions first ensures the catalog row is gone before the next
-// CREATE EXTENSION runs.
+// Attempts to reset the schema in place (DROP EXTENSION + DROP SCHEMA) fail
+// because the pg_extension catalog row is the parent of its schema-resident
+// functions in pg_depend, not a dependent — DROP SCHEMA CASCADE leaves the
+// pg_extension row with a stale extnamespace OID, and subsequent DROP
+// EXTENSION IF EXISTS silently no-ops on the orphaned row, so
+// CREATE EXTENSION trips pg_extension_name_index. A fresh, empty database
+// avoids all extension/schema residue by construction.
 func openExternal(dsn, migrationsDir string) (*Harness, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
+
+	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("pgxpool.New: %w", err)
+		return nil, fmt.Errorf("parse DSN %q: %w", dsn, err)
+	}
+
+	// Derive the channel-test database name and a DSN for the admin database
+	// (postgres) so we can CREATE DATABASE without being connected to it.
+	channelDB := cfg.ConnConfig.Database + "_channels"
+	adminCfg := cfg.Copy()
+	adminCfg.ConnConfig.Database = "postgres"
+
+	adminPool, err := pgxpool.NewWithConfig(ctx, adminCfg)
+	if err != nil {
+		return nil, fmt.Errorf("open admin pool: %w", err)
+	}
+	if err := adminPool.Ping(ctx); err != nil {
+		adminPool.Close()
+		return nil, fmt.Errorf("ping admin DB: %w", err)
+	}
+	// Terminate any leftover connections from a previous aborted run before
+	// dropping so the DROP does not block.
+	_, _ = adminPool.Exec(ctx,
+		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+		channelDB,
+	)
+	if _, err := adminPool.Exec(ctx, `DROP DATABASE IF EXISTS `+channelDB); err != nil {
+		adminPool.Close()
+		return nil, fmt.Errorf("drop channel DB %q: %w", channelDB, err)
+	}
+	if _, err := adminPool.Exec(ctx, `CREATE DATABASE `+channelDB); err != nil {
+		adminPool.Close()
+		return nil, fmt.Errorf("create channel DB %q: %w", channelDB, err)
+	}
+	adminPool.Close()
+
+	// Open the main pool against the freshly created database.
+	channelCfg := cfg.Copy()
+	channelCfg.ConnConfig.Database = channelDB
+	pool, err := pgxpool.NewWithConfig(ctx, channelCfg)
+	if err != nil {
+		return nil, fmt.Errorf("open channel pool: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping %q: %w", dsn, err)
+		return nil, fmt.Errorf("ping channel DB %q: %w", channelDB, err)
 	}
+
 	h := &Harness{
 		pool:          pool,
-		dsn:           dsn,
+		dsn:           channelCfg.ConnString(),
 		migrationsDir: migrationsDir,
 		cleanup: func() {
-			_ = applyMigrations(context.Background(), pool, migrationsDir, "down")
 			pool.Close()
+			cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cleanCancel()
+			ap, apErr := pgxpool.NewWithConfig(cleanCtx, adminCfg)
+			if apErr != nil {
+				return
+			}
+			_, _ = ap.Exec(cleanCtx,
+				`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+				channelDB,
+			)
+			_, _ = ap.Exec(cleanCtx, `DROP DATABASE IF EXISTS `+channelDB)
+			ap.Close()
 		},
-	}
-	if _, err := pool.Exec(ctx, `
-		DROP EXTENSION IF EXISTS pgcrypto CASCADE;
-		DROP EXTENSION IF EXISTS citext   CASCADE;
-		DROP SCHEMA    IF EXISTS public   CASCADE;
-		CREATE SCHEMA public;
-	`); err != nil {
-		h.cleanup()
-		return nil, fmt.Errorf("reset public schema: %w", err)
 	}
 	if err := applyMigrations(ctx, pool, migrationsDir, "up"); err != nil {
 		h.cleanup()
