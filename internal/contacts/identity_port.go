@@ -45,4 +45,12 @@ type IdentityRepository interface {
 	// creates a fresh Identity for that contact (1:1). Use when a merge
 	// was incorrect.
 	Split(ctx context.Context, tenantID, linkID uuid.UUID) error
+
+	// FindByContactID returns the Identity currently linked to contactID
+	// under tenantID, with Links populated for every sibling contact on
+	// the same Identity. Used by the split UI (F2-13) to render the
+	// identity panel: one row per IdentityLink, each with link_reason and
+	// timestamp. Returns ErrNotFound when the contact has no link row
+	// (e.g. the upsert use case has not yet linked it).
+	FindByContactID(ctx context.Context, tenantID, contactID uuid.UUID) (*Identity, error)
 }

@@ -172,6 +172,43 @@ func (s *IdentityStore) Merge(
 	return nil
 }
 
+// FindByContactID resolves contactID's current Identity and hydrates its
+// Links. Used by the split UI (SIN-62799 / F2-13) so the operator sees
+// every contact tied to the merged identity. Returns contacts.ErrNotFound
+// when the contact has no contact_identity_link row.
+func (s *IdentityStore) FindByContactID(
+	ctx context.Context, tenantID, contactID uuid.UUID,
+) (*contacts.Identity, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("contacts/identity: FindByContactID: tenant id is nil")
+	}
+	var identity *contacts.Identity
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		var identityID uuid.UUID
+		row := tx.QueryRow(ctx, `
+			SELECT identity_id FROM contact_identity_link
+			 WHERE contact_id = $1
+			 LIMIT 1
+		`, contactID)
+		if err := row.Scan(&identityID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return contacts.ErrNotFound
+			}
+			return err
+		}
+		loaded, err := s.loadIdentity(ctx, tx, tenantID, identityID)
+		if err != nil {
+			return err
+		}
+		identity = loaded
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("contacts/identity: FindByContactID: %w", err)
+	}
+	return identity, nil
+}
+
 // Split removes linkID from contact_identity_link and creates a new
 // Identity for the orphaned contact.
 func (s *IdentityStore) Split(ctx context.Context, tenantID, linkID uuid.UUID) error {
