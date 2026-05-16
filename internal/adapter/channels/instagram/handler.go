@@ -32,21 +32,21 @@ const SignatureHeader = metashared.SignatureHeader
 // has channel-specific fields (sender.id == IGSID, no contacts[]
 // profile array, etc.) and a shared struct would invite drift.
 type igEnvelope struct {
-	Object string         `json:"object"`
-	Entry  []igEntry      `json:"entry"`
+	Object string    `json:"object"`
+	Entry  []igEntry `json:"entry"`
 }
 
 type igEntry struct {
-	ID        string         `json:"id"` // ig business account id (the recipient)
-	Time      int64          `json:"time"`
-	Messaging []igMessaging  `json:"messaging"`
+	ID        string        `json:"id"` // ig business account id (the recipient)
+	Time      int64         `json:"time"`
+	Messaging []igMessaging `json:"messaging"`
 }
 
 type igMessaging struct {
-	Sender    igParty        `json:"sender"`
-	Recipient igParty        `json:"recipient"`
-	Timestamp int64          `json:"timestamp"` // unix millis
-	Message   igMessage      `json:"message"`
+	Sender    igParty   `json:"sender"`
+	Recipient igParty   `json:"recipient"`
+	Timestamp int64     `json:"timestamp"` // unix millis
+	Message   igMessage `json:"message"`
 }
 
 type igParty struct {
@@ -61,7 +61,7 @@ type igMessage struct {
 }
 
 type igAttachment struct {
-	Type    string             `json:"type"`
+	Type    string              `json:"type"`
 	Payload igAttachmentPayload `json:"payload"`
 }
 

@@ -16,14 +16,14 @@ import (
 // field is mutated after construction so the adapter is safe to share
 // across the request goroutines net/http spawns.
 type Adapter struct {
-	cfg      Config
-	inbox    inbox.InboundChannel
-	tenants  TenantResolver
-	flag     FeatureFlag
-	rate     RateLimiter
-	media    MediaScanPublisher
-	clock    Clock
-	logger   *slog.Logger
+	cfg     Config
+	inbox   inbox.InboundChannel
+	tenants TenantResolver
+	flag    FeatureFlag
+	rate    RateLimiter
+	media   MediaScanPublisher
+	clock   Clock
+	logger  *slog.Logger
 }
 
 // Option mutates an Adapter at construction time.
