@@ -26,3 +26,11 @@ make down                                            # tear down (volumes preser
 make test   # go test ./... -race -cover
 make lint   # go vet ./...
 ```
+
+## Transactional email
+
+Provider wiring selects an adapter at boot via `EMAIL_PROVIDER`
+(`mailgun` | `recorder` | `noop`). See
+[docs/ops/email-provider.md](docs/ops/email-provider.md) for env vars,
+provider switch procedure, and the opt-in live Mailgun smoke test.
+Architecture decision: [ADR 0096](docs/adr/0096-email-mailgun-adapter.md).
