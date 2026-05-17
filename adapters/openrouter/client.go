@@ -111,7 +111,6 @@ type Client struct {
 	metrics    *Metrics
 	timeout    time.Duration
 	now        func() time.Time
-	sleep      func(time.Duration)
 }
 
 // New constructs a Client from cfg. It validates that APIKey is set so
@@ -158,7 +157,6 @@ func New(cfg Config) (*Client, error) {
 		metrics:    cfg.Metrics,
 		timeout:    timeout,
 		now:        time.Now,
-		sleep:      time.Sleep,
 	}, nil
 }
 
@@ -455,14 +453,19 @@ func isTransientNetErr(err error) bool {
 }
 
 // outcomeForCtx maps a context error into the metric outcome label.
+// Today the context package only emits DeadlineExceeded and Canceled,
+// so the default branch is defensive: if a future Go release adds a
+// new context-error class we record it under "unknown" rather than
+// silently mislabelling it as a timeout.
 func outcomeForCtx(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
-	}
-	if errors.Is(err, context.Canceled) {
+	case errors.Is(err, context.Canceled):
 		return "canceled"
+	default:
+		return "unknown"
 	}
-	return "timeout"
 }
 
 // finalOutcomeFor classifies the lastErr returned after the retry

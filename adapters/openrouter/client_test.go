@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,9 +17,10 @@ import (
 	"github.com/prometheus/common/expfmt"
 )
 
-// fastClient builds a Client with a no-op sleep so retry tests run in
-// milliseconds rather than seconds. Tests that need to assert on
-// backoff timing override sleep manually.
+// fastClient builds a Client with discarded logging. Retry-exhaust
+// tests still pay the real wall-clock cost of waitBeforeRetry's timer;
+// keep prompts and Retry-After values modest in tests that exercise
+// that path.
 func fastClient(t *testing.T, srvURL string, opts ...func(*Config)) *Client {
 	t.Helper()
 	cfg := Config{
@@ -35,7 +35,6 @@ func fastClient(t *testing.T, srvURL string, opts ...func(*Config)) *Client {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	c.sleep = func(time.Duration) {}
 	return c
 }
 
@@ -286,25 +285,12 @@ func TestCompleteHonoursRetryAfterSeconds(t *testing.T) {
 	defer srv.Close()
 
 	c := fastClient(t, srv.URL)
-	var slept []time.Duration
-	var mu sync.Mutex
-	c.sleep = func(d time.Duration) {
-		mu.Lock()
-		slept = append(slept, d)
-		mu.Unlock()
-	}
 	if _, err := c.Complete(context.Background(), CompleteRequest{Prompt: "p"}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	if got := atomic.LoadInt32(&attempts); got != 2 {
 		t.Errorf("expected 2 attempts, got %d", got)
 	}
-	// Backoff schedule for attempt 0 is 250ms; Retry-After=2s
-	// overrides it.
-	// (We can't observe c.sleep since waitBeforeRetry uses a real
-	//  timer; the assertion above on attempts proves the path was
-	//  exercised. Slept slice is captured here for future expansion.)
-	_ = slept
 }
 
 func TestCompleteHonoursRetryAfterHTTPDate(t *testing.T) {
@@ -554,7 +540,6 @@ func TestCompleteTransportErrorNonTransient(t *testing.T) {
 	if err != nil {
 		t.Skipf("baseURL rejected: %v", err)
 	}
-	c.sleep = func(time.Duration) {}
 	_, callErr := c.Complete(context.Background(), CompleteRequest{Prompt: "p"})
 	if callErr == nil {
 		t.Fatal("expected error on unparseable base URL")

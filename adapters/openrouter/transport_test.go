@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestLogTransportRedactsPromptAndResponse is the smoking-gun assertion
@@ -107,7 +106,6 @@ func TestLogTransportLogsTransportFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	c.sleep = func(time.Duration) {}
 	_, callErr := c.Complete(context.Background(), CompleteRequest{Prompt: sensitive})
 	if callErr == nil {
 		t.Fatal("expected error from closed connection")
