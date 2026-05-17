@@ -21,7 +21,18 @@ import (
 // on every subsequent click from the same browser within the cookie
 // TTL — that is how AC #2 (no duplicate row per browser) is achieved
 // without server-side session state.
-const CookieName = "crm_click_id"
+//
+// The "__Host-" prefix (SIN-62983 LOW-1) is a spec-level guard: per
+// RFC 6265bis §4.1.3.2 a browser MUST refuse a __Host- cookie that is
+// not Secure, not Path=/, or carries a Domain attribute. The wire
+// already satisfies those constraints (Secure under TLS, Path=/, no
+// Domain set), so the prefix is a belt-and-braces defence against a
+// future refactor that quietly adds Domain= or downgrades Secure: the
+// browser will drop the cookie loudly instead of silently scoping it
+// to a parent host. Local HTTP dev with CAMPAIGNS_PUBLIC_COOKIE_INSECURE=1
+// will see the cookie rejected by the browser — that is a deliberate
+// downgrade signal, not a regression.
+const CookieName = "__Host-crm_click_id"
 
 // CookieMaxAge is the 90-day TTL the spec requires (Persistent cookie,
 // per-browser identity for attribution). Long enough that the contact
@@ -52,7 +63,7 @@ type Deps struct {
 	Now Now
 
 	// NewClickID generates a fresh click_id when the browser has no
-	// crm_click_id cookie yet. See IDGen for the contract.
+	// __Host-crm_click_id cookie yet. See IDGen for the contract.
 	NewClickID IDGen
 
 	// AllowedHosts is the SSRF / open-redirect allowlist applied at
@@ -64,10 +75,12 @@ type Deps struct {
 	// site under its primary domain need not re-list itself.
 	AllowedHosts []string
 
-	// CookieSecure controls the Secure attribute on the crm_click_id
-	// cookie. Production sets it true (every public request lands on
-	// TLS via Caddy); tests using httptest.NewRecorder pass false so
-	// the cookie is observable in test recorders.
+	// CookieSecure controls the Secure attribute on the
+	// __Host-crm_click_id cookie. Production sets it true (every public
+	// request lands on TLS via Caddy) — required by the __Host- prefix
+	// spec (RFC 6265bis §4.1.3.2). Tests using httptest.NewRecorder pass
+	// false so the Set-Cookie header is observable in the recorder; the
+	// recorder does not enforce browser prefix rules.
 	CookieSecure bool
 
 	// MarkerKey is the HMAC secret used to sign the attribution marker
@@ -181,7 +194,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.Logger.WarnContext(ctx, "campaign/public: redirect host rejected",
 			slog.String("tenant_id", tenant.ID.String()),
 			slog.String("slug", normSlug),
-			slog.String("redirect_url", c.RedirectURL),
+			slog.String("redirect_url", truncateForLog(c.RedirectURL, maxLoggedURLBytes)),
 			slog.String("err", err.Error()),
 		)
 		writeStatus(w, http.StatusBadGateway, "bad gateway\n")
@@ -268,12 +281,15 @@ func (h *Handler) resolveClickID(r *http.Request) (string, bool) {
 	return h.deps.NewClickID(), true
 }
 
-// setClickCookie writes the crm_click_id cookie with the security
-// attributes spec'd in AC #2 (httpOnly, SameSite=Lax, Secure when wired,
-// Path=/, 90d). Domain is intentionally left empty so the cookie binds
-// to the exact tenant host the browser saw — a contact who clicks on
-// acme.crm.example does NOT receive a cookie that travels to
-// other-tenant.crm.example, even if the operator misconfigures DNS.
+// setClickCookie writes the __Host-crm_click_id cookie with the
+// security attributes spec'd in AC #2 (httpOnly, SameSite=Lax, Secure
+// when wired, Path=/, 90d). Domain is intentionally left empty so the
+// cookie binds to the exact tenant host the browser saw — a contact
+// who clicks on acme.crm.example does NOT receive a cookie that
+// travels to other-tenant.crm.example, even if the operator
+// misconfigures DNS. The __Host- prefix on the cookie name (SIN-62983
+// LOW-1) makes the no-Domain + Path=/ + Secure invariant enforceable
+// by the browser itself rather than implicitly by this function.
 func (h *Handler) setClickCookie(w http.ResponseWriter, _ *http.Request, value string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
@@ -416,6 +432,29 @@ var botMarkers = []string{
 	"bot", "spider", "crawler", "preview", "scrape", "fetch",
 	"curl/", "wget/", "python-requests", "go-http-client",
 	"headlesschrome", "phantomjs", "puppeteer",
+}
+
+// maxLoggedURLBytes caps the redirect_url field emitted by warn-level
+// logs (SIN-62983 LOW-3). The campaigns.redirect_url column is uncapped
+// text; a pathological marketer entry combined with a high-cardinality
+// log shipper can balloon log volume and amplify any future log
+// injection finding. 512 bytes keeps a realistic wa.me/?text=… URL
+// fully intact (well under the practical 2048 typical browser cap)
+// while putting a hard ceiling on tail risk. Apply via truncateForLog
+// to any slog field that carries marketer-supplied URL content.
+const maxLoggedURLBytes = 512
+
+// truncateForLog clips a string to at most max bytes, suffixing a
+// "…trunc" marker so a downstream consumer can tell the value was
+// elided. Operates on bytes (not runes) because slog already accepts
+// raw UTF-8 strings; truncating mid-rune yields a replacement char on
+// render, which is fine for an audit field. Returns the input
+// unchanged when it already fits.
+func truncateForLog(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "…trunc"
 }
 
 // writeStatus writes a terse text/plain body with the given code. The
