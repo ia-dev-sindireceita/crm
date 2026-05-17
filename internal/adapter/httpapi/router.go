@@ -219,6 +219,34 @@ type Deps struct {
 	//   PATCH  /settings/ai-policy/{scope_type}/{scope_id}
 	//   DELETE /settings/ai-policy/{scope_type}/{scope_id}
 	WebAIPolicy http.Handler
+
+	// MasterTenants bundles the three master-console tenant routes
+	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
+	// is the inner http.Handler the wire layer hands the router;
+	// NewRouter wraps each with the canonical RequireAuth →
+	// RequireAction gate using the per-route Action constant from
+	// SIN-62880. Any nil slot (or a nil Authorizer at the router
+	// level) causes that specific route to be skipped — router tests
+	// that don't exercise the master surface keep their pre-PR
+	// behaviour.
+	//
+	// Routes mounted (all in the tenanted+authed group so they
+	// inherit TenantScope + Auth + CSRF):
+	//   GET   /master/tenants            — ActionMasterTenantRead
+	//   POST  /master/tenants            — ActionMasterTenantCreate
+	//   PATCH /master/tenants/{id}/plan  — ActionMasterSubscriptionAssignPlan
+	MasterTenants MasterTenantsRoutes
+}
+
+// MasterTenantsRoutes bundles the three inner handlers for the master
+// /master/tenants surface so NewRouter can wrap each one with its
+// per-action RequireAction gate. cmd/server constructs the inner
+// handlers from internal/web/master.Handler and passes them through
+// via Deps.MasterTenants; tests can pass simple http.Handler stubs.
+type MasterTenantsRoutes struct {
+	List       http.Handler
+	Create     http.Handler
+	AssignPlan http.Handler
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -400,6 +428,37 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/settings/ai-policy", webAIPolicy)
 				authed.Method(http.MethodPatch, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
 				authed.Method(http.MethodDelete, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
+			}
+
+			// SIN-62882 — HTMX master/tenants UI (Fase 2.5 C9). Each
+			// of the three routes goes through RequireAuth (lifts
+			// session → Principal) and a per-route RequireAction gate
+			// using the master-* action constants added in SIN-62880.
+			// The Authorizer is the SIN-62765 AuditingAuthorizer, so a
+			// tenant-role user hitting /master/* receives a 403 and an
+			// audit_log_security row in one motion (CA #2). Per-route
+			// gating (rather than a single group middleware) is what
+			// gives master.tenant.create / master.subscription.
+			// assign_plan distinct audit rows.
+			if deps.Authorizer != nil {
+				if deps.MasterTenants.List != nil {
+					listH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantRead, nil)(deps.MasterTenants.List),
+					)
+					authed.Method(http.MethodGet, "/master/tenants", listH)
+				}
+				if deps.MasterTenants.Create != nil {
+					createH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantCreate, nil)(deps.MasterTenants.Create),
+					)
+					authed.Method(http.MethodPost, "/master/tenants", createH)
+				}
+				if deps.MasterTenants.AssignPlan != nil {
+					assignH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterSubscriptionAssignPlan, nil)(deps.MasterTenants.AssignPlan),
+					)
+					authed.Method(http.MethodPatch, "/master/tenants/{id}/plan", assignH)
+				}
 			}
 		})
 	})
