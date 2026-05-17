@@ -42,6 +42,15 @@ const (
 	SecurityEventAuthzAllow         SecurityEvent = "authz_allow"
 	SecurityEventSignatureFail      SecurityEvent = "signature_fail"
 	SecurityEventKeyRotation        SecurityEvent = "key_rotation"
+
+	// SIN-62883 / Fase 2.5 C8: master billing/wallet events. Names are
+	// dotted to match the NATS subject vocabulary the publisher emits
+	// downstream (subscription.renewed lives on the same plane). The
+	// CHECK clause in migration 0100 mirrors these literals — adding a
+	// constant requires extending that migration first.
+	SecurityEventMasterGrantIssued        SecurityEvent = "master.grant.issued"
+	SecurityEventSubscriptionCreated      SecurityEvent = "subscription.created"
+	SecurityEventInvoiceCancelledByMaster SecurityEvent = "invoice.cancelled_by_master"
 )
 
 // DataEvent is the controlled vocabulary of audit_log_data rows.
@@ -57,18 +66,21 @@ const (
 )
 
 var allSecurityEvents = map[SecurityEvent]struct{}{
-	SecurityEventLogin:              {},
-	SecurityEventLoginFail:          {},
-	SecurityEvent2FAEnroll:          {},
-	SecurityEvent2FAVerify:          {},
-	SecurityEventRoleChange:         {},
-	SecurityEventImpersonationStart: {},
-	SecurityEventImpersonationStop:  {},
-	SecurityEventMasterGrant:        {},
-	SecurityEventAuthzDeny:          {},
-	SecurityEventAuthzAllow:         {},
-	SecurityEventSignatureFail:      {},
-	SecurityEventKeyRotation:        {},
+	SecurityEventLogin:                    {},
+	SecurityEventLoginFail:                {},
+	SecurityEvent2FAEnroll:                {},
+	SecurityEvent2FAVerify:                {},
+	SecurityEventRoleChange:               {},
+	SecurityEventImpersonationStart:       {},
+	SecurityEventImpersonationStop:        {},
+	SecurityEventMasterGrant:              {},
+	SecurityEventAuthzDeny:                {},
+	SecurityEventAuthzAllow:               {},
+	SecurityEventSignatureFail:            {},
+	SecurityEventKeyRotation:              {},
+	SecurityEventMasterGrantIssued:        {},
+	SecurityEventSubscriptionCreated:      {},
+	SecurityEventInvoiceCancelledByMaster: {},
 }
 
 var allDataEvents = map[DataEvent]struct{}{
