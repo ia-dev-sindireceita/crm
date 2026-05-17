@@ -42,6 +42,14 @@ const (
 	OutcomeReconcilerErr    Outcome = "reconciler_err"
 	OutcomeBodyReadFail     Outcome = "body_read_fail"
 	OutcomeMethodNotAllowed Outcome = "method_not_allowed"
+	// OutcomeStuckPendingSuspected is the observability-backstop label
+	// surfaced when the reconciler reports a dedup hit AND the matching
+	// pix_charges row is still pending. Almost always indicates the
+	// dedup ledger was poisoned by a previous delivery that could not
+	// transition the charge (Forget compensation failed or never ran).
+	// HTTP response stays 200 — the alert lives in the structured log
+	// and the metrics hook ([SIN-62997](/SIN/issues/SIN-62997)).
+	OutcomeStuckPendingSuspected Outcome = "stuck_pending_suspected"
 )
 
 // InterWebhookConfig wires the InterWebhookHandler. All fields with
@@ -245,8 +253,10 @@ func (h *InterWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// 6) Per-event work: external_id rate limit → reconciler.Apply.
 	// We track outcomes per-event and report the aggregate at the end
 	// — an entirely deduped batch logs as dedup_hit, a fully applied
-	// batch as applied, anything else as mixed.
-	var appliedCount, dedupCount int
+	// batch as applied, anything else as mixed. A dedup hit on a
+	// still-pending charge bumps the aggregate to
+	// stuck_pending_suspected so the dashboard alert fires.
+	var appliedCount, dedupCount, stuckCount int
 	for _, evt := range events {
 		extKey := "pix:inter:ext:" + evt.ExternalID
 		allowed, retryAfter, lErr := h.limiter.Allow(ctx, extKey, time.Minute, h.ratePerExternal)
@@ -271,6 +281,15 @@ func (h *InterWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		if out.Duplicate {
 			dedupCount++
+			if out.StuckPendingSuspected {
+				stuckCount++
+				h.logger.WarnContext(ctx, "pix.inter.webhook: dedup hit on still-pending charge",
+					slog.String("psp", pixinter.SourceName),
+					slog.String("outcome", string(OutcomeStuckPendingSuspected)),
+					slog.String("external_id", evt.ExternalID),
+					slog.String("request_id", redactRequestID(requestID)),
+				)
+			}
 		} else {
 			appliedCount++
 		}
@@ -278,6 +297,8 @@ func (h *InterWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	var aggregate Outcome
 	switch {
+	case stuckCount > 0:
+		aggregate = OutcomeStuckPendingSuspected
 	case appliedCount > 0 && dedupCount == 0:
 		aggregate = OutcomeApplied
 	case appliedCount == 0 && dedupCount > 0:

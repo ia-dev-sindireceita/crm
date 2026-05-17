@@ -84,7 +84,9 @@ func (r *fakeRepo) ListExpiredPending(_ context.Context, before time.Time, limit
 // constraint on (source, external_id, event_type). It returns
 // ErrDuplicateEvent on conflict, matching the postgres adapter contract.
 type fakeEventLog struct {
-	seen map[string]struct{}
+	seen        map[string]struct{}
+	forgetCount int
+	forgetErr   error
 }
 
 func newFakeEventLog() *fakeEventLog {
@@ -97,6 +99,15 @@ func (l *fakeEventLog) Record(_ context.Context, source, externalID string, even
 		return pix.ErrDuplicateEvent
 	}
 	l.seen[k] = struct{}{}
+	return nil
+}
+
+func (l *fakeEventLog) Forget(_ context.Context, source, externalID string, eventType pix.WebhookEventType) error {
+	l.forgetCount++
+	if l.forgetErr != nil {
+		return l.forgetErr
+	}
+	delete(l.seen, source+"|"+externalID+"|"+string(eventType))
 	return nil
 }
 
@@ -355,6 +366,10 @@ func (s *sentinelEventLog) Record(context.Context, string, string, pix.WebhookEv
 	return s.err
 }
 
+func (s *sentinelEventLog) Forget(context.Context, string, string, pix.WebhookEventType) error {
+	return nil
+}
+
 func TestReconciler_Apply_EventLogError(t *testing.T) {
 	boom := errors.New("network blip")
 	r := pix.NewReconciler(newFakeRepo(), &sentinelEventLog{err: boom}, uuid.New())
@@ -381,6 +396,170 @@ func TestReconciler_Apply_SaveError(t *testing.T) {
 	}
 	if err.Error() != "postgres down" {
 		t.Errorf("got err %q, want postgres down", err.Error())
+	}
+}
+
+// TestReconciler_UnknownChargeFirstDelivery_DoesNotPoisonDedup is the
+// regression test for [SIN-62997](/SIN/issues/SIN-62997). If the webhook
+// is delivered before the local pix_charges row exists (race with
+// charge creation, transient pgxpool error, replica-lag miss), the
+// reconciler MUST compensate the dedup row so a retry can transition
+// the charge on the second pass. Without the compensation, the retry
+// hits ErrDuplicateEvent and silently no-ops — charge stuck pending.
+func TestReconciler_UnknownChargeFirstDelivery_DoesNotPoisonDedup(t *testing.T) {
+	repo := newFakeRepo()
+	log := newFakeEventLog()
+	actor := uuid.New()
+	r := pix.NewReconciler(repo, log, actor)
+
+	// First delivery: charge row not yet present (charge-creation race).
+	evt := paidEvent()
+	out, err := r.Apply(context.Background(), evt)
+	if !errors.Is(err, pix.ErrNotFound) {
+		t.Fatalf("first delivery: got err %v, want ErrNotFound", err)
+	}
+	if out.Duplicate || out.Transitioned {
+		t.Errorf("first delivery returned %+v, want zero Outcome", out)
+	}
+	if log.forgetCount != 1 {
+		t.Errorf("Forget called %d times, want 1", log.forgetCount)
+	}
+	key := evt.Source + "|" + evt.ExternalID + "|" + string(evt.EventType)
+	if _, stillSeen := log.seen[key]; stillSeen {
+		t.Fatalf("dedup row not compensated: log.seen still contains %q", key)
+	}
+
+	// Now stage the charge row (the recovered create flow finishes).
+	c := newPending(t)
+	if err := c.AttachExternalID(evt.ExternalID, tNow); err != nil {
+		t.Fatalf("AttachExternalID: %v", err)
+	}
+	repo.Seed(c)
+
+	// PSP retries: must transition this time, NOT silently dedup.
+	out2, err := r.Apply(context.Background(), evt)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if out2.Duplicate {
+		t.Fatalf("retry reported Duplicate=true — dedup row was not compensated on first delivery")
+	}
+	if !out2.Transitioned {
+		t.Errorf("retry did not transition the charge")
+	}
+	if out2.Charge == nil || out2.Charge.Status() != pix.StatusPaid {
+		t.Errorf("charge not paid after retry: %+v", out2.Charge)
+	}
+}
+
+// If the compensating Forget itself fails, surface both the original
+// ErrNotFound AND the compensation error so the caller can alert on
+// the now-poisoned dedup row. The PSP still retries (Inter retries on
+// any non-2xx), and the next pass will hit the existing dedup row and
+// dedup_hit — but at least the receiver got a structured signal that
+// something went wrong on this delivery.
+func TestReconciler_UnknownCharge_ForgetFailureIsJoined(t *testing.T) {
+	repo := newFakeRepo()
+	boom := errors.New("compensate down")
+	log := newFakeEventLog()
+	log.forgetErr = boom
+	r := pix.NewReconciler(repo, log, uuid.New())
+
+	_, err := r.Apply(context.Background(), paidEvent())
+	if !errors.Is(err, pix.ErrNotFound) {
+		t.Errorf("joined err must satisfy errors.Is(ErrNotFound), got %v", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("joined err must satisfy errors.Is(boom), got %v", err)
+	}
+}
+
+// TestReconciler_DuplicateOnPendingFlagsStuckPending pins the
+// observability backstop side of [SIN-62997](/SIN/issues/SIN-62997).
+// If a dedup hit lands on a charge that is still pending, the
+// reconciler MUST surface Outcome.StuckPendingSuspected so the
+// receiver can fire an alert — the dedup row was poisoned by an
+// earlier failed compensation and every retry will silently no-op.
+func TestReconciler_DuplicateOnPendingFlagsStuckPending(t *testing.T) {
+	repo := newFakeRepo()
+	log := newFakeEventLog()
+	r := pix.NewReconciler(repo, log, uuid.New())
+
+	c := newPending(t)
+	if err := c.AttachExternalID(externalID, tNow); err != nil {
+		t.Fatalf("AttachExternalID: %v", err)
+	}
+	repo.Seed(c)
+
+	// Prime the dedup ledger directly — simulates a poisoned row from a
+	// previous delivery that committed Record but failed before Save.
+	if err := log.Record(context.Background(), "banco-inter", externalID, pix.WebhookEventPaid, []byte(`{}`), tNow); err != nil {
+		t.Fatalf("prime dedup: %v", err)
+	}
+
+	out, err := r.Apply(context.Background(), paidEvent())
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !out.Duplicate {
+		t.Fatalf("expected Duplicate=true; outcome=%+v", out)
+	}
+	if !out.StuckPendingSuspected {
+		t.Errorf("expected StuckPendingSuspected=true on pending charge with dedup hit")
+	}
+}
+
+// Counter-case: dedup hit on a non-pending charge must NOT flag stuck
+// pending — that is the normal idempotent retry path.
+func TestReconciler_DuplicateOnPaidDoesNotFlag(t *testing.T) {
+	repo := newFakeRepo()
+	log := newFakeEventLog()
+	r := pix.NewReconciler(repo, log, uuid.New())
+
+	c := newPending(t)
+	if err := c.AttachExternalID(externalID, tNow); err != nil {
+		t.Fatalf("AttachExternalID: %v", err)
+	}
+	if _, err := c.MarkPaid(tNow.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+	repo.Seed(c)
+
+	if err := log.Record(context.Background(), "banco-inter", externalID, pix.WebhookEventPaid, []byte(`{}`), tNow); err != nil {
+		t.Fatalf("prime dedup: %v", err)
+	}
+
+	out, err := r.Apply(context.Background(), paidEvent())
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !out.Duplicate {
+		t.Fatalf("expected Duplicate=true")
+	}
+	if out.StuckPendingSuspected {
+		t.Errorf("StuckPendingSuspected must be false on dedup hit against a paid charge")
+	}
+}
+
+// Dedup hit with no matching charge (the peek itself errors) must NOT
+// regress the dedup happy path — the observability lookup is best-effort.
+func TestReconciler_DuplicateWithMissingChargeDoesNotError(t *testing.T) {
+	log := newFakeEventLog()
+	r := pix.NewReconciler(newFakeRepo(), log, uuid.New())
+
+	if err := log.Record(context.Background(), "banco-inter", externalID, pix.WebhookEventPaid, []byte(`{}`), tNow); err != nil {
+		t.Fatalf("prime dedup: %v", err)
+	}
+
+	out, err := r.Apply(context.Background(), paidEvent())
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !out.Duplicate {
+		t.Fatalf("expected Duplicate=true")
+	}
+	if out.StuckPendingSuspected {
+		t.Errorf("StuckPendingSuspected must be false when peek lookup errors")
 	}
 }
 

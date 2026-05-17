@@ -493,6 +493,160 @@ func TestPIXWebhook_AdapterConstructors_Guards(t *testing.T) {
 	}
 }
 
+// TestPIXWebhook_UnknownChargeFirstDelivery_DoesNotPoisonDedup is the
+// regression test for [SIN-62997](/SIN/issues/SIN-62997). The bug:
+// when Inter delivers a webhook for an external_id whose pix_charges
+// row is not yet committed (race with cobOnce / transient pgxpool
+// error / replica-lag miss), the reconciler committed the dedup row
+// BEFORE checking the charge existed — so a retry would silently
+// no-op via ErrDuplicateEvent and the charge would be stuck pending
+// forever. The fix: compensate the dedup row on ErrNotFound so the
+// retry can transition the charge once it lands.
+func TestPIXWebhook_UnknownChargeFirstDelivery_DoesNotPoisonDedup(t *testing.T) {
+	deps := newPIXWebhookDeps(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	reconciler := domainpix.NewReconciler(deps.repo, deps.log, deps.actorID)
+	missingExternalID := "race-txid-" + uuid.NewString()[:12]
+	occurred := time.Now().UTC().Add(-time.Minute)
+	evt := domainpix.WebhookEvent{
+		Source:     pixinter.SourceName,
+		ExternalID: missingExternalID,
+		EventType:  domainpix.WebhookEventPaid,
+		Payload:    []byte(`{"txid":"` + missingExternalID + `","valor":"49.90"}`),
+		OccurredAt: occurred,
+	}
+
+	// 1) First delivery — no matching pix_charges row exists yet.
+	//    Apply must error with ErrNotFound and MUST NOT leave a dedup
+	//    row behind.
+	out, err := reconciler.Apply(ctx, evt)
+	if !errors.Is(err, domainpix.ErrNotFound) {
+		t.Fatalf("first delivery (no charge): got err %v, want ErrNotFound", err)
+	}
+	if out.Duplicate || out.Transitioned {
+		t.Errorf("first delivery returned %+v, want zero Outcome", out)
+	}
+	if got := countWebhookEvents(t, ctx, deps.db, missingExternalID); got != 0 {
+		t.Fatalf("after first delivery: webhook_events rows = %d, want 0 (dedup row must be compensated)", got)
+	}
+
+	// 2) Now create the pix_charges row — recovered cobOnce flow lands.
+	chargeID := uuid.New()
+	expiresAt := time.Now().UTC().Add(30 * time.Minute)
+	if err := postgresadapter.WithMasterOps(ctx, deps.db.MasterOpsPool(), deps.actorID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO pix_charges
+			  (id, tenant_id, invoice_id, external_id, qr_code, copy_paste,
+			   status, expires_at, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, 'qr', 'paste', 'pending', $5, now(), now())`,
+			chargeID, deps.tenantID, deps.invoiceID, missingExternalID, expiresAt,
+		)
+		return err
+	}); err != nil {
+		t.Fatalf("seed missing pix charge: %v", err)
+	}
+
+	// 3) PSP retries: this delivery MUST transition the charge to paid,
+	//    NOT silently dedup. If the dedup row had been poisoned on
+	//    delivery 1, Apply would return Outcome{Duplicate:true}.
+	out2, err := reconciler.Apply(ctx, evt)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if out2.Duplicate {
+		t.Fatalf("retry reported Duplicate=true — compensation did not run on first delivery (charge stuck pending)")
+	}
+	if !out2.Transitioned {
+		t.Errorf("retry did not transition the charge; outcome=%+v", out2)
+	}
+
+	got, err := deps.repo.GetByExternalID(ctx, missingExternalID)
+	if err != nil {
+		t.Fatalf("GetByExternalID after retry: %v", err)
+	}
+	if got.Status() != domainpix.StatusPaid {
+		t.Errorf("after retry: status = %s, want paid", got.Status())
+	}
+	if got.PaidAt() == nil {
+		t.Error("after retry: paid_at is nil")
+	}
+	if n := countWebhookEvents(t, ctx, deps.db, missingExternalID); n != 1 {
+		t.Errorf("after retry: webhook_events rows = %d, want 1 (single dedup row from successful delivery)", n)
+	}
+}
+
+// TestPIXWebhook_StuckPendingSuspected_OnPoisonedDedup exercises the
+// observability backstop side of [SIN-62997](/SIN/issues/SIN-62997)
+// against real Postgres. We manually poison the dedup ledger (simulating
+// a previous delivery that committed Record but failed to transition
+// the charge), then deliver the webhook again — the reconciler must
+// flag Outcome.StuckPendingSuspected so the dashboard alert fires.
+func TestPIXWebhook_StuckPendingSuspected_OnPoisonedDedup(t *testing.T) {
+	deps := newPIXWebhookDeps(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Step 1: prime the dedup ledger for the seeded externalID. The
+	// pix_charges row is already in `pending` from the test fixture.
+	now := time.Now().UTC()
+	if err := deps.log.Record(ctx, pixinter.SourceName, deps.externalID, domainpix.WebhookEventPaid, []byte(`{}`), now); err != nil {
+		t.Fatalf("poison dedup: %v", err)
+	}
+
+	reconciler := domainpix.NewReconciler(deps.repo, deps.log, deps.actorID)
+	evt := domainpix.WebhookEvent{
+		Source:     pixinter.SourceName,
+		ExternalID: deps.externalID,
+		EventType:  domainpix.WebhookEventPaid,
+		Payload:    []byte(`{}`),
+		OccurredAt: now,
+	}
+
+	// Step 2: the retry MUST report Duplicate AND flag StuckPendingSuspected.
+	out, err := reconciler.Apply(ctx, evt)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !out.Duplicate {
+		t.Fatalf("expected Duplicate=true; outcome=%+v", out)
+	}
+	if !out.StuckPendingSuspected {
+		t.Errorf("expected StuckPendingSuspected=true on dedup hit against pending charge")
+	}
+}
+
+// TestPIXWebhook_EventLog_ForgetIsIdempotent verifies the compensating
+// delete on a never-recorded triple is a no-op (no error).
+func TestPIXWebhook_EventLog_ForgetIsIdempotent(t *testing.T) {
+	deps := newPIXWebhookDeps(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := deps.log.Forget(ctx, pixinter.SourceName, "never-existed", domainpix.WebhookEventPaid); err != nil {
+		t.Errorf("Forget on missing row: %v, want nil (idempotent)", err)
+	}
+}
+
+// TestPIXWebhook_EventLog_ForgetGuards covers the input-guard branches
+// — same shape as TestPIXWebhook_EventLog_RecordGuards.
+func TestPIXWebhook_EventLog_ForgetGuards(t *testing.T) {
+	deps := newPIXWebhookDeps(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := deps.log.Forget(ctx, "", "x", domainpix.WebhookEventPaid); err == nil {
+		t.Error("empty source: nil error")
+	}
+	if err := deps.log.Forget(ctx, "src", "", domainpix.WebhookEventPaid); !errors.Is(err, domainpix.ErrEmptyExternalID) {
+		t.Errorf("empty externalID: got %v, want ErrEmptyExternalID", err)
+	}
+	if err := deps.log.Forget(ctx, "src", "x", domainpix.WebhookEventType("refunded")); !errors.Is(err, domainpix.ErrUnknownEventType) {
+		t.Errorf("unknown event type: got %v, want ErrUnknownEventType", err)
+	}
+}
+
 // countWebhookEvents reads the webhook_events row count for the given
 // external_id via the superuser pool (the table has no RLS, but the
 // pool choice is deliberate so the assertion does not depend on the

@@ -48,6 +48,11 @@ const insertWebhookEvent = `
 	VALUES ($1, $2, $3, $4::jsonb, $5)
 `
 
+const deleteWebhookEvent = `
+	DELETE FROM webhook_events
+	WHERE source = $1 AND external_id = $2 AND event_type = $3
+`
+
 // Record inserts the dedup row. A unique-violation on
 // webhook_events_dedup_uniq translates to pix.ErrDuplicateEvent.
 // payload is stored verbatim as jsonb; the receiver is expected to
@@ -82,6 +87,39 @@ func (s *EventLogStore) Record(
 		return domainpix.ErrDuplicateEvent
 	}
 	return fmt.Errorf("pix/postgres: Record: %w", err)
+}
+
+// Forget deletes the dedup row for the (source, external_id, event_type)
+// triple. The reconciler calls this as a compensating action when a
+// fresh Record committed but the subsequent charge lookup raced with
+// charge creation; see [SIN-62997](/SIN/issues/SIN-62997).
+//
+// The DELETE runs in its own master_ops transaction so the audit trail
+// captures the compensation as a separate event from the original
+// INSERT. Zero rows affected is not an error — the operation is
+// idempotent so retries by the reconciler stay safe.
+func (s *EventLogStore) Forget(
+	ctx context.Context,
+	source, externalID string,
+	eventType domainpix.WebhookEventType,
+) error {
+	if source == "" {
+		return fmt.Errorf("pix/postgres: Forget: source is empty")
+	}
+	if externalID == "" {
+		return domainpix.ErrEmptyExternalID
+	}
+	if !eventType.IsKnown() {
+		return domainpix.ErrUnknownEventType
+	}
+	err := postgresadapter.WithMasterOps(ctx, s.masterPool, s.actorID, func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(ctx, deleteWebhookEvent, source, externalID, string(eventType))
+		return execErr
+	})
+	if err != nil {
+		return fmt.Errorf("pix/postgres: Forget: %w", err)
+	}
+	return nil
 }
 
 // isUniqueViolation reports whether err is a pgconn.PgError carrying

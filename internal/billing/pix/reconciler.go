@@ -3,6 +3,7 @@ package pix
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,7 +22,13 @@ import (
 //     ErrDuplicateEvent, we are certain the transition has already been
 //     applied by an earlier delivery — return Outcome{Duplicate: true}
 //     without touching the charge.
-//  2. Otherwise, fetch the charge by external_id.
+//  2. Otherwise, fetch the charge by external_id. If the charge does
+//     not exist yet (race with charge creation — Inter delivered the
+//     webhook before our cobOnce round-trip committed the local row),
+//     compensate the dedup ledger with EventLog.Forget and surface
+//     ErrNotFound so the PSP retries. Without this rollback the next
+//     retry hits the dedup ledger and silently no-ops, stranding the
+//     charge in pending forever ([SIN-62997](/SIN/issues/SIN-62997)).
 //  3. Apply the transition. Idempotent no-ops (e.g. a `paid` event for
 //     a charge that EventLog believes is fresh but is actually already
 //     paid — possible if the dedup row was inserted by a previous
@@ -59,13 +66,35 @@ func (r *reconciler) Apply(ctx context.Context, evt WebhookEvent) (Outcome, erro
 	err := r.log.Record(ctx, evt.Source, evt.ExternalID, evt.EventType, evt.Payload, evt.OccurredAt)
 	if err != nil {
 		if errors.Is(err, ErrDuplicateEvent) {
-			return Outcome{Duplicate: true}, nil
+			out := Outcome{Duplicate: true}
+			// Observability backstop: a dedup hit on a charge that is
+			// still pending almost always means an earlier delivery
+			// poisoned the ledger without transitioning the charge
+			// (e.g. EventLog.Forget failed on the recovery path).
+			// Surfacing it here lets the receiver emit a structured
+			// alert without round-tripping the repo from the
+			// transport layer. Lookup errors are intentionally
+			// swallowed — observability MUST NOT regress the dedup
+			// happy-path ([SIN-62997](/SIN/issues/SIN-62997)).
+			if peek, pErr := r.repo.GetByExternalID(ctx, evt.ExternalID); pErr == nil && peek != nil && peek.Status() == StatusPending {
+				out.StuckPendingSuspected = true
+			}
+			return out, nil
 		}
 		return Outcome{}, err
 	}
 
 	charge, err := r.repo.GetByExternalID(ctx, evt.ExternalID)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// Compensate the dedup row we just committed. Otherwise
+			// the PSP retry hits Record → ErrDuplicateEvent and
+			// Apply returns Outcome{Duplicate:true} on a charge that
+			// was never transitioned ([SIN-62997](/SIN/issues/SIN-62997)).
+			if ferr := r.log.Forget(ctx, evt.Source, evt.ExternalID, evt.EventType); ferr != nil {
+				return Outcome{}, errors.Join(err, fmt.Errorf("pix: compensate dedup row: %w", ferr))
+			}
+		}
 		return Outcome{}, err
 	}
 
