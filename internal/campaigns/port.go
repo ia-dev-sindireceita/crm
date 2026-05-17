@@ -54,4 +54,29 @@ type Repository interface {
 	// builds a handful per quarter); no pagination today — when it
 	// becomes one we add a cursor argument, not an offset.
 	ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]*Campaign, error)
+
+	// StatsByTenant aggregates click + attribution counters for every
+	// campaign under tenantID and returns them keyed by Campaign.ID.
+	// Campaigns with zero clicks may be absent from the map — callers
+	// MUST treat a missing key as the zero value (CampaignStats{}).
+	// The dashboard list view joins this map onto ListByTenant.
+	StatsByTenant(ctx context.Context, tenantID uuid.UUID) (map[uuid.UUID]CampaignStats, error)
+
+	// ListClicks returns at most limit click rows for the given
+	// campaign under tenantID, newest-first by CreatedAt. Used by the
+	// detail drill-down. A non-positive limit collapses to a small
+	// default in the adapter so the SQL never returns an unbounded
+	// ledger; the UI surfaces a "load more" affordance later when
+	// pagination becomes necessary.
+	ListClicks(ctx context.Context, tenantID, campaignID uuid.UUID, limit int) ([]*CampaignClick, error)
+}
+
+// CampaignStats is the aggregated counters projection used by the
+// dashboard list view. Clicks is the total count of campaign_clicks
+// rows that belong to the campaign; Attributions is the subset with a
+// non-NULL contact_id (the click was later linked to a known contact
+// via Repository.LinkContactToCampaign).
+type CampaignStats struct {
+	Clicks       int64
+	Attributions int64
 }

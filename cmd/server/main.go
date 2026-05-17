@@ -239,16 +239,23 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webCatalogHandler, webCatalogCleanup := buildWebCatalogHandler(ctx, getenv)
 	defer webCatalogCleanup()
 
+	// SIN-62962 — HTMX campaign dashboard (Fase 4). Same fail-soft
+	// pattern: nil handler leaves /campaigns* unmounted when the
+	// runtime DSN is missing or the pgxpool fails to open.
+	webCampaignsHandler, webCampaignsCleanup := buildWebCampaignsHandler(ctx, getenv)
+	defer webCampaignsCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
 	// catch-all handler.
 	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv, iamHandlerOpts{
-		WebContacts: webContactsHandler,
-		WebFunnel:   webFunnelHandler,
-		WebPrivacy:  webPrivacyHandler,
-		WebAIPolicy: webAIPolicyHandler,
-		WebCatalog:  webCatalogHandler,
+		WebContacts:  webContactsHandler,
+		WebFunnel:    webFunnelHandler,
+		WebPrivacy:   webPrivacyHandler,
+		WebAIPolicy:  webAIPolicyHandler,
+		WebCatalog:   webCatalogHandler,
+		WebCampaigns: webCampaignsHandler,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

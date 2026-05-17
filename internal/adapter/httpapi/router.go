@@ -244,6 +244,21 @@ type Deps struct {
 	//   DELETE /catalog/{id}/arguments/{arg_id}
 	WebCatalog http.Handler
 
+	// WebCampaigns is the HTMX admin UI handler for the per-tenant
+	// marketing-campaign dashboard from internal/web/campaigns
+	// (SIN-62962 / Fase 4). Same envelope as WebCatalog: RequireAuth
+	// → RequireAction(iam.ActionTenantCampaignManage). One action
+	// gates every method because gerente is the only role allowed to
+	// publish short links / inspect the click ledger.
+	//
+	// Routes mounted:
+	//   GET    /campaigns
+	//   GET    /campaigns/new
+	//   POST   /campaigns
+	//   GET    /campaigns/{slug}
+	//   GET    /campaigns/{slug}/clicks
+	WebCampaigns http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -492,6 +507,28 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/catalog/{id}/arguments/{arg_id}/edit", webCatalog)
 				authed.Method(http.MethodPatch, "/catalog/{id}/arguments/{arg_id}", webCatalog)
 				authed.Method(http.MethodDelete, "/catalog/{id}/arguments/{arg_id}", webCatalog)
+			}
+
+			// SIN-62962 — HTMX campaign dashboard (Fase 4). Same
+			// envelope as WebCatalog: RequireAuth installs the
+			// principal, RequireAction(ActionTenantCampaignManage)
+			// gates every method. When Authorizer is nil (router
+			// tests that don't exercise the authz seam) the gate
+			// skips and the inner mux still runs with a Principal.
+			if deps.WebCampaigns != nil {
+				webCampaigns := http.Handler(deps.WebCampaigns)
+				if deps.Authorizer != nil {
+					webCampaigns = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantCampaignManage, nil)(webCampaigns),
+					)
+				} else {
+					webCampaigns = middleware.RequireAuth(middleware.RequireAuthDeps{})(webCampaigns)
+				}
+				authed.Method(http.MethodGet, "/campaigns", webCampaigns)
+				authed.Method(http.MethodGet, "/campaigns/new", webCampaigns)
+				authed.Method(http.MethodPost, "/campaigns", webCampaigns)
+				authed.Method(http.MethodGet, "/campaigns/{slug}", webCampaigns)
+				authed.Method(http.MethodGet, "/campaigns/{slug}/clicks", webCampaigns)
 			}
 
 			// SIN-62882 — HTMX master/tenants UI (Fase 2.5 C9). Each

@@ -675,6 +675,191 @@ func TestCampaignsAdapter_LinkContactToCampaign_RejectsBadArgs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// StatsByTenant + ListClicks (SIN-62962 — dashboard inputs)
+// ---------------------------------------------------------------------------
+
+func TestCampaignsAdapter_StatsByTenant_EmptyMapWhenNoClicks(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithCampaigns(t)
+	store := newCampaignsStore(t, db)
+	tenant := seedCampaignsTenant(t, db.AdminPool())
+	ctx := newCtx(t)
+	camp := seedActiveCampaign(t, ctx, store, tenant)
+	got, err := store.StatsByTenant(ctx, tenant)
+	if err != nil {
+		t.Fatalf("StatsByTenant: %v", err)
+	}
+	if _, present := got[camp.ID]; present {
+		t.Fatalf("campaign with zero clicks must be ABSENT from stats; got %#v", got)
+	}
+}
+
+func TestCampaignsAdapter_StatsByTenant_CountsClicksAndAttributions(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithCampaigns(t)
+	store := newCampaignsStore(t, db)
+	tenant := seedCampaignsTenant(t, db.AdminPool())
+	contact := seedCampaignsContact(t, db.AdminPool(), tenant)
+	ctx := newCtx(t)
+	camp := seedActiveCampaign(t, ctx, store, tenant)
+	other := seedActiveCampaign(t, ctx, store, tenant)
+
+	for i := 0; i < 3; i++ {
+		click, _ := campaigns.NewCampaignClick(uuid.New(), tenant, camp.ID,
+			fmt.Sprintf("ck-%d", i), time.Now().UTC())
+		if _, err := store.RecordClick(ctx, click); err != nil {
+			t.Fatalf("seed click %d: %v", i, err)
+		}
+	}
+	// Link two of them to a contact (attributions = 2).
+	if err := store.LinkContactToCampaign(ctx, tenant, "ck-0", contact); err != nil {
+		t.Fatalf("link 0: %v", err)
+	}
+	if err := store.LinkContactToCampaign(ctx, tenant, "ck-1", contact); err != nil {
+		t.Fatalf("link 1: %v", err)
+	}
+	// One click on the other campaign so the GROUP BY emits two rows.
+	otherClick, _ := campaigns.NewCampaignClick(uuid.New(), tenant, other.ID, "other-click", time.Now().UTC())
+	if _, err := store.RecordClick(ctx, otherClick); err != nil {
+		t.Fatalf("seed other: %v", err)
+	}
+
+	got, err := store.StatsByTenant(ctx, tenant)
+	if err != nil {
+		t.Fatalf("StatsByTenant: %v", err)
+	}
+	if got[camp.ID].Clicks != 3 || got[camp.ID].Attributions != 2 {
+		t.Errorf("camp stats: got %+v, want clicks=3 attributions=2", got[camp.ID])
+	}
+	if got[other.ID].Clicks != 1 || got[other.ID].Attributions != 0 {
+		t.Errorf("other stats: got %+v, want clicks=1 attributions=0", got[other.ID])
+	}
+}
+
+func TestCampaignsAdapter_StatsByTenant_RLSHidesOtherTenant(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithCampaigns(t)
+	store := newCampaignsStore(t, db)
+	tenantA := seedCampaignsTenant(t, db.AdminPool())
+	tenantB := seedCampaignsTenant(t, db.AdminPool())
+	ctx := newCtx(t)
+	campA := seedActiveCampaign(t, ctx, store, tenantA)
+	click, _ := campaigns.NewCampaignClick(uuid.New(), tenantA, campA.ID, "rls-token", time.Now().UTC())
+	if _, err := store.RecordClick(ctx, click); err != nil {
+		t.Fatalf("RecordClick: %v", err)
+	}
+	got, err := store.StatsByTenant(ctx, tenantB)
+	if err != nil {
+		t.Fatalf("StatsByTenant B: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("RLS leak: tenant B saw %d stat rows from tenant A", len(got))
+	}
+}
+
+func TestCampaignsAdapter_StatsByTenant_RejectsNilTenant(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithCampaigns(t)
+	store := newCampaignsStore(t, db)
+	if _, err := store.StatsByTenant(newCtx(t), uuid.Nil); !errors.Is(err, campaigns.ErrInvalidTenant) {
+		t.Fatalf("got %v, want ErrInvalidTenant", err)
+	}
+}
+
+func TestCampaignsAdapter_ListClicks_NewestFirstAndLimited(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithCampaigns(t)
+	store := newCampaignsStore(t, db)
+	tenant := seedCampaignsTenant(t, db.AdminPool())
+	ctx := newCtx(t)
+	camp := seedActiveCampaign(t, ctx, store, tenant)
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	for i := 0; i < 5; i++ {
+		click, _ := campaigns.NewCampaignClick(uuid.New(), tenant, camp.ID,
+			fmt.Sprintf("lc-%d", i), base.Add(time.Duration(i)*time.Second))
+		if _, err := store.RecordClick(ctx, click); err != nil {
+			t.Fatalf("seed click %d: %v", i, err)
+		}
+	}
+	got, err := store.ListClicks(ctx, tenant, camp.ID, 3)
+	if err != nil {
+		t.Fatalf("ListClicks: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d clicks, want 3", len(got))
+	}
+	for i := 0; i < len(got)-1; i++ {
+		if got[i].CreatedAt.Before(got[i+1].CreatedAt) {
+			t.Errorf("ordering: got[%d].CreatedAt %v < got[%d].CreatedAt %v",
+				i, got[i].CreatedAt, i+1, got[i+1].CreatedAt)
+		}
+	}
+	if got[0].ClickID != "lc-4" {
+		t.Errorf("got[0].ClickID = %q, want %q", got[0].ClickID, "lc-4")
+	}
+}
+
+func TestCampaignsAdapter_ListClicks_ZeroLimitFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithCampaigns(t)
+	store := newCampaignsStore(t, db)
+	tenant := seedCampaignsTenant(t, db.AdminPool())
+	ctx := newCtx(t)
+	camp := seedActiveCampaign(t, ctx, store, tenant)
+	for i := 0; i < 2; i++ {
+		click, _ := campaigns.NewCampaignClick(uuid.New(), tenant, camp.ID,
+			fmt.Sprintf("zl-%d", i), time.Now().UTC())
+		if _, err := store.RecordClick(ctx, click); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	got, err := store.ListClicks(ctx, tenant, camp.ID, 0)
+	if err != nil {
+		t.Fatalf("ListClicks: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d, want 2 (default cap higher than 2)", len(got))
+	}
+}
+
+func TestCampaignsAdapter_ListClicks_RLSHidesOtherTenant(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithCampaigns(t)
+	store := newCampaignsStore(t, db)
+	tenantA := seedCampaignsTenant(t, db.AdminPool())
+	tenantB := seedCampaignsTenant(t, db.AdminPool())
+	ctx := newCtx(t)
+	campA := seedActiveCampaign(t, ctx, store, tenantA)
+	click, _ := campaigns.NewCampaignClick(uuid.New(), tenantA, campA.ID, "only-a-click", time.Now().UTC())
+	if _, err := store.RecordClick(ctx, click); err != nil {
+		t.Fatalf("RecordClick: %v", err)
+	}
+	got, err := store.ListClicks(ctx, tenantB, campA.ID, 10)
+	if err != nil {
+		t.Fatalf("ListClicks B: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("RLS leak: tenant B saw %d clicks from tenant A", len(got))
+	}
+}
+
+func TestCampaignsAdapter_ListClicks_RejectsBadArgs(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithCampaigns(t)
+	store := newCampaignsStore(t, db)
+	tenant := seedCampaignsTenant(t, db.AdminPool())
+	ctx := newCtx(t)
+
+	if _, err := store.ListClicks(ctx, uuid.Nil, uuid.New(), 10); !errors.Is(err, campaigns.ErrInvalidTenant) {
+		t.Fatalf("got %v, want ErrInvalidTenant", err)
+	}
+	if _, err := store.ListClicks(ctx, tenant, uuid.Nil, 10); !errors.Is(err, campaigns.ErrInvalidCampaign) {
+		t.Fatalf("got %v, want ErrInvalidCampaign", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

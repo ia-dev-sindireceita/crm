@@ -263,6 +263,81 @@ func (s *Store) ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]*domain
 	return out, nil
 }
 
+// StatsByTenant aggregates click + attribution counters per campaign
+// under tenantID. Campaigns with zero clicks are absent from the
+// resulting map (the SQL GROUPs over campaign_clicks rows that exist;
+// the caller must treat a missing key as the zero value).
+func (s *Store) StatsByTenant(ctx context.Context, tenantID uuid.UUID) (map[uuid.UUID]domain.CampaignStats, error) {
+	if tenantID == uuid.Nil {
+		return nil, domain.ErrInvalidTenant
+	}
+	out := map[uuid.UUID]domain.CampaignStats{}
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, qErr := tx.Query(ctx, selectCampaignStatsByTenant)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				campaignID   uuid.UUID
+				clicks       int64
+				attributions int64
+			)
+			if scanErr := rows.Scan(&campaignID, &clicks, &attributions); scanErr != nil {
+				return scanErr
+			}
+			out[campaignID] = domain.CampaignStats{Clicks: clicks, Attributions: attributions}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("campaigns/postgres: StatsByTenant: %w", err)
+	}
+	return out, nil
+}
+
+// defaultClickListLimit caps the click ledger drill-down when the
+// caller passes a non-positive limit. Bounded so the detail view never
+// streams a megabyte of click rows even when a developer forgets to
+// set the page size.
+const defaultClickListLimit = 100
+
+// ListClicks returns up to limit click rows for the given campaign
+// under tenantID, newest-first by created_at. A non-positive limit
+// collapses to defaultClickListLimit so the SQL is always bounded.
+func (s *Store) ListClicks(ctx context.Context, tenantID, campaignID uuid.UUID, limit int) ([]*domain.CampaignClick, error) {
+	if tenantID == uuid.Nil {
+		return nil, domain.ErrInvalidTenant
+	}
+	if campaignID == uuid.Nil {
+		return nil, domain.ErrInvalidCampaign
+	}
+	if limit <= 0 {
+		limit = defaultClickListLimit
+	}
+	var out []*domain.CampaignClick
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, qErr := tx.Query(ctx, selectClicksByCampaign, campaignID, limit)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			c, scanErr := scanClick(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			out = append(out, c)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("campaigns/postgres: ListClicks: %w", err)
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // SQL constants + row scanning helpers
 // ---------------------------------------------------------------------------
@@ -288,6 +363,32 @@ const selectClickByClickID = `
 	       ip, user_agent, referrer, meta, created_at
 	  FROM campaign_clicks
 	 WHERE click_id = $1
+`
+
+// selectCampaignStatsByTenant groups campaign_clicks by campaign_id
+// and emits {clicks, attributions}. RLS scopes the rows to the
+// current tenant so the GROUP BY can never accidentally aggregate
+// across tenants. Campaigns with zero clicks are absent — callers
+// merge against ListByTenant and default the missing key to zero.
+const selectCampaignStatsByTenant = `
+	SELECT campaign_id,
+	       COUNT(*) AS clicks,
+	       COUNT(contact_id) AS attributions
+	  FROM campaign_clicks
+	 GROUP BY campaign_id
+`
+
+// selectClicksByCampaign returns the most-recent click rows for one
+// campaign. The campaign_id filter is the only WHERE clause beyond
+// RLS — the underlying table has an index on (campaign_id, created_at
+// DESC) installed by migration 0102 so the query is index-bounded.
+const selectClicksByCampaign = `
+	SELECT id, tenant_id, campaign_id, click_id, contact_id,
+	       ip, user_agent, referrer, meta, created_at
+	  FROM campaign_clicks
+	 WHERE campaign_id = $1
+	 ORDER BY created_at DESC, id ASC
+	 LIMIT $2
 `
 
 // rowScanner is the minimal surface pgx.Row and pgx.Rows both

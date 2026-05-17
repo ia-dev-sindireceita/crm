@@ -74,6 +74,15 @@ const (
 	// the W4A ai-policy pattern. Atendente / common are denied at the
 	// router gate.
 	ActionTenantCatalogManage Action = "tenant.catalog.manage"
+
+	// Fase 4 — marketing-campaign dashboard (SIN-62962). One action
+	// gates every campaign surface (list / detail / create) under
+	// /campaigns. Gerente only — atendente / common cannot publish
+	// short links that bypass identity attribution. Mirrors the W4C
+	// catalog pattern: a single manage action covers both the read
+	// dashboard and the write form because the user who can create
+	// campaigns is the only role that needs the dashboard view.
+	ActionTenantCampaignManage Action = "tenant.campaign.manage"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -203,6 +212,10 @@ func defaultRolesByAction() map[Action][]Role {
 
 		// Fase 3 W4C — catalog admin (SIN-62907). Gerente only.
 		ActionTenantCatalogManage: {RoleTenantGerente},
+
+		// Fase 4 — marketing-campaign dashboard (SIN-62962). Gerente
+		// only, same justification as the catalog manage gate above.
+		ActionTenantCampaignManage: {RoleTenantGerente},
 	}
 }
 

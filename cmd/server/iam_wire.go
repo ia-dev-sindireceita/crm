@@ -70,6 +70,8 @@ var iamRoutes = []string{
 	"/settings/privacy/dpa.md",
 	"/catalog",
 	"/catalog/",
+	"/campaigns",
+	"/campaigns/",
 	"/m/",
 	"/metrics",
 }
@@ -107,6 +109,12 @@ type iamHandlerOpts struct {
 	// owns its runtime + master_ops pgxpools and returns nil when
 	// either DSN is missing or the connection fails.
 	WebCatalog http.Handler
+
+	// WebCampaigns is the SIN-62962 HTMX campaign dashboard mux.
+	// Nil keeps the /campaigns* routes unmounted; the wire in
+	// campaigns_wire.go owns its own pgxpool and returns nil when
+	// DATABASE_URL is missing.
+	WebCampaigns http.Handler
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -192,11 +200,12 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		// SessionToucher is nil — Activity middleware deferred to batch
 		// that lands the session role/last_activity DB columns (0077).
 		// Master MFA deps deferred to batch 17 (SIN-62526).
-		WebContacts: opts.WebContacts,
-		WebFunnel:   opts.WebFunnel,
-		WebPrivacy:  opts.WebPrivacy,
-		WebAIPolicy: opts.WebAIPolicy,
-		WebCatalog:  opts.WebCatalog,
+		WebContacts:  opts.WebContacts,
+		WebFunnel:    opts.WebFunnel,
+		WebPrivacy:   opts.WebPrivacy,
+		WebAIPolicy:  opts.WebAIPolicy,
+		WebCatalog:   opts.WebCatalog,
+		WebCampaigns: opts.WebCampaigns,
 	})
 
 	fullCleanup := func() {
