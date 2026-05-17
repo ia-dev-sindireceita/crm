@@ -94,6 +94,13 @@ type ReceiveInbound struct {
 	// pre-SIN-62982 unsigned marker form. Left true for the 90-day
 	// cookie-TTL transition window; a follow-up flips it false.
 	campaignMarkerAllowLegacy bool
+	// inboundPublisher is the optional NATS outbound hook (SIN-62960).
+	// Wired by the composition root via SetInboundMessagePublisher so
+	// the existing NewReceiveInbound / NewReceiveInboundWithLeadership
+	// APIs stay backwards-compatible. Nil disables fan-out (see
+	// publishInboundMessage for the soft-fail contract).
+	inboundPublisher       InboundMessagePublisher
+	inboundPublisherLogger *slog.Logger
 }
 
 // NewReceiveInbound wires the use case to its dependencies. nil port
@@ -343,6 +350,25 @@ func (u *ReceiveInbound) Execute(ctx context.Context, ev inbox.InboundEvent) (Re
 		logger = slog.Default()
 	}
 	u.linkContactToCampaign(ctx, logger, ev.TenantID, res.Contact.ID, m.Body)
+
+	// 7. Funnel-engine fan-out (SIN-62960 — soft-fail). Publishes the
+	//    persisted message on the JetStream inbound subject so the
+	//    funnel rule engine (a separate worker process) can evaluate
+	//    rules and apply actions. Disabled when no publisher is wired;
+	//    publish errors degrade gracefully — the inbox row is the
+	//    source of truth, the bus is a notification.
+	publisherLogger := u.inboundPublisherLogger
+	if publisherLogger == nil {
+		publisherLogger = slog.Default()
+	}
+	u.publishInboundMessage(ctx, publisherLogger, PublishedInboundMessage{
+		TenantID:       ev.TenantID,
+		ConversationID: conv.ID,
+		MessageID:      m.ID,
+		Channel:        channel,
+		Body:           m.Body,
+		OccurredAt:     m.CreatedAt,
+	})
 
 	return ReceiveInboundResult{
 		Conversation: conv,
