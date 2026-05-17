@@ -259,6 +259,22 @@ type Deps struct {
 	//   GET    /campaigns/{slug}/clicks
 	WebCampaigns http.Handler
 
+	// WebBillingInvoices is the HTMX UI for the per-tenant PIX-invoice
+	// surface from internal/web/billing/invoices (SIN-62963 / Fase 4).
+	// Same envelope as WebCatalog and WebCampaigns: RequireAuth →
+	// RequireAction(iam.ActionTenantBillingView) — the tenant-side
+	// billing action reused from the master billing console (SIN-62880
+	// matrix). Mounted only when the wire layer supplies a non-nil
+	// handler so a deploy that has not yet wired the PIX postgres
+	// adapter (SIN-62958 / C7) skips the routes cleanly.
+	//
+	// Routes mounted:
+	//   GET    /billing/invoices
+	//   GET    /billing/invoices/{id}
+	//   GET    /billing/invoices/{id}/status
+	//   GET    /billing/dunning-banner
+	WebBillingInvoices http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -529,6 +545,27 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/campaigns", webCampaigns)
 				authed.Method(http.MethodGet, "/campaigns/{slug}", webCampaigns)
 				authed.Method(http.MethodGet, "/campaigns/{slug}/clicks", webCampaigns)
+			}
+
+			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses
+			// the tenant-side billing action from SIN-62880; the
+			// production matrix restricts ActionTenantBillingView to
+			// RoleTenantGerente, matching the "admin do tenant" AC.
+			// The mount is conditional so a deploy that has not yet
+			// wired the PIX postgres adapter (C7) skips the routes.
+			if deps.WebBillingInvoices != nil {
+				webInvoices := http.Handler(deps.WebBillingInvoices)
+				if deps.Authorizer != nil {
+					webInvoices = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantBillingView, nil)(webInvoices),
+					)
+				} else {
+					webInvoices = middleware.RequireAuth(middleware.RequireAuthDeps{})(webInvoices)
+				}
+				authed.Method(http.MethodGet, "/billing/invoices", webInvoices)
+				authed.Method(http.MethodGet, "/billing/invoices/{id}", webInvoices)
+				authed.Method(http.MethodGet, "/billing/invoices/{id}/status", webInvoices)
+				authed.Method(http.MethodGet, "/billing/dunning-banner", webInvoices)
 			}
 
 			// SIN-62882 — HTMX master/tenants UI (Fase 2.5 C9). Each
