@@ -31,6 +31,13 @@ package main
 // Production deploys MUST set the secret + actor; any other missing
 // required env keeps the route disabled with a log line naming the
 // gap.
+//
+// Metrics: when the wiring boots the route, it registers
+// pix_inter_webhook_outcomes_total{outcome} on the supplied
+// prometheus.Registerer (prometheus.DefaultRegisterer in production),
+// driven by httppix.Metrics. The counter is the SIN-62997 dashboard
+// alert path for outcome="stuck_pending_suspected" — WARN log alone is
+// fragile under log-volume spikes (SIN-63001).
 
 import (
 	"context"
@@ -42,6 +49,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
@@ -105,17 +113,19 @@ func defaultPixInterWebhookRedisDial(redisURL string) (*goredis.Client, error) {
 
 // buildPixInterWebhookWiring is the production entry point.
 func buildPixInterWebhookWiring(ctx context.Context, getenv func(string) string) *pixInterWebhookWiring {
-	return buildPixInterWebhookWiringWithDeps(ctx, getenv, defaultPixInterWebhookDial, defaultPixInterWebhookRedisDial)
+	return buildPixInterWebhookWiringWithDeps(ctx, getenv, defaultPixInterWebhookDial, defaultPixInterWebhookRedisDial, prometheus.DefaultRegisterer)
 }
 
 // buildPixInterWebhookWiringWithDeps is the test seam — accepts
-// injectable dialers so unit tests can drive the wiring without
-// Postgres / Redis.
+// injectable dialers and a Prometheus registerer so unit tests can
+// drive the wiring without Postgres / Redis and without colliding on
+// the global registry.
 func buildPixInterWebhookWiringWithDeps(
 	ctx context.Context,
 	getenv func(string) string,
 	dial pixInterWebhookDial,
 	redisDial pixInterWebhookRedisDial,
+	registerer prometheus.Registerer,
 ) *pixInterWebhookWiring {
 	if getenv(envPixInterWebhookEnabled) != "1" {
 		return nil
@@ -186,6 +196,7 @@ func buildPixInterWebhookWiringWithDeps(
 	reconciler := domainpix.NewReconciler(repo, eventLog, actor)
 	limiter := rlredis.New(rdb, pixInterRateRedisPrefix)
 	allowed := parsePixInterAllowedCIDRs(getenv)
+	metrics := httppix.NewMetrics(registerer)
 
 	handler, err := httppix.NewInterWebhookHandler(httppix.InterWebhookConfig{
 		Verifier:                verifier,
@@ -197,6 +208,7 @@ func buildPixInterWebhookWiringWithDeps(
 		RatePerIPPerMin:         readPositiveInt(getenv(envPixInterWebhookIPRate), 100),
 		RatePerExternalIDPerMin: readPositiveInt(getenv(envPixInterWebhookExtRate), 5),
 		Logger:                  slog.Default(),
+		MetricsHook:             metrics.Hook(),
 	})
 	if err != nil {
 		_ = rdb.Close()
