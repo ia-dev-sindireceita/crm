@@ -16,7 +16,6 @@ import (
 // fakeSubscriber implements EventSubscriber. Tests push deliveries onto
 // the internal channel via Deliver.
 type fakeSubscriber struct {
-	mu         sync.Mutex
 	deliveries chan aiassistinvalidator.Delivery
 	errs       chan error
 	subErr     error
