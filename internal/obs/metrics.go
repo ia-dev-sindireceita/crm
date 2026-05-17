@@ -74,6 +74,13 @@ type Metrics struct {
 	// replay at scale — alert rule lives at
 	// deploy/prometheus/webhook-rules.yml.
 	WebhookTimestampWindowDrops *prometheus.CounterVec
+	// AIConsentTotal counts operator decisions on the LGPD per-scope
+	// consent modal (SIN-62929 / Fase 3 decisão #8). Labels are
+	// scope_kind ("tenant" | "team" | "channel") and outcome
+	// ("accepted" | "cancelled"). Cardinality stays bounded because
+	// both label sets are closed enums; no tenant/scope_id leaks into
+	// the metric (PII-safety per ADR 0093).
+	AIConsentTotal *prometheus.CounterVec
 }
 
 // NewMetrics builds a fresh registry plus the three SIN-62218
@@ -104,8 +111,12 @@ func NewMetrics() *Metrics {
 			Name: "webhook_timestamp_window_drop_total",
 			Help: "Inbound webhook drops because the envelope timestamp fell outside the configured replay window (ADR 0094). direction=past means older than PastWindow (Meta retry budget exceeded OR captured-body replay); direction=future means beyond FutureSkew (clock-skew or future-pivot replay).",
 		}, []string{"channel", "direction"}),
+		AIConsentTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ai_consent_total",
+			Help: "Operator decisions on the LGPD per-scope AI consent modal, partitioned by scope_kind (tenant|team|channel) and outcome (accepted|cancelled). [SIN-62929 / Fase 3 decisão #8]",
+		}, []string{"scope_kind", "outcome"}),
 	}
-	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies, m.WebhookTimestampWindowDrops)
+	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies, m.WebhookTimestampWindowDrops, m.AIConsentTotal)
 	return m
 }
 
@@ -133,6 +144,26 @@ func (m *Metrics) WebhookTimestampWindowDrop(channel, direction string) {
 	}
 	m.WebhookTimestampWindowDrops.WithLabelValues(channel, direction).Inc()
 }
+
+// AIConsent increments the consent counter for the (scope_kind,
+// outcome) pair. scopeKind is one of "tenant" | "team" | "channel"
+// (aipolicy.ScopeType values rendered as text); outcome is one of the
+// AIConsentOutcome constants below. Safe with a nil receiver so the
+// web/aipanel handler can call it unconditionally even in tests that
+// don't wire metrics.
+func (m *Metrics) AIConsent(scopeKind, outcome string) {
+	if m == nil {
+		return
+	}
+	m.AIConsentTotal.WithLabelValues(scopeKind, outcome).Inc()
+}
+
+// AIConsentOutcome label values. Closed enum so the registry stays
+// low-cardinality.
+const (
+	AIConsentOutcomeAccepted  = "accepted"
+	AIConsentOutcomeCancelled = "cancelled"
+)
 
 // Handler returns the http.Handler that exposes m's registry over
 // /metrics. Callers wire this into a route that bypasses tenant /

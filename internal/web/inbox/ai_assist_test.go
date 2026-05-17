@@ -19,6 +19,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/aiassist"
 	aiassistusecase "github.com/pericles-luz/crm/internal/aiassist/usecase"
+	"github.com/pericles-luz/crm/internal/aipolicy"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	"github.com/pericles-luz/crm/internal/tenancy"
 	webinbox "github.com/pericles-luz/crm/internal/web/inbox"
@@ -924,5 +925,67 @@ func TestAIAssist_ListMessagesGenericErrorReturns500(t *testing.T) {
 	mux.ServeHTTP(rec, assistPostReq(t, tenant, conv, "", ""))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status: got %d want 500", rec.Code)
+	}
+}
+
+// TestAIAssist_ConsentRequired_RendersModal exercises SIN-62929 from
+// the inbox side: when the use-case returns *aiassist.ConsentRequired,
+// the handler MUST render the consent modal partial with HX-Retarget
+// pointing at the right-pane anchor (not the default #ai-assist-panel
+// target), so HTMX swaps the dialog into view instead of replacing
+// the summary tile.
+func TestAIAssist_ConsentRequired_RendersModal(t *testing.T) {
+	t.Parallel()
+	tenant, conv := uuid.New(), uuid.New()
+	consentErr := &aiassist.ConsentRequired{
+		Scope: aipolicy.ConsentScope{
+			TenantID: tenant,
+			Kind:     aipolicy.ScopeChannel,
+			ID:       "whatsapp",
+		},
+		Payload:           "Olá ***, seu pedido foi atualizado.",
+		AnonymizerVersion: "anon-v1",
+		PromptVersion:     "prompt-v2",
+	}
+	summarizer := &stubSummarizer{err: consentErr}
+	metrics := webinbox.NewAssistMetrics(nil)
+	h := newAssistHandler(t, summarizer, nil, nil, &stubMessages{}, metrics)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, assistPostReq(t, tenant, conv, "whatsapp", ""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200 (HX-Retarget requires 2xx); body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("HX-Retarget"); got != "#ai-consent-modal" {
+		t.Errorf("HX-Retarget = %q, want #ai-consent-modal", got)
+	}
+	if got := rec.Header().Get("HX-Reswap"); got != "outerHTML" {
+		t.Errorf("HX-Reswap = %q, want outerHTML", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="ai-consent-modal"`,
+		`role="dialog"`,
+		`aria-modal="true"`,
+		"Confirme o envio para o OpenRouter",
+		`hx-post="/aipanel/consent/accept"`,
+		`hx-post="/aipanel/consent/cancel"`,
+		`name="scope_kind" value="channel"`,
+		`name="scope_id" value="whatsapp"`,
+		`name="anonymizer_version" value="anon-v1"`,
+		`name="prompt_version" value="prompt-v2"`,
+		`name="payload_preview"`,
+		`name="payload_hash"`,
+		`name="conversation_id" value="` + conv.String() + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("modal body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	if got := counterValue(t, metrics.Errors, "reason", "consent_required"); got != 1 {
+		t.Errorf("errors[consent_required]: got %v want 1", got)
 	}
 }

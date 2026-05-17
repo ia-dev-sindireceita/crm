@@ -222,6 +222,7 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
   <aside class="ai-assist" aria-label="Assistente de IA">
     {{.AssistButton}}
     <section id="ai-assist-panel" class="ai-assist__panel" aria-live="polite"></section>
+    <section id="ai-consent-modal" class="ai-consent-modal ai-consent-modal--placeholder" hidden></section>
   </aside>
   {{end}}
   <form class="conversation__compose"

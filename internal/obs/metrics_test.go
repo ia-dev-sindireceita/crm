@@ -273,3 +273,42 @@ func TestStatusRecorder_WritesPropagate(t *testing.T) {
 // We don't assert tests above by checking errors.Is; the line below
 // keeps the errors import live for potential future expansion.
 var _ = errors.New
+
+func TestAIConsent_IncrementsLabelledCounter(t *testing.T) {
+	t.Parallel()
+	m := obs.NewMetrics()
+	m.AIConsent("channel", obs.AIConsentOutcomeAccepted)
+	m.AIConsent("channel", obs.AIConsentOutcomeAccepted)
+	m.AIConsent("channel", obs.AIConsentOutcomeCancelled)
+	m.AIConsent("tenant", obs.AIConsentOutcomeAccepted)
+
+	if got := testutil.ToFloat64(m.AIConsentTotal.WithLabelValues("channel", "accepted")); got != 2 {
+		t.Errorf(`{scope_kind="channel",outcome="accepted"} = %v, want 2`, got)
+	}
+	if got := testutil.ToFloat64(m.AIConsentTotal.WithLabelValues("channel", "cancelled")); got != 1 {
+		t.Errorf(`{scope_kind="channel",outcome="cancelled"} = %v, want 1`, got)
+	}
+	if got := testutil.ToFloat64(m.AIConsentTotal.WithLabelValues("tenant", "accepted")); got != 1 {
+		t.Errorf(`{scope_kind="tenant",outcome="accepted"} = %v, want 1`, got)
+	}
+}
+
+func TestAIConsent_NilReceiver_NoPanic(t *testing.T) {
+	t.Parallel()
+	var m *obs.Metrics
+	m.AIConsent("channel", obs.AIConsentOutcomeAccepted) // must not panic
+}
+
+func TestAIConsent_RegisteredInScrape(t *testing.T) {
+	t.Parallel()
+	m := obs.NewMetrics()
+	m.AIConsent("tenant", obs.AIConsentOutcomeAccepted)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), "ai_consent_total") {
+		t.Errorf("scrape missing ai_consent_total family")
+	}
+}

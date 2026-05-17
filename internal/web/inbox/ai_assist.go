@@ -33,6 +33,8 @@ package inbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -49,6 +51,7 @@ import (
 	aiassistusecase "github.com/pericles-luz/crm/internal/aiassist/usecase"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	"github.com/pericles-luz/crm/internal/tenancy"
+	"github.com/pericles-luz/crm/internal/web/aipanel"
 )
 
 // AssistRoutePath is the HTMX endpoint the button POSTs to. Exported so
@@ -172,6 +175,13 @@ const (
 	assistReasonRateLimited         = "rate_limited"
 	assistReasonLLMUnavailable      = "llm_unavailable"
 	assistReasonInternal            = "internal"
+	// assistReasonConsentRequired marks the SIN-62929 consent-gate
+	// branch: the IA call was blocked because the operator has not yet
+	// confirmed the anonymized preview for the (tenant, scope_kind,
+	// scope_id) triple. Distinguished from rate_limited / policy
+	// because the path is "render modal, await operator decision",
+	// not "fail and ask the operator to retry later".
+	assistReasonConsentRequired = "consent_required"
 )
 
 // aiAssist is the POST handler for the assist button. It composes the
@@ -246,6 +256,11 @@ func (h *Handler) aiAssist(w http.ResponseWriter, r *http.Request) {
 	elapsed := time.Since(start).Seconds()
 
 	if summarizeErr != nil {
+		var cr *aiassist.ConsentRequired
+		if errors.As(summarizeErr, &cr) {
+			h.renderConsentModal(w, r, conversationID, cr, elapsed)
+			return
+		}
 		h.renderAssistError(w, summarizeErr, elapsed)
 		return
 	}
@@ -294,6 +309,49 @@ func (h *Handler) renderAssistError(w http.ResponseWriter, err error, elapsed fl
 		h.incAssistError(assistReasonInternal)
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = assistLLMUnavailableTmpl.Execute(w, nil)
+	}
+}
+
+// renderConsentModal translates a *aiassist.ConsentRequired into the
+// SIN-62929 modal partial. HTMX is redirected from the original
+// #ai-assist-panel target to the right-pane #ai-consent-modal anchor
+// via HX-Retarget so the operator sees the dialog instead of the
+// summary tile. The response status stays 200 because HX-Retarget +
+// HX-Reswap only fire on a 2xx; HTMX otherwise treats the swap as a
+// no-op (htmx-issue 1149).
+//
+// The handler also emits the consent_required error counter so
+// dashboards can split "operator hit the gate" from the real failure
+// reasons (insufficient_balance, rate_limited, ...).
+func (h *Handler) renderConsentModal(w http.ResponseWriter, r *http.Request, conversationID uuid.UUID, cr *aiassist.ConsentRequired, elapsed float64) {
+	h.observeAssistDuration(assistOutcomeError, elapsed)
+	h.incAssistError(assistReasonConsentRequired)
+
+	token := h.deps.CSRFToken(r)
+	if token == "" {
+		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
+		return
+	}
+
+	digest := sha256.Sum256([]byte(cr.Payload))
+	data := aipanel.ConsentModalData{
+		ScopeKind:         string(cr.Scope.Kind),
+		ScopeID:           cr.Scope.ID,
+		Payload:           cr.Payload,
+		AnonymizerVersion: cr.AnonymizerVersion,
+		PromptVersion:     cr.PromptVersion,
+		PayloadHashHex:    hex.EncodeToString(digest[:]),
+		ConversationID:    conversationID.String(),
+		CSRFInput:         csrf.FormHidden(token),
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("HX-Retarget", "#ai-consent-modal")
+	w.Header().Set("HX-Reswap", "outerHTML")
+	w.WriteHeader(http.StatusOK)
+	if err := aipanel.RenderConsentModal(w, data); err != nil {
+		h.deps.Logger.Error("web/inbox: render consent modal", "err", err)
 	}
 }
 
@@ -608,6 +666,7 @@ var assistButtonTmpl = template.Must(template.New("ai_assist_button").Parse(`<fo
       hx-post="/inbox/conversations/{{.ConversationID}}/ai-assist"
       hx-target="#ai-assist-panel"
       hx-swap="innerHTML"
+      hx-trigger="submit, ai-consent-accepted from:body"
       hx-include="this">
   {{.CSRFInput}}
   <input type="hidden" name="channelId" value="{{.ChannelID}}">
