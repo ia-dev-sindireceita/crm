@@ -100,17 +100,26 @@ services:
         mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
         exec /scripts/minio/init-quarantine.sh local
 
+  # [SIN-62935] App + workers now run from purpose-built images out of
+  # the repository Dockerfile (multi-target build) instead of the old
+  # `golang:1.22-alpine` + `go run` + bind-mounted source pattern. Each
+  # service declares its `target:` so `docker compose build` produces a
+  # distroless, non-root image per binary (defence in depth + 12-factor
+  # one-process-per-container). `make up` triggers the build on first
+  # run, then reuses the cached `crm-*:dev` images. `make build`
+  # rebuilds explicitly after a source change.
   app:
-    image: golang:1.22-alpine
+    image: crm-server:dev
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: crm-server
     restart: unless-stopped
     networks: [crm]
-    working_dir: /src
-    command: ["go", "run", "./cmd/server"]
     # SIN-62212 / CEO review on PR1: the app container MUST NOT see
     # deploy/compose/.env or any path outside the source tree. Secrets
     # arrive via env_file (read by the docker daemon, never bind-mounted)
-    # and DATABASE_URL is composed at compose-up time. PR9 replaces the
-    # selective binds below with a multi-stage image build.
+    # and DATABASE_URL is composed at compose-up time.
     env_file: .env
     environment:
       HTTP_ADDR: ":8080"
@@ -123,11 +132,6 @@ services:
       # Default ON. Flip to "false" to globally disable on-demand TLS.
       CUSTOMDOMAIN_ASK_ENABLED: ${CUSTOMDOMAIN_ASK_ENABLED:-true}
     expose: ["8081"]
-    volumes:
-      - ../../go.mod:/src/go.mod:ro
-      - ../../go.sum:/src/go.sum:ro
-      - ../../cmd:/src/cmd:ro
-      - ../../internal:/src/internal:ro
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -188,11 +192,13 @@ services:
   # publishes `media.scan.completed`. [SIN-62805] F2-05d wires the
   # Quarantiner + Alerter so infected blobs are moved + #security is paged.
   mediascan-worker:
-    image: golang:1.22-alpine
+    image: crm-mediascan-worker:dev
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: crm-mediascan-worker
     restart: unless-stopped
     networks: [crm]
-    working_dir: /src
-    command: ["go", "run", "./cmd/mediascan-worker"]
     env_file: .env
     environment:
       NATS_URL: nats://nats:4222
@@ -206,11 +212,6 @@ services:
       MINIO_QUARANTINE_SOURCE: media
       MINIO_QUARANTINE_DEST: media-quarantine
       # Slack webhook stays out of the YAML — read from .env via env_file.
-    volumes:
-      - ../../go.mod:/src/go.mod:ro
-      - ../../go.sum:/src/go.sum:ro
-      - ../../cmd:/src/cmd:ro
-      - ../../internal:/src/internal:ro
     depends_on:
       postgres: { condition: service_healthy }
       nats: { condition: service_healthy }
@@ -225,11 +226,13 @@ services:
   # SLACK_ALERTS_WEBHOOK_URL) keeps the worker consuming + acking events
   # without crashing — see AC #3 of SIN-62905.
   wallet-alerter-worker:
-    image: golang:1.22-alpine
+    image: crm-wallet-alerter-worker:dev
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: crm-wallet-alerter-worker
     restart: unless-stopped
     networks: [crm]
-    working_dir: /src
-    command: ["go", "run", "./cmd/wallet-alerter-worker"]
     env_file: .env
     environment:
       NATS_URL: nats://nats:4222
@@ -239,11 +242,6 @@ services:
       # set the URL inline here: docker exposes `environment:` values in
       # `docker inspect`, and inlining the secret leaks it to any reader
       # of the compose file.
-    volumes:
-      - ../../go.mod:/src/go.mod:ro
-      - ../../go.sum:/src/go.sum:ro
-      - ../../cmd:/src/cmd:ro
-      - ../../internal:/src/internal:ro
     depends_on:
       nats: { condition: service_healthy }
 

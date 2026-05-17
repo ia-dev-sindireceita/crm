@@ -25,7 +25,7 @@ ITEST_COVER_THRESHOLD ?= 85.0
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up down logs test test-integration test-integration-cover \
+.PHONY: help up down logs build test test-integration test-integration-cover \
         lint lint-aicache lint-customdomainnet lint-imports lint-postgres-adapter-tests \
         lint-webboundary notenant forbidimport forbidwebboundary \
         migrate-up migrate-down seed-stg smoke-alert verify-vendor \
@@ -39,7 +39,10 @@ ESBUILD_VERSION ?= 0.24.0
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-up: ## Bring up the local stack (Postgres, Redis, NATS, MinIO, Caddy, app)
+build: ## Build crm-server + crm-mediascan-worker + crm-wallet-alerter-worker images (SIN-62935)
+	$(COMPOSE) build
+
+up: build ## Bring up the local stack (Postgres, Redis, NATS, MinIO, Caddy, app + workers)
 	@if [ ! -f $(COMPOSE_DIR)/.env ]; then \
 		echo "missing $(COMPOSE_DIR)/.env — copy $(COMPOSE_DIR)/.env.example and fill secrets"; \
 		exit 1; \

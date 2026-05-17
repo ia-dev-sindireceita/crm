@@ -1,26 +1,29 @@
-# PR-time docker build smoke — SIN-62301.
+# PR-time docker build + image-scan smoke — SIN-62301, extended in SIN-62935.
 #
-# Postmortem follow-up to SIN-62297. PR #28 merged 8/8 green, then `cd-stg`
-# failed 23s later at `[builder 4/7] RUN go mod download` because the
-# Dockerfile builder was pinned at `golang:1.24.5-alpine` while go.mod had
-# been bumped to `toolchain go1.26.3`. None of the eight PR-time CI jobs
-# actually exercised `docker build` — they all use `actions/setup-go`, which
-# installs Go independently of the Dockerfile builder image — so the
-# Dockerfile-vs-go.mod consistency was uncheckable until after merge.
+# Originally a single builder-only build to catch the postmortem from
+# SIN-62297 (PR #28 merged 8/8 green, then `cd-stg` failed at
+# `[builder] RUN go mod download` because the Dockerfile builder was
+# pinned at `golang:1.24.5-alpine` while go.mod had bumped to
+# `toolchain go1.26.3`). None of the PR-time CI jobs exercised
+# `docker build` — they all use `actions/setup-go`, which installs Go
+# independently of the Dockerfile builder image.
 #
-# This workflow runs the multi-stage `builder` target whenever a PR touches
-# the files that determine that consistency. Build-only smoke (no push, no
-# load) — the failure mode we care about (`go mod download` against the
-# pinned builder image) shows up before the runtime stage, so building the
-# `builder` target alone is enough signal at the lowest cost. Cache is GHA
-# scoped so a no-change rebuild stays under ~1 min on the median PR.
+# SIN-62935 made the Dockerfile multi-target (crm-server +
+# crm-mediascan-worker + crm-wallet-alerter-worker). The smoke now
+# matrixes across each final target so a worker-only compile or runtime
+# regression is caught at PR time. Each matrix leg also runs `trivy
+# image --severity HIGH,CRITICAL --exit-code 1` on the loaded image
+# (SIN-62935 AC #4) — distroless/static images should be clean, so any
+# HIGH+ finding indicates either a base-image bump is needed or a vuln
+# was introduced via go.sum.
 #
-# Complementary to (NOT duplicate of) SIN-62298 (govulncheck): that gate is
-# call-graph CVE reachability on source; this gate is build-sandbox vs
-# go.mod toolchain consistency. Both are fail-closed.
+# Complementary to (NOT duplicate of) SIN-62298 (govulncheck): that
+# gate is call-graph CVE reachability on source; this gate exercises
+# the runtime images themselves. Both are fail-closed.
 #
-# Pin policy: third-party actions are SHA-pinned per SIN-62303 / SIN-62307.
-# Bump the SHA and the trailing version comment together when upgrading.
+# Pin policy: third-party actions are SHA-pinned per SIN-62303 /
+# SIN-62307. Bump the SHA and the trailing version comment together
+# when upgrading.
 
 name: docker-smoke
 
@@ -32,6 +35,7 @@ on:
       - .dockerignore
       - go.mod
       - go.sum
+      - cmd/**
       - .github/workflows/docker-smoke.yml
 
 permissions:
@@ -39,9 +43,16 @@ permissions:
 
 jobs:
   docker-smoke:
-    name: docker-smoke
+    name: docker-smoke (${{ matrix.target }})
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - crm-server
+          - crm-mediascan-worker
+          - crm-wallet-alerter-worker
     steps:
       - name: checkout PR head
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
@@ -49,19 +60,32 @@ jobs:
       - name: set up buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
-      # Build the `builder` stage only. The Dockerfile-vs-go.mod failure that
-      # broke us (SIN-62297) surfaces at `go mod download` inside this stage,
-      # so building further adds runtime without adding signal. push:false +
-      # load:false means buildx never materialises the image into the local
-      # daemon — we only care that the build sandbox could compile.
-      - name: docker build --target builder
+      # Build the named final stage and load it into the local Docker
+      # daemon so trivy can scan the image bytes. Cache is GHA scoped
+      # per target to keep cold-build times manageable on a 3-leg matrix.
+      - name: docker build --target ${{ matrix.target }}
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: .
           file: Dockerfile
-          target: builder
+          target: ${{ matrix.target }}
+          tags: local/${{ matrix.target }}:smoke
           push: false
-          load: false
-          cache-from: type=gha,scope=docker-smoke
-          cache-to: type=gha,scope=docker-smoke,mode=max
+          load: true
+          cache-from: type=gha,scope=docker-smoke-${{ matrix.target }}
+          cache-to: type=gha,scope=docker-smoke-${{ matrix.target }},mode=max
           provenance: false
+
+      # SIN-62935 AC #4 — fail the PR on any HIGH or CRITICAL CVE in the
+      # loaded image. distroless/static has historically been clean, so
+      # a finding here means either the base digest needs to bump (pin
+      # in Dockerfile) or a transitive dep added a vulnerable native lib.
+      - name: trivy image scan (${{ matrix.target }})
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: local/${{ matrix.target }}:smoke
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: false
+          vuln-type: os,library

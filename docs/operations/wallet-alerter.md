@@ -117,18 +117,25 @@ line; the same `nats pub` produces a worker log
 ## Docker / deploy
 
 The worker is wired into `deploy/compose/compose.yml` as a sibling of
-`mediascan-worker` (dev path uses `golang:1.22-alpine` + `go run`).
-Operators set `SLACK_ALERTS_WEBHOOK_URL` in `deploy/compose/.env`; it
-flows in via `env_file`, never inline `environment:`.
+`mediascan-worker` and runs from the purpose-built
+`crm-wallet-alerter-worker:dev` image produced by the repository
+`Dockerfile`'s `crm-wallet-alerter-worker` target (SIN-62935). The
+final stage is `gcr.io/distroless/static-debian12:nonroot` — no shell,
+no package manager, UID/GID 65532. Operators set
+`SLACK_ALERTS_WEBHOOK_URL` in `deploy/compose/.env`; it flows in via
+`env_file`, never inline `environment:`.
 
 > ⚠️ Never set `SLACK_ALERTS_WEBHOOK_URL=<url>` on a `docker run --env`
 > argv positional pair. The CTO `docker --env` review pattern requires
 > `--env NAME` (name-only) so the URL never appears in `ps`.
 
-A dedicated production image (multi-stage build) is a follow-up to
-this PR — same gap exists today for `cmd/mediascan-worker`, which also
-runs via `go run` in compose and is not built into the
-`cmd/server`-only `Dockerfile`. See SIN follow-up issue once filed.
+`make build` (or `docker compose build wallet-alerter-worker`) rebuilds
+the image after a source change; `make up` pulls in the cached image on
+subsequent boots. The PR-time
+[`docker-smoke`](../../.github/workflows/docker-smoke.yml) workflow
+builds each target and runs `trivy image --severity HIGH,CRITICAL
+--exit-code 1` against the loaded image, so any HIGH+ CVE introduced
+by a base-image bump or a transitive dependency fails the PR.
 
 ## Stream contract
 
