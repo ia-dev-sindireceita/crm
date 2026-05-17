@@ -1,4 +1,4 @@
--- 0101_phase4_marketing_billing_dunning.up.sql
+-- 0102_phase4_marketing_billing_dunning.up.sql
 -- Fase 4 / SIN-62952: base schema for marketing/billing/dunning surfaces.
 --
 -- Ships seven tables in one migration because they form a single deployable
@@ -24,8 +24,9 @@
 --                                    Medium/Large).
 --
 -- Numbering: ADR-0086 fork-only numbering. Last fork-only migration on
--- main is 0100_audit_log_security_billing_events (SIN-62883). This is
--- 0101_*.
+-- main is 0101_ai_policy_consent (SIN-62929 — landed concurrently with
+-- this PR's review window, which forced a renumber from 0101 to 0102).
+-- This is 0102_*.
 --
 -- All tenant-scoped tables follow the canonical four-policy RLS template
 -- from docs/adr/0072-rls-policies.md. tenant_id is denormalized onto

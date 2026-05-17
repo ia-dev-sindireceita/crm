@@ -1,6 +1,6 @@
 package postgres_test
 
-// SIN-62952 / Fase 4 acceptance for 0101_phase4_marketing_billing_dunning:
+// SIN-62952 / Fase 4 acceptance for 0102_phase4_marketing_billing_dunning:
 //
 //   #1 up/down/up idempotent on the shared CI cluster (all seven tables
 //      appear after up, disappear after down, and can re-up cleanly).
@@ -43,7 +43,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
 )
 
-// phase4TableNames lists every table created by 0101.
+// phase4TableNames lists every table created by 0102.
 var phase4TableNames = []string{
 	"campaigns",
 	"campaign_clicks",
@@ -69,7 +69,7 @@ func freshDBWithPhase4(t *testing.T) *testpg.DB {
 		"0088_inbox_contacts.up.sql",
 		"0089_wallet_basic.up.sql",
 		"0097_subscription_plan_invoice_master_grant.up.sql",
-		"0101_phase4_marketing_billing_dunning.up.sql",
+		"0102_phase4_marketing_billing_dunning.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
@@ -120,7 +120,7 @@ func TestPhase4Migration_UpDownUp(t *testing.T) {
 	}
 
 	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(),
-		"0101_phase4_marketing_billing_dunning.down.sql"))
+		"0102_phase4_marketing_billing_dunning.down.sql"))
 	if err != nil {
 		t.Fatalf("read down: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestPhase4Migration_UpDownUp(t *testing.T) {
 	}
 
 	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(),
-		"0101_phase4_marketing_billing_dunning.up.sql"))
+		"0102_phase4_marketing_billing_dunning.up.sql"))
 	if err != nil {
 		t.Fatalf("read up: %v", err)
 	}

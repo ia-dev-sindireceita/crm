@@ -1,5 +1,5 @@
--- 0101_phase4_marketing_billing_dunning.down.sql
--- Reverse of 0101: drop the seven Fase 4 base tables in reverse FK order.
+-- 0102_phase4_marketing_billing_dunning.down.sql
+-- Reverse of 0102: drop the seven Fase 4 base tables in reverse FK order.
 --
 -- token_packages, webhook_events: no FK dependents in this migration.
 -- subscription_dunning_states, pix_charges, funnel_rules, campaign_clicks,
