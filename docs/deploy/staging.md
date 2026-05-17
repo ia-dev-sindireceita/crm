@@ -133,6 +133,208 @@ before flipping `on_demand_tls.ask` on `Caddyfile.stg`. If the answer is
 `NOERROR` with `127.0.0.1` in the answer section, do NOT proceed with a
 catch-all flip — the sidecar is misconfigured.
 
+## HTTP edge / IP trust boundary
+
+The per-IP rate limit on `GET /c/{slug}` (and any future per-IP cap) keys
+off `r.RemoteAddr` as rewritten by `chi.RealIP`. That rewrite is only safe
+when (a) the edge strips client-supplied identity headers before forwarding
+and (b) the app only honours those headers when the immediate TCP peer is
+a trusted proxy. Both controls already ship — Caddy strips on the tenant
+vhost (`deploy/caddy/Caddyfile`, `deploy/caddy/Caddyfile.stg`) and the
+Go side wraps `chi.RealIP` with a trust gate
+(`internal/adapter/httpapi/trusted_realip.go`). What is documented below
+is the operator-facing surface: the three places where a future infra
+change can silently re-open the bypass without changing any application
+code.
+
+### 1. `TRUSTED_PROXY_CIDRS` defaults and overrides
+
+The trust gate's default allowlist is loopback plus the two RFC1918 ranges
+docker compose uses for its bridge networks and that operators commonly
+assign to internal L4 LBs:
+
+| CIDR             | Why it is in the default                                                |
+| ---------------- | ----------------------------------------------------------------------- |
+| `127.0.0.1/32`   | Local smoke checks (`curl http://localhost:8080/health`) inside the VPS. |
+| `::1/128`        | Same, IPv6 loopback.                                                    |
+| `172.16.0.0/12`  | Docker compose user-defined bridge networks (production layout).        |
+| `10.0.0.0/8`     | RFC1918 range commonly used for internal L4 load balancers.             |
+
+In the production layout (Caddy and the app share a compose network inside
+`172.16/12`) the immediate TCP peer is always inside the default set, so
+no override is needed.
+
+**When to override.** Set `TRUSTED_PROXY_CIDRS` (process env, e.g. an
+extra line in `/opt/crm/stg/.env.stg`) when the immediate TCP peer is
+NOT inside the default set. The two realistic cases:
+
+- The reverse proxy / LB lives on a public-IP subnet outside RFC1918.
+  Append that proxy's egress CIDR — pin it as tightly as the LB's
+  documentation allows (e.g. a single `/32` if the LB has a static IP).
+- The container network uses a non-default bridge range outside
+  `172.16/12` (uncommon — only happens if the docker daemon was
+  reconfigured with `default-address-pools` or a custom network was
+  declared with an explicit `subnet:` outside the RFC1918 ranges
+  baked into the default).
+
+**Format.** Comma-separated CIDRs, e.g.
+`TRUSTED_PROXY_CIDRS=10.0.0.0/8,192.0.2.10/32`. Whitespace around each
+entry is trimmed. Setting the variable replaces the defaults entirely —
+if you still want loopback + `172.16/12` honoured, list them explicitly.
+
+**Safe degrade — read this before debugging.** Invalid CIDR entries are
+silently dropped at boot. If every entry in the override is invalid
+(e.g. `TRUSTED_PROXY_CIDRS=bogus` or
+`TRUSTED_PROXY_CIDRS=10.0.0.0` with the prefix length forgotten), the
+wrapper falls back to the documented defaults rather than disabling
+trust or refusing to start. The practical consequence for operators:
+
+- `TRUSTED_PROXY_CIDRS=` (empty) → defaults apply.
+- `TRUSTED_PROXY_CIDRS=bogus` → defaults apply. The parse drop is silent
+  (no log, no startup warning) — the wrapper just falls back.
+- `TRUSTED_PROXY_CIDRS=10.0.0.0/8,bogus` → only `10.0.0.0/8` applies; the
+  defaults are NOT re-added.
+
+If the override appears to be ignored, do not assume the env var did not
+reach the process — silent fallback to defaults on a fully-invalid input
+is the documented behaviour, not a bug. The fastest live verification is
+to issue a request from an IP just outside what you intended to trust and
+observe whether `X-Forwarded-For` gets honoured downstream; if it is,
+your override either parsed clean or fell back to defaults that happened
+to include the test source.
+
+The authoritative reference is the doc-comment on
+`internal/adapter/httpapi/trusted_realip.go`; this runbook only restates
+the operator-facing summary.
+
+### 2. The local-dev `:8080` listener is loopback-only
+
+`deploy/caddy/Caddyfile` defines a plain-HTTP site block for local smoke
+checks:
+
+```caddy
+:8080 {
+  import security-headers.caddy
+  reverse_proxy app:8080
+}
+```
+
+That block does NOT carry the three `request_header -…` strip lines that
+the tenant vhost (`*.crm.local, crm.local`) carries. It exists so a
+developer can `curl http://localhost:8080/health` against the local-dev
+compose without going through TLS. **Never publish this listener to a
+non-loopback peer.** Two ways this regresses silently:
+
+- A port-forward (e.g. `ssh -L 8080:127.0.0.1:8080`) that lands the dev
+  port on a public-IP workstation, then a colleague hits it over the
+  internet because the firewall is permissive. The `127.0.0.1/32` entry
+  in the default trust set means Caddy's peer view (still loopback from
+  Caddy's perspective on the dev box) is trusted, so any
+  `X-Forwarded-For` the colleague's curl sends is honoured — per-IP
+  rate-limit keys can be forged at will from that path.
+- A docker compose override that binds `:8080` on `0.0.0.0` instead of
+  `127.0.0.1` on a developer machine on a shared LAN.
+
+If a developer genuinely needs a non-loopback smoke path on the local-dev
+stack — vanishingly rare; the staging stack is for that — copy the
+strip block from the wildcard vhost into the `:8080` site so the
+defence-in-depth is in place even on dev:
+
+```caddy
+:8080 {
+  import security-headers.caddy
+  request_header -True-Client-IP
+  request_header -X-Real-IP
+  request_header -X-Forwarded-For
+  reverse_proxy app:8080
+}
+```
+
+Staging (`Caddyfile.stg`) drops the `:8080` block entirely — staging
+traffic only reaches the app via 80/443, and the wildcard pattern is
+replaced by explicit `$STG_TENANT_HOSTS` entries. Do not port the dev
+`:8080` block into a production-shaped Caddyfile.
+
+### 3. Chained reverse proxies (CDN / WAF in front of Caddy)
+
+The current threat model assumes a single proxy hop (Caddy → app). Once a
+CDN or WAF (Cloudflare, Fastly, AWS WAF, etc.) is added in front of Caddy,
+the trust topology changes in three ways the operator MUST account for:
+
+1. **Caddy becomes the trusted proxy from the CDN's point of view.** The
+   CDN, not the original client, is now the immediate TCP peer of Caddy.
+   The app's trust gate (`TRUSTED_PROXY_CIDRS`) continues to apply to the
+   Caddy→app hop; nothing about the wrapper changes.
+2. **The current edge strip wipes any CDN-supplied client IP.** The
+   `request_header -True-Client-IP`, `-X-Real-IP`, and `-X-Forwarded-For`
+   lines on the tenant vhost are unconditional — they fire regardless of
+   the CDN's signing/validation, because Caddy cannot tell a forged
+   header from a CDN-supplied one without explicit configuration. This
+   is the safe default: until the CDN's identity-forwarding header is
+   validated, treating every IP header as untrusted is correct.
+3. **The per-IP rate limit collapses to per-CDN-edge granularity.** With
+   the headers stripped, `r.RemoteAddr` is whatever Caddy sees, which is
+   the CDN edge node's IP. CDNs coalesce thousands of clients through a
+   handful of edge IPs, so the 100/min/IP cap on `GET /c/{slug}` becomes
+   100/min/edge — orders of magnitude looser. This is *safe* (no bypass,
+   just coarser) but not what an operator who pays for a CDN wants.
+
+**To accept a CDN-provided client IP behind Caddy**, the operator must
+either:
+
+- Validate the CDN's identity header against the CDN's published edge
+  ranges and translate it into `X-Forwarded-For` BEFORE the strip lines
+  fire — concrete shape for Cloudflare:
+
+  ```caddy
+  *.crm.<stg-domain> {
+    import security-headers.caddy
+
+    @from_cdn remote_ip <CDN_EDGE_CIDR_1> <CDN_EDGE_CIDR_2> ...
+    handle @from_cdn {
+      request_header X-Forwarded-For {http.request.header.CF-Connecting-IP}
+    }
+
+    # existing strip block — runs on every request, including the
+    # @from_cdn branch above. Because the rewrite ran first, the value
+    # forwarded to the app is now the CDN-supplied client IP rather
+    # than the raw CF-Connecting-IP header.
+    request_header -True-Client-IP
+    request_header -X-Real-IP
+    # NOTE: do NOT also strip X-Forwarded-For here if the rewrite above
+    # populated it — drop the third line in this branch, or move the
+    # rewrite to happen AFTER the strip.
+
+    reverse_proxy app:8080
+  }
+  ```
+
+  (The exact ordering matters; reverse the strip ↔ rewrite order and
+  the CDN value is wiped before the app sees it. Pair with the
+  Caddyfile `trusted_proxies static` directive when Caddy v2.7+ ships
+  with first-class support in your build.)
+
+- Or use Caddy's built-in `trusted_proxies` directive (Caddy v2.7+) once
+  it is enabled in this deployment. That moves the trust gate from the
+  Go side to the Caddy side; the Go-side wrapper still runs as
+  belt-and-braces.
+
+Until that wiring is in place, the per-IP rate limit keys off Caddy's
+peer view of the request (CDN edge IP), which is the safe-default
+behaviour described above. Document on the change ticket which CIDR set
+was used for the CDN's identity header and link to the CDN's published
+edge ranges so a future operator can re-verify when those ranges rotate.
+
+**Cross-references.** When the operator change above lands, also update:
+
+- `internal/adapter/httpapi/trusted_realip.go` doc-comment if the
+  Caddy→app peer set changes (it usually does not — the CDN sits in
+  front of Caddy, not between Caddy and the app).
+- `deploy/caddy/Caddyfile.stg` (or whichever Caddyfile is mounted) with
+  the rewrite block and an inline comment naming the CDN.
+- This runbook section, with the resolved CDN's edge-range refresh
+  cadence so the next on-call knows when to re-check.
+
 ## Provisioning a fresh staging VPS (target: < 1h)
 
 Assumes Debian 12 / Ubuntu 24.04 with a public IP and root SSH from a bastion.
