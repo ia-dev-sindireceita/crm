@@ -68,6 +68,8 @@ var iamRoutes = []string{
 	"/funnel/",
 	"/settings/privacy",
 	"/settings/privacy/dpa.md",
+	"/catalog",
+	"/catalog/",
 	"/m/",
 	"/metrics",
 }
@@ -99,6 +101,12 @@ type iamHandlerOpts struct {
 	// ai_policy_wire.go owns its own pgxpool and returns nil when the
 	// DB / aipolicy store cannot be built.
 	WebAIPolicy http.Handler
+
+	// WebCatalog is the SIN-62907 HTMX catalog admin UI mux. Nil keeps
+	// the /catalog* routes unmounted; the wire in catalog_wire.go
+	// owns its runtime + master_ops pgxpools and returns nil when
+	// either DSN is missing or the connection fails.
+	WebCatalog http.Handler
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -188,6 +196,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebFunnel:   opts.WebFunnel,
 		WebPrivacy:  opts.WebPrivacy,
 		WebAIPolicy: opts.WebAIPolicy,
+		WebCatalog:  opts.WebCatalog,
 	})
 
 	fullCleanup := func() {

@@ -233,6 +233,12 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webAIPolicyHandler, webAIPolicyCleanup := buildWebAIPolicyHandler(ctx, getenv)
 	defer webAIPolicyCleanup()
 
+	// SIN-62907 — HTMX catalog admin UI (Fase 3 W4C). Same fail-soft
+	// pattern: nil handler leaves /catalog* unmounted when either the
+	// runtime DSN or MASTER_OPS_DATABASE_URL is missing.
+	webCatalogHandler, webCatalogCleanup := buildWebCatalogHandler(ctx, getenv)
+	defer webCatalogCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
@@ -242,6 +248,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		WebFunnel:   webFunnelHandler,
 		WebPrivacy:  webPrivacyHandler,
 		WebAIPolicy: webAIPolicyHandler,
+		WebCatalog:  webCatalogHandler,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

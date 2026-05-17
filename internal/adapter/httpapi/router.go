@@ -220,6 +220,30 @@ type Deps struct {
 	//   DELETE /settings/ai-policy/{scope_type}/{scope_id}
 	WebAIPolicy http.Handler
 
+	// WebCatalog is the HTMX admin UI handler for the per-tenant
+	// product catalog from internal/web/catalog (SIN-62907 / Fase 3
+	// W4C). Mounted in the authed group with the same envelope as
+	// WebAIPolicy: RequireAuth → RequireAction(iam.
+	// ActionTenantCatalogManage). One action gates every method
+	// because the gerente who manages the catalog is the only role
+	// that needs to see it.
+	//
+	// Routes mounted:
+	//   GET    /catalog
+	//   GET    /catalog/new
+	//   POST   /catalog
+	//   GET    /catalog/{id}
+	//   GET    /catalog/{id}/edit
+	//   PATCH  /catalog/{id}
+	//   DELETE /catalog/{id}
+	//   GET    /catalog/{id}/preview
+	//   GET    /catalog/{id}/arguments/new
+	//   POST   /catalog/{id}/arguments
+	//   GET    /catalog/{id}/arguments/{arg_id}/edit
+	//   PATCH  /catalog/{id}/arguments/{arg_id}
+	//   DELETE /catalog/{id}/arguments/{arg_id}
+	WebCatalog http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -438,6 +462,36 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/settings/ai-policy", webAIPolicy)
 				authed.Method(http.MethodPatch, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
 				authed.Method(http.MethodDelete, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
+			}
+
+			// SIN-62907 — HTMX catalog admin UI (Fase 3 W4C). Same
+			// envelope as WebAIPolicy: RequireAuth installs the
+			// principal, RequireAction(ActionTenantCatalogManage) gates
+			// every method. When Authorizer is nil (router tests that
+			// don't exercise the authz seam) the gate skips and the
+			// inner mux still runs with a Principal.
+			if deps.WebCatalog != nil {
+				webCatalog := http.Handler(deps.WebCatalog)
+				if deps.Authorizer != nil {
+					webCatalog = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantCatalogManage, nil)(webCatalog),
+					)
+				} else {
+					webCatalog = middleware.RequireAuth(middleware.RequireAuthDeps{})(webCatalog)
+				}
+				authed.Method(http.MethodGet, "/catalog", webCatalog)
+				authed.Method(http.MethodGet, "/catalog/new", webCatalog)
+				authed.Method(http.MethodPost, "/catalog", webCatalog)
+				authed.Method(http.MethodGet, "/catalog/{id}", webCatalog)
+				authed.Method(http.MethodGet, "/catalog/{id}/edit", webCatalog)
+				authed.Method(http.MethodPatch, "/catalog/{id}", webCatalog)
+				authed.Method(http.MethodDelete, "/catalog/{id}", webCatalog)
+				authed.Method(http.MethodGet, "/catalog/{id}/preview", webCatalog)
+				authed.Method(http.MethodGet, "/catalog/{id}/arguments/new", webCatalog)
+				authed.Method(http.MethodPost, "/catalog/{id}/arguments", webCatalog)
+				authed.Method(http.MethodGet, "/catalog/{id}/arguments/{arg_id}/edit", webCatalog)
+				authed.Method(http.MethodPatch, "/catalog/{id}/arguments/{arg_id}", webCatalog)
+				authed.Method(http.MethodDelete, "/catalog/{id}/arguments/{arg_id}", webCatalog)
 			}
 
 			// SIN-62882 — HTMX master/tenants UI (Fase 2.5 C9). Each

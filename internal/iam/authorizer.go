@@ -66,6 +66,14 @@ const (
 	// served at /admin/audit?tenant=...&module=ai-policy. Master only;
 	// the gate runs alongside the standard master.* surface.
 	ActionMasterAuditRead Action = "master.audit.read"
+
+	// Fase 3 W4C — product catalog admin (SIN-62907). One action gates
+	// every catalog mutation surface (create / update / delete on
+	// Product and ProductArgument) plus the read views: the gerente who
+	// manages the catalog is the only role that needs to see it, mirroring
+	// the W4A ai-policy pattern. Atendente / common are denied at the
+	// router gate.
+	ActionTenantCatalogManage Action = "tenant.catalog.manage"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -192,6 +200,9 @@ func defaultRolesByAction() map[Action][]Role {
 		ActionTenantAIPolicyWrite:     {RoleTenantGerente},
 		ActionTenantAIPolicyAuditRead: {RoleTenantGerente},
 		ActionMasterAuditRead:         {RoleMaster},
+
+		// Fase 3 W4C — catalog admin (SIN-62907). Gerente only.
+		ActionTenantCatalogManage: {RoleTenantGerente},
 	}
 }
 
