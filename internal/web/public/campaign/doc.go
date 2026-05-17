@@ -16,10 +16,12 @@
 //     a request that hits an unknown host renders the generic 404 from
 //     the middleware and never reaches the handler. This stops
 //     cross-tenant slug enumeration.
-//  2. Idempotent click ledger. The cookie crm_click_id (httpOnly,
-//     SameSite=Lax, Secure, 90d) carries the browser-supplied
-//     idempotency token; the storage adapter dedups on click_id so a
-//     reload / double-tap never inflates the counter. AC #2.
+//  2. Idempotent click ledger. The cookie __Host-crm_click_id (httpOnly,
+//     SameSite=Lax, Secure, Path=/, no Domain, 90d) carries the
+//     browser-supplied idempotency token; the storage adapter dedups
+//     on click_id so a reload / double-tap never inflates the counter.
+//     AC #2. See docs/security/cookies.md for the LGPD analysis behind
+//     the 90-day TTL.
 //  3. Per-IP rate limit. The wire wraps the handler in the
 //     httpapi/ratelimit middleware with a single bucket (default
 //     100/min/IP, env CAMPAIGNS_PUBLIC_CLICK_RATE_PER_MIN). AC #4.

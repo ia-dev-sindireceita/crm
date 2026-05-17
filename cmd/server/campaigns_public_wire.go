@@ -49,10 +49,12 @@ const (
 	// to the minimum set of trusted carriers.
 	envCampaignAllowedHosts = "CAMPAIGNS_REDIRECT_ALLOWED_HOSTS"
 
-	// envCampaignCookieInsecure flips the crm_click_id Secure
+	// envCampaignCookieInsecure flips the __Host-crm_click_id Secure
 	// attribute off. Production leaves it unset (Secure=true); local
 	// docker-compose without TLS sets it to "1" so the cookie still
-	// rides over plain HTTP.
+	// rides over plain HTTP — note that browsers will reject a __Host-
+	// cookie that is not Secure, so the click-idempotency path is a
+	// no-op in that dev mode (SIN-62983 LOW-1).
 	envCampaignCookieInsecure = "CAMPAIGNS_PUBLIC_COOKIE_INSECURE"
 
 	// envCampaignMarkerSigningKey carries the HMAC secret used to sign
