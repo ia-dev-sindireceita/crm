@@ -16,7 +16,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	"github.com/pericles-luz/crm/internal/catalog"
+	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -138,12 +140,20 @@ func TestAssembleWebCatalogHandler_MountsEveryRoute(t *testing.T) {
 		{"edit argument 404", http.MethodGet, "/catalog/" + pid + "/arguments/" + aid + "/edit", http.StatusNotFound},
 		{"delete argument fast-rejects on nil actor", http.MethodDelete, "/catalog/" + pid + "/arguments/" + aid, http.StatusUnauthorized},
 	}
+	// list and detail handlers now fetch the CSRF token from the request
+	// session (csrfmw expects every state-changing HTMX call to carry the
+	// matching X-CSRF-Token header — see SIN-62907 follow-up). The wire
+	// test bypasses middleware.Auth, so inject a session with a known
+	// token here to mirror what RequireAuth would install in production.
+	sess := iam.Session{CSRFToken: "wire-test-csrf"}
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			req := httptest.NewRequest(c.method, c.path, nil)
-			req = req.WithContext(tenancy.WithContext(req.Context(), tenant))
+			ctx := tenancy.WithContext(req.Context(), tenant)
+			ctx = middleware.WithSession(ctx, sess)
+			req = req.WithContext(ctx)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != c.want {

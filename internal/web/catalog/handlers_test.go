@@ -695,6 +695,69 @@ func TestDetail_MissingCSRFToken_500(t *testing.T) {
 	}
 }
 
+// TestListAndDetail_EmitCSRFMetaAndHXHeaders is the contract test for the
+// CSRF surface the authed group's middleware (csrfmw) requires. Without
+// the <meta name="csrf-token"> tag in <head> and the hx-headers attr on
+// <body>, HTMX requests on /catalog* would 403 in production even though
+// the unit tests bypass the router CSRF check.
+func TestListAndDetail_EmitCSRFMetaAndHXHeaders(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	p := seedProduct(t, store, "Mensalidade")
+	mux := newHandler(t, store, resolverFromStore(t, store))
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"list", "/catalog"},
+		{"detail", "/catalog/" + p.ID().String()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, newRequest(t, http.MethodGet, tc.path, nil))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d; body=%s", rr.Code, rr.Body.String())
+			}
+			body := rr.Body.String()
+			for _, want := range []string{
+				`<meta name="csrf-token" content="` + testCSRFToken + `">`,
+				`hx-headers='{"X-CSRF-Token": "` + testCSRFToken + `"}'`,
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("body missing %q", want)
+				}
+			}
+		})
+	}
+}
+
+func TestList_MissingCSRFToken_500(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	h, err := webcatalog.New(webcatalog.Deps{
+		ProductReader:  store,
+		ProductWriter:  store,
+		ArgumentReader: store,
+		ArgumentWriter: store,
+		Resolver:       resolverFromStore(t, store),
+		CSRFToken:      func(*http.Request) string { return "" },
+		UserID:         func(*http.Request) uuid.UUID { return testUserID },
+		Now:            func() time.Time { return time.Now().UTC() },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, newRequest(t, http.MethodGet, "/catalog", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
+
 // -----------------------------------------------------------------------------
 // GET /catalog/{id}/edit + PATCH /catalog/{id}
 // -----------------------------------------------------------------------------

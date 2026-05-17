@@ -40,10 +40,17 @@ func sourceFromAnchorType(t catalog.ScopeType) ResolveSource {
 }
 
 // pageData drives the /catalog list page.
+//
+// CSRFMeta and HXHeaders are required because the CSRF middleware on
+// the authed group rejects POST/PATCH/DELETE without an X-CSRF-Token
+// header. The HTMX swap targets on this page (Apagar, Salvar) issue
+// state-changing requests; without hx-headers on <body> they 403.
 type pageData struct {
 	TenantName  string
 	GeneratedAt string
 	Rows        []productRow
+	CSRFMeta    template.HTML
+	HXHeaders   template.HTMLAttr
 }
 
 // listPartialData drives the HTMX-swapped list after a mutation.
@@ -62,12 +69,16 @@ type productRow struct {
 	UpdatedAt   string
 }
 
-// detailData drives the /catalog/{id} detail page.
+// detailData drives the /catalog/{id} detail page. Same CSRF rationale
+// as pageData. The fields are only rendered by detailTmpl (full page);
+// detailPartialTmpl ignores them because the swap target lives inside
+// the already-rendered <body>, whose hx-headers still apply.
 type detailData struct {
 	Product   productRow
 	Arguments []argumentRow
 	Preview   previewData
-	CSRFInput string
+	CSRFMeta  template.HTML
+	HXHeaders template.HTMLAttr
 }
 
 // argumentRow is one row in the per-product argument table.
@@ -374,8 +385,9 @@ var pageTmpl = mustParse("catalog.page", `<!doctype html>
 <head>
 <meta charset="utf-8">
 <title>Catálogo · {{.TenantName}}</title>
+{{.CSRFMeta}}
 </head>
-<body>
+<body {{.HXHeaders}}>
 <main>
 <h1>Catálogo</h1>
 <p>Tenant: {{.TenantName}} · Atualizado em {{.GeneratedAt}}</p>
@@ -400,8 +412,9 @@ var detailTmpl = mustParse("catalog.detail", `<!doctype html>
 <head>
 <meta charset="utf-8">
 <title>{{.Product.Name}} · Catálogo</title>
+{{.CSRFMeta}}
 </head>
-<body>
+<body {{.HXHeaders}}>
 <main>
 <p><a href="/catalog">← Voltar ao catálogo</a></p>
 <h1>{{.Product.Name}}</h1>

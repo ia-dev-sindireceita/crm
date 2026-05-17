@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/catalog"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -181,10 +182,17 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "list products", err)
 		return
 	}
+	token := h.deps.CSRFToken(r)
+	if token == "" {
+		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
+		return
+	}
 	h.writeHTML(w, http.StatusOK, pageTmpl, pageData{
 		TenantName:  tenant.Name,
 		GeneratedAt: h.deps.Now().UTC().Format(time.RFC3339),
 		Rows:        rowsFromProducts(products),
+		CSRFMeta:    csrf.MetaTag(token),
+		HXHeaders:   csrf.HXHeadersAttr(token),
 	})
 }
 
@@ -273,7 +281,8 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 		Product:   rowFromProduct(p),
 		Arguments: rowsFromArguments(args),
 		Preview:   previewData{Argument: rowFromPreview(preview), Source: src},
-		CSRFInput: token,
+		CSRFMeta:  csrf.MetaTag(token),
+		HXHeaders: csrf.HXHeadersAttr(token),
 	})
 }
 
@@ -745,7 +754,8 @@ func (h *Handler) renderDetailPartial(w http.ResponseWriter, r *http.Request, te
 		Product:   rowFromProduct(p),
 		Arguments: rowsFromArguments(args),
 		Preview:   previewData{Argument: rowFromPreview(preview), Source: src},
-		CSRFInput: token,
+		CSRFMeta:  csrf.MetaTag(token),
+		HXHeaders: csrf.HXHeadersAttr(token),
 	})
 }
 
