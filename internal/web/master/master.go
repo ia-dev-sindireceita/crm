@@ -189,12 +189,32 @@ type Deps struct {
 	// the wallet adapter.
 	Grants GrantPort
 
+	// Billing is the SIN-62885 C11 billing-history view (subscription +
+	// invoices + grants). Optional: when nil, GET /master/tenants/{id}/
+	// billing returns 503 so deploys without the billing adapter wired
+	// keep the rest of the console working.
+	Billing BillingViewer
+
+	// Ledger is the SIN-62885 C11 paginated token-ledger view.
+	// Optional like Billing.
+	Ledger LedgerViewer
+
 	// DefaultPageSize is applied when the request omits ?page_size or
 	// passes a value outside (0, MaxPageSize]. Zero defaults to 25.
 	DefaultPageSize int
 
 	// MaxPageSize caps the page_size query param. Zero defaults to 100.
 	MaxPageSize int
+
+	// LedgerDefaultPageSize defaults the C11 ledger page when the
+	// request omits ?page_size. Zero defaults to 50 (matches AC #2 —
+	// a 200-row test fixture paginates in 4 pages).
+	LedgerDefaultPageSize int
+
+	// LedgerMaxPageSize caps the C11 ledger page_size query param.
+	// Zero defaults to 200 so 10k entries paginate in ≤ 50 round
+	// trips without each individual page risking a huge index scan.
+	LedgerMaxPageSize int
 }
 
 // GrantPort is the union of the three grants sub-ports used by the
@@ -211,9 +231,11 @@ type GrantPort interface {
 // in-package tests, or attach the three exported HandlerFunc methods
 // individually behind their RequireAction gate at the wire layer.
 type Handler struct {
-	deps            Deps
-	defaultPageSize int
-	maxPageSize     int
+	deps                  Deps
+	defaultPageSize       int
+	maxPageSize           int
+	ledgerDefaultPageSize int
+	ledgerMaxPageSize     int
 }
 
 // New constructs a Handler. Nil required dependencies are rejected at
@@ -248,10 +270,23 @@ func New(deps Deps) (*Handler, error) {
 	if defaultPageSize > maxPageSize {
 		return nil, errors.New("web/master: DefaultPageSize exceeds MaxPageSize")
 	}
+	ledgerDefaultPageSize := deps.LedgerDefaultPageSize
+	if ledgerDefaultPageSize <= 0 {
+		ledgerDefaultPageSize = 50
+	}
+	ledgerMaxPageSize := deps.LedgerMaxPageSize
+	if ledgerMaxPageSize <= 0 {
+		ledgerMaxPageSize = 200
+	}
+	if ledgerDefaultPageSize > ledgerMaxPageSize {
+		return nil, errors.New("web/master: LedgerDefaultPageSize exceeds LedgerMaxPageSize")
+	}
 	return &Handler{
-		deps:            deps,
-		defaultPageSize: defaultPageSize,
-		maxPageSize:     maxPageSize,
+		deps:                  deps,
+		defaultPageSize:       defaultPageSize,
+		maxPageSize:           maxPageSize,
+		ledgerDefaultPageSize: ledgerDefaultPageSize,
+		ledgerMaxPageSize:     ledgerMaxPageSize,
 	}, nil
 }
 
@@ -269,4 +304,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /master/tenants/{id}/grants/new", h.ShowGrantsForm)
 	mux.HandleFunc("POST /master/tenants/{id}/grants", h.IssueGrant)
 	mux.HandleFunc("POST /master/grants/{id}/revoke", h.RevokeGrant)
+	// SIN-62885 C11 — read-only billing + ledger views. With Billing
+	// or Ledger nil the respective routes 503 so the console keeps
+	// working in deploys that have not wired the read adapters.
+	mux.HandleFunc("GET /master/tenants/{id}/billing", h.ShowBilling)
+	mux.HandleFunc("GET /master/tenants/{id}/ledger", h.ShowLedger)
 }
