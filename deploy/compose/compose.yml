@@ -218,6 +218,35 @@ services:
       minio-init: { condition: service_completed_successfully }
       clamav: { condition: service_healthy }
 
+  # [SIN-62912] Fase 3 W3D — wallet-balance Slack alerter. Subscribes to
+  # the `wallet.balance.depleted` JetStream subject (published by the
+  # wallet debit path) and POSTs a single Slack message to the operator
+  # alerts channel for every depletion event. Degraded mode (empty
+  # SLACK_ALERTS_WEBHOOK_URL) keeps the worker consuming + acking events
+  # without crashing — see AC #3 of SIN-62905.
+  wallet-alerter-worker:
+    image: golang:1.22-alpine
+    restart: unless-stopped
+    networks: [crm]
+    working_dir: /src
+    command: ["go", "run", "./cmd/wallet-alerter-worker"]
+    env_file: .env
+    environment:
+      NATS_URL: nats://nats:4222
+      NATS_INSECURE: "1"
+      # SLACK_ALERTS_WEBHOOK_URL stays out of the YAML — read from .env
+      # via env_file (or unset for degraded mode). Operators MUST NOT
+      # set the URL inline here: docker exposes `environment:` values in
+      # `docker inspect`, and inlining the secret leaks it to any reader
+      # of the compose file.
+    volumes:
+      - ../../go.mod:/src/go.mod:ro
+      - ../../go.sum:/src/go.sum:ro
+      - ../../cmd:/src/cmd:ro
+      - ../../internal:/src/internal:ro
+    depends_on:
+      nats: { condition: service_healthy }
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
