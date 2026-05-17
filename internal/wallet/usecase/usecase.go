@@ -13,12 +13,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/wallet"
 )
+
+// DefaultBalanceDepletedPolicyScope is the policy scope tag attached to
+// every wallet.balance.depleted event the Service emits. Fase 3 wallets
+// are tenant-scoped (one bucket per tenant), so the only meaningful
+// value today is the tenant-default constant. A future per-policy
+// allocator can override it via WithBalanceDepletedPolicyScope without
+// breaking the wire format the consumer (internal/worker/wallet_alerter)
+// decodes.
+const DefaultBalanceDepletedPolicyScope = "tenant:default"
 
 // Clock is the time source. Defaulted to time.Now; tests inject a
 // frozen clock to make the version/updated_at fields deterministic.
@@ -64,22 +74,86 @@ const maxAttempts = 256
 // Service is the wallet use-case orchestrator. It exposes Reserve,
 // Commit, Release, and Grant; each uses Repository.LoadByTenant +
 // ApplyWithLock and absorbs ErrVersionConflict with a bounded retry.
+//
+// The balance-depleted publisher is best-effort: a successful Commit
+// that brings the balance to zero fires PublishBalanceDepleted AFTER
+// the transaction has committed. A publish error is logged at warn and
+// swallowed — the debit is never rolled back because the broker is
+// degraded. The default is NoOpBalanceDepletedPublisher; pass
+// WithBalanceDepletedPublisher to attach a real adapter.
 type Service struct {
-	repo  wallet.Repository
-	clock Clock
+	repo        wallet.Repository
+	clock       Clock
+	publisher   wallet.BalanceDepletedPublisher
+	policyScope string
+	logger      *slog.Logger
+}
+
+// Option configures a Service at construction. Pure data; safe to
+// retain across processes.
+type Option func(*Service)
+
+// WithBalanceDepletedPublisher attaches the publisher that fires the
+// wallet.balance.depleted event after a successful Commit empties the
+// wallet. A nil publisher is ignored (the default no-op stays in
+// place) so cmd-level wiring can opt into the producer with a single
+// constructor call.
+func WithBalanceDepletedPublisher(p wallet.BalanceDepletedPublisher) Option {
+	return func(s *Service) {
+		if p != nil {
+			s.publisher = p
+		}
+	}
+}
+
+// WithBalanceDepletedPolicyScope overrides the policy_scope tag
+// attached to every emitted event. Defaults to
+// DefaultBalanceDepletedPolicyScope. Empty values are ignored.
+func WithBalanceDepletedPolicyScope(scope string) Option {
+	return func(s *Service) {
+		if scope != "" {
+			s.policyScope = scope
+		}
+	}
+}
+
+// WithLogger overrides the slog.Logger the Service uses for best-
+// effort publish failures. Defaults to slog.Default(). A nil logger
+// is ignored.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Service) {
+		if l != nil {
+			s.logger = l
+		}
+	}
 }
 
 // NewService constructs a Service. A nil repo is rejected so the
 // caller sees a fast panic at construction rather than a confusing
 // nil-deref on the first call. clock defaults to time.Now when nil.
-func NewService(repo wallet.Repository, clock Clock) (*Service, error) {
+// Optional behaviour (depletion publisher, policy scope, logger) is
+// supplied via Option values; the variadic signature keeps the
+// pre-publisher call sites compatible.
+func NewService(repo wallet.Repository, clock Clock, opts ...Option) (*Service, error) {
 	if repo == nil {
 		return nil, errors.New("wallet/usecase: repo is nil")
 	}
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Service{repo: repo, clock: clock}, nil
+	s := &Service{
+		repo:        repo,
+		clock:       clock,
+		publisher:   wallet.NoOpBalanceDepletedPublisher{},
+		policyScope: DefaultBalanceDepletedPolicyScope,
+		logger:      slog.Default(),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s, nil
 }
 
 // Reserve attempts to reserve amount from tenantID's wallet using
@@ -256,9 +330,39 @@ func (s *Service) Commit(ctx context.Context, r *wallet.Reservation, actualAmoun
 			}
 			return err
 		}
+		s.maybePublishDepleted(ctx, w, actualAmount, now)
 		return nil
 	}
 	return fmt.Errorf("wallet/usecase: commit exhausted retries: %w", lastErr)
+}
+
+// maybePublishDepleted fires a wallet.balance.depleted event when the
+// most recent Commit zeroed the available balance. Best-effort: a
+// publisher error is logged at warn but never surfaced — the
+// transaction has already committed and rolling back here would
+// double-debit on the next attempt.
+//
+// "Depleted" is defined as w.Balance() == 0 after the in-memory mutation.
+// Reserved is intentionally ignored: a fully-reserved-but-zero-balance
+// wallet is the moment the tenant runs out of spendable tokens, which
+// is exactly the alert signal the operator subscribes to.
+func (s *Service) maybePublishDepleted(ctx context.Context, w *wallet.TokenWallet, lastCharge int64, occurredAt time.Time) {
+	if w.Balance() != 0 {
+		return
+	}
+	evt := wallet.BalanceDepletedEvent{
+		TenantID:         w.TenantID(),
+		PolicyScope:      s.policyScope,
+		LastChargeTokens: lastCharge,
+		OccurredAt:       occurredAt.UTC(),
+	}
+	if err := s.publisher.PublishBalanceDepleted(ctx, evt); err != nil {
+		s.logger.Warn("wallet/usecase: publish balance.depleted failed",
+			"err", err.Error(),
+			"tenant_id", evt.TenantID.String(),
+			"policy_scope", evt.PolicyScope,
+		)
+	}
 }
 
 // Release rolls a reservation back without debiting. Used when the

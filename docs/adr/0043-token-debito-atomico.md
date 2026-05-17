@@ -201,38 +201,49 @@ because no in-flight LLM call should outlive its own timeout.
    to `402 Payment Required` (or `403`, see operational handbook
    for the choice) and renders a UI message that distinguishes
    "out of tokens" from "service unavailable."
-2. Emits a NATS event:
+2. Emits a NATS event on the `WALLET` JetStream stream:
 
    ```
-   Subject: wallet.balance.depleted.v1
-   Headers: nats-msg-id = "{tenant_id}:{date(now, day)}"
+   Subject: wallet.balance.depleted
+   Headers: Nats-Msg-Id = "{tenant_id}:{occurred_at.UnixNano}"
    Payload: {
-     "tenant_id":     "01HXYZ...",
-     "subscription_id": "01HXYZ...",
-     "depleted_at":   "2026-05-16T19:31:02Z",
-     "scope":         "ai_assist",
-     "estimated_tokens": 4000,
-     "available_tokens": 87
+     "tenant_id":          "01HXYZ...",
+     "policy_scope":       "tenant:default",
+     "last_charge_tokens": 4242,
+     "occurred_at":        "2026-05-16T19:31:02Z"
    }
    ```
 
-The NATS event dedupes per-tenant per-day via the `nats-msg-id`
-header so we do not flood downstream consumers with one event per
-denied call. The same tenant hitting the depleted state ten times
-in a day produces one event for the JetStream stream consumers,
-plus N denied calls in the audit log.
+The NATS event dedupes per (tenant_id, occurred_at) via the
+`Nats-Msg-Id` header inside the stream's 1h Duplicates window, with
+a complementary in-memory dedup in the consumer for the operator
+runbook's at-most-once expectation. The producer fires on the
+positive-debit edge (Commit that brings the balance to zero) rather
+than only on the denial path so the operator alert reflects "tenant
+just ran out" rather than "tenant tried to spend after running
+out"; the denial path can still surface in the audit log without an
+extra event.
 
-Downstream consumers of `wallet.balance.depleted.v1` in Fase 3:
+Downstream consumers of `wallet.balance.depleted` in Fase 3:
 
+- **W3D — `cmd/wallet-alerter-worker`** (shipped via
+  [SIN-62912](/SIN/issues/SIN-62912)) consumes the subject and posts
+  to the operator Slack `#alerts` channel.
 - **W3C** (referenced in [SIN-62196](/SIN/issues/SIN-62196)) —
   composes a notification to the tenant admin so they can top up.
-  The composer ignores duplicate events (per-day dedup is enough).
+  The composer ignores duplicate events (broker dedup is enough).
 - The wallet dashboards subscribe and surface a "tenant out of
   tokens" banner to operators with master access.
 
-The event is on the existing `WALLET_EVENTS` JetStream stream
-(per [ADR 0088](./0088-wallet-basic.md) §D5). Subject naming
-follows the project convention `wallet.<aggregate>.<action>.v<n>`.
+The event is on the `WALLET` JetStream stream owned by the worker
+(per `internal/worker/wallet_alerter.StreamName`). Subject naming
+intentionally omits the `.v<n>` suffix the broader project
+convention uses: SIN-62934 (Option A) pins the unsuffixed subject
+because the consumer at `internal/worker/wallet_alerter` was
+mergeable-and-merged that way; a future breaking change to the
+payload would introduce a parallel `wallet.balance.depleted.v2`
+subject and migrate consumers explicitly rather than mutate this
+one.
 
 ### D6 — Hexagonal boundary
 
@@ -241,25 +252,44 @@ The wallet domain (`internal/wallet/`) already owns the
 0088](./0088-wallet-basic.md)). This ADR introduces no new domain
 shape; it composes existing primitives.
 
-`internal/aiassist/usecase.go` consumes:
+The `wallet.BalanceDepletedPublisher` port lives in
+`internal/wallet/depleted_publisher.go` and is consumed by the
+wallet use-case (`internal/wallet/usecase`). The aiassist use-case
+calls the wallet use-case via the existing `Wallet` port and does
+not depend on the publisher directly: the publish-on-zero behaviour
+is a property of `wallet.Commit`, not a per-caller responsibility.
 
-- The `Wallet` port (already declared as
-  `internal/wallet/port.go`).
-- A new `BalanceDepletedPublisher` port for the NATS event:
+```go
+type BalanceDepletedEvent struct {
+    TenantID         uuid.UUID
+    PolicyScope      string
+    LastChargeTokens int64
+    OccurredAt       time.Time
+}
 
-  ```go
-  type BalanceDepletedPublisher interface {
-      Publish(ctx context.Context, e BalanceDepleted) error
-  }
-  ```
+type BalanceDepletedPublisher interface {
+    PublishBalanceDepleted(ctx context.Context, evt BalanceDepletedEvent) error
+}
+```
 
-  Lives in `internal/aiassist/events.go`. The NATS adapter at
-  `internal/adapter/messaging/nats/wallet_depleted_publisher.go` is
-  the only file that imports `github.com/nats-io/...` for this
-  flow.
+The NATS adapter at
+`internal/adapter/messaging/nats/wallet_depleted_publisher.go` is
+the only file that imports `github.com/nats-io/...` for this flow.
+A `NoOpBalanceDepletedPublisher{}` is the default the Service uses
+when no adapter is wired (degraded mode: debits keep flowing without
+the alert pipeline).
 
 The wallet domain core does not import the AI assist package; the
 AI assist domain core does not import NATS or `database/sql`.
+
+`wallet/usecase` publishes after a successful `ApplyWithLock`
+returns: a publish failure is logged at warn and swallowed because
+the transaction has already committed and the consumer's own dedup
+(broker + in-memory) makes re-emit safe inside the 1h window. The
+producer fires on the positive edge — a `Commit` whose resulting
+`w.Balance() == 0` — and is silent on the denial path
+(`Reserve` → `ErrInsufficientFunds`); the denial surfaces in the
+audit log without an additional event.
 
 ### D7 — Audit and reconciliation
 
@@ -309,8 +339,10 @@ Positive:
   reconciler within ~24h; the TTL of 16s for AI assist
   reservations means in practice the next heartbeat or the next
   call from the same tenant fixes them in seconds.
-- Insufficient-balance is a first-class error path with a NATS
-  event for downstream reaction, dedup'd per-tenant per-day.
+- Insufficient-balance / zero-balance is a first-class signal
+  with a NATS event for downstream reaction, dedup'd per
+  (tenant_id, occurred_at) inside the broker's 1h Duplicates
+  window.
 
 Negative / costs:
 
@@ -324,8 +356,10 @@ Negative / costs:
   config and a unit test that asserts an `ai_assist` reservation
   is reaped at 16s, not at the default 24h.
 - The NATS event introduces a new subject. Operators must subscribe
-  to `wallet.balance.depleted.v1` to receive the depletion signal;
-  documented in the runbook.
+  to `wallet.balance.depleted` to receive the depletion signal;
+  documented in the runbook. The unsuffixed subject is the contract;
+  a breaking payload change would migrate consumers via a parallel
+  `wallet.balance.depleted.v2` rather than mutate this one.
 
 Risk residual:
 
@@ -342,9 +376,11 @@ Risk residual:
   test asserts the same operator action produces the same
   `request_id` across retries; rate limiter caps the blast radius
   at one denial per second per (tenant, conversation).
-- The `wallet.balance.depleted.v1` dedup window is one day. A
-  tenant who runs out, tops up, and runs out again the same day
-  receives only the first event. Acceptable: the second denial
+- The `wallet.balance.depleted` dedup window is 1h (the broker's
+  Duplicates window aligned with the reconciler tolerance). A
+  tenant who runs out, tops up, and runs out again inside that
+  window receives only the first event. Acceptable: the second
+  denial
   still surfaces in the audit log; the topology of the topology
   consumers (operator banner, admin notification) does not benefit
   from multiple-events-per-day for the same tenant.

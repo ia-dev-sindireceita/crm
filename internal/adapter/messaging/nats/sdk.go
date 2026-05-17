@@ -286,6 +286,34 @@ func (a *SDKAdapter) Publish(ctx context.Context, subject string, body []byte) e
 	return nil
 }
 
+// PublishMsgID is the dedup-aware Publish variant. The msgID is set on
+// the JetStream Nats-Msg-Id header so the broker collapses duplicate
+// publishes within the stream's Duplicates window (1h for streams
+// created through EnsureStream — see MinDuplicatesWindow). Callers
+// that derive msgID from event content (e.g. tenant_id + occurred_at)
+// get at-most-once delivery within the window without an external
+// store.
+//
+// Empty msgID falls back to a plain Publish; the broker assigns a
+// fresh server-side sequence and dedup is disabled for that message.
+// Returning an error here is the same shape as Publish: callers may
+// retry on the network layer; the broker's dedup catches a re-publish
+// with the same msgID.
+func (a *SDKAdapter) PublishMsgID(ctx context.Context, subject, msgID string, body []byte) error {
+	if subject == "" {
+		return errors.New("nats: subject is required")
+	}
+	msg := &natsgo.Msg{Subject: subject, Data: body}
+	if msgID != "" {
+		msg.Header = natsgo.Header{}
+		msg.Header.Set(natsgo.MsgIdHdr, msgID)
+	}
+	if _, err := a.js.PublishMsg(msg, natsgo.Context(ctx)); err != nil {
+		return fmt.Errorf("nats: publish %q: %w", subject, err)
+	}
+	return nil
+}
+
 // HandlerFunc is the per-message callback shape Subscribe wires. The
 // adapter does NOT ack on its behalf; the worker calls Delivery.Ack
 // once persistence is confirmed. Returning a non-nil error tells the
