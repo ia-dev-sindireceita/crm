@@ -378,7 +378,7 @@ func (fakeSubscriber) Subscribe(context.Context, string, string, string, time.Du
 func (fakeSubscriber) Drain() error { return nil }
 
 func TestRun_DelegatesToRunner(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel(): mutates the package-level runner global ([SIN-62969]).
 	saved := runner
 	t.Cleanup(func() { runner = saved })
 
@@ -415,7 +415,7 @@ func TestRun_DelegatesToRunner(t *testing.T) {
 }
 
 func TestRun_PropagatesRunnerError(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel(): mutates the package-level runner global ([SIN-62969]).
 	saved := runner
 	t.Cleanup(func() { runner = saved })
 
