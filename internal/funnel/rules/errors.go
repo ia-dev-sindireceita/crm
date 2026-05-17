@@ -22,3 +22,9 @@ var ErrUnknownTriggerType = errors.New("rules: unknown trigger type")
 
 // ErrUnknownActionType mirrors ErrUnknownTriggerType for actions.
 var ErrUnknownActionType = errors.New("rules: unknown action type")
+
+// ErrNotFound is returned by [RuleAdminRepository.Get],
+// [RuleAdminRepository.Update], [RuleAdminRepository.SetEnabled] and
+// [RuleAdminRepository.Delete] when no row matches under the current
+// tenant. Callers translate this into a 404.
+var ErrNotFound = errors.New("rules: not found")

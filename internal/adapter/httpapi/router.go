@@ -276,6 +276,26 @@ type Deps struct {
 	//   GET    /campaigns/{slug}/clicks
 	WebCampaigns http.Handler
 
+	// WebFunnelRules is the HTMX admin UI handler for the per-tenant
+	// funnel-rules editor from internal/web/funnel/rules
+	// (SIN-62961 / Fase 4). Same envelope as WebCampaigns: RequireAuth
+	// → RequireAction(iam.ActionTenantFunnelRuleManage). One action
+	// gates every method because gerente is the only role allowed to
+	// author / mutate the rules that fire auto-handoffs.
+	//
+	// Routes mounted:
+	//   GET    /funnel/rules
+	//   GET    /funnel/rules/new
+	//   POST   /funnel/rules
+	//   GET    /funnel/rules/trigger-fields
+	//   GET    /funnel/rules/action-fields
+	//   GET    /funnel/rules/preview
+	//   GET    /funnel/rules/{id}/edit
+	//   PATCH  /funnel/rules/{id}
+	//   PATCH  /funnel/rules/{id}/toggle
+	//   DELETE /funnel/rules/{id}
+	WebFunnelRules http.Handler
+
 	// WebBillingInvoices is the HTMX UI for the per-tenant PIX-invoice
 	// surface from internal/web/billing/invoices (SIN-62963 / Fase 4).
 	// Same envelope as WebCatalog and WebCampaigns: RequireAuth →
@@ -506,6 +526,32 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/funnel/transitions", webFunnel)
 				authed.Method(http.MethodGet, "/funnel/conversations/{id}/history", webFunnel)
 				authed.Method(http.MethodGet, "/funnel/modal/close", webFunnel)
+			}
+
+			// SIN-62961 — HTMX funnel-rules editor (Fase 4). Same
+			// envelope as WebCampaigns: RequireAuth installs the
+			// principal, RequireAction(ActionTenantFunnelRuleManage)
+			// gates every method. gerente is the only role allowed
+			// to author the rules that fire auto-handoffs.
+			if deps.WebFunnelRules != nil {
+				webFunnelRules := http.Handler(deps.WebFunnelRules)
+				if deps.Authorizer != nil {
+					webFunnelRules = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantFunnelRuleManage, nil)(webFunnelRules),
+					)
+				} else {
+					webFunnelRules = middleware.RequireAuth(middleware.RequireAuthDeps{})(webFunnelRules)
+				}
+				authed.Method(http.MethodGet, "/funnel/rules", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/new", webFunnelRules)
+				authed.Method(http.MethodPost, "/funnel/rules", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/trigger-fields", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/action-fields", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/preview", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/{id}/edit", webFunnelRules)
+				authed.Method(http.MethodPatch, "/funnel/rules/{id}", webFunnelRules)
+				authed.Method(http.MethodPatch, "/funnel/rules/{id}/toggle", webFunnelRules)
+				authed.Method(http.MethodDelete, "/funnel/rules/{id}", webFunnelRules)
 			}
 
 			// SIN-62354 — HTMX privacy / DPA disclosure (Fase 3, decisão #8).

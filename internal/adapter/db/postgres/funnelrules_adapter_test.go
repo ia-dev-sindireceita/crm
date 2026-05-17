@@ -278,3 +278,149 @@ func TestFunnelRulesAdapter_ListEffectiveForChannel_RejectsNilTenant(t *testing.
 		t.Fatal("want error for nil tenant id, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SIN-62961 admin port — Create / Get / Update / SetEnabled / Delete / ListAll
+// ---------------------------------------------------------------------------
+
+func TestFunnelRulesAdapter_CreateGetUpdateDelete_RoundTrip(t *testing.T) {
+	db := freshDBWithFunnelRules(t)
+	store := newFunnelRulesStore(t, db)
+	tenant := seedFunnelRulesTenant(t, db.AdminPool())
+	ctx := newCtx(t)
+
+	r, err := rules.NewRule(uuid.New(), tenant, "webchat", nil, "rule-1",
+		rules.TriggerTypeMessageContains, map[string]any{"phrase": "preço"},
+		rules.ActionTypeMoveToStage, map[string]any{"stage_key": "novo"},
+		true, time.Now().UTC().Truncate(time.Microsecond))
+	if err != nil {
+		t.Fatalf("NewRule: %v", err)
+	}
+	if err := store.Create(ctx, r); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.Get(ctx, tenant, r.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "rule-1" || got.Channel != "webchat" {
+		t.Fatalf("Get returned wrong row: %+v", got)
+	}
+
+	r.Name = "rule-1-renamed"
+	r.Enabled = false
+	if err := store.Update(ctx, r); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ = store.Get(ctx, tenant, r.ID)
+	if got.Name != "rule-1-renamed" || got.Enabled {
+		t.Fatalf("Update did not stick: %+v", got)
+	}
+
+	if err := store.SetEnabled(ctx, tenant, r.ID, true); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
+	}
+	got, _ = store.Get(ctx, tenant, r.ID)
+	if !got.Enabled {
+		t.Fatal("SetEnabled(true) did not flip the flag")
+	}
+
+	if err := store.Delete(ctx, tenant, r.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := store.Get(ctx, tenant, r.ID); err == nil {
+		t.Fatal("Get after Delete: want error, got nil")
+	}
+}
+
+func TestFunnelRulesAdapter_Admin_ListAllOrdersByCascade(t *testing.T) {
+	db := freshDBWithFunnelRules(t)
+	store := newFunnelRulesStore(t, db)
+	adminPool := db.AdminPool()
+	tenant := seedFunnelRulesTenant(t, adminPool)
+	team := uuid.New()
+	ctx := newCtx(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	mustCreate := func(channel string, teamID *uuid.UUID, name string, enabled bool, off time.Duration) {
+		t.Helper()
+		r, err := rules.NewRule(uuid.New(), tenant, channel, teamID, name,
+			rules.TriggerTypeMessageContains, map[string]any{"phrase": "x"},
+			rules.ActionTypeMoveToStage, map[string]any{"stage_key": "novo"},
+			enabled, now.Add(off))
+		if err != nil {
+			t.Fatalf("NewRule(%s): %v", name, err)
+		}
+		if err := store.Create(ctx, r); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+	mustCreate("", nil, "tenant-default", true, 0)
+	mustCreate("", &team, "team-rule", false, 1*time.Minute) // disabled still surfaces
+	mustCreate("webchat", nil, "channel-rule", true, 2*time.Minute)
+
+	all, err := store.ListAll(ctx, tenant)
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("want 3 rules, got %d (%+v)", len(all), all)
+	}
+	wantOrder := []string{"channel-rule", "team-rule", "tenant-default"}
+	for i, w := range wantOrder {
+		if all[i].Name != w {
+			t.Fatalf("rule[%d]: want %q, got %q", i, w, all[i].Name)
+		}
+	}
+}
+
+func TestFunnelRulesAdapter_Admin_RejectsNilTenant(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithFunnelRules(t)
+	store := newFunnelRulesStore(t, db)
+	ctx := newCtx(t)
+	if _, err := store.ListAll(ctx, uuid.Nil); err == nil {
+		t.Fatal("ListAll(nil): want error")
+	}
+	if _, err := store.Get(ctx, uuid.Nil, uuid.New()); err == nil {
+		t.Fatal("Get(nil): want error")
+	}
+	if err := store.Create(ctx, rules.Rule{}); err == nil {
+		t.Fatal("Create(nil tenant): want error")
+	}
+	if err := store.Update(ctx, rules.Rule{}); err == nil {
+		t.Fatal("Update(nil tenant): want error")
+	}
+	if err := store.SetEnabled(ctx, uuid.Nil, uuid.New(), true); err == nil {
+		t.Fatal("SetEnabled(nil): want error")
+	}
+	if err := store.Delete(ctx, uuid.Nil, uuid.New()); err == nil {
+		t.Fatal("Delete(nil): want error")
+	}
+}
+
+func TestFunnelRulesAdapter_Admin_NotFoundPaths(t *testing.T) {
+	db := freshDBWithFunnelRules(t)
+	store := newFunnelRulesStore(t, db)
+	tenant := seedFunnelRulesTenant(t, db.AdminPool())
+	ctx := newCtx(t)
+	missing := uuid.New()
+
+	if _, err := store.Get(ctx, tenant, missing); err == nil {
+		t.Fatal("Get(missing): want ErrNotFound")
+	}
+	if err := store.Update(ctx, rules.Rule{
+		ID: missing, TenantID: tenant,
+		TriggerType: rules.TriggerTypeMessageContains,
+		ActionType:  rules.ActionTypeMoveToStage,
+	}); err == nil {
+		t.Fatal("Update(missing): want ErrNotFound")
+	}
+	if err := store.SetEnabled(ctx, tenant, missing, true); err == nil {
+		t.Fatal("SetEnabled(missing): want ErrNotFound")
+	}
+	if err := store.Delete(ctx, tenant, missing); err == nil {
+		t.Fatal("Delete(missing): want ErrNotFound")
+	}
+}
