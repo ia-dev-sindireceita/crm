@@ -251,7 +251,7 @@ func TestEnvBool_TruthyValues(t *testing.T) {
 // the runner indirection, so we don't need real NATS for the smoke.
 // Mirrors cmd/wallet-alerter-worker/main_test.go.
 func TestRun_StopsOnContextCancel(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel(): mutates the package-level runner global ([SIN-63002]).
 	orig := runner
 	t.Cleanup(func() { runner = orig })
 	runner = func(ctx context.Context, _ funnel_engine.Subscriber, _ funnel_engine.RunConfig) error {
@@ -279,7 +279,7 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 }
 
 func TestRun_PropagatesError(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel(): mutates the package-level runner global ([SIN-63002]).
 	orig := runner
 	t.Cleanup(func() { runner = orig })
 	sentinel := errors.New("subscriber boom")
