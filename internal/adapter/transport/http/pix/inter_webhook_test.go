@@ -1,6 +1,7 @@
 package pix_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -504,3 +505,84 @@ func TestRegister_AttachesRoute(t *testing.T) {
 // need a brief jitter; referenced from TestRegister so the symbol does
 // not collide with unused-import lint when refactoring.
 func sleeper(_ time.Duration) {}
+
+// stuckFakeReconciler always returns the canned outcome. Used to test
+// the receiver's classification of Outcome.StuckPendingSuspected from
+// [SIN-62997](/SIN/issues/SIN-62997) without spinning up the full
+// reconciler + repo stack.
+type stuckFakeReconciler struct {
+	out domainpix.Outcome
+}
+
+func (r *stuckFakeReconciler) Apply(_ context.Context, _ domainpix.WebhookEvent) (domainpix.Outcome, error) {
+	return r.out, nil
+}
+
+// reconcilerFn adapts a function to the pix.Reconciler port. Local to
+// the test file so we can spell richer per-event behavior without
+// extending the stateful fakeReconciler.
+type reconcilerFn func(ctx context.Context, evt domainpix.WebhookEvent) (domainpix.Outcome, error)
+
+func (f reconcilerFn) Apply(ctx context.Context, evt domainpix.WebhookEvent) (domainpix.Outcome, error) {
+	return f(ctx, evt)
+}
+
+// TestServeHTTP_StuckPendingSuspected_AggregatesAndLogs pins the
+// observability backstop side of [SIN-62997](/SIN/issues/SIN-62997):
+// when the reconciler reports Outcome{Duplicate:true,
+// StuckPendingSuspected:true}, the receiver MUST classify the
+// aggregate as `stuck_pending_suspected` so dashboards alert even
+// though the HTTP response stays 200.
+func TestServeHTTP_StuckPendingSuspected_AggregatesAndLogs(t *testing.T) {
+	rec := &stuckFakeReconciler{out: domainpix.Outcome{Duplicate: true, StuckPendingSuspected: true}}
+	lim := newFakeLimiter()
+	cfg := defaultCfg(t, rec, lim)
+	var outcomes []httppix.Outcome
+	cfg.MetricsHook = func(o httppix.Outcome) { outcomes = append(outcomes, o) }
+	var logBuf bytes.Buffer
+	cfg.Logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	h := mustHandler(t, cfg)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, newRequest(testEnvelope, sign(testEnvelope), "10.1.2.3:9999"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if len(outcomes) != 1 || outcomes[0] != httppix.OutcomeStuckPendingSuspected {
+		t.Errorf("metric outcomes = %v, want [stuck_pending_suspected]", outcomes)
+	}
+	if !strings.Contains(logBuf.String(), "stuck_pending_suspected") {
+		t.Errorf("per-event WARN log not emitted; logs=%q", logBuf.String())
+	}
+}
+
+// Mixed batch: one event applied and one dedup-on-pending must still
+// surface stuck_pending_suspected so the alert wins over the
+// classification-mixing logic.
+func TestServeHTTP_StuckPendingSuspected_WinsOverMixed(t *testing.T) {
+	var calls int
+	rec := reconcilerFn(func(_ context.Context, evt domainpix.WebhookEvent) (domainpix.Outcome, error) {
+		calls++
+		if evt.ExternalID == "a" {
+			return domainpix.Outcome{Duplicate: true, StuckPendingSuspected: true}, nil
+		}
+		return domainpix.Outcome{Transitioned: true}, nil
+	})
+	lim := newFakeLimiter()
+	cfg := defaultCfg(t, rec, lim)
+	var outcome httppix.Outcome
+	cfg.MetricsHook = func(o httppix.Outcome) { outcome = o }
+	h := mustHandler(t, cfg)
+
+	body := `{"pix":[{"txid":"a","horario":"2026-05-17T01:00:00Z"},{"txid":"b","horario":"2026-05-17T02:00:00Z"}]}`
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, newRequest(body, sign(body), "10.1.2.3:9999"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if outcome != httppix.OutcomeStuckPendingSuspected {
+		t.Errorf("aggregate outcome = %q, want stuck_pending_suspected", outcome)
+	}
+}

@@ -162,6 +162,18 @@ type Outcome struct {
 	// Charge is the charge after the transition, or nil on duplicate.
 	// Callers (the receiver) typically log the new status for audit.
 	Charge *PIXCharge
+
+	// StuckPendingSuspected is set on a Duplicate outcome when the
+	// post-dedup peek finds the matching pix_charges row still in
+	// StatusPending. This is the observability backstop for the race
+	// described in [SIN-62997](/SIN/issues/SIN-62997): if the dedup
+	// row was poisoned by a previous delivery that could not transition
+	// the charge (e.g. EventLog.Forget failed on the recovery path),
+	// every PSP retry will dedup-hit forever and the customer payment
+	// will appear lost. The receiver translates this flag into a
+	// `stuck_pending_suspected` outcome label so the dashboard alert
+	// fires even though the HTTP response stays 200.
+	StuckPendingSuspected bool
 }
 
 // Reconciler is the inbound port the HTTP webhook receiver (C13) calls
@@ -236,5 +248,24 @@ type EventLog interface {
 		eventType WebhookEventType,
 		payload []byte,
 		receivedAt time.Time,
+	) error
+
+	// Forget deletes the dedup row for the given (source, externalID,
+	// eventType) tuple. The reconciler calls Forget as a compensating
+	// action when a fresh Record has already committed but the
+	// subsequent charge lookup races with charge creation
+	// (Repository.GetByExternalID → ErrNotFound). Without it, the
+	// poisoned dedup row would silently no-op every retry of the same
+	// webhook event — the charge would be paid by the PSP but stuck
+	// pending in our ledger ([SIN-62997](/SIN/issues/SIN-62997)).
+	//
+	// Forget MUST be idempotent: deleting a row that was never present
+	// (or already compensated) returns nil. Adapters implement this by
+	// running the DELETE in its own short master_ops transaction and
+	// ignoring the zero-row-affected case.
+	Forget(
+		ctx context.Context,
+		source, externalID string,
+		eventType WebhookEventType,
 	) error
 }
