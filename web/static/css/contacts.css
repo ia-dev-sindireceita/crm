@@ -1,0 +1,180 @@
+/* SIN-62919 — contacts identity panel styles. Served by
+   internal/web/contacts at /static/css/contacts.css. Plain CSS, no
+   preprocessor, no framework, no @import. Mirrors the conventions
+   shared by funnel.css + privacy.css (system-ui font, #e5e7eb
+   borders, #6b7280 muted text) so the identity page reads as part
+   of the same product.
+
+   Accessibility:
+     - body text #111827 on #ffffff, secondary #374151 on #f9fafb
+       (contrast >= 4.5:1, WCAG 2.1 AA).
+     - focus-visible outlines on every interactive control so
+       keyboard users can follow tab order.
+     - the destructive "Separar este contato" button is
+       distinguishable by border + background, not color alone, and
+       carries hx-confirm at the template level for the modal step.
+
+   Responsive:
+     - the identity panel collapses cleanly below 600px; the link
+       row reflows from grid to stacked block so the timestamp does
+       not get clipped.
+*/
+
+.contact-shell {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #111827;
+  line-height: 1.5;
+}
+
+.contact-shell__header {
+  margin: 0 0 24px;
+}
+
+.contact-shell__header h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+
+.contact-shell__hint {
+  margin: 0;
+  color: #374151;
+  font-size: 14px;
+}
+
+.identity-panel {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.identity-panel__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.identity-panel__title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.identity-panel__id {
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  color: #6b7280;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+.identity-panel__links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.identity-panel__empty {
+  margin: 0;
+  color: #6b7280;
+  font-style: italic;
+  font-size: 14px;
+}
+
+.identity-link {
+  display: grid;
+  grid-template-columns: 120px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+.identity-link__reason {
+  font-weight: 600;
+  color: #374151;
+}
+
+.identity-link__contact {
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  color: #111827;
+  overflow-wrap: anywhere;
+}
+
+.identity-link__time {
+  font-variant-numeric: tabular-nums;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.identity-link__form {
+  margin: 0;
+}
+
+.identity-link__split {
+  background: #ffffff;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+  border-radius: 3px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.identity-link__split:hover {
+  background: #fef2f2;
+}
+
+.identity-link__split:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.identity-link__self {
+  font-size: 12px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+@media (max-width: 600px) {
+  .contact-shell {
+    padding: 16px 12px 32px;
+  }
+
+  .contact-shell__header h1 {
+    font-size: 20px;
+  }
+
+  /* Stack the link row vertically below 600px so the timestamp
+     and split button keep their full label instead of clipping. */
+  .identity-link {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .identity-link__time {
+    order: 3;
+  }
+
+  .identity-link__form,
+  .identity-link__self {
+    order: 4;
+    justify-self: start;
+  }
+}
