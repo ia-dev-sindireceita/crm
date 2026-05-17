@@ -47,3 +47,15 @@ var ErrEmptyPrompt = errors.New("aiassist: prompt must not be empty")
 // rather than reasoning about adapter-specific errors. The original
 // error is preserved via errors.Unwrap.
 var ErrLLMUnavailable = errors.New("aiassist: LLM unavailable")
+
+// ErrRateLimited is returned by Summarize when the rate limiter denies
+// the call. It is multi-wrapped together with ErrLLMUnavailable so
+// existing callers that only branch on ErrLLMUnavailable keep working
+// (errors.Is(err, ErrLLMUnavailable) stays true), while UI layers that
+// want to render the per-error state ("Aguarde 30s antes de re-tentar"
+// vs. a generic "AI indisponível") can disambiguate with
+// errors.Is(err, ErrRateLimited). The two sentinels are deliberately
+// orthogonal: rate-limit deny is a transient gating decision; LLM
+// unavailable covers everything else (network, upstream 5xx, decode
+// failure). [SIN-62908]
+var ErrRateLimited = errors.New("aiassist: rate limit exceeded")

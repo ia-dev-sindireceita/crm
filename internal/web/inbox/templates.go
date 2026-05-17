@@ -205,7 +205,9 @@ var conversationListTmpl = template.Must(template.New("conversation_list").Funcs
 
 // conversationViewTmpl is the right-pane HTMX partial for a single
 // conversation. The thread of message_bubble blocks is followed by the
-// outbound form (CSRF + hidden conversation id + textarea).
+// AI-assist surface (button + result panel placeholder, only when the
+// feature is wired in via the handler's AssistDeps) and the outbound
+// form (CSRF + hidden conversation id + textarea).
 var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs(templateFuncs).Parse(`<article class="conversation" aria-label="Conversa">
   <header class="conversation__header">
     <h1 class="conversation__title">Conversa</h1>
@@ -216,6 +218,12 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
       {{template "message_bubble" .}}
     {{end}}
   </ol>
+  {{if .AssistButton}}
+  <aside class="ai-assist" aria-label="Assistente de IA">
+    {{.AssistButton}}
+    <section id="ai-assist-panel" class="ai-assist__panel" aria-live="polite"></section>
+  </aside>
+  {{end}}
   <form class="conversation__compose"
         hx-post="/inbox/conversations/{{.ConversationID}}/messages"
         hx-target="#conversation-thread"

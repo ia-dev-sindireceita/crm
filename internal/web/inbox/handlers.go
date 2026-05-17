@@ -65,7 +65,11 @@ type CSRFTokenFn func(*http.Request) string
 // gate on it.
 type UserIDFn func(*http.Request) uuid.UUID
 
-// Deps bundles the handler's collaborators. All fields are required.
+// Deps bundles the handler's collaborators. The core inbox ports
+// (ListConversations / ListMessages / SendOutbound / GetMessage /
+// CSRFToken / UserID) are required; AIAssist is optional — when
+// AIAssist.Summarizer is nil the assist button + route are not
+// registered, so existing deployments keep the same surface.
 type Deps struct {
 	ListConversations ListConversationsUseCase
 	ListMessages      ListMessagesUseCase
@@ -74,6 +78,9 @@ type Deps struct {
 	CSRFToken         CSRFTokenFn
 	UserID            UserIDFn
 	Logger            *slog.Logger
+	// AIAssist wires the optional SIN-62908 ai-assist feature. The
+	// nested Summarizer field is the activation switch.
+	AIAssist AssistDeps
 }
 
 // Handler is the HTMX inbox UI front controller. It is mounted on the
@@ -110,14 +117,21 @@ func New(deps Deps) (*Handler, error) {
 	return &Handler{deps: deps}, nil
 }
 
-// Routes registers the four handlers on mux. Path patterns are Go
+// Routes registers the inbox handlers on mux. Path patterns are Go
 // 1.22 ServeMux style so the mux's longest-prefix rule wins over the
 // custom-domain catch-all at "/".
+//
+// POST /inbox/conversations/{id}/ai-assist is conditional: it is only
+// registered when AIAssist.Summarizer is wired (SIN-62908). Inbox-only
+// deployments that don't enable IA keep the original four routes.
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /inbox", h.list)
 	mux.HandleFunc("GET /inbox/conversations/{id}", h.view)
 	mux.HandleFunc("POST /inbox/conversations/{id}/messages", h.send)
 	mux.HandleFunc("GET /inbox/conversations/{id}/messages/{msgID}/status", h.status)
+	if h.deps.AIAssist.Summarizer != nil {
+		mux.HandleFunc("POST /inbox/conversations/{id}/ai-assist", h.aiAssist)
+	}
 }
 
 // list renders the full inbox shell (left list + empty right pane).
@@ -159,7 +173,8 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// view renders a single conversation pane (thread + compose form).
+// view renders a single conversation pane (thread + compose form +
+// optional AI-assist button + panel placeholder).
 func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	tenant, err := tenancy.FromContext(r.Context())
 	if err != nil {
@@ -188,12 +203,28 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
+
+	// Pre-render the assist button when the feature is wired. The
+	// channel/team scope is currently empty (filled by a future read
+	// use case, see PR10) — the policy resolver falls through to the
+	// tenant-scope row, which is the correct default.
+	var assistHTML template.HTML
+	if h.deps.AIAssist.Summarizer != nil {
+		var buf strings.Builder
+		if err := h.renderAssistButton(r.Context(), &buf, tenant.ID, conversationID, "", "", token); err != nil {
+			h.deps.Logger.Error("web/inbox: render assist button", "err", err)
+		} else {
+			assistHTML = template.HTML(buf.String())
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := conversationViewTmpl.Execute(w, viewData{
 		ConversationID: conversationID,
 		Channel:        "", // filled by a future read use case (PR10)
 		Messages:       res.Items,
 		CSRFInput:      csrf.FormHidden(token),
+		AssistButton:   assistHTML,
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render view", "err", err)
 	}
@@ -335,10 +366,13 @@ type layoutData struct {
 	List      listData
 }
 
-// viewData drives the right-pane conversation view template.
+// viewData drives the right-pane conversation view template. AssistButton
+// is the pre-rendered HTMX fragment for the SIN-62908 assist button —
+// empty when the assist feature is not wired (default).
 type viewData struct {
 	ConversationID uuid.UUID
 	Channel        string
 	Messages       []inboxusecase.MessageView
 	CSRFInput      template.HTML
+	AssistButton   template.HTML
 }

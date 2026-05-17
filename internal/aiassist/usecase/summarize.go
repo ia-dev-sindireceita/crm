@@ -132,7 +132,8 @@ const (
 //
 //  1. Validate the input.
 //  2. Resolve policy; refuse if AI is disabled / opt-in is false.
-//  3. Optionally consult the rate limiter; deny → ErrLLMUnavailable.
+//  3. Optionally consult the rate limiter; deny →
+//     errors.Join(ErrLLMUnavailable, ErrRateLimited).
 //  4. Look up the cache; valid hit → return without charging.
 //  5. EstimateReservation → wallet.Reserve.
 //     wallet.ErrInsufficientFunds → ErrInsufficientBalance.
@@ -221,6 +222,12 @@ func (s *Service) validate(req SummarizeRequest) error {
 // (tenant_id, conversation_id) so the bucket is per-conversation —
 // preventing a single noisy chat from monopolising the IA budget while
 // leaving other conversations on the same tenant unaffected.
+//
+// A deny is multi-wrapped with ErrRateLimited so the UI layer can
+// surface the "Aguarde 30s antes de re-tentar" toast distinct from the
+// generic LLM-unavailable banner ([SIN-62908]). errors.Is checks for
+// ErrLLMUnavailable keep working for callers that don't need the
+// disambiguation.
 func (s *Service) checkRateLimit(ctx context.Context, req SummarizeRequest) error {
 	if s.rateLimiter == nil {
 		return nil
@@ -231,7 +238,7 @@ func (s *Service) checkRateLimit(ctx context.Context, req SummarizeRequest) erro
 		return fmt.Errorf("%w: %v", aiassist.ErrLLMUnavailable, err)
 	}
 	if !allowed {
-		return aiassist.ErrLLMUnavailable
+		return errors.Join(aiassist.ErrLLMUnavailable, aiassist.ErrRateLimited)
 	}
 	return nil
 }
