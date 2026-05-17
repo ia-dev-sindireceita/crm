@@ -14,6 +14,7 @@ package main
 // modes; the chi router skips the /c/{slug} route in that case.
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"log/slog"
@@ -54,8 +55,22 @@ const (
 	// rides over plain HTTP.
 	envCampaignCookieInsecure = "CAMPAIGNS_PUBLIC_COOKIE_INSECURE"
 
+	// envCampaignMarkerSigningKey carries the HMAC secret used to sign
+	// the `[crm:<id>.<hmac8>]` attribution marker the redirect handler
+	// embeds and the inbox-side hook verifies (SIN-62982). Encoded as
+	// base64-standard for transport tolerance; the decoded key must be
+	// at least minCampaignMarkerKeyBytes long or the wire logs a
+	// disabled-marker warning and emits the legacy unsigned form.
+	envCampaignMarkerSigningKey = "CAMPAIGNS_MARKER_SIGNING_KEY"
+
 	// defaultCampaignRatePerMin is the AC #4 floor.
 	defaultCampaignRatePerMin = 100
+
+	// minCampaignMarkerKeyBytes is the minimum decoded key length the
+	// SIN-62982 signing key must carry. 32 bytes matches HMAC-SHA256's
+	// recommended key size and prevents a wire that pasted a truncated
+	// secret from silently signing with weak material.
+	minCampaignMarkerKeyBytes = 32
 
 	// campaignClickPolicyName is the iam/ratelimit.Policy name used
 	// by the per-IP bucket. Kept distinct from the auth policy names
@@ -94,7 +109,12 @@ func buildWebCampaignHandler(pool *pgxpool.Pool, rdb *goredis.Client, getenv fun
 		log.Printf("crm: campaigns/public allowlist empty (CAMPAIGNS_REDIRECT_ALLOWED_HOSTS unset) — only same-host redirects will be allowed")
 	}
 
-	handler, err := assembleCampaignHandler(store, allowedHosts, !cookieInsecure(getenv), slog.Default())
+	markerKey := readMarkerSigningKey(getenv)
+	if !markerKey.HasValue() {
+		log.Printf("crm: campaigns/public marker signing key disabled (CAMPAIGNS_MARKER_SIGNING_KEY unset or too short) — emitting legacy unsigned [crm:<id>] markers")
+	}
+
+	handler, err := assembleCampaignHandlerWithMarker(store, allowedHosts, !cookieInsecure(getenv), markerKey, slog.Default())
 	if err != nil {
 		return nil, err
 	}
@@ -115,10 +135,27 @@ func buildWebCampaignHandler(pool *pgxpool.Pool, rdb *goredis.Client, getenv fun
 
 // assembleCampaignHandler is the pure-assembly seam used by tests so
 // the handler construction can be exercised without a real pgxpool.
+// Delegates to assembleCampaignHandlerWithMarker with a zero MarkerKey
+// (legacy unsigned marker output) so pre-SIN-62982 callers stay
+// source-compatible. New wire-level call sites SHOULD use the
+// WithMarker variant so the SIN-62982 signed marker is emitted.
 func assembleCampaignHandler(
 	repo campaigns.Repository,
 	allowedHosts []string,
 	cookieSecure bool,
+	logger *slog.Logger,
+) (*webcampaign.Handler, error) {
+	return assembleCampaignHandlerWithMarker(repo, allowedHosts, cookieSecure, nil, logger)
+}
+
+// assembleCampaignHandlerWithMarker is the SIN-62982 seam: same as
+// assembleCampaignHandler but accepts the MarkerKey the redirect
+// handler uses to sign attribution markers.
+func assembleCampaignHandlerWithMarker(
+	repo campaigns.Repository,
+	allowedHosts []string,
+	cookieSecure bool,
+	markerKey campaigns.MarkerKey,
 	logger *slog.Logger,
 ) (*webcampaign.Handler, error) {
 	return webcampaign.New(webcampaign.Deps{
@@ -127,6 +164,7 @@ func assembleCampaignHandler(
 		NewClickID:   func() string { return uuid.NewString() },
 		AllowedHosts: allowedHosts,
 		CookieSecure: cookieSecure,
+		MarkerKey:    markerKey,
 		Logger:       logger,
 	})
 }
@@ -227,4 +265,29 @@ func buildCampaignLinker(pool *pgxpool.Pool) (campaigns.Repository, error) {
 		return nil, nil
 	}
 	return pgcampaigns.New(pool)
+}
+
+// readMarkerSigningKey decodes CAMPAIGNS_MARKER_SIGNING_KEY. The env
+// value is base64 (standard or url-safe; padding optional) so deploy
+// tooling can ship binary key material without quoting drama. Returns
+// the zero MarkerKey when the env is unset, undecodable, or shorter
+// than minCampaignMarkerKeyBytes after decode — the wire then logs a
+// disabled-marker warning and the handler emits the legacy unsigned
+// marker form.
+func readMarkerSigningKey(getenv func(string) string) campaigns.MarkerKey {
+	raw := strings.TrimSpace(getenv(envCampaignMarkerSigningKey))
+	if raw == "" {
+		return nil
+	}
+	for _, dec := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		if k, err := dec.DecodeString(raw); err == nil && len(k) >= minCampaignMarkerKeyBytes {
+			return campaigns.MarkerKey(k)
+		}
+	}
+	return nil
 }

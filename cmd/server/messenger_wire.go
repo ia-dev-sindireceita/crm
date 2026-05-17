@@ -113,6 +113,11 @@ func assembleMessengerAdapter(cfg messenger.Config, pool *pgxpool.Pool, getenv f
 	} else if linker != nil {
 		receiver.SetCampaignLinker(linker)
 		receiver.SetCampaignLinkerLogger(slog.Default())
+		// SIN-62982 — share the marker signing key with the inbox
+		// verifier so the redirect handler and the inbox-side hook
+		// agree on the HMAC. Empty key keeps the compat-window
+		// legacy-only behaviour.
+		receiver.SetCampaignMarkerKey(readMarkerSigningKey(getenv))
 	}
 
 	lookup := pgstore.NewChannelAssociationLookup(pool)

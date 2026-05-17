@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"regexp"
 
 	"github.com/google/uuid"
 
@@ -24,33 +23,17 @@ type CampaignLinker interface {
 	LinkContactToCampaign(ctx context.Context, tenantID uuid.UUID, clickID string, contactID uuid.UUID) error
 }
 
-// clickMarkerRE matches the documented attribution marker the public
-// redirect handler embeds in the campaign's redirect_url via the
-// {click_id} placeholder substitution. The pre-filled message body
-// looks like:
-//
-//	"Olá, vim do site [crm:c0a5e0b7-…]"
-//
-// The handler-side click_id is a uuid v4 today (uuid.NewString), so
-// the alphabet is hex + hyphen. The regex is deliberately tight so we
-// do not match arbitrary text that happens to start with "[crm:" — the
-// goal is "if the marker is exactly the format we generated, link;
-// otherwise leave the message untouched".
-//
-// Anchored at the bracket pair: no whitespace allowed inside; one
-// match per body is enough (a redirect handler emits one click_id per
-// click). FindStringSubmatch returns the captured group on a match.
-var clickMarkerRE = regexp.MustCompile(`\[crm:([A-Za-z0-9-]{8,128})\]`)
-
 // ExtractClickID returns the first attribution token found in body, or
-// the empty string when no marker is present. Tests and the inbound
-// hook share this helper so the parsing rule lives in one place.
+// the empty string when no marker is present. Kept as a thin wrapper
+// around campaigns.ExtractClickMarker so pre-SIN-62982 callers that
+// only need the click_id half remain source-compatible.
+//
+// The marker format the redirect handler embeds in the campaign's
+// redirect_url via the {click_id} placeholder is documented at
+// internal/campaigns.BuildClickToken; both legacy `[crm:<id>]` and
+// signed `[crm:<id>.<hmac8>]` forms parse here.
 func ExtractClickID(body string) string {
-	m := clickMarkerRE.FindStringSubmatch(body)
-	if len(m) < 2 {
-		return ""
-	}
-	return m[1]
+	return campaigns.ExtractClickMarker(body).ClickID
 }
 
 // SetCampaignLinker wires the optional CampaignLinker dependency.
@@ -74,6 +57,28 @@ func (u *ReceiveInbound) SetCampaignLinkerLogger(l *slog.Logger) {
 	u.campaignLogger = l
 }
 
+// SetCampaignMarkerKey wires the HMAC secret the attribution hook uses
+// to verify the signed marker (SIN-62982). The zero MarkerKey disables
+// verification — the hook then accepts legacy unsigned markers
+// (`[crm:<click_id>]`) only, which is the pre-SIN-62982 behaviour.
+//
+// Production wiring loads the key from CAMPAIGNS_MARKER_SIGNING_KEY at
+// composition root and passes it both here and to the redirect handler
+// so the two paths agree on the signing key.
+func (u *ReceiveInbound) SetCampaignMarkerKey(key campaigns.MarkerKey) {
+	u.campaignMarkerKey = key
+}
+
+// SetCampaignMarkerAllowLegacy controls whether the hook accepts the
+// legacy unsigned marker `[crm:<click_id>]` (no `.<hmac8>` suffix).
+// Production wiring leaves this true for the 90-day cookie-TTL
+// transition window so markers minted before the SIN-62982 rollout
+// remain linkable; a follow-up flips it false once the window has
+// elapsed to retire the legacy form.
+func (u *ReceiveInbound) SetCampaignMarkerAllowLegacy(allow bool) {
+	u.campaignMarkerAllowLegacy = allow
+}
+
 // linkContactToCampaign runs the AC #3 attribution hook. It is called
 // from Execute after the message has been persisted (so a partial
 // failure here does not lose the message — the click ledger is the
@@ -88,8 +93,14 @@ func (u *ReceiveInbound) SetCampaignLinkerLogger(l *slog.Logger) {
 //     disabled).
 //   - body has no marker → skip silently. Most inbound messages are
 //     organic conversation, not campaign acknowledgements.
+//   - marker HMAC missing/invalid (SIN-62982) → log info and skip. A
+//     sender forging `[crm:<id>]` without a valid signature MUST NOT
+//     produce an attribution row; the rate of these is interesting
+//     for an operator dashboard but they do not signal an integrity
+//     bug in the system.
 //   - linker returns campaigns.ErrNotFound → log info and skip. The
-//     marker was a forged or stale token; not an integrity bug.
+//     marker was a stale token (the click row aged out or the wire
+//     pointed at a fresh tenant); not an integrity bug.
 //   - linker returns any other error → log warn and skip. The
 //     attribution row is not critical-path for the user-facing inbox.
 //
@@ -99,24 +110,36 @@ func (u *ReceiveInbound) linkContactToCampaign(ctx context.Context, logger *slog
 	if u.campaignLinker == nil {
 		return
 	}
-	clickID := ExtractClickID(body)
-	if clickID == "" {
+	marker := campaigns.ExtractClickMarker(body)
+	if !marker.Found {
 		return
 	}
-	err := u.campaignLinker.LinkContactToCampaign(ctx, tenantID, clickID, contactID)
+	if !campaigns.VerifyClickToken(u.campaignMarkerKey, u.campaignMarkerAllowLegacy, tenantID, marker.ClickID, marker.HMACHex) {
+		// Forged or unsigned-after-cutover marker. Soft-fail with
+		// info-level so the inbound delivery is not blocked and the
+		// dashboard can count these without paging the on-call.
+		signed := marker.HMACHex != ""
+		logger.InfoContext(ctx, "inbox: campaign marker rejected",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("click_id", marker.ClickID),
+			slog.Bool("signed", signed),
+		)
+		return
+	}
+	err := u.campaignLinker.LinkContactToCampaign(ctx, tenantID, marker.ClickID, contactID)
 	if err == nil {
 		return
 	}
 	if errors.Is(err, campaigns.ErrNotFound) {
 		logger.InfoContext(ctx, "inbox: campaign link miss",
 			slog.String("tenant_id", tenantID.String()),
-			slog.String("click_id", clickID),
+			slog.String("click_id", marker.ClickID),
 		)
 		return
 	}
 	logger.WarnContext(ctx, "inbox: campaign link failed",
 		slog.String("tenant_id", tenantID.String()),
-		slog.String("click_id", clickID),
+		slog.String("click_id", marker.ClickID),
 		slog.String("err", err.Error()),
 	)
 }

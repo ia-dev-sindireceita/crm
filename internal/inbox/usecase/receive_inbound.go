@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/campaigns"
 	"github.com/pericles-luz/crm/internal/contacts"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	"github.com/pericles-luz/crm/internal/inbox"
@@ -83,6 +84,16 @@ type ReceiveInbound struct {
 	// emitted by the attribution hook. The wire injects the process
 	// logger via SetCampaignLinkerLogger; nil falls back to slog.Default.
 	campaignLogger *slog.Logger
+	// campaignMarkerKey is the HMAC secret used to verify the signed
+	// attribution marker (SIN-62982). The composition root wires it
+	// via SetCampaignMarkerKey from CAMPAIGNS_MARKER_SIGNING_KEY; the
+	// zero MarkerKey disables verification so legacy unsigned markers
+	// continue to link if campaignMarkerAllowLegacy is true.
+	campaignMarkerKey campaigns.MarkerKey
+	// campaignMarkerAllowLegacy controls whether the hook accepts the
+	// pre-SIN-62982 unsigned marker form. Left true for the 90-day
+	// cookie-TTL transition window; a follow-up flips it false.
+	campaignMarkerAllowLegacy bool
 }
 
 // NewReceiveInbound wires the use case to its dependencies. nil port
@@ -103,7 +114,17 @@ func NewReceiveInbound(repo inbox.Repository, dedup inbox.InboundDedupRepository
 	if c == nil {
 		return nil, errors.New("inbox/usecase: contacts upserter must not be nil")
 	}
-	return &ReceiveInbound{repo: repo, dedup: dedup, contacts: c}, nil
+	return &ReceiveInbound{
+		repo:     repo,
+		dedup:    dedup,
+		contacts: c,
+		// SIN-62982 compat-window default: accept legacy unsigned
+		// markers so messages sent before the HMAC rollout still link.
+		// A follow-up will flip this to false once the 90-day cookie
+		// TTL has elapsed; production wiring may override via
+		// SetCampaignMarkerAllowLegacy.
+		campaignMarkerAllowLegacy: true,
+	}, nil
 }
 
 // MustNewReceiveInbound is the panic-on-error variant for the

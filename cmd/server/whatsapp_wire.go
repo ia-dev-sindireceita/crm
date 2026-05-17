@@ -125,6 +125,12 @@ func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *gored
 	} else if linker != nil {
 		receiver.SetCampaignLinker(linker)
 		receiver.SetCampaignLinkerLogger(slog.Default())
+		// SIN-62982 — share the marker signing key with the inbox
+		// verifier so the redirect handler and the inbox-side hook
+		// agree on the HMAC. An empty key collapses the verifier to
+		// the compat-window legacy-only path (allowLegacy=true by
+		// default at construction).
+		receiver.SetCampaignMarkerKey(readMarkerSigningKey(getenv))
 	}
 	// SIN-62768: wire the status reconciler use case from SIN-62734 so
 	// the adapter can fan statuses[] entries from the WhatsApp webhook

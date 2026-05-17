@@ -70,6 +70,15 @@ type Deps struct {
 	// the cookie is observable in test recorders.
 	CookieSecure bool
 
+	// MarkerKey is the HMAC secret used to sign the attribution marker
+	// substituted into the campaign's redirect_url (SIN-62982). When
+	// the zero value, the handler emits the legacy unsigned form
+	// `[crm:<click_id>]`; production wiring populates the key from
+	// CAMPAIGNS_MARKER_SIGNING_KEY so the inbox-side verifier in
+	// internal/inbox/usecase.linkContactToCampaign can refuse forged
+	// markers that misattribute a campaign.
+	MarkerKey campaigns.MarkerKey
+
 	// Logger receives one structured line per non-success outcome
 	// (slug miss, expired, allowlist reject, persistence error).
 	Logger *slog.Logger
@@ -212,7 +221,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.setClickCookie(w, r, clickID)
 	}
 
-	target := expandRedirect(c.RedirectURL, clickID)
+	token := campaigns.BuildClickToken(h.deps.MarkerKey, tenant.ID, clickID)
+	target := expandRedirect(c.RedirectURL, token)
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
@@ -223,18 +233,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // message and the inbox-side hook can correlate the inbound message
 // back to the click row.
 //
+// The substituted value is whatever the caller minted via
+// campaigns.BuildClickToken — either the bare click_id (no signing
+// key) or `<click_id>.<hmac8>` (SIN-62982 signed marker). The
+// placeholder name stays `{click_id}` so existing marketer templates
+// pick up the signed form for free; the dot separator survives
+// url.QueryEscape unchanged.
+//
 // We only substitute the exact token "{click_id}" (case-sensitive) so
 // existing redirect_urls without the placeholder keep working
-// unchanged. The substitution uses url.QueryEscape so the ID is safe
+// unchanged. The substitution uses url.QueryEscape so the value is safe
 // inside a query-string value; marketers who embed the placeholder in
 // the path are responsible for choosing a click_id alphabet that does
-// not require escaping (today, uuid v4 hex-with-hyphens does not).
-func expandRedirect(redirectURL, clickID string) string {
+// not require escaping (today, uuid v4 hex-with-hyphens does not, and
+// the optional `.<hmac8>` suffix is RFC 3986 unreserved as well).
+func expandRedirect(redirectURL, clickToken string) string {
 	const placeholder = "{click_id}"
 	if !strings.Contains(redirectURL, placeholder) {
 		return redirectURL
 	}
-	return strings.ReplaceAll(redirectURL, placeholder, url.QueryEscape(clickID))
+	return strings.ReplaceAll(redirectURL, placeholder, url.QueryEscape(clickToken))
 }
 
 // resolveClickID returns the click_id to use for this request and
