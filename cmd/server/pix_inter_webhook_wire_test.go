@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -48,14 +49,14 @@ func envMap(m map[string]string) func(string) string {
 
 func TestBuildPixInterWebhookWiring_DisabledByDefault(t *testing.T) {
 	getenv := envMap(nil)
-	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial()); w != nil {
+	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial(), prometheus.NewRegistry()); w != nil {
 		t.Errorf("expected nil wiring when PIX_INTER_WEBHOOK_ENABLED unset, got %+v", w)
 	}
 }
 
 func TestBuildPixInterWebhookWiring_RequiresSecret(t *testing.T) {
 	getenv := envMap(map[string]string{envPixInterWebhookEnabled: "1"})
-	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial()); w != nil {
+	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial(), prometheus.NewRegistry()); w != nil {
 		t.Errorf("expected nil wiring when secret unset, got %+v", w)
 	}
 }
@@ -65,7 +66,7 @@ func TestBuildPixInterWebhookWiring_RequiresActor(t *testing.T) {
 		envPixInterWebhookEnabled: "1",
 		envPixInterWebhookSecret:  "s",
 	})
-	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial()); w != nil {
+	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial(), prometheus.NewRegistry()); w != nil {
 		t.Errorf("expected nil wiring when actor unset, got %+v", w)
 	}
 }
@@ -76,7 +77,7 @@ func TestBuildPixInterWebhookWiring_RequiresValidActor(t *testing.T) {
 		envPixInterWebhookSecret:  "s",
 		envPixInterWebhookActor:   "not-a-uuid",
 	})
-	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial()); w != nil {
+	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial(), prometheus.NewRegistry()); w != nil {
 		t.Errorf("expected nil wiring when actor is not a uuid, got %+v", w)
 	}
 }
@@ -87,7 +88,7 @@ func TestBuildPixInterWebhookWiring_RequiresDSN(t *testing.T) {
 		envPixInterWebhookSecret:  "s",
 		envPixInterWebhookActor:   uuid.NewString(),
 	})
-	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial()); w != nil {
+	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial(), prometheus.NewRegistry()); w != nil {
 		t.Errorf("expected nil wiring when DATABASE_URL unset, got %+v", w)
 	}
 }
@@ -99,7 +100,7 @@ func TestBuildPixInterWebhookWiring_RequiresRedis(t *testing.T) {
 		envPixInterWebhookActor:   uuid.NewString(),
 		"DATABASE_URL":            "postgres://stub",
 	})
-	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial()); w != nil {
+	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial(), prometheus.NewRegistry()); w != nil {
 		t.Errorf("expected nil wiring when REDIS_URL unset, got %+v", w)
 	}
 }
@@ -115,7 +116,7 @@ func TestBuildPixInterWebhookWiring_PoolDialFails(t *testing.T) {
 	failingDial := func(context.Context, string) (pixInterWebhookPool, error) {
 		return nil, errors.New("pg unavailable")
 	}
-	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, failingDial, fakeRedisDial()); w != nil {
+	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, failingDial, fakeRedisDial(), prometheus.NewRegistry()); w != nil {
 		t.Errorf("expected nil wiring when pg dial fails, got %+v", w)
 	}
 }
@@ -131,7 +132,7 @@ func TestBuildPixInterWebhookWiring_RedisDialFails(t *testing.T) {
 	pool := &fakeTxBeginnerPool{}
 	dial := func(context.Context, string) (pixInterWebhookPool, error) { return pool, nil }
 	failingRedis := func(string) (*goredis.Client, error) { return nil, errors.New("redis down") }
-	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, dial, failingRedis); w != nil {
+	if w := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, dial, failingRedis, prometheus.NewRegistry()); w != nil {
 		t.Errorf("expected nil wiring when redis dial fails, got %+v", w)
 	}
 	if !pool.closed {
@@ -147,7 +148,7 @@ func TestBuildPixInterWebhookWiring_HappyPath_MountsRoute(t *testing.T) {
 		"DATABASE_URL":            "postgres://stub",
 		envRedisURL:               "redis://127.0.0.1:6379/0",
 	})
-	wiring := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial())
+	wiring := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial(), prometheus.NewRegistry())
 	if wiring == nil {
 		t.Fatal("expected non-nil wiring on happy path")
 	}
@@ -165,6 +166,56 @@ func TestBuildPixInterWebhookWiring_HappyPath_MountsRoute(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code == http.StatusNotFound {
 		t.Fatalf("status = 404, expected route to be mounted")
+	}
+}
+
+func TestBuildPixInterWebhookWiring_RegistersOutcomesCounter(t *testing.T) {
+	getenv := envMap(map[string]string{
+		envPixInterWebhookEnabled: "1",
+		envPixInterWebhookSecret:  "topsecret",
+		envPixInterWebhookActor:   uuid.NewString(),
+		"DATABASE_URL":            "postgres://stub",
+		envRedisURL:               "redis://127.0.0.1:6379/0",
+	})
+	reg := prometheus.NewRegistry()
+	wiring := buildPixInterWebhookWiringWithDeps(context.Background(), getenv, fakeDial(nil), fakeRedisDial(), reg)
+	if wiring == nil {
+		t.Fatal("expected non-nil wiring on happy path")
+	}
+	defer wiring.Cleanup()
+
+	// CounterVecs only surface in Gather() once a label has been
+	// observed. Drive one request through the mounted handler — the
+	// missing X-Inter-Signature header guarantees an outcome=signature_fail
+	// classification, which routes through MetricsHook and increments the
+	// CounterVec exactly once.
+	mux := http.NewServeMux()
+	wiring.Register(mux)
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/pix/inter", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("registry gather: %v", err)
+	}
+	var found bool
+	for _, f := range families {
+		if f.GetName() == "pix_inter_webhook_outcomes_total" {
+			found = true
+			// Help text must describe the counter for /metrics scrapes.
+			if f.GetHelp() == "" {
+				t.Errorf("pix_inter_webhook_outcomes_total has empty Help")
+			}
+			break
+		}
+	}
+	if !found {
+		names := make([]string, 0, len(families))
+		for _, f := range families {
+			names = append(names, f.GetName())
+		}
+		t.Fatalf("pix_inter_webhook_outcomes_total not registered; saw %v", names)
 	}
 }
 
