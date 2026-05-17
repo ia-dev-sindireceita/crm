@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/aiassist"
+	"github.com/pericles-luz/crm/internal/aipolicy"
 	"github.com/pericles-luz/crm/internal/wallet"
 )
 
@@ -39,21 +40,38 @@ type Service struct {
 	// case skips the Allow call. The bucket is wired by cmd/server so
 	// the use case stays infra-agnostic.
 	rateLimitBucket string
+	// consent + anonymizer + anonymizerVersion implement the SIN-62928
+	// gate (Fase 3 decisão #8). All three must be wired for the gate
+	// to run; if any is nil, the use case skips the gate and proceeds
+	// as in W2C (rate limiter pattern). Production wiring in
+	// cmd/server is responsible for setting all three so the gate is
+	// always armed outside of unit tests.
+	consent           aiassist.ConsentService
+	anonymizer        aiassist.Anonymizer
+	anonymizerVersion string
 }
 
 // Config carries Service construction-time dependencies. The fields are
 // all required except RateLimiter (and RateLimitBucket): callers that
 // don't wire a rate limiter skip the gate. TTL <= 0 falls back to
 // aiassist.DefaultSummaryTTL; Clock nil falls back to time.Now.
+//
+// Consent / Anonymizer / AnonymizerVersion implement the SIN-62928
+// consent gate. All three must be set together for the gate to run;
+// any nil/blank skips the gate (test-only convenience). Production
+// wiring sets all three.
 type Config struct {
-	Repo            aiassist.SummaryRepository
-	Wallet          aiassist.WalletClient
-	LLM             aiassist.LLMClient
-	Policy          aiassist.PolicyResolver
-	RateLimiter     aiassist.RateLimiter
-	RateLimitBucket string
-	TTL             time.Duration
-	Clock           Clock
+	Repo              aiassist.SummaryRepository
+	Wallet            aiassist.WalletClient
+	LLM               aiassist.LLMClient
+	Policy            aiassist.PolicyResolver
+	RateLimiter       aiassist.RateLimiter
+	RateLimitBucket   string
+	TTL               time.Duration
+	Clock             Clock
+	Consent           aiassist.ConsentService
+	Anonymizer        aiassist.Anonymizer
+	AnonymizerVersion string
 }
 
 // NewService validates cfg and returns a wired Service. Missing required
@@ -75,6 +93,10 @@ func NewService(cfg Config) (*Service, error) {
 	if cfg.RateLimiter != nil && cfg.RateLimitBucket == "" {
 		return nil, errors.New("aiassist/usecase: RateLimitBucket required when RateLimiter is set")
 	}
+	if (cfg.Consent != nil || cfg.Anonymizer != nil || cfg.AnonymizerVersion != "") &&
+		(cfg.Consent == nil || cfg.Anonymizer == nil || cfg.AnonymizerVersion == "") {
+		return nil, errors.New("aiassist/usecase: Consent, Anonymizer, and AnonymizerVersion must be wired together")
+	}
 	ttl := cfg.TTL
 	if ttl <= 0 {
 		ttl = aiassist.DefaultSummaryTTL
@@ -84,14 +106,17 @@ func NewService(cfg Config) (*Service, error) {
 		clock = time.Now
 	}
 	return &Service{
-		repo:            cfg.Repo,
-		walletSvc:       cfg.Wallet,
-		llm:             cfg.LLM,
-		policy:          cfg.Policy,
-		rateLimiter:     cfg.RateLimiter,
-		rateLimitBucket: cfg.RateLimitBucket,
-		clock:           clock,
-		ttl:             ttl,
+		repo:              cfg.Repo,
+		walletSvc:         cfg.Wallet,
+		llm:               cfg.LLM,
+		policy:            cfg.Policy,
+		rateLimiter:       cfg.RateLimiter,
+		rateLimitBucket:   cfg.RateLimitBucket,
+		clock:             clock,
+		ttl:               ttl,
+		consent:           cfg.Consent,
+		anonymizer:        cfg.Anonymizer,
+		anonymizerVersion: cfg.AnonymizerVersion,
 	}, nil
 }
 
@@ -157,6 +182,10 @@ func (s *Service) Summarize(ctx context.Context, req SummarizeRequest) (*Summari
 		return nil, ErrPolicyBlocked(policy)
 	}
 
+	if err := s.checkConsent(ctx, req, policy); err != nil {
+		return nil, err
+	}
+
 	if err := s.checkRateLimit(ctx, req); err != nil {
 		return nil, err
 	}
@@ -215,6 +244,68 @@ func (s *Service) validate(req SummarizeRequest) error {
 		return aiassist.ErrEmptyPrompt
 	}
 	return nil
+}
+
+// checkConsent runs the SIN-62928 consent gate. It executes before
+// the rate limiter, cache lookup, wallet reservation, and LLM call so
+// nothing is charged or fetched on behalf of an unconsented scope.
+//
+// The gate is fail-closed: an Anonymizer or ConsentService error
+// aborts the call. A clean (consent==false) result is the explicit
+// re-consent path: the function returns a *aiassist.ConsentRequired
+// carrying the anonymized preview, so the web handler can render the
+// confirmation modal and persist consent on accept.
+//
+// The gate is skipped when (a) consent/anonymizer/version are not all
+// wired (test-only), or (b) the resolved policy has no PromptVersion —
+// the latter is a tightly-scoped escape hatch for legacy tenants whose
+// admin row pre-dates the consent migration; once they re-run the
+// W4A config UI they receive a non-empty version and re-enter the
+// gate automatically.
+func (s *Service) checkConsent(ctx context.Context, req SummarizeRequest, policy aiassist.Policy) error {
+	if s.consent == nil || s.anonymizer == nil || s.anonymizerVersion == "" {
+		return nil
+	}
+	if policy.PromptVersion == "" {
+		return nil
+	}
+	preview, err := s.anonymizer.Anonymize(ctx, req.Prompt)
+	if err != nil {
+		return fmt.Errorf("aiassist/usecase: anonymize for consent: %w", err)
+	}
+	scope := consentScopeFor(req.TenantID, req.Scope)
+	has, err := s.consent.HasConsent(ctx, scope, s.anonymizerVersion, policy.PromptVersion)
+	if err != nil {
+		return fmt.Errorf("aiassist/usecase: consent check: %w", err)
+	}
+	if has {
+		return nil
+	}
+	return &aiassist.ConsentRequired{
+		Scope:             scope,
+		Payload:           preview,
+		AnonymizerVersion: s.anonymizerVersion,
+		PromptVersion:     policy.PromptVersion,
+	}
+}
+
+// consentScopeFor picks the most-specific consent scope for the
+// request. The cascade mirrors the policy cascade (channel > team >
+// tenant): a tenant operator acting on the WhatsApp channel records
+// consent at the channel scope so other channels on the same tenant
+// keep their own gate; a team-scoped action records at the team
+// scope; a bare tenant action records at the tenant scope. The
+// resulting triple maps directly onto migration 0101's UNIQUE
+// (tenant_id, scope_kind, scope_id).
+func consentScopeFor(tenantID uuid.UUID, scope aiassist.Scope) aipolicy.ConsentScope {
+	switch {
+	case scope.ChannelID != "":
+		return aipolicy.ConsentScope{TenantID: tenantID, Kind: aipolicy.ScopeChannel, ID: scope.ChannelID}
+	case scope.TeamID != "":
+		return aipolicy.ConsentScope{TenantID: tenantID, Kind: aipolicy.ScopeTeam, ID: scope.TeamID}
+	default:
+		return aipolicy.ConsentScope{TenantID: tenantID, Kind: aipolicy.ScopeTenant, ID: tenantID.String()}
+	}
 }
 
 // checkRateLimit calls the configured RateLimiter, if any. The key is

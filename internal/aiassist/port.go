@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/aipolicy"
 	"github.com/pericles-luz/crm/internal/wallet"
 )
 
@@ -123,6 +124,14 @@ type Policy struct {
 	// estimated prompt tokens, which is the documented "unlimited
 	// output, capped budget" mode.
 	MaxOutputTokens int64
+	// PromptVersion identifies the prompt template the LLM call would
+	// run against. The consent gate ties acceptance to this string:
+	// a tenant that consented under "v1" must re-consent when the
+	// active prompt rolls to "v2". Empty leaves the gate disabled for
+	// this call (the use case treats it as "no live prompt version,
+	// nothing to gate against") and is the documented test-only
+	// value.
+	PromptVersion string
 }
 
 // PolicyResolver is the port the use case calls to pick the effective
@@ -146,4 +155,33 @@ type PolicyResolver interface {
 // allowed but unnecessary friction in the unit tests).
 type RateLimiter interface {
 	Allow(ctx context.Context, bucket, key string) (allowed bool, retryAfter time.Duration, err error)
+}
+
+// Anonymizer is the port the consent gate calls to strip PII from the
+// raw prompt before hashing the preview and asking HasConsent. The
+// concrete adapter lives in internal/ai-assist/anonymizer/regex (its
+// Anonymizer interface is satisfied structurally by this one). We
+// duplicate the single-method interface here so the use case stays
+// self-contained — tests do not import the regex adapter package, and
+// the use-case unit tests substitute a deterministic fake.
+//
+// Fail-closed: a non-nil error from Anonymize aborts the gate and
+// surfaces as an aiassist error. The use case never falls back to
+// the raw prompt on anonymizer failure.
+type Anonymizer interface {
+	Anonymize(ctx context.Context, text string) (string, error)
+}
+
+// ConsentService is the gate's read-only view of consent persistence.
+// The concrete adapter is *aipolicy.ConsentService; the interface here
+// keeps the aiassist use case from importing the adapter package and
+// lets tests inject a controllable fake. Only HasConsent is on the
+// port: RecordConsent is called by the web handler that catches
+// ConsentRequired, not by the use case itself.
+//
+// Returning (false, nil) tells the use case the consent gate is open
+// and a ConsentRequired error must be raised. A non-nil error is a
+// transport/validation failure that aborts the call fail-closed.
+type ConsentService interface {
+	HasConsent(ctx context.Context, scope aipolicy.ConsentScope, anonymizerVersion, promptVersion string) (bool, error)
 }

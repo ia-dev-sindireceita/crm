@@ -25,3 +25,23 @@ var ErrInvalidScopeID = errors.New("aipolicy: invalid scope id")
 // actor; the decorator refuses to write a policy change it cannot
 // attribute.
 var ErrMissingActor = errors.New("aipolicy: missing audit actor")
+
+// ErrInvalidAnonymizerVersion is returned by ConsentService when the
+// supplied anonymizer version is blank after trimming. The consent
+// ledger relies on a non-empty version string for the
+// re-consent-on-version-bump invariant (AC #4 of SIN-62352); rejecting
+// blanks at the boundary keeps a misconfigured caller from writing a
+// row that would silently never roll forward.
+var ErrInvalidAnonymizerVersion = errors.New("aipolicy: invalid anonymizer version")
+
+// ErrInvalidPromptVersion is returned by ConsentService when the
+// supplied prompt version is blank after trimming. Same rationale as
+// ErrInvalidAnonymizerVersion: a blank prompt version on the row would
+// match every future call and defeat the cascade-on-version-bump
+// behaviour the gate depends on.
+var ErrInvalidPromptVersion = errors.New("aipolicy: invalid prompt version")
+
+// ErrNilConsentRepository is returned by NewConsentService when the
+// supplied repository is nil. The service guards construction-time so
+// cmd/server fails to start rather than panicking on the first call.
+var ErrNilConsentRepository = errors.New("aipolicy: ConsentRepository is required")
