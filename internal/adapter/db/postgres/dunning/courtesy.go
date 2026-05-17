@@ -75,7 +75,7 @@ func (s *CourtesyOverrideStore) ActiveFor(ctx context.Context, tenantID uuid.UUI
 		if err := rows.Scan(&createdAt, &payload, &reason); err != nil {
 			return billingdunning.Override{}, fmt.Errorf("dunning/postgres: scan grant: %w", err)
 		}
-		months, ok := decodeMonths(payload)
+		months, ok := DecodeMonths(payload)
 		if !ok {
 			continue
 		}
@@ -90,12 +90,18 @@ func (s *CourtesyOverrideStore) ActiveFor(ctx context.Context, tenantID uuid.UUI
 	return billingdunning.Override{}, billingdunning.ErrNoActiveOverride
 }
 
-// decodeMonths extracts the integer "months" field from the grant
+// DecodeMonths extracts the integer "months" field from the grant
 // payload. The ADR-0098 schema is {"months": N, "plan_id": "..."}; we
 // accept any positive integer (JSON numbers decode to float64). A
 // missing or non-positive value yields (0, false) so the caller skips
 // the row.
-func decodeMonths(payload []byte) (int, bool) {
+//
+// Exported so the parent postgres_test package can table-drive the
+// payload decoder without an integration test — see
+// dunning_unit_test.go (SIN-62965). Subpackage *_test.go files under
+// internal/adapter/db/postgres/ are forbidden by SIN-62750 to avoid
+// the shared CI cluster's ALTER ROLE race.
+func DecodeMonths(payload []byte) (int, bool) {
 	if len(payload) == 0 {
 		return 0, false
 	}
