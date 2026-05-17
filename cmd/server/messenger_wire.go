@@ -105,6 +105,15 @@ func assembleMessengerAdapter(cfg messenger.Config, pool *pgxpool.Pool, getenv f
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// SIN-62959 — attribution hook. Same soft-fail pattern as
+	// whatsapp_wire: linker construction failure → warn + skip; inbox
+	// keeps working without the [crm:<click_id>] linkage.
+	if linker, err := buildCampaignLinker(pool); err != nil {
+		slog.Default().Warn("messenger wire: campaign linker disabled", "err", err)
+	} else if linker != nil {
+		receiver.SetCampaignLinker(linker)
+		receiver.SetCampaignLinkerLogger(slog.Default())
+	}
 
 	lookup := pgstore.NewChannelAssociationLookup(pool)
 	resolver := messenger.TenantResolverFunc(func(ctx context.Context, pageID string) (uuid.UUID, error) {

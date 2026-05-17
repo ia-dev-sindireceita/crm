@@ -275,6 +275,23 @@ type Deps struct {
 	//   GET    /billing/dunning-banner
 	WebBillingInvoices http.Handler
 
+	// WebCampaignPublic is the SIN-62959 public redirect endpoint
+	// from internal/web/public/campaign. Mounted inside the tenanted
+	// group BUT outside the authed sub-group — the redirect is
+	// unauthenticated by design (AC #1) and protected by per-IP rate
+	// limit + cookie idempotency + open-redirect allowlist. The wire
+	// in cmd/server/campaigns_public_wire.go pre-wraps the handler
+	// with httpratelimit.New, so the slot here is the
+	// already-throttled http.Handler.
+	//
+	// Nil keeps GET /c/{slug} unmounted; cmd/server passes nil when
+	// DATABASE_URL or REDIS_URL is unset so partial-stack boots stay
+	// green.
+	//
+	// Routes mounted:
+	//   GET    /c/{slug}
+	WebCampaignPublic http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -373,6 +390,18 @@ func NewRouter(deps Deps) http.Handler {
 		tenanted.Use(obs.OTelHTTP("http.request", httpRouteOf, httpTenantSpanEnricher))
 
 		tenanted.Get("/login", handler.LoginGet)
+
+		// SIN-62959 — public campaign redirect (GET /c/{slug}). Mounted
+		// inside the tenanted group so middleware.TenantScope resolves
+		// the Host header to a Tenant BEFORE the handler runs (AC #1
+		// secure-by-default exception: the endpoint is unauthenticated
+		// by design, the host gate is the cross-tenant boundary). The
+		// rate-limit middleware is pre-wrapped by the wire layer so
+		// the slot here is the already-throttled http.Handler — see
+		// cmd/server/campaigns_public_wire.go.
+		if deps.WebCampaignPublic != nil {
+			tenanted.Method(http.MethodGet, "/c/{slug}", deps.WebCampaignPublic)
+		}
 
 		loginPost := http.Handler(handler.LoginPost(handler.LoginConfig{
 			IAM: deps.IAM,

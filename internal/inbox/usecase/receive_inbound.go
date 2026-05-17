@@ -21,6 +21,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -72,6 +73,16 @@ type ReceiveInbound struct {
 	contacts    ContactUpserter
 	leadPolicy  TenantLeadPolicy
 	assignments inbox.AssignmentRepository
+	// campaignLinker is the SIN-62959 attribution port — wired by the
+	// composition root via SetCampaignLinker after construction so the
+	// existing NewReceiveInbound / NewReceiveInboundWithLeadership APIs
+	// stay backwards-compatible. Nil disables the attribution hook
+	// (see linkContactToCampaign for the soft-fail contract).
+	campaignLinker CampaignLinker
+	// campaignLogger receives the InfoContext / WarnContext entries
+	// emitted by the attribution hook. The wire injects the process
+	// logger via SetCampaignLinkerLogger; nil falls back to slog.Default.
+	campaignLogger *slog.Logger
 }
 
 // NewReceiveInbound wires the use case to its dependencies. nil port
@@ -297,6 +308,20 @@ func (u *ReceiveInbound) Execute(ctx context.Context, ev inbox.InboundEvent) (Re
 	if err := u.dedup.MarkProcessed(ctx, channel, externalID); err != nil {
 		return ReceiveInboundResult{}, err
 	}
+
+	// 6. Attribution hook (SIN-62959 AC #3 — soft-fail). The hook
+	//    scans the just-persisted body for a [crm:<click_id>] marker
+	//    that the public redirect handler embedded via the
+	//    {click_id} placeholder in the campaign's redirect_url. A
+	//    miss / absence / linker error never aborts the inbound
+	//    delivery — see linkContactToCampaign for the soft-fail
+	//    contract. This is the only place ReceiveInbound talks to the
+	//    campaigns boundary.
+	logger := u.campaignLogger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	u.linkContactToCampaign(ctx, logger, ev.TenantID, res.Contact.ID, m.Body)
 
 	return ReceiveInboundResult{
 		Conversation: conv,

@@ -116,6 +116,16 @@ func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *gored
 	if err != nil {
 		return nil, nil, err
 	}
+	// SIN-62959 — attribution hook. Failure to build the campaigns
+	// adapter (e.g. migration 0102 not yet applied in this env) is
+	// non-fatal: the inbox keeps working with the marker-extractor
+	// no-op path (linker nil → silent skip).
+	if linker, err := buildCampaignLinker(pool); err != nil {
+		slog.Default().Warn("whatsapp wire: campaign linker disabled", "err", err)
+	} else if linker != nil {
+		receiver.SetCampaignLinker(linker)
+		receiver.SetCampaignLinkerLogger(slog.Default())
+	}
 	// SIN-62768: wire the status reconciler use case from SIN-62734 so
 	// the adapter can fan statuses[] entries from the WhatsApp webhook
 	// envelope into Message.AdvanceStatus + UpdateMessage under tenant
