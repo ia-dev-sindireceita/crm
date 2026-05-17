@@ -5,8 +5,18 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
+)
+
+// Compile-time assertion: the in-memory repository satisfies both
+// ports. The HTMX editor and the cascade resolver both wire to this
+// fake in tests, so a drift in either port shape fails the build of
+// this file before any test does.
+var (
+	_ RuleRepository      = (*InMemoryRepository)(nil)
+	_ RuleAdminRepository = (*InMemoryRepository)(nil)
 )
 
 // InMemoryRepository is a tenant-scoped, race-safe [RuleRepository]
@@ -80,6 +90,116 @@ func (r *InMemoryRepository) ListEffectiveForChannel(_ context.Context, tenantID
 		return out[i].ID.String() < out[j].ID.String()
 	})
 	return out, nil
+}
+
+// ListAll implements the [RuleAdminRepository] port — returns every
+// rule under tenantID (enabled and disabled alike). Used by the
+// HTMX editor to render the complete table.
+func (r *InMemoryRepository) ListAll(_ context.Context, tenantID uuid.UUID) ([]Rule, error) {
+	if tenantID == uuid.Nil {
+		return nil, ErrInvalidTenant
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Rule, 0)
+	for _, rule := range r.rules {
+		if rule.TenantID != tenantID {
+			continue
+		}
+		cp := rule
+		out = append(out, cp)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		si, sj := scopeRank(out[i].Scope()), scopeRank(out[j].Scope())
+		if si != sj {
+			return si < sj
+		}
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	return out, nil
+}
+
+// Get implements the [RuleAdminRepository] port.
+func (r *InMemoryRepository) Get(_ context.Context, tenantID, id uuid.UUID) (Rule, error) {
+	if tenantID == uuid.Nil {
+		return Rule{}, ErrInvalidTenant
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rule := range r.rules {
+		if rule.TenantID == tenantID && rule.ID == id {
+			return rule, nil
+		}
+	}
+	return Rule{}, ErrNotFound
+}
+
+// Create implements the [RuleAdminRepository] port. Appends the row
+// in O(1); duplicate IDs are NOT rejected — the caller is expected to
+// use NewRule which generates a fresh id when none is supplied.
+func (r *InMemoryRepository) Create(_ context.Context, rule Rule) error {
+	if rule.TenantID == uuid.Nil {
+		return ErrInvalidTenant
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rules = append(r.rules, rule)
+	return nil
+}
+
+// Update implements the [RuleAdminRepository] port. Overwrites the
+// matching row in-place; ErrNotFound when no row matches.
+func (r *InMemoryRepository) Update(_ context.Context, rule Rule) error {
+	if rule.TenantID == uuid.Nil {
+		return ErrInvalidTenant
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, existing := range r.rules {
+		if existing.TenantID == rule.TenantID && existing.ID == rule.ID {
+			rule.CreatedAt = existing.CreatedAt
+			rule.UpdatedAt = time.Now().UTC()
+			r.rules[i] = rule
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// SetEnabled implements the [RuleAdminRepository] port.
+func (r *InMemoryRepository) SetEnabled(_ context.Context, tenantID, id uuid.UUID, enabled bool) error {
+	if tenantID == uuid.Nil {
+		return ErrInvalidTenant
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, existing := range r.rules {
+		if existing.TenantID == tenantID && existing.ID == id {
+			r.rules[i].Enabled = enabled
+			r.rules[i].UpdatedAt = time.Now().UTC()
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// Delete implements the [RuleAdminRepository] port.
+func (r *InMemoryRepository) Delete(_ context.Context, tenantID, id uuid.UUID) error {
+	if tenantID == uuid.Nil {
+		return ErrInvalidTenant
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, existing := range r.rules {
+		if existing.TenantID == tenantID && existing.ID == id {
+			r.rules = append(r.rules[:i], r.rules[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 // matchesScope is the in-memory mirror of the adapter's SQL WHERE

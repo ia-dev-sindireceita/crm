@@ -83,6 +83,13 @@ const (
 	// dashboard and the write form because the user who can create
 	// campaigns is the only role that needs the dashboard view.
 	ActionTenantCampaignManage Action = "tenant.campaign.manage"
+
+	// Fase 4 — funnel-rule editor (SIN-62961). One action gates every
+	// rule-editor surface under /funnel/rules. Gerente only — atendente
+	// / common cannot author the automations that re-route conversations
+	// because a misconfigured rule can move every event to a single
+	// stage. Mirrors the catalog/campaign manage gates.
+	ActionTenantFunnelRuleManage Action = "tenant.funnel_rule.manage"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -216,6 +223,10 @@ func defaultRolesByAction() map[Action][]Role {
 		// Fase 4 — marketing-campaign dashboard (SIN-62962). Gerente
 		// only, same justification as the catalog manage gate above.
 		ActionTenantCampaignManage: {RoleTenantGerente},
+
+		// Fase 4 — funnel-rule editor (SIN-62961). Gerente only — see
+		// the constant declaration for the rationale.
+		ActionTenantFunnelRuleManage: {RoleTenantGerente},
 	}
 }
 

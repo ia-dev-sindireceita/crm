@@ -155,3 +155,153 @@ func stringField(m map[string]any, key string) (string, bool) {
 	v, ok := m[key].(string)
 	return v, ok
 }
+
+// NewRule constructs a Rule with the structural invariants enforced.
+// Used by the HTMX editor (SIN-62961) when authoring or persisting a
+// rule; the resolver does NOT call this on read because the postgres
+// adapter trusts the row shape coming out of the database.
+//
+// Validation contract:
+//
+//   - tenantID MUST be non-nil — RLS would reject the insert anyway,
+//     but failing early gives the form a typed error to render inline.
+//   - name MUST be non-empty after Trim.
+//   - triggerType MUST be one of the documented values; unknown
+//     triggers are rejected at the form (the resolver tolerates them
+//     for forward compatibility on rows authored by future versions).
+//   - actionType MUST be one of the documented values.
+//   - For known trigger types, the canonical config field MUST be a
+//     non-empty string. Each TriggerType pulls a different key:
+//     message_contains → "phrase", campaign_click → "campaign_id" OR
+//     "slug", message_keyword_regex → "regex".
+//   - For move_to_stage actions, action_config MUST carry a non-empty
+//     "stage_key" string. The resolver doesn't inspect this, but the
+//     downstream auto-handoff consumer would explode on an empty key.
+//
+// Scope columns (channel + teamID) are not validated here — the [Scope]
+// method derives the bucket from whatever the caller supplied. The
+// editor parses radio buttons into (channel, teamID) pairs; tests can
+// pass either or both, with channel taking precedence at resolve time.
+//
+// id defaults to a fresh uuid when zero, mirroring NewCampaign. now
+// stamps both CreatedAt and UpdatedAt; the storage adapter is expected
+// to overwrite UpdatedAt on Update.
+func NewRule(
+	id uuid.UUID,
+	tenantID uuid.UUID,
+	channel string,
+	teamID *uuid.UUID,
+	name string,
+	triggerType TriggerType,
+	triggerConfig map[string]any,
+	actionType ActionType,
+	actionConfig map[string]any,
+	enabled bool,
+	now time.Time,
+) (Rule, error) {
+	if tenantID == uuid.Nil {
+		return Rule{}, ErrInvalidTenant
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Rule{}, ErrInvalidRule
+	}
+	if !triggerType.Known() {
+		return Rule{}, ErrUnknownTriggerType
+	}
+	if !actionType.Known() {
+		return Rule{}, ErrUnknownActionType
+	}
+	if err := validateTriggerConfig(triggerType, triggerConfig); err != nil {
+		return Rule{}, err
+	}
+	if err := validateActionConfig(actionType, actionConfig); err != nil {
+		return Rule{}, err
+	}
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	channel = strings.TrimSpace(channel)
+	var team *uuid.UUID
+	if channel == "" && teamID != nil && *teamID != uuid.Nil {
+		t := *teamID
+		team = &t
+	}
+	if triggerConfig == nil {
+		triggerConfig = map[string]any{}
+	}
+	if actionConfig == nil {
+		actionConfig = map[string]any{}
+	}
+	return Rule{
+		ID:            id,
+		TenantID:      tenantID,
+		Channel:       channel,
+		TeamID:        team,
+		Name:          name,
+		TriggerType:   triggerType,
+		TriggerConfig: triggerConfig,
+		ActionType:    actionType,
+		ActionConfig:  actionConfig,
+		Enabled:       enabled,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}, nil
+}
+
+// Known reports whether t is one of the documented TriggerType values.
+// Used by [NewRule] to reject unknown values at the form boundary.
+func (t TriggerType) Known() bool {
+	switch t {
+	case TriggerTypeMessageContains,
+		TriggerTypeCampaignClick,
+		TriggerTypeMessageKeywordRegex:
+		return true
+	}
+	return false
+}
+
+// Known reports whether a is one of the documented ActionType values.
+func (a ActionType) Known() bool {
+	return a == ActionTypeMoveToStage
+}
+
+// validateTriggerConfig enforces the per-type required-field contract
+// the form layer relies on. The set is intentionally narrow — only the
+// fields TriggerSignature reads — so future trigger kinds can land
+// without revising this function in lockstep.
+func validateTriggerConfig(t TriggerType, cfg map[string]any) error {
+	switch t {
+	case TriggerTypeMessageContains:
+		if v, ok := stringField(cfg, "phrase"); !ok || strings.TrimSpace(v) == "" {
+			return ErrInvalidRule
+		}
+	case TriggerTypeCampaignClick:
+		if v, ok := stringField(cfg, "campaign_id"); ok && strings.TrimSpace(v) != "" {
+			return nil
+		}
+		if v, ok := stringField(cfg, "slug"); ok && strings.TrimSpace(v) != "" {
+			return nil
+		}
+		return ErrInvalidRule
+	case TriggerTypeMessageKeywordRegex:
+		if v, ok := stringField(cfg, "regex"); !ok || strings.TrimSpace(v) == "" {
+			return ErrInvalidRule
+		}
+	}
+	return nil
+}
+
+// validateActionConfig enforces the action_config required-field
+// contract.
+func validateActionConfig(a ActionType, cfg map[string]any) error {
+	if a == ActionTypeMoveToStage {
+		if v, ok := stringField(cfg, "stage_key"); !ok || strings.TrimSpace(v) == "" {
+			return ErrInvalidRule
+		}
+	}
+	return nil
+}

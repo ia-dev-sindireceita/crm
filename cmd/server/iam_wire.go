@@ -122,6 +122,12 @@ type iamHandlerOpts struct {
 	// DATABASE_URL is missing.
 	WebCampaigns http.Handler
 
+	// WebFunnelRules is the SIN-62961 HTMX funnel-rules editor mux.
+	// Nil keeps the /funnel/rules* routes unmounted; the wire in
+	// funnelrules_wire.go owns its own pgxpool and returns nil when
+	// DATABASE_URL is missing.
+	WebFunnelRules http.Handler
+
 	// WebCampaignPublic is the SIN-62959 GET /c/{slug} handler
 	// pre-wrapped with its per-IP rate limit by
 	// campaigns_public_wire.go. Nil keeps the route unmounted (e.g.
@@ -235,6 +241,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebAIPolicy:       opts.WebAIPolicy,
 		WebCatalog:        opts.WebCatalog,
 		WebCampaigns:      opts.WebCampaigns,
+		WebFunnelRules:    opts.WebFunnelRules,
 		WebCampaignPublic: webCampaignPublic,
 	})
 
