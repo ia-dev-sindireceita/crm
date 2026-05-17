@@ -678,6 +678,7 @@ func TestStatus_MapsUpstreamEnum(t *testing.T) {
 		{"REMOVIDA_PELO_PSP", pix.StatusCancelled, nil},
 		{"WAT", "", inter.ErrStatusUnknown},
 	}
+	const validTxid = "abc123def456abc123def456abc12345"
 	for _, tc := range cases {
 		t.Run(tc.upstream, func(t *testing.T) {
 			h := newMTLSHarness(t)
@@ -691,10 +692,10 @@ func TestStatus_MapsUpstreamEnum(t *testing.T) {
 					t.Errorf("want GET, got %s", r.Method)
 				}
 				writeJSON(w, http.StatusOK, map[string]any{
-					"txid": "x", "status": tc.upstream, "pixCopiaECola": "P",
+					"txid": validTxid, "status": tc.upstream, "pixCopiaECola": "P",
 				})
 			})
-			got, err := c.Status(context.Background(), "x")
+			got, err := c.Status(context.Background(), validTxid)
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("err=%v want=%v", err, tc.wantErr)
@@ -722,7 +723,7 @@ func TestStatus_NotFound(t *testing.T) {
 		}
 		http.Error(w, "not found", http.StatusNotFound)
 	})
-	_, err := c.Status(context.Background(), "unknown")
+	_, err := c.Status(context.Background(), "unknown1234567890abcdef0123456789")
 	if !errors.Is(err, pix.ErrNotFound) {
 		t.Fatalf("want pix.ErrNotFound, got %v", err)
 	}
@@ -735,6 +736,82 @@ func TestStatus_RejectsEmptyExternalID(t *testing.T) {
 	_, err := c.Status(context.Background(), "")
 	if !errors.Is(err, inter.ErrUpstream) {
 		t.Fatalf("want ErrUpstream, got %v", err)
+	}
+}
+
+// TestStatus_RejectsMalformedExternalID locks in the defence-in-depth
+// path-segment guard added in [SIN-62991]. The harness handler t.Fatals
+// on any incoming request, so the assertion that ErrUpstream surfaces
+// is also an assertion that no HTTP call (oauth or /cob) reached the
+// server.
+func TestStatus_RejectsMalformedExternalID(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"path traversal absolute oauth", "../oauth/v2/token"},
+		{"path traversal relative", "../"},
+		{"slash injection", "abc/def"},
+		{"too short", strings.Repeat("a", 25)},
+		{"too long", strings.Repeat("a", 36)},
+		{"non-alphanumeric", "txid-with-hyphen-1234567890"},
+		{"whitespace", "  whitespacepad12345678901234  "},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newMTLSHarness(t)
+			h.setHandler(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatalf("upstream was reached for malformed externalID %q (path=%s)", tc.id, r.URL.Path)
+			})
+			c := h.newCharger(t)
+			_, err := c.Status(context.Background(), tc.id)
+			if !errors.Is(err, inter.ErrUpstream) {
+				t.Fatalf("want ErrUpstream, got %v", err)
+			}
+		})
+	}
+}
+
+// TestStatus_AcceptsValidTxid is the positive complement of
+// TestStatus_RejectsMalformedExternalID: txids that match the BACEN
+// pattern (26–35 alphanumeric) MUST pass the guard and reach upstream.
+func TestStatus_AcceptsValidTxid(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"min length 26", strings.Repeat("a", 26)},
+		{"typical 32 hex", strings.Repeat("0", 32)},
+		{"max length 35", strings.Repeat("Z", 35)},
+		{"mixed case digits", "Abc123Def456Ghi789Jkl0mnopqr"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newMTLSHarness(t)
+			h.setHandler(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/oauth/v2/token" {
+					writeJSON(w, http.StatusOK, tokenOK())
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"txid": tc.id, "status": "ATIVA", "pixCopiaECola": "P",
+				})
+			})
+			c := h.newCharger(t)
+			got, err := c.Status(context.Background(), tc.id)
+			if err != nil {
+				t.Fatalf("Status(%q): %v", tc.id, err)
+			}
+			if got != pix.StatusPending {
+				t.Fatalf("status=%v want=%v", got, pix.StatusPending)
+			}
+		})
 	}
 }
 

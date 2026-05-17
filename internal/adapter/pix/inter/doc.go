@@ -30,7 +30,7 @@
 //   - The bearer token is held in memory only. A `Logger.Info` line is
 //     emitted on token refresh with the new expiry; the token itself
 //     never leaves the process.
-//   - HTTP traffic is logged at the (method, url, status, latency)
+//   - HTTP traffic is logged at the (psp, method, path, status)
 //     granularity. Request and response bodies are NEVER logged. The
 //     only PII-adjacent field that leaves the process is the txid
 //     (externalID).

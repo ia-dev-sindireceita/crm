@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -373,6 +374,18 @@ func (c *Charger) Status(ctx context.Context, externalID string) (pix.Status, er
 		span.RecordError(err)
 		return "", err
 	}
+	if !txidPattern.MatchString(externalID) {
+		// Defence-in-depth path-segment guard. Today all
+		// externalIDs originate from txidFromInvoice (32 hex
+		// chars) and Inter's echo of that value, so this branch
+		// is unreachable from current call sites. The guard
+		// stays so a future caller cannot smuggle a traversal
+		// sequence or a foreign-PSP identifier into the
+		// /cob/{txid} URL.
+		err := fmt.Errorf("%w: externalID format", ErrUpstream)
+		span.RecordError(err)
+		return "", err
+	}
 
 	cob, err := c.callCob(ctx, http.MethodGet, "/cob/"+externalID, nil)
 	if err != nil {
@@ -498,6 +511,12 @@ func formatCents(cents int64) string {
 	centavos := cents % 100
 	return fmt.Sprintf("%d.%02d", reais, centavos)
 }
+
+// txidPattern is the BACEN-published txid format (cobrança imediata):
+// 26–35 alphanumeric characters, no punctuation. Used to gate
+// Status(externalID) so an adapter caller can never coerce arbitrary
+// path segments (e.g. "../oauth/v2/token") into the /cob/{txid} URL.
+var txidPattern = regexp.MustCompile(`^[A-Za-z0-9]{26,35}$`)
 
 // txidFromInvoice derives the BACEN txid from an invoice UUID by
 // stripping the hyphens. The result is exactly 32 hex chars, which
