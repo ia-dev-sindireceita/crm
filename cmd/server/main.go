@@ -357,6 +357,21 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		}()
 	}
 
+	// SIN-62965 dunning tick — sweeps non-terminal subscription_dunning_states
+	// rows, escalates per the plan policy, drops back to current when the
+	// pending invoice clears, and respects free_subscription_period grants.
+	dt := buildDunningTickWiring(ctx, getenv)
+	if dt != nil {
+		defer dt.Cleanup()
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			if err := dt.RunWorker(ctx); err != nil {
+				recordWorkerErr(err)
+			}
+		}()
+	}
+
 	// SIN-62881 wallet allocator — consumes subscription.renewed and
 	// credits the tenant wallet idempotently. Same lifecycle pattern;
 	// Cleanup drains the JetStream conn before closing pools.
