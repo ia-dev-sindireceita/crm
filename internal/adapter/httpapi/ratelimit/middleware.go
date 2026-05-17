@@ -182,12 +182,30 @@ func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
 //
 // IMPORTANT — production reverse-proxy wiring. When the server sits
 // behind Caddy or a load balancer the trustworthy client IP is in
-// X-Forwarded-For, not in r.RemoteAddr. The trusted-proxy parsing
-// belongs to the http server bootstrap (Caddy strips/sets this header
-// per ADR 0070 §edge), which then writes the canonical IP into
-// r.RemoteAddr. This extractor stays naive on purpose so the trust
-// boundary lives in one place; tests that need to simulate a proxy
-// set RemoteAddr directly.
+// X-Forwarded-For, not in r.RemoteAddr. Two cooperating controls put
+// the canonical IP into r.RemoteAddr before this extractor runs:
+//
+//  1. **Edge strip** — deploy/caddy/Caddyfile (+ Caddyfile.stg) strips
+//     True-Client-IP / X-Real-IP / X-Forwarded-For on every tenant
+//     vhost before reverse_proxy, then reverse_proxy re-adds the
+//     real client IP to X-Forwarded-For. Direct client → app bypass of
+//     Caddy is impossible in production (app:8080 is not published).
+//  2. **Belt-and-braces wrapper** — internal/adapter/httpapi/
+//     trusted_realip.go wraps chimw.RealIP so the rewrite only fires
+//     when the immediate TCP peer is inside the trusted-proxy CIDR
+//     allowlist (TRUSTED_PROXY_CIDRS env, default loopback + RFC1918).
+//     When the peer is untrusted (operator misconfig, regressed Caddy
+//     strip, direct app socket access), the wrapper drops the three
+//     identity headers and leaves r.RemoteAddr raw, so this extractor
+//     keys off the actual attacker IP and the per-IP rate limit holds.
+//
+// SIN-62978 (HIGH) tracks the original finding: bare chimw.RealIP with
+// no edge strip lets an attacker forge per-IP rate-limit bucket keys
+// by sending arbitrary True-Client-IP values. Both controls above
+// MUST stay in place; the regression test in middleware_test.go
+// (TestIPKeyExtractor_DoesNotTrustClientHeaders) pins the contract.
+// This extractor stays deliberately naive: the trust boundary lives
+// in the two places above, not here.
 func IPKeyExtractor(r *http.Request) string {
 	if r == nil {
 		return ""

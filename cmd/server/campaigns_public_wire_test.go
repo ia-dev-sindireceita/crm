@@ -7,13 +7,22 @@ package main
 // the rate-limit middleware composition.
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/pericles-luz/crm/internal/adapter/httpapi"
+	httpratelimit "github.com/pericles-luz/crm/internal/adapter/httpapi/ratelimit"
 	"github.com/pericles-luz/crm/internal/campaigns"
+	domainratelimit "github.com/pericles-luz/crm/internal/iam/ratelimit"
 )
 
 func TestBuildWebCampaignHandler_NilPoolOrRedis_ReturnsNil(t *testing.T) {
@@ -151,6 +160,103 @@ func TestBuildCampaignRateLimitMiddleware_ValidatesPolicy(t *testing.T) {
 	if mw == nil {
 		t.Fatalf("buildCampaignRateLimitMiddleware returned nil middleware")
 	}
+}
+
+// TestCampaignPublicRateLimit_SpoofedTrueClientIPDoesNotBypass is the
+// AC #2 regression test for SIN-62978: 200 requests from the same TCP
+// peer with a forged True-Client-IP per request MUST NOT bypass the
+// 100/min/IP rate limit on GET /c/{slug}. We exercise the full chain
+// (trusted-proxy wrapper + rate-limit middleware + handler) against an
+// in-memory limiter so the test is fast and hermetic.
+//
+// The trusted-proxy wrapper sits in front of the rate-limit middleware
+// in production via the chi router; here we stitch the same envelope
+// manually so the wire-level test does not need a full httpapi.NewRouter.
+func TestCampaignPublicRateLimit_SpoofedTrueClientIPDoesNotBypass(t *testing.T) {
+	t.Parallel()
+	cap := 100
+	limiter := &countingLimiter{cap: cap}
+
+	rate, err := domainratelimit.NewPolicy(
+		"campaign_click_test",
+		[]domainratelimit.Bucket{
+			{Name: "ip", Window: time.Minute, Max: cap},
+		},
+		domainratelimit.Lockout{},
+	)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	rl, err := httpratelimit.New(httpratelimit.Config{
+		Policy:  rate,
+		Limiter: limiter,
+		Buckets: []httpratelimit.Bucket{
+			{Name: "ip", Extractor: httpratelimit.IPKeyExtractor},
+		},
+	})
+	if err != nil {
+		t.Fatalf("httpratelimit.New: %v", err)
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusFound)
+	})
+
+	// Default trusted-proxy CIDRs cover loopback, so a 198.51.100.0/24
+	// peer (TEST-NET-2) is untrusted — exactly the threat model.
+	trusted := httpapi.NewTrustedRealIP(func(string) string { return "" })
+	chain := trusted(rl(inner))
+
+	allowed := 0
+	throttled := 0
+	for i := 1; i <= 200; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/c/promo", nil)
+		req.RemoteAddr = "198.51.100.10:55555" // SAME peer every time
+		// Attacker varies True-Client-IP to forge per-IP bucket key.
+		req.Header.Set("True-Client-IP", fmt.Sprintf("203.0.113.%d", i%254+1))
+		w := httptest.NewRecorder()
+		chain.ServeHTTP(w, req)
+		switch w.Code {
+		case http.StatusFound:
+			allowed++
+		case http.StatusTooManyRequests:
+			throttled++
+		}
+	}
+
+	// Cap is 100; 200 attempts → ~100 allowed, ~100 throttled. We
+	// require at least cap throttled responses to prove the spoofed
+	// header did NOT yield a fresh bucket per request.
+	if throttled < 90 {
+		t.Fatalf("throttled=%d, allowed=%d — spoofed True-Client-IP appears to bypass per-IP cap (want ≥90 throttled out of 200)", throttled, allowed)
+	}
+	if allowed > cap+10 { // allow small jitter for window edges
+		t.Fatalf("allowed=%d, want ≈%d — bucket cap not respected", allowed, cap)
+	}
+}
+
+// countingLimiter is a tiny in-memory implementation of the
+// domainratelimit.RateLimiter port. It counts hits per key inside the
+// supplied window; the wire-side test only needs a single-window
+// snapshot, so the implementation is deliberately minimal and
+// non-sliding.
+type countingLimiter struct {
+	mu    sync.Mutex
+	cap   int
+	count map[string]int
+}
+
+func (c *countingLimiter) Allow(_ context.Context, key string, window time.Duration, max int) (bool, time.Duration, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.count == nil {
+		c.count = map[string]int{}
+	}
+	c.count[key]++
+	if c.count[key] > max {
+		return false, window, nil
+	}
+	return true, 0, nil
 }
 
 // TestIAMRoutesIncludesCampaignPublic pins the stdlib-mux dispatch

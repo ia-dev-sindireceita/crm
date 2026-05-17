@@ -43,6 +43,25 @@
 *.crm.local, crm.local {
 	import security-headers.caddy
 	import secure-resolvers
+
+	# SIN-62978 (HIGH, AC #1 of SIN-62978): strip every client-supplied
+	# client-IP identity header before the request reaches app:8080.
+	# chi.RealIP (router.go) reads True-Client-IP → X-Real-IP → first
+	# token of X-Forwarded-For and rewrites r.RemoteAddr; without this
+	# strip an attacker can forge a fresh per-IP bucket key per request
+	# and trivially bypass the AC #4 100/min/IP rate limit on
+	# GET /c/{slug}. Caddy's reverse_proxy re-adds the real client IP
+	# in X-Forwarded-For after the strip, so the chi.RealIP read still
+	# yields the correct peer IP for legitimate traffic.
+	#
+	# DO NOT remove these three lines without coordinating with the
+	# trusted-proxy wrapper around chi.RealIP in
+	# internal/adapter/httpapi/router.go — that wrapper is the
+	# belt-and-braces fallback when this edge strip regresses.
+	request_header -True-Client-IP
+	request_header -X-Real-IP
+	request_header -X-Forwarded-For
+
 	reverse_proxy app:8080
 
 	encode zstd gzip

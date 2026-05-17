@@ -369,6 +369,28 @@ func TestIPKeyExtractor(t *testing.T) {
 	}
 }
 
+// TestIPKeyExtractor_DoesNotTrustClientHeaders pins the SIN-62978
+// invariant: IPKeyExtractor never reads client-supplied identity
+// headers (True-Client-IP / X-Real-IP / X-Forwarded-For). The
+// extractor MUST only key off r.RemoteAddr, which the upstream
+// trusted-proxy wrapper (internal/adapter/httpapi/trusted_realip.go)
+// has already rewritten ONLY for trusted peers. A regression that
+// teaches this extractor to consult headers directly would re-open
+// the rate-limit bypass even with the trusted-proxy wrapper in place.
+func TestIPKeyExtractor_DoesNotTrustClientHeaders(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.42:55555"
+	req.Header.Set("True-Client-IP", "1.2.3.4")
+	req.Header.Set("X-Real-IP", "5.6.7.8")
+	req.Header.Set("X-Forwarded-For", "9.10.11.12")
+
+	got := httpratelimit.IPKeyExtractor(req)
+	if got != "203.0.113.42" {
+		t.Fatalf("IPKeyExtractor = %q, want %q (must NOT honour client-supplied headers; relies on trusted-proxy wrapper upstream)", got, "203.0.113.42")
+	}
+}
+
 func TestFormFieldExtractor(t *testing.T) {
 	t.Parallel()
 	ex := httpratelimit.FormFieldExtractor("email")

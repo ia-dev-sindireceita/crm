@@ -147,6 +147,12 @@ func buildCampaignRateLimitMiddleware(rdb *goredis.Client, ratePerMin int, logge
 		return nil, fmt.Errorf("campaigns/public: build rate-limit policy: %w", err)
 	}
 	limiter := rlredis.New(rdb, campaignRateRedisPrefix)
+	// SIN-62978: IPKeyExtractor reads r.RemoteAddr. The trusted-proxy
+	// wrapper in internal/adapter/httpapi/trusted_realip.go gates the
+	// chimw.RealIP rewrite to peers inside TRUSTED_PROXY_CIDRS, and
+	// deploy/caddy/Caddyfile strips True-Client-IP / X-Real-IP /
+	// X-Forwarded-For at the edge — together those two controls mean
+	// the key here is the real client IP for the AC #4 100/min/IP bucket.
 	mw, err := httpratelimit.New(httpratelimit.Config{
 		Policy:  policy,
 		Limiter: limiter,

@@ -54,6 +54,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -162,6 +163,22 @@ type Deps struct {
 	// — the allowlist falls back to the tenant host alone, which is the
 	// minimum-viable safe value.
 	MasterHost string
+
+	// TrustedProxyMiddleware overrides the chimw.RealIP wrapper that
+	// NewRouter installs as the second middleware in the chain
+	// (RequestID → RealIP → …). Production wires it via
+	// NewTrustedRealIP(os.Getenv) so only requests from the
+	// trusted-proxy CIDR allowlist (TRUSTED_PROXY_CIDRS env, default
+	// loopback + RFC1918) have their r.RemoteAddr rewritten from the
+	// True-Client-IP / X-Real-IP / X-Forwarded-For headers. Tests can
+	// inject a custom middleware (e.g. one that always trusts the
+	// loopback peer the httptest harness uses) to exercise the rewrite
+	// path; nil falls back to the secure-by-default
+	// NewTrustedRealIP(os.Getenv) so router tests that don't wire it
+	// keep behaving as they did pre-SIN-62978 when the immediate peer
+	// is a loopback address (the default trusted set covers 127.0.0.1
+	// and ::1).
+	TrustedProxyMiddleware func(http.Handler) http.Handler
 	// CSRFRejectMetric, when non-nil, is invoked on every 403 emitted
 	// by the RequireCSRF middleware. cmd/server wires this to a
 	// Prometheus counter; tests can record the reasons directly.
@@ -351,7 +368,17 @@ func NewRouter(deps Deps) http.Handler {
 	// Cross-cutting middleware. Order is fixed by SIN-62217 §Middleware
 	// chain — never reorder without an ADR.
 	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
+	// SIN-62978 — trusted-proxy-aware RealIP wrapper. Bare chimw.RealIP
+	// blindly trusts client-supplied True-Client-IP / X-Real-IP /
+	// X-Forwarded-For headers and rewrites r.RemoteAddr; that lets a
+	// caller forge the per-IP rate-limit bucket key for every public
+	// endpoint (most acutely GET /c/{slug} introduced by SIN-62959).
+	// The wrapper only honours the headers when the immediate TCP peer
+	// is inside the trusted-proxy CIDR allowlist (Caddy on the docker
+	// bridge in production). Edge strip in deploy/caddy/Caddyfile +
+	// Caddyfile.stg is the first line of defence; this wrapper is the
+	// belt-and-braces fallback.
+	r.Use(deps.trustedRealIPMiddleware())
 	r.Use(propagateRequestIDToObs)
 	r.Use(slogRequestLogger(deps.Logger))
 	r.Use(chimw.Recoverer)
@@ -899,4 +926,18 @@ func csrfAllowedHosts(masterHost string) func(*http.Request) []string {
 		}
 		return hosts
 	}
+}
+
+// trustedRealIPMiddleware returns the SIN-62978 RealIP wrapper. Honours
+// an explicit Deps.TrustedProxyMiddleware override when set; otherwise
+// builds the production-safe NewTrustedRealIP(os.Getenv) which trusts
+// loopback + RFC1918 by default and reads TRUSTED_PROXY_CIDRS as an
+// override. The fallback uses os.Getenv directly so router tests that
+// run inside httptest (loopback peer) still see the RealIP rewrite —
+// the default trusted set covers 127.0.0.1 + ::1.
+func (d Deps) trustedRealIPMiddleware() func(http.Handler) http.Handler {
+	if d.TrustedProxyMiddleware != nil {
+		return d.TrustedProxyMiddleware
+	}
+	return NewTrustedRealIP(os.Getenv)
 }
