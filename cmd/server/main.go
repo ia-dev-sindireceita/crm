@@ -194,6 +194,17 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		ms.Register(mux)
 	}
 
+	// SIN-62964 PIX Inter webhook receiver. Fail-soft on missing
+	// secret / DSN / Redis just like the other webhook wirings; the
+	// more-specific `POST /webhooks/pix/inter` pattern wins over the
+	// ADR-0075 templated route the same way the WhatsApp and Messenger
+	// wires do.
+	pi := buildPixInterWebhookWiring(ctx, getenv)
+	if pi != nil {
+		defer pi.Cleanup()
+		pi.Register(mux)
+	}
+
 	// SIN-62331 F51 — slug reservation wiring. Mount the master
 	// override route, the signup + tenant-rename placeholders guarded
 	// by RequireSlugAvailable, and the upload pipeline. The redirect
