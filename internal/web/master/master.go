@@ -170,7 +170,10 @@ var (
 type CSRFTokenFn func(*http.Request) string
 
 // Deps bundles the handler collaborators. Logger defaults to slog.
-// Default when nil; every other field is required.
+// Default when nil; tenant-side fields are required; the grants port
+// (Grants) is optional — nil disables the SIN-62884 grants surface so
+// router tests and ad-hoc binaries that only need the tenants page do
+// not have to plumb a wallet-backed adapter.
 type Deps struct {
 	Tenants   TenantLister
 	Creator   TenantCreator
@@ -179,12 +182,29 @@ type Deps struct {
 	CSRFToken CSRFTokenFn
 	Logger    *slog.Logger
 
+	// Grants is the SIN-62884 grants surface (issue / revoke / list).
+	// Optional: when nil, the three grants routes return 503 with an
+	// explanatory message instead of panicking, so the rest of the
+	// master console keeps working in deploys that haven't yet wired
+	// the wallet adapter.
+	Grants GrantPort
+
 	// DefaultPageSize is applied when the request omits ?page_size or
 	// passes a value outside (0, MaxPageSize]. Zero defaults to 25.
 	DefaultPageSize int
 
 	// MaxPageSize caps the page_size query param. Zero defaults to 100.
 	MaxPageSize int
+}
+
+// GrantPort is the union of the three grants sub-ports used by the
+// C10 handlers. cmd/server wires this with a single struct that
+// embeds the wallet-backed adapter; tests can pass a hand-rolled
+// stub.
+type GrantPort interface {
+	GrantIssuer
+	GrantRevoker
+	GrantLister
 }
 
 // Handler is the master/tenants HTMX handler. Mount with Routes for
@@ -235,12 +255,18 @@ func New(deps Deps) (*Handler, error) {
 	}, nil
 }
 
-// Routes mounts the three master/tenants endpoints on a stdlib mux.
-// Production wires the three handlers individually so each can sit
-// behind its own RequireAction gate; this method is the convenience
-// path for in-package tests and ad-hoc local exploration.
+// Routes mounts the tenants + grants endpoints on a stdlib mux.
+// Production wires each handler individually so each can sit behind
+// its own RequireAction gate; this method is the convenience path
+// for in-package tests and ad-hoc local exploration.
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /master/tenants", h.ListTenants)
 	mux.HandleFunc("POST /master/tenants", h.CreateTenant)
 	mux.HandleFunc("PATCH /master/tenants/{id}/plan", h.AssignPlan)
+	// SIN-62884 C10 — grants surface. Conditionally mount; with
+	// Grants nil the routes return 503 so the rest of the console
+	// keeps working in early deploys.
+	mux.HandleFunc("GET /master/tenants/{id}/grants/new", h.ShowGrantsForm)
+	mux.HandleFunc("POST /master/tenants/{id}/grants", h.IssueGrant)
+	mux.HandleFunc("POST /master/grants/{id}/revoke", h.RevokeGrant)
 }

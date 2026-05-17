@@ -247,6 +247,16 @@ type MasterTenantsRoutes struct {
 	List       http.Handler
 	Create     http.Handler
 	AssignPlan http.Handler
+	// SIN-62884 C10 — grants surface. Each handler is conditionally
+	// mounted; nil slots are skipped so deploys that haven't wired
+	// the wallet adapter behave the same as the pre-C10 router. The
+	// two write slots (GrantsCreate / GrantsRevoke) are additionally
+	// expected to be wrapped with mastermfa.RequireRecentMFA by the
+	// caller before being assigned here — see the wire layer in
+	// cmd/server for the canonical composition.
+	GrantsNew    http.Handler
+	GrantsCreate http.Handler
+	GrantsRevoke http.Handler
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -458,6 +468,36 @@ func NewRouter(deps Deps) http.Handler {
 						middleware.RequireAction(deps.Authorizer, iam.ActionMasterSubscriptionAssignPlan, nil)(deps.MasterTenants.AssignPlan),
 					)
 					authed.Method(http.MethodPatch, "/master/tenants/{id}/plan", assignH)
+				}
+				// SIN-62884 — HTMX master/grants UI (Fase 2.5 C10).
+				// Same gating envelope as the tenants surface. The
+				// GET form gates on the free-period action (master-
+				// only, same RBAC band as the POST). The two POST
+				// routes are pre-wrapped with
+				// mastermfa.RequireRecentMFA at the wire layer so the
+				// router only needs to add RequireAction here. The
+				// audit row is written twice on a successful POST:
+				// once by RequireAction (the authorization event) and
+				// once by the C8 AuditedMasterGrantRepository
+				// decorator (the master.grant.issued business event)
+				// — see ADR-0098 §D3.
+				if deps.MasterTenants.GrantsNew != nil {
+					gNew := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, nil)(deps.MasterTenants.GrantsNew),
+					)
+					authed.Method(http.MethodGet, "/master/tenants/{id}/grants/new", gNew)
+				}
+				if deps.MasterTenants.GrantsCreate != nil {
+					gCreate := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, nil)(deps.MasterTenants.GrantsCreate),
+					)
+					authed.Method(http.MethodPost, "/master/tenants/{id}/grants", gCreate)
+				}
+				if deps.MasterTenants.GrantsRevoke != nil {
+					gRevoke := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyRevoke, nil)(deps.MasterTenants.GrantsRevoke),
+					)
+					authed.Method(http.MethodPost, "/master/grants/{id}/revoke", gRevoke)
 				}
 			}
 		})
