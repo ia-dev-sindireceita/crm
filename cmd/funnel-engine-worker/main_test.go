@@ -374,7 +374,9 @@ func TestEnvOr_FallbackAndOverride(t *testing.T) {
 func TestRun_DefaultsMissingValuesToZero(t *testing.T) {
 	// Compile-time fence on the runner type so a future refactor that
 	// loses the indirection alerts here.
-	t.Parallel()
+	// Not t.Parallel(): reads the package-level runner global, which
+	// TestRun_StopsOnContextCancel / TestRun_PropagatesError mutate
+	// ([SIN-63010], extends [SIN-63002]).
 	var _ func(context.Context, funnel_engine.Subscriber, funnel_engine.RunConfig) error = runner
 }
 
