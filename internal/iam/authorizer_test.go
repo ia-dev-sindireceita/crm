@@ -340,3 +340,39 @@ func TestPrincipalFromSession(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestRBACAuthorizer_CampaignManage_Matrix covers the SIN-62962
+// ActionTenantCampaignManage RBAC row: gerente allowed, atendente +
+// common + master (non-impersonating) denied. Added separately from
+// the main contract matrix so the new action lands without modifying
+// the existing slice.
+func TestRBACAuthorizer_CampaignManage_Matrix(t *testing.T) {
+	t.Parallel()
+	authz := iam.NewRBACAuthorizer(iam.RBACConfig{})
+
+	tests := []struct {
+		name       string
+		role       iam.Role
+		wantAllow  bool
+		wantReason iam.ReasonCode
+	}{
+		{"gerente-campaign-manage-ALLOW", iam.RoleTenantGerente, true, iam.ReasonAllowedRBAC},
+		{"atendente-campaign-manage-DENY", iam.RoleTenantAtendente, false, iam.ReasonDeniedRBAC},
+		{"common-campaign-manage-DENY", iam.RoleTenantCommon, false, iam.ReasonDeniedRBAC},
+		{"master-campaign-manage-DENY", iam.RoleMaster, false, iam.ReasonDeniedRBAC},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := principalFor(t, tc.role, false, nil)
+			d := authz.Can(context.Background(), p, iam.ActionTenantCampaignManage, iam.Resource{Kind: "campaign", ID: "fix"})
+			if d.Allow != tc.wantAllow {
+				t.Fatalf("Allow = %v, want %v (reason %q)", d.Allow, tc.wantAllow, d.ReasonCode)
+			}
+			if d.ReasonCode != tc.wantReason {
+				t.Fatalf("Reason = %q, want %q", d.ReasonCode, tc.wantReason)
+			}
+		})
+	}
+}

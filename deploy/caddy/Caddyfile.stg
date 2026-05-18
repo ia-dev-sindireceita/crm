@@ -28,6 +28,19 @@
 
 {$STG_TENANT_HOSTS} {
 	import security-headers.caddy
+
+	# SIN-62978 (HIGH, AC #1): strip every client-supplied client-IP
+	# identity header before the request reaches app:8080. Mirrors the
+	# same block in deploy/caddy/Caddyfile — see that file's doc-comment
+	# for the full rationale (per-IP rate-limit bypass on GET /c/{slug}
+	# when chi.RealIP trusts forged True-Client-IP / X-Real-IP /
+	# X-Forwarded-For). Caddy's reverse_proxy re-adds the real client IP
+	# in X-Forwarded-For after the strip, so legitimate traffic still
+	# sees the correct peer IP downstream.
+	request_header -True-Client-IP
+	request_header -X-Real-IP
+	request_header -X-Forwarded-For
+
 	reverse_proxy app:8080
 	encode zstd gzip
 }

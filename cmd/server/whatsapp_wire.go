@@ -82,7 +82,7 @@ func buildWhatsAppWiring(ctx context.Context, getenv func(string) string) *whats
 		log.Printf("crm: whatsapp intake disabled — redis connect: %v", err)
 		return nil
 	}
-	adapter, cleanup, err := assembleWhatsAppAdapter(cfg, pool, rdb, getenv)
+	adapter, cleanup, err := assembleWhatsAppAdapter(ctx, cfg, pool, rdb, getenv)
 	if err != nil {
 		pool.Close()
 		_ = rdb.Close()
@@ -99,7 +99,7 @@ func buildWhatsAppWiring(ctx context.Context, getenv func(string) string) *whats
 // assembleWhatsAppAdapter constructs the adapter from already-connected
 // dependencies. Split out so unit tests can wire fakes instead of real
 // pgxpool / redis clients.
-func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *goredis.Client, getenv func(string) string) (*whatsapp.Adapter, func(), error) {
+func assembleWhatsAppAdapter(ctx context.Context, cfg whatsapp.Config, pool *pgxpool.Pool, rdb *goredis.Client, getenv func(string) string) (*whatsapp.Adapter, func(), error) {
 	contactsStore, err := pgcontacts.New(pool)
 	if err != nil {
 		return nil, nil, err
@@ -115,6 +115,33 @@ func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *gored
 	receiver, err := inboxusecase.NewReceiveInbound(inboxStore, inboxStore, contactsUC)
 	if err != nil {
 		return nil, nil, err
+	}
+	// SIN-62959 — attribution hook. Failure to build the campaigns
+	// adapter (e.g. migration 0102 not yet applied in this env) is
+	// non-fatal: the inbox keeps working with the marker-extractor
+	// no-op path (linker nil → silent skip).
+	if linker, err := buildCampaignLinker(pool); err != nil {
+		slog.Default().Warn("whatsapp wire: campaign linker disabled", "err", err)
+	} else if linker != nil {
+		receiver.SetCampaignLinker(linker)
+		receiver.SetCampaignLinkerLogger(slog.Default())
+		// SIN-62982 — share the marker signing key with the inbox
+		// verifier so the redirect handler and the inbox-side hook
+		// agree on the HMAC. An empty key collapses the verifier to
+		// the compat-window legacy-only path (allowLegacy=true by
+		// default at construction).
+		receiver.SetCampaignMarkerKey(readMarkerSigningKey(getenv))
+	}
+	// SIN-62960 — funnel engine fan-out hook. Same soft-fail pattern:
+	// NATS_URL unset → publisher nil → inbox skips the publish; dial
+	// error → warn + skip. The funnel-engine-worker treats a missing
+	// publish identically (nothing on the stream → nothing to apply).
+	funnelPub, funnelCleanup, err := buildFunnelEngineInboundPublisher(ctx, getenv)
+	if err != nil {
+		slog.Default().Warn("whatsapp wire: funnel engine publisher disabled", "err", err)
+	} else if funnelPub != nil {
+		receiver.SetInboundMessagePublisher(funnelPub)
+		receiver.SetInboundMessagePublisherLogger(slog.Default())
 	}
 	// SIN-62768: wire the status reconciler use case from SIN-62734 so
 	// the adapter can fan statuses[] entries from the WhatsApp webhook
@@ -162,6 +189,9 @@ func assembleWhatsAppAdapter(cfg whatsapp.Config, pool *pgxpool.Pool, rdb *gored
 		return nil, nil, err
 	}
 	cleanup := func() {
+		if funnelCleanup != nil {
+			funnelCleanup()
+		}
 		pool.Close()
 		_ = rdb.Close()
 	}

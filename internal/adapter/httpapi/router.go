@@ -54,6 +54,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -162,6 +163,22 @@ type Deps struct {
 	// — the allowlist falls back to the tenant host alone, which is the
 	// minimum-viable safe value.
 	MasterHost string
+
+	// TrustedProxyMiddleware overrides the chimw.RealIP wrapper that
+	// NewRouter installs as the second middleware in the chain
+	// (RequestID → RealIP → …). Production wires it via
+	// NewTrustedRealIP(os.Getenv) so only requests from the
+	// trusted-proxy CIDR allowlist (TRUSTED_PROXY_CIDRS env, default
+	// loopback + RFC1918) have their r.RemoteAddr rewritten from the
+	// True-Client-IP / X-Real-IP / X-Forwarded-For headers. Tests can
+	// inject a custom middleware (e.g. one that always trusts the
+	// loopback peer the httptest harness uses) to exercise the rewrite
+	// path; nil falls back to the secure-by-default
+	// NewTrustedRealIP(os.Getenv) so router tests that don't wire it
+	// keep behaving as they did pre-SIN-62978 when the immediate peer
+	// is a loopback address (the default trusted set covers 127.0.0.1
+	// and ::1).
+	TrustedProxyMiddleware func(http.Handler) http.Handler
 	// CSRFRejectMetric, when non-nil, is invoked on every 403 emitted
 	// by the RequireCSRF middleware. cmd/server wires this to a
 	// Prometheus counter; tests can record the reasons directly.
@@ -244,6 +261,74 @@ type Deps struct {
 	//   DELETE /catalog/{id}/arguments/{arg_id}
 	WebCatalog http.Handler
 
+	// WebCampaigns is the HTMX admin UI handler for the per-tenant
+	// marketing-campaign dashboard from internal/web/campaigns
+	// (SIN-62962 / Fase 4). Same envelope as WebCatalog: RequireAuth
+	// → RequireAction(iam.ActionTenantCampaignManage). One action
+	// gates every method because gerente is the only role allowed to
+	// publish short links / inspect the click ledger.
+	//
+	// Routes mounted:
+	//   GET    /campaigns
+	//   GET    /campaigns/new
+	//   POST   /campaigns
+	//   GET    /campaigns/{slug}
+	//   GET    /campaigns/{slug}/clicks
+	WebCampaigns http.Handler
+
+	// WebFunnelRules is the HTMX admin UI handler for the per-tenant
+	// funnel-rules editor from internal/web/funnel/rules
+	// (SIN-62961 / Fase 4). Same envelope as WebCampaigns: RequireAuth
+	// → RequireAction(iam.ActionTenantFunnelRuleManage). One action
+	// gates every method because gerente is the only role allowed to
+	// author / mutate the rules that fire auto-handoffs.
+	//
+	// Routes mounted:
+	//   GET    /funnel/rules
+	//   GET    /funnel/rules/new
+	//   POST   /funnel/rules
+	//   GET    /funnel/rules/trigger-fields
+	//   GET    /funnel/rules/action-fields
+	//   GET    /funnel/rules/preview
+	//   GET    /funnel/rules/{id}/edit
+	//   PATCH  /funnel/rules/{id}
+	//   PATCH  /funnel/rules/{id}/toggle
+	//   DELETE /funnel/rules/{id}
+	WebFunnelRules http.Handler
+
+	// WebBillingInvoices is the HTMX UI for the per-tenant PIX-invoice
+	// surface from internal/web/billing/invoices (SIN-62963 / Fase 4).
+	// Same envelope as WebCatalog and WebCampaigns: RequireAuth →
+	// RequireAction(iam.ActionTenantBillingView) — the tenant-side
+	// billing action reused from the master billing console (SIN-62880
+	// matrix). Mounted only when the wire layer supplies a non-nil
+	// handler so a deploy that has not yet wired the PIX postgres
+	// adapter (SIN-62958 / C7) skips the routes cleanly.
+	//
+	// Routes mounted:
+	//   GET    /billing/invoices
+	//   GET    /billing/invoices/{id}
+	//   GET    /billing/invoices/{id}/status
+	//   GET    /billing/dunning-banner
+	WebBillingInvoices http.Handler
+
+	// WebCampaignPublic is the SIN-62959 public redirect endpoint
+	// from internal/web/public/campaign. Mounted inside the tenanted
+	// group BUT outside the authed sub-group — the redirect is
+	// unauthenticated by design (AC #1) and protected by per-IP rate
+	// limit + cookie idempotency + open-redirect allowlist. The wire
+	// in cmd/server/campaigns_public_wire.go pre-wraps the handler
+	// with httpratelimit.New, so the slot here is the
+	// already-throttled http.Handler.
+	//
+	// Nil keeps GET /c/{slug} unmounted; cmd/server passes nil when
+	// DATABASE_URL or REDIS_URL is unset so partial-stack boots stay
+	// green.
+	//
+	// Routes mounted:
+	//   GET    /c/{slug}
+	WebCampaignPublic http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -303,7 +388,17 @@ func NewRouter(deps Deps) http.Handler {
 	// Cross-cutting middleware. Order is fixed by SIN-62217 §Middleware
 	// chain — never reorder without an ADR.
 	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
+	// SIN-62978 — trusted-proxy-aware RealIP wrapper. Bare chimw.RealIP
+	// blindly trusts client-supplied True-Client-IP / X-Real-IP /
+	// X-Forwarded-For headers and rewrites r.RemoteAddr; that lets a
+	// caller forge the per-IP rate-limit bucket key for every public
+	// endpoint (most acutely GET /c/{slug} introduced by SIN-62959).
+	// The wrapper only honours the headers when the immediate TCP peer
+	// is inside the trusted-proxy CIDR allowlist (Caddy on the docker
+	// bridge in production). Edge strip in deploy/caddy/Caddyfile +
+	// Caddyfile.stg is the first line of defence; this wrapper is the
+	// belt-and-braces fallback.
+	r.Use(deps.trustedRealIPMiddleware())
 	r.Use(propagateRequestIDToObs)
 	r.Use(slogRequestLogger(deps.Logger))
 	r.Use(chimw.Recoverer)
@@ -342,6 +437,18 @@ func NewRouter(deps Deps) http.Handler {
 		tenanted.Use(obs.OTelHTTP("http.request", httpRouteOf, httpTenantSpanEnricher))
 
 		tenanted.Get("/login", handler.LoginGet)
+
+		// SIN-62959 — public campaign redirect (GET /c/{slug}). Mounted
+		// inside the tenanted group so middleware.TenantScope resolves
+		// the Host header to a Tenant BEFORE the handler runs (AC #1
+		// secure-by-default exception: the endpoint is unauthenticated
+		// by design, the host gate is the cross-tenant boundary). The
+		// rate-limit middleware is pre-wrapped by the wire layer so
+		// the slot here is the already-throttled http.Handler — see
+		// cmd/server/campaigns_public_wire.go.
+		if deps.WebCampaignPublic != nil {
+			tenanted.Method(http.MethodGet, "/c/{slug}", deps.WebCampaignPublic)
+		}
 
 		loginPost := http.Handler(handler.LoginPost(handler.LoginConfig{
 			IAM: deps.IAM,
@@ -421,6 +528,32 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/funnel/modal/close", webFunnel)
 			}
 
+			// SIN-62961 — HTMX funnel-rules editor (Fase 4). Same
+			// envelope as WebCampaigns: RequireAuth installs the
+			// principal, RequireAction(ActionTenantFunnelRuleManage)
+			// gates every method. gerente is the only role allowed
+			// to author the rules that fire auto-handoffs.
+			if deps.WebFunnelRules != nil {
+				webFunnelRules := http.Handler(deps.WebFunnelRules)
+				if deps.Authorizer != nil {
+					webFunnelRules = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantFunnelRuleManage, nil)(webFunnelRules),
+					)
+				} else {
+					webFunnelRules = middleware.RequireAuth(middleware.RequireAuthDeps{})(webFunnelRules)
+				}
+				authed.Method(http.MethodGet, "/funnel/rules", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/new", webFunnelRules)
+				authed.Method(http.MethodPost, "/funnel/rules", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/trigger-fields", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/action-fields", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/preview", webFunnelRules)
+				authed.Method(http.MethodGet, "/funnel/rules/{id}/edit", webFunnelRules)
+				authed.Method(http.MethodPatch, "/funnel/rules/{id}", webFunnelRules)
+				authed.Method(http.MethodPatch, "/funnel/rules/{id}/toggle", webFunnelRules)
+				authed.Method(http.MethodDelete, "/funnel/rules/{id}", webFunnelRules)
+			}
+
 			// SIN-62354 — HTMX privacy / DPA disclosure (Fase 3, decisão #8).
 			// Same envelope as WebContacts / WebFunnel. The two routes are
 			// GET-only so the CSRF middleware short-circuits naturally.
@@ -492,6 +625,49 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/catalog/{id}/arguments/{arg_id}/edit", webCatalog)
 				authed.Method(http.MethodPatch, "/catalog/{id}/arguments/{arg_id}", webCatalog)
 				authed.Method(http.MethodDelete, "/catalog/{id}/arguments/{arg_id}", webCatalog)
+			}
+
+			// SIN-62962 — HTMX campaign dashboard (Fase 4). Same
+			// envelope as WebCatalog: RequireAuth installs the
+			// principal, RequireAction(ActionTenantCampaignManage)
+			// gates every method. When Authorizer is nil (router
+			// tests that don't exercise the authz seam) the gate
+			// skips and the inner mux still runs with a Principal.
+			if deps.WebCampaigns != nil {
+				webCampaigns := http.Handler(deps.WebCampaigns)
+				if deps.Authorizer != nil {
+					webCampaigns = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantCampaignManage, nil)(webCampaigns),
+					)
+				} else {
+					webCampaigns = middleware.RequireAuth(middleware.RequireAuthDeps{})(webCampaigns)
+				}
+				authed.Method(http.MethodGet, "/campaigns", webCampaigns)
+				authed.Method(http.MethodGet, "/campaigns/new", webCampaigns)
+				authed.Method(http.MethodPost, "/campaigns", webCampaigns)
+				authed.Method(http.MethodGet, "/campaigns/{slug}", webCampaigns)
+				authed.Method(http.MethodGet, "/campaigns/{slug}/clicks", webCampaigns)
+			}
+
+			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses
+			// the tenant-side billing action from SIN-62880; the
+			// production matrix restricts ActionTenantBillingView to
+			// RoleTenantGerente, matching the "admin do tenant" AC.
+			// The mount is conditional so a deploy that has not yet
+			// wired the PIX postgres adapter (C7) skips the routes.
+			if deps.WebBillingInvoices != nil {
+				webInvoices := http.Handler(deps.WebBillingInvoices)
+				if deps.Authorizer != nil {
+					webInvoices = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantBillingView, nil)(webInvoices),
+					)
+				} else {
+					webInvoices = middleware.RequireAuth(middleware.RequireAuthDeps{})(webInvoices)
+				}
+				authed.Method(http.MethodGet, "/billing/invoices", webInvoices)
+				authed.Method(http.MethodGet, "/billing/invoices/{id}", webInvoices)
+				authed.Method(http.MethodGet, "/billing/invoices/{id}/status", webInvoices)
+				authed.Method(http.MethodGet, "/billing/dunning-banner", webInvoices)
 			}
 
 			// SIN-62882 — HTMX master/tenants UI (Fase 2.5 C9). Each
@@ -796,4 +972,18 @@ func csrfAllowedHosts(masterHost string) func(*http.Request) []string {
 		}
 		return hosts
 	}
+}
+
+// trustedRealIPMiddleware returns the SIN-62978 RealIP wrapper. Honours
+// an explicit Deps.TrustedProxyMiddleware override when set; otherwise
+// builds the production-safe NewTrustedRealIP(os.Getenv) which trusts
+// loopback + RFC1918 by default and reads TRUSTED_PROXY_CIDRS as an
+// override. The fallback uses os.Getenv directly so router tests that
+// run inside httptest (loopback peer) still see the RealIP rewrite —
+// the default trusted set covers 127.0.0.1 + ::1.
+func (d Deps) trustedRealIPMiddleware() func(http.Handler) http.Handler {
+	if d.TrustedProxyMiddleware != nil {
+		return d.TrustedProxyMiddleware
+	}
+	return NewTrustedRealIP(os.Getenv)
 }

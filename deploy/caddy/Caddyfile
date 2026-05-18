@@ -33,9 +33,39 @@
 	}
 }
 
+# SIN-62978 (HIGH) + SIN-62984 (MED follow-up): strip every client-supplied
+# client-IP identity header at the edge before the request reaches app:8080.
+# chi.RealIP (router.go), via the trusted-proxy wrapper in
+# internal/adapter/httpapi/trusted_realip.go, reads True-Client-IP →
+# X-Real-IP → first token of X-Forwarded-For and rewrites r.RemoteAddr.
+# Without this strip an attacker can forge a fresh per-IP bucket key per
+# request and trivially bypass the 100/min/IP rate limit on GET /c/{slug}
+# (and any other rate-limit / audit path that keys off the trusted client
+# IP). Caddy's reverse_proxy re-adds the real client IP in X-Forwarded-For
+# AFTER the strip, so the chi.RealIP read still yields the correct peer
+# IP for legitimate traffic.
+#
+# The Go-side wrapper in trusted_realip.go is belt-and-braces ONLY:
+# it gates chi.RealIP on the immediate TCP peer being inside the
+# trusted-proxy CIDR allowlist, but Caddy's peer IP lives inside the
+# docker bridge (172.16/12) and is therefore trusted by default — i.e.
+# the wrapper relies on Caddy stripping forged headers before they
+# arrive. Every site block that does `reverse_proxy app:8080` MUST
+# import this snippet.
+(strip-client-ip) {
+	request_header -True-Client-IP
+	request_header -X-Real-IP
+	request_header -X-Forwarded-For
+}
+
 # Plain HTTP passthrough for local smoke checks (curl http://localhost:8080/health).
+# SIN-62984: strip applied here too — if docker-compose ever binds :8080 to
+# 0.0.0.0 (the scenario called out in SIN-62981's threat-model doc), this
+# block becomes reachable from off-host and the strip is the only edge
+# defense against IP-header forgery.
 :8080 {
 	import security-headers.caddy
+	import strip-client-ip
 	reverse_proxy app:8080
 }
 
@@ -43,6 +73,8 @@
 *.crm.local, crm.local {
 	import security-headers.caddy
 	import secure-resolvers
+	import strip-client-ip
+
 	reverse_proxy app:8080
 
 	encode zstd gzip
@@ -70,11 +102,17 @@
 # on_demand_tls.ask above; only verified, non-paused hosts are allowed
 # through to the app. tls { on_demand } MUST be paired with the global
 # on_demand_tls policy or Caddy will refuse to issue.
+#
+# SIN-62984: this block carries real production custom-domain tenant
+# traffic (SIN-62242 rollout). The IP-header strip MUST be imported so
+# custom-domain tenants cannot forge True-Client-IP / X-Real-IP /
+# X-Forwarded-For — same threat model as the wildcard tenant vhost.
 :443 {
 	tls {
 		on_demand
 	}
 	import security-headers.caddy
+	import strip-client-ip
 	reverse_proxy app:8080
 	encode zstd gzip
 }

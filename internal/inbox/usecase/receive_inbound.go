@@ -21,10 +21,12 @@ package usecase
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/campaigns"
 	"github.com/pericles-luz/crm/internal/contacts"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	"github.com/pericles-luz/crm/internal/inbox"
@@ -72,6 +74,33 @@ type ReceiveInbound struct {
 	contacts    ContactUpserter
 	leadPolicy  TenantLeadPolicy
 	assignments inbox.AssignmentRepository
+	// campaignLinker is the SIN-62959 attribution port — wired by the
+	// composition root via SetCampaignLinker after construction so the
+	// existing NewReceiveInbound / NewReceiveInboundWithLeadership APIs
+	// stay backwards-compatible. Nil disables the attribution hook
+	// (see linkContactToCampaign for the soft-fail contract).
+	campaignLinker CampaignLinker
+	// campaignLogger receives the InfoContext / WarnContext entries
+	// emitted by the attribution hook. The wire injects the process
+	// logger via SetCampaignLinkerLogger; nil falls back to slog.Default.
+	campaignLogger *slog.Logger
+	// campaignMarkerKey is the HMAC secret used to verify the signed
+	// attribution marker (SIN-62982). The composition root wires it
+	// via SetCampaignMarkerKey from CAMPAIGNS_MARKER_SIGNING_KEY; the
+	// zero MarkerKey disables verification so legacy unsigned markers
+	// continue to link if campaignMarkerAllowLegacy is true.
+	campaignMarkerKey campaigns.MarkerKey
+	// campaignMarkerAllowLegacy controls whether the hook accepts the
+	// pre-SIN-62982 unsigned marker form. Left true for the 90-day
+	// cookie-TTL transition window; a follow-up flips it false.
+	campaignMarkerAllowLegacy bool
+	// inboundPublisher is the optional NATS outbound hook (SIN-62960).
+	// Wired by the composition root via SetInboundMessagePublisher so
+	// the existing NewReceiveInbound / NewReceiveInboundWithLeadership
+	// APIs stay backwards-compatible. Nil disables fan-out (see
+	// publishInboundMessage for the soft-fail contract).
+	inboundPublisher       InboundMessagePublisher
+	inboundPublisherLogger *slog.Logger
 }
 
 // NewReceiveInbound wires the use case to its dependencies. nil port
@@ -92,7 +121,17 @@ func NewReceiveInbound(repo inbox.Repository, dedup inbox.InboundDedupRepository
 	if c == nil {
 		return nil, errors.New("inbox/usecase: contacts upserter must not be nil")
 	}
-	return &ReceiveInbound{repo: repo, dedup: dedup, contacts: c}, nil
+	return &ReceiveInbound{
+		repo:     repo,
+		dedup:    dedup,
+		contacts: c,
+		// SIN-62982 compat-window default: accept legacy unsigned
+		// markers so messages sent before the HMAC rollout still link.
+		// A follow-up will flip this to false once the 90-day cookie
+		// TTL has elapsed; production wiring may override via
+		// SetCampaignMarkerAllowLegacy.
+		campaignMarkerAllowLegacy: true,
+	}, nil
 }
 
 // MustNewReceiveInbound is the panic-on-error variant for the
@@ -297,6 +336,39 @@ func (u *ReceiveInbound) Execute(ctx context.Context, ev inbox.InboundEvent) (Re
 	if err := u.dedup.MarkProcessed(ctx, channel, externalID); err != nil {
 		return ReceiveInboundResult{}, err
 	}
+
+	// 6. Attribution hook (SIN-62959 AC #3 — soft-fail). The hook
+	//    scans the just-persisted body for a [crm:<click_id>] marker
+	//    that the public redirect handler embedded via the
+	//    {click_id} placeholder in the campaign's redirect_url. A
+	//    miss / absence / linker error never aborts the inbound
+	//    delivery — see linkContactToCampaign for the soft-fail
+	//    contract. This is the only place ReceiveInbound talks to the
+	//    campaigns boundary.
+	logger := u.campaignLogger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	u.linkContactToCampaign(ctx, logger, ev.TenantID, res.Contact.ID, m.Body)
+
+	// 7. Funnel-engine fan-out (SIN-62960 — soft-fail). Publishes the
+	//    persisted message on the JetStream inbound subject so the
+	//    funnel rule engine (a separate worker process) can evaluate
+	//    rules and apply actions. Disabled when no publisher is wired;
+	//    publish errors degrade gracefully — the inbox row is the
+	//    source of truth, the bus is a notification.
+	publisherLogger := u.inboundPublisherLogger
+	if publisherLogger == nil {
+		publisherLogger = slog.Default()
+	}
+	u.publishInboundMessage(ctx, publisherLogger, PublishedInboundMessage{
+		TenantID:       ev.TenantID,
+		ConversationID: conv.ID,
+		MessageID:      m.ID,
+		Channel:        channel,
+		Body:           m.Body,
+		OccurredAt:     m.CreatedAt,
+	})
 
 	return ReceiveInboundResult{
 		Conversation: conv,

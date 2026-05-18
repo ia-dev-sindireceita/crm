@@ -70,6 +70,14 @@ var iamRoutes = []string{
 	"/settings/privacy/dpa.md",
 	"/catalog",
 	"/catalog/",
+	"/campaigns",
+	"/campaigns/",
+	// SIN-62959 — public campaign redirect endpoint (GET /c/{slug}).
+	// The stdlib mux dispatches "/c/" (subtree) to the chi router,
+	// which then re-matches the Go 1.22 method+pattern "GET /c/{slug}"
+	// inside the tenanted group. The custom-domain catch-all at "/"
+	// still loses to the more-specific "/c/" prefix on every request.
+	"/c/",
 	"/m/",
 	"/metrics",
 }
@@ -107,6 +115,26 @@ type iamHandlerOpts struct {
 	// owns its runtime + master_ops pgxpools and returns nil when
 	// either DSN is missing or the connection fails.
 	WebCatalog http.Handler
+
+	// WebCampaigns is the SIN-62962 HTMX campaign dashboard mux.
+	// Nil keeps the /campaigns* routes unmounted; the wire in
+	// campaigns_wire.go owns its own pgxpool and returns nil when
+	// DATABASE_URL is missing.
+	WebCampaigns http.Handler
+
+	// WebFunnelRules is the SIN-62961 HTMX funnel-rules editor mux.
+	// Nil keeps the /funnel/rules* routes unmounted; the wire in
+	// funnelrules_wire.go owns its own pgxpool and returns nil when
+	// DATABASE_URL is missing.
+	WebFunnelRules http.Handler
+
+	// WebCampaignPublic is the SIN-62959 GET /c/{slug} handler
+	// pre-wrapped with its per-IP rate limit by
+	// campaigns_public_wire.go. Nil keeps the route unmounted (e.g.
+	// when DATABASE_URL / REDIS_URL is unset). Mounted inside the
+	// tenanted group but outside the authed sub-group — the redirect
+	// is unauthenticated by design (AC #1).
+	WebCampaignPublic http.Handler
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -174,6 +202,21 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		return nil, noop
 	}
 
+	// SIN-62959 — public campaign redirect endpoint. Built here so it
+	// reuses the IAM pool + Redis (no second pgxpool / goredis client
+	// opened). A failure to build the handler is non-fatal — the
+	// router simply omits GET /c/{slug} and the rest of IAM keeps
+	// serving. opts.WebCampaignPublic, when set by the caller, wins
+	// over the wire-built handler (tests rely on this).
+	webCampaignPublic := opts.WebCampaignPublic
+	if webCampaignPublic == nil {
+		if h, err := buildWebCampaignHandler(pool, rdb, getenv); err != nil {
+			log.Printf("crm: campaigns/public handler disabled — %v", err)
+		} else {
+			webCampaignPublic = h
+		}
+	}
+
 	h := httpapi.NewRouter(httpapi.Deps{
 		IAM: iamAdapter{
 			tenants:  tenants,
@@ -192,11 +235,14 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		// SessionToucher is nil — Activity middleware deferred to batch
 		// that lands the session role/last_activity DB columns (0077).
 		// Master MFA deps deferred to batch 17 (SIN-62526).
-		WebContacts: opts.WebContacts,
-		WebFunnel:   opts.WebFunnel,
-		WebPrivacy:  opts.WebPrivacy,
-		WebAIPolicy: opts.WebAIPolicy,
-		WebCatalog:  opts.WebCatalog,
+		WebContacts:       opts.WebContacts,
+		WebFunnel:         opts.WebFunnel,
+		WebPrivacy:        opts.WebPrivacy,
+		WebAIPolicy:       opts.WebAIPolicy,
+		WebCatalog:        opts.WebCatalog,
+		WebCampaigns:      opts.WebCampaigns,
+		WebFunnelRules:    opts.WebFunnelRules,
+		WebCampaignPublic: webCampaignPublic,
 	})
 
 	fullCleanup := func() {

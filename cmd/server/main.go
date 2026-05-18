@@ -194,6 +194,17 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		ms.Register(mux)
 	}
 
+	// SIN-62964 PIX Inter webhook receiver. Fail-soft on missing
+	// secret / DSN / Redis just like the other webhook wirings; the
+	// more-specific `POST /webhooks/pix/inter` pattern wins over the
+	// ADR-0075 templated route the same way the WhatsApp and Messenger
+	// wires do.
+	pi := buildPixInterWebhookWiring(ctx, getenv)
+	if pi != nil {
+		defer pi.Cleanup()
+		pi.Register(mux)
+	}
+
 	// SIN-62331 F51 — slug reservation wiring. Mount the master
 	// override route, the signup + tenant-rename placeholders guarded
 	// by RequireSlugAvailable, and the upload pipeline. The redirect
@@ -239,16 +250,30 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webCatalogHandler, webCatalogCleanup := buildWebCatalogHandler(ctx, getenv)
 	defer webCatalogCleanup()
 
+	// SIN-62962 — HTMX campaign dashboard (Fase 4). Same fail-soft
+	// pattern: nil handler leaves /campaigns* unmounted when the
+	// runtime DSN is missing or the pgxpool fails to open.
+	webCampaignsHandler, webCampaignsCleanup := buildWebCampaignsHandler(ctx, getenv)
+	defer webCampaignsCleanup()
+
+	// SIN-62961 — HTMX funnel-rules editor (Fase 4). Same fail-soft
+	// pattern: nil handler leaves /funnel/rules* unmounted when the
+	// runtime DSN is missing or the pgxpool fails to open.
+	webFunnelRulesHandler, webFunnelRulesCleanup := buildWebFunnelRulesHandler(ctx, getenv)
+	defer webFunnelRulesCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
 	// catch-all handler.
 	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv, iamHandlerOpts{
-		WebContacts: webContactsHandler,
-		WebFunnel:   webFunnelHandler,
-		WebPrivacy:  webPrivacyHandler,
-		WebAIPolicy: webAIPolicyHandler,
-		WebCatalog:  webCatalogHandler,
+		WebContacts:    webContactsHandler,
+		WebFunnel:      webFunnelHandler,
+		WebPrivacy:     webPrivacyHandler,
+		WebAIPolicy:    webAIPolicyHandler,
+		WebCatalog:     webCatalogHandler,
+		WebCampaigns:   webCampaignsHandler,
+		WebFunnelRules: webFunnelRulesHandler,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {
@@ -338,6 +363,21 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		go func() {
 			defer workerWG.Done()
 			if err := br.RunWorker(ctx); err != nil {
+				recordWorkerErr(err)
+			}
+		}()
+	}
+
+	// SIN-62965 dunning tick — sweeps non-terminal subscription_dunning_states
+	// rows, escalates per the plan policy, drops back to current when the
+	// pending invoice clears, and respects free_subscription_period grants.
+	dt := buildDunningTickWiring(ctx, getenv)
+	if dt != nil {
+		defer dt.Cleanup()
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			if err := dt.RunWorker(ctx); err != nil {
 				recordWorkerErr(err)
 			}
 		}()

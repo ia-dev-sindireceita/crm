@@ -71,7 +71,7 @@ func buildMessengerWiring(ctx context.Context, getenv func(string) string) *mess
 		log.Printf("crm: messenger intake disabled — pg connect: %v", err)
 		return nil
 	}
-	adapter, sender, cleanup, err := assembleMessengerAdapter(cfg, pool, getenv)
+	adapter, sender, cleanup, err := assembleMessengerAdapter(ctx, cfg, pool, getenv)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: messenger intake disabled — assemble: %v", err)
@@ -88,7 +88,7 @@ func buildMessengerWiring(ctx context.Context, getenv func(string) string) *mess
 // assembleMessengerAdapter constructs the adapter from already-connected
 // dependencies. Split out so unit tests can wire fakes instead of real
 // pgxpool clients.
-func assembleMessengerAdapter(cfg messenger.Config, pool *pgxpool.Pool, getenv func(string) string) (*messenger.Adapter, *channelmessenger.Sender, func(), error) {
+func assembleMessengerAdapter(ctx context.Context, cfg messenger.Config, pool *pgxpool.Pool, getenv func(string) string) (*messenger.Adapter, *channelmessenger.Sender, func(), error) {
 	contactsStore, err := pgcontacts.New(pool)
 	if err != nil {
 		return nil, nil, nil, err
@@ -104,6 +104,31 @@ func assembleMessengerAdapter(cfg messenger.Config, pool *pgxpool.Pool, getenv f
 	receiver, err := inboxusecase.NewReceiveInbound(inboxStore, inboxStore, contactsUC)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	// SIN-62959 — attribution hook. Same soft-fail pattern as
+	// whatsapp_wire: linker construction failure → warn + skip; inbox
+	// keeps working without the [crm:<click_id>] linkage.
+	if linker, err := buildCampaignLinker(pool); err != nil {
+		slog.Default().Warn("messenger wire: campaign linker disabled", "err", err)
+	} else if linker != nil {
+		receiver.SetCampaignLinker(linker)
+		receiver.SetCampaignLinkerLogger(slog.Default())
+		// SIN-62982 — share the marker signing key with the inbox
+		// verifier so the redirect handler and the inbox-side hook
+		// agree on the HMAC. Empty key keeps the compat-window
+		// legacy-only behaviour.
+		receiver.SetCampaignMarkerKey(readMarkerSigningKey(getenv))
+	}
+	// SIN-62960 — funnel engine fan-out hook. Mirrors whatsapp_wire:
+	// NATS_URL unset → no publisher → inbox skips the publish; dial
+	// error → warn + continue. The publish hook in ReceiveInbound is
+	// soft-fail (see linkContactToCampaign for the same contract).
+	funnelPub, funnelCleanup, err := buildFunnelEngineInboundPublisher(ctx, getenv)
+	if err != nil {
+		slog.Default().Warn("messenger wire: funnel engine publisher disabled", "err", err)
+	} else if funnelPub != nil {
+		receiver.SetInboundMessagePublisher(funnelPub)
+		receiver.SetInboundMessagePublisherLogger(slog.Default())
 	}
 
 	lookup := pgstore.NewChannelAssociationLookup(pool)
@@ -150,7 +175,12 @@ func assembleMessengerAdapter(cfg messenger.Config, pool *pgxpool.Pool, getenv f
 		log.Printf("crm: messenger outbound sender disabled (META_GRAPH_TOKEN unset)")
 	}
 
-	cleanup := func() { pool.Close() }
+	cleanup := func() {
+		if funnelCleanup != nil {
+			funnelCleanup()
+		}
+		pool.Close()
+	}
 	return inboundAdapter, outboundSender, cleanup, nil
 }
 
