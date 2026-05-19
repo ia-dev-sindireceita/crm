@@ -46,6 +46,9 @@ func buildFixtures(t testing.TB) []struct {
 		{name: "mid_grey_solid", bytes: pngSolid(64, color.NRGBA{0x77, 0x77, 0x77, 0xFF})},
 		{name: "alpha_gradient_blue", bytes: pngAlphaGradient(64, color.NRGBA{0x2B, 0x6E, 0xDD, 0xFF})},
 		{name: "tiny_icon_32px", bytes: pngStripes(32, color.NRGBA{0x0E, 0xA5, 0xE9, 0xFF}, color.NRGBA{0xFA, 0xCC, 0x15, 0xFF}, color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF})},
+		// 512-px fixture exercises the resampleNearest downsample branch
+		// (input above resampleMax = 256 triggers the NearestNeighbor pass).
+		{name: "large_512px_stripes", bytes: pngStripes(512, color.NRGBA{0xE0, 0x21, 0x21, 0xFF}, color.NRGBA{0x21, 0x21, 0xE0, 0xFF})},
 	}
 }
 

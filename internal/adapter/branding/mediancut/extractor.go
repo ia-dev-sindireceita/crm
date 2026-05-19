@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/dominantcolor"
+	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // register decoder
 
 	"github.com/pericles-luz/crm/internal/branding"
@@ -32,6 +33,7 @@ import (
 // knob.
 const (
 	defaultMaxBytes        = 2 << 20 // ADR 0080 §5 tenant-logo cap.
+	resampleMax            = 256     // ADR 0060 §"Sizing and timing" step 2.
 	clusters               = 5       // ADR 0060 §"Decision".
 	neutralEpsilon         = 0.04    // ADR 0060 §"WCAG AA policy" step 2.
 	minHueDistance         = 30.0    // ADR 0060 §"WCAG AA policy" step 3.
@@ -109,7 +111,16 @@ func (e *Extractor) Extract(ctx context.Context, src io.Reader, hint branding.Hi
 		return branding.Palette{}, err
 	}
 
-	candidates := toRGBs(dominantcolor.FindN(maskAlpha(img, alphaCutoff), clusters))
+	// Resample to ≤256×256 with NearestNeighbor (ADR 0060 §"Sizing and timing"
+	// step 2) BEFORE maskAlpha so the alpha pre-filter iterates ≤65k pixels
+	// instead of the full input (16× headroom for a 1024×1024 logo).
+	// NearestNeighbor preserves flat-field brand colours without
+	// anti-aliasing bleed — bilinear/Lanczos would soften logo edges and
+	// shift cluster dominance. Determinism is preserved: NearestNeighbor +
+	// fixed bytes = fixed bitmap. dominantcolor.FindN's own internal resize
+	// becomes a no-op once the input is already within budget.
+	small := resampleNearest(img, resampleMax)
+	candidates := toRGBs(dominantcolor.FindN(maskAlpha(small, alphaCutoff), clusters))
 	if len(candidates) == 0 {
 		// Pure-transparent input or zero-area image: hand EnsureWCAGAA a
 		// mid-grey Primary so the deterministic fallback path fires.
@@ -136,6 +147,34 @@ func (e *Extractor) Extract(ctx context.Context, src io.Reader, hint branding.Hi
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 	return palette, nil
+}
+
+// resampleNearest scales src so the longer edge is ≤ maxEdge, preserving
+// aspect ratio with NearestNeighbor (ADR 0060 §"Sizing and timing" step
+// 2). Returns src unchanged when it is already within the budget.
+func resampleNearest(src image.Image, maxEdge int) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= maxEdge && h <= maxEdge {
+		return src
+	}
+	var dw, dh int
+	if w >= h {
+		dw = maxEdge
+		dh = int(float64(h) * float64(maxEdge) / float64(w))
+	} else {
+		dh = maxEdge
+		dw = int(float64(w) * float64(maxEdge) / float64(h))
+	}
+	if dw < 1 {
+		dw = 1
+	}
+	if dh < 1 {
+		dh = 1
+	}
+	dst := image.NewNRGBA(image.Rect(0, 0, dw, dh))
+	draw.NearestNeighbor.Scale(dst, dst.Bounds(), src, b, draw.Src, nil)
+	return dst
 }
 
 // maskAlpha binarises the alpha channel: pixels with alpha < cutoff
