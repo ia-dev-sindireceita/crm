@@ -22,7 +22,7 @@
 }
 
 .funnel-rules-shell__actions a {
-  background: #1f6feb;
+  background: var(--color-primary, #1f6feb);
   color: #fff;
   padding: 0.5rem 0.85rem;
   border-radius: 4px;
@@ -289,9 +289,9 @@
 
 .funnel-rules-form input:focus-visible,
 .funnel-rules-form select:focus-visible {
-  outline: 3px solid #54aeff;
+  outline: 3px solid var(--color-accent, #54aeff);
   outline-offset: 0;
-  border-color: #1f6feb;
+  border-color: var(--color-primary, #1f6feb);
 }
 
 .funnel-rules-form input[aria-invalid="true"] {
