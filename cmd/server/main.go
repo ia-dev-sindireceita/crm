@@ -262,13 +262,13 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webFunnelRulesHandler, webFunnelRulesCleanup := buildWebFunnelRulesHandler(ctx, getenv)
 	defer webFunnelRulesCleanup()
 
-	// SIN-63084 — HTMX branding admin (Fase 5). No DB dependency
-	// (the in-memory PaletteStore stands in for the SIN-63075 postgres
-	// adapter), so the handler is always non-nil here. The cleanup is
-	// a no-op but the signature stays consistent with the other
-	// web/* wires for orthogonality.
-	webBrandingHandler, webBrandingCleanup := buildWebBrandingHandler(slog.Default())
-	defer webBrandingCleanup()
+	// SIN-63084 + SIN-63085 + SIN-63101 — HTMX branding admin AND the
+	// per-tenant theme middleware. Both halves share the in-memory
+	// PaletteStore so a SIN-63084 save is visible to the next theme-
+	// middleware lookup without TTL wait (AC #4 of SIN-63085). No DB
+	// dependency today; cleanup is a no-op but stays for orthogonality.
+	brandingStack := buildBrandingStack(slog.Default(), nil)
+	defer brandingStack.Cleanup()
 
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
@@ -282,7 +282,8 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		WebCatalog:     webCatalogHandler,
 		WebCampaigns:   webCampaignsHandler,
 		WebFunnelRules: webFunnelRulesHandler,
-		WebBranding:    webBrandingHandler,
+		WebBranding:    brandingStack.Handler,
+		Theme:          brandingStack.Theme,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

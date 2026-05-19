@@ -157,6 +157,20 @@ type Deps struct {
 	// that don't wire a Touch port.
 	SessionToucher middleware.SessionToucher
 
+	// Theme, when non-nil, mounts the SIN-63085 per-tenant theme
+	// middleware inside the tenanted group (AFTER TenantScope so the
+	// resolved tenant is available on the request context). Every
+	// downstream renderer reads the resolved style via
+	// branding.ThemeStyleFromContext; a nil Theme keeps the chain
+	// behaving as it did pre-SIN-63101 — the helpers fall back to
+	// branding.DefaultThemeStyle. cmd/server constructs the
+	// middleware on top of the SIN-63075 palette store so reads from
+	// the middleware and writes from the SIN-63084 branding admin
+	// handler share state; the same instance is also handed to
+	// webbranding.Deps.ThemeCache so the AC #4 cache-invalidation
+	// seam fires after every save / revert.
+	Theme *middleware.ThemeMiddleware
+
 	// MasterHost is the operator-console hostname (e.g. "master.crm.local")
 	// added to the CSRF Origin/Referer allowlist alongside the resolved
 	// tenant host (ADR 0073 §D1). Empty means "no master host configured"
@@ -454,6 +468,13 @@ func NewRouter(deps Deps) http.Handler {
 			tenanted.Use(deps.Metrics.HTTPMetrics(httpTenantOf, httpRouteOf))
 		}
 		tenanted.Use(obs.OTelHTTP("http.request", httpRouteOf, httpTenantSpanEnricher))
+		// SIN-63101 — per-tenant theme attachment. Mounted AFTER
+		// TenantScope so the resolved tenant is on the context; nil
+		// keeps the chain unchanged so router tests that don't wire
+		// the middleware continue rendering DefaultThemeStyle.
+		if deps.Theme != nil {
+			tenanted.Use(deps.Theme.Handler)
+		}
 
 		tenanted.Get("/login", handler.LoginGet)
 
