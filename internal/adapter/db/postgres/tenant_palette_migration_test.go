@@ -293,3 +293,25 @@ func TestTenantPalette_RLSPosture(t *testing.T) {
 		t.Fatalf("tenant B primary mutated to %q (want %q) — RLS bypass", bPrimary, "#bbbbbb")
 	}
 }
+
+// TestTenantPalette_MasterOpsAuditTriggerRegistered asserts the canonical
+// master_ops_audit_trigger is attached to tenant_palette. Without it, an
+// app_master_ops session could mutate palette rows with no audit row
+// written and no app.master_ops_actor_user_id GUC required — see
+// ADR-0072 ("what makes the log non-bypassable").
+func TestTenantPalette_MasterOpsAuditTriggerRegistered(t *testing.T) {
+	db, ctx := freshDBWithTenantPalette(t)
+
+	var name string
+	if err := db.SuperuserPool().QueryRow(ctx,
+		`SELECT t.tgname FROM pg_trigger t
+		   JOIN pg_class c ON c.oid = t.tgrelid
+		  WHERE c.relname = 'tenant_palette'
+		    AND t.tgname = 'tenant_palette_master_ops_audit'
+		    AND NOT t.tgisinternal`).Scan(&name); err != nil {
+		t.Fatalf("read trigger: %v", err)
+	}
+	if name != "tenant_palette_master_ops_audit" {
+		t.Errorf("trigger name = %q; want tenant_palette_master_ops_audit", name)
+	}
+}

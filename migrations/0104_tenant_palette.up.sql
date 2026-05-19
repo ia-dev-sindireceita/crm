@@ -95,4 +95,9 @@ CREATE POLICY tenant_isolation_delete ON tenant_palette
   FOR DELETE TO app_runtime
   USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
 
+DROP TRIGGER IF EXISTS tenant_palette_master_ops_audit ON tenant_palette;
+CREATE TRIGGER tenant_palette_master_ops_audit
+  BEFORE INSERT OR UPDATE OR DELETE ON tenant_palette
+  FOR EACH ROW EXECUTE FUNCTION master_ops_audit_trigger();
+
 COMMIT;
