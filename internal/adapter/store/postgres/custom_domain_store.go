@@ -13,8 +13,8 @@ import (
 )
 
 // CustomDomainStore is the write-side adapter for tenant_custom_domains
-// (migration 0010). It is the production implementation of
-// management.Store.
+// (migration 0010, extended by 0106). It is the production
+// implementation of management.Store.
 //
 // Reads of multiple rows go through Query; the existing PgxConn surface
 // only declares QueryRow + Exec. PgxRowsConn is the narrowed pgx.Pool
@@ -33,12 +33,17 @@ type PgxRowsConn interface {
 // NewCustomDomainStore returns a store bound to db.
 func NewCustomDomainStore(db PgxRowsConn) *CustomDomainStore { return &CustomDomainStore{db: db} }
 
+// customDomainColumns is the standard projection used by every SELECT
+// and every UPDATE/INSERT RETURNING. Keeping it as a constant makes it
+// impossible to forget a column when scanCustomDomainRow expects it.
+const customDomainColumns = `id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
+       tls_paused_at, deleted_at, dns_resolution_log_id, token_issued_at, created_at, updated_at`
+
 // listSQL returns active rows newest-first per the
 // idx_tenant_custom_domains_created_at partial index. Soft-deleted rows
 // are excluded — UI lists never display them.
 const customDomainListSQL = `
-SELECT id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-       tls_paused_at, deleted_at, dns_resolution_log_id, created_at, updated_at
+SELECT ` + customDomainColumns + `
   FROM tenant_custom_domains
  WHERE tenant_id = $1 AND deleted_at IS NULL
  ORDER BY created_at DESC
@@ -67,8 +72,7 @@ func (s *CustomDomainStore) List(ctx context.Context, tenantID uuid.UUID) ([]man
 }
 
 const customDomainGetSQL = `
-SELECT id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-       tls_paused_at, deleted_at, dns_resolution_log_id, created_at, updated_at
+SELECT ` + customDomainColumns + `
   FROM tenant_custom_domains
  WHERE id = $1
  LIMIT 1
@@ -82,14 +86,14 @@ func (s *CustomDomainStore) GetByID(ctx context.Context, id uuid.UUID) (manageme
 }
 
 const customDomainInsertSQL = `
-INSERT INTO tenant_custom_domains (id, tenant_id, host, verification_token, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $5)
-RETURNING id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-          tls_paused_at, deleted_at, dns_resolution_log_id, created_at, updated_at
-`
+INSERT INTO tenant_custom_domains (id, tenant_id, host, verification_token, token_issued_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $5, $5)
+RETURNING ` + customDomainColumns
 
 // Insert appends a new row. The unique index on lower(host) WHERE
-// deleted_at IS NULL surfaces conflicts as 23505.
+// deleted_at IS NULL surfaces conflicts as 23505. token_issued_at takes
+// the same value as created_at on enrollment (per Enroll in the
+// use-case) so a fresh row starts its TTL window now.
 func (s *CustomDomainStore) Insert(ctx context.Context, d management.Domain) (management.Domain, error) {
 	row := s.db.QueryRow(ctx, customDomainInsertSQL, d.ID, d.TenantID, d.Host, d.VerificationToken, d.CreatedAt)
 	return scanCustomDomainRow(row)
@@ -97,23 +101,49 @@ func (s *CustomDomainStore) Insert(ctx context.Context, d management.Domain) (ma
 
 const customDomainMarkVerifiedSQL = `
 UPDATE tenant_custom_domains
-   SET verified_at = $2,
-       verified_with_dnssec = $3,
-       dns_resolution_log_id = $4,
-       updated_at = $2
- WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-          tls_paused_at, deleted_at, dns_resolution_log_id, created_at, updated_at
+   SET verified_at = $3,
+       verified_with_dnssec = $4,
+       dns_resolution_log_id = $5,
+       updated_at = $3
+ WHERE id = $1
+   AND deleted_at IS NULL
+   AND verification_token = $2
+RETURNING ` + customDomainColumns
+
+// customDomainExistsSQL is the rotation-vs-not-found discriminator used
+// after a zero-row CAS UPDATE.
+const customDomainExistsSQL = `
+SELECT 1 FROM tenant_custom_domains WHERE id = $1 AND deleted_at IS NULL
 `
 
-// MarkVerified flips verified_at + verified_with_dnssec.
-func (s *CustomDomainStore) MarkVerified(ctx context.Context, id uuid.UUID, at time.Time, withDNSSEC bool, dnsLogID *uuid.UUID) (management.Domain, error) {
+// MarkVerified flips verified_at + verified_with_dnssec iff the row
+// still carries expectedToken. On zero rows we follow up with a SELECT
+// to distinguish a missing/soft-deleted row (ErrStoreNotFound) from a
+// token rotation race (ErrTokenRotated). Two round-trips on the rare
+// failure path is acceptable; the common path stays single-statement.
+func (s *CustomDomainStore) MarkVerified(ctx context.Context, id uuid.UUID, expectedToken string, at time.Time, withDNSSEC bool, dnsLogID *uuid.UUID) (management.Domain, error) {
 	var dnsArg any
 	if dnsLogID != nil {
 		dnsArg = *dnsLogID
 	}
-	row := s.db.QueryRow(ctx, customDomainMarkVerifiedSQL, id, at, withDNSSEC, dnsArg)
-	return scanCustomDomainRow(row)
+	row := s.db.QueryRow(ctx, customDomainMarkVerifiedSQL, id, expectedToken, at, withDNSSEC, dnsArg)
+	d, err := scanCustomDomainRow(row)
+	if err == nil {
+		return d, nil
+	}
+	if !errors.Is(err, management.ErrStoreNotFound) {
+		return management.Domain{}, err
+	}
+	// Zero rows. Is the row missing entirely, or did the token rotate?
+	var probe int
+	probeErr := s.db.QueryRow(ctx, customDomainExistsSQL, id).Scan(&probe)
+	if probeErr == nil {
+		return management.Domain{}, management.ErrTokenRotated
+	}
+	if errors.Is(probeErr, pgx.ErrNoRows) {
+		return management.Domain{}, management.ErrStoreNotFound
+	}
+	return management.Domain{}, fmt.Errorf("custom_domain mark verified probe: %w", probeErr)
 }
 
 const customDomainSetPausedSQL = `
@@ -121,9 +151,7 @@ UPDATE tenant_custom_domains
    SET tls_paused_at = $2,
        updated_at = $3
  WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-          tls_paused_at, deleted_at, dns_resolution_log_id, created_at, updated_at
-`
+RETURNING ` + customDomainColumns
 
 // SetPaused sets tls_paused_at to *pausedAt or NULL.
 func (s *CustomDomainStore) SetPaused(ctx context.Context, id uuid.UUID, pausedAt *time.Time) (management.Domain, error) {
@@ -142,9 +170,7 @@ UPDATE tenant_custom_domains
    SET deleted_at = $2,
        updated_at = $2
  WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-          tls_paused_at, deleted_at, dns_resolution_log_id, created_at, updated_at
-`
+RETURNING ` + customDomainColumns
 
 // SoftDelete flips deleted_at. The partial unique index on (lower(host),
 // deleted_at IS NULL) automatically frees the host for re-claim.
@@ -236,9 +262,10 @@ func scanCustomDomainRow(row pgx.Row) (management.Domain, error) {
 		pausedAt       *time.Time
 		deletedAt      *time.Time
 		dnsLogID       *[16]byte
+		tokenIssuedAt  time.Time
 		createdAt, upd time.Time
 	)
-	if err := row.Scan(&id, &tenantID, &host, &token, &verifiedAt, &verifiedDNSSEC, &pausedAt, &deletedAt, &dnsLogID, &createdAt, &upd); err != nil {
+	if err := row.Scan(&id, &tenantID, &host, &token, &verifiedAt, &verifiedDNSSEC, &pausedAt, &deletedAt, &dnsLogID, &tokenIssuedAt, &createdAt, &upd); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return management.Domain{}, management.ErrStoreNotFound
 		}
@@ -253,6 +280,7 @@ func scanCustomDomainRow(row pgx.Row) (management.Domain, error) {
 		VerifiedWithDNSSEC: verifiedDNSSEC,
 		TLSPausedAt:        pausedAt,
 		DeletedAt:          deletedAt,
+		TokenIssuedAt:      tokenIssuedAt,
 		CreatedAt:          createdAt,
 		UpdatedAt:          upd,
 	}

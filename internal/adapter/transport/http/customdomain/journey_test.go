@@ -304,12 +304,15 @@ func (s *journeyDomainStore) Insert(_ context.Context, d management.Domain) (man
 	return d, nil
 }
 
-func (s *journeyDomainStore) MarkVerified(_ context.Context, id uuid.UUID, at time.Time, withDNSSEC bool, logID *uuid.UUID) (management.Domain, error) {
+func (s *journeyDomainStore) MarkVerified(_ context.Context, id uuid.UUID, expectedToken string, at time.Time, withDNSSEC bool, logID *uuid.UUID) (management.Domain, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d, ok := s.rows[id]
 	if !ok {
 		return management.Domain{}, management.ErrStoreNotFound
+	}
+	if d.VerificationToken != expectedToken {
+		return management.Domain{}, management.ErrTokenRotated
 	}
 	t := at
 	d.VerifiedAt = &t
