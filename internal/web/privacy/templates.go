@@ -25,6 +25,7 @@ var pageTmpl = template.Must(template.New("privacy.page").Parse(`<!doctype html>
 <head>
   <meta charset="utf-8">
   <title>Privacidade e sub-processadores — {{.TenantName}}</title>
+  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/privacy.css">
 </head>
 <body>

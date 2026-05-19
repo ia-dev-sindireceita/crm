@@ -35,6 +35,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/aipolicy"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -106,15 +107,16 @@ func (h *Handler) viewTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.render(w, pageData{
-		Title:       fmt.Sprintf("Auditoria — IA — %s", tenant.Name),
-		IsMaster:    false,
-		TenantName:  tenant.Name,
-		TenantID:    tenant.ID,
-		BaseURL:     "/settings/ai-policy/audit",
-		GeneratedAt: h.deps.Now().Format(time.RFC3339),
-		Filters:     filters,
-		Events:      mapRecords(page.Events),
-		NextCursor:  encodeCursor(page.Next),
+		Title:            fmt.Sprintf("Auditoria — IA — %s", tenant.Name),
+		IsMaster:         false,
+		TenantName:       tenant.Name,
+		TenantID:         tenant.ID,
+		BaseURL:          "/settings/ai-policy/audit",
+		GeneratedAt:      h.deps.Now().Format(time.RFC3339),
+		Filters:          filters,
+		Events:           mapRecords(page.Events),
+		NextCursor:       encodeCursor(page.Next),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	})
 }
 
@@ -162,16 +164,17 @@ func (h *Handler) viewMaster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.render(w, pageData{
-		Title:       fmt.Sprintf("Auditoria master — IA — tenant %s", rawTenant),
-		IsMaster:    true,
-		TenantName:  rawTenant,
-		TenantID:    tenantID,
-		BaseURL:     "/admin/audit",
-		ModuleParam: module,
-		GeneratedAt: h.deps.Now().Format(time.RFC3339),
-		Filters:     filters,
-		Events:      mapRecords(page.Events),
-		NextCursor:  encodeCursor(page.Next),
+		Title:            fmt.Sprintf("Auditoria master — IA — tenant %s", rawTenant),
+		IsMaster:         true,
+		TenantName:       rawTenant,
+		TenantID:         tenantID,
+		BaseURL:          "/admin/audit",
+		ModuleParam:      module,
+		GeneratedAt:      h.deps.Now().Format(time.RFC3339),
+		Filters:          filters,
+		Events:           mapRecords(page.Events),
+		NextCursor:       encodeCursor(page.Next),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	})
 }
 
@@ -339,6 +342,10 @@ type pageData struct {
 	Filters     filterSet
 	Events      []renderableEvent
 	NextCursor  string
+
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 func (h *Handler) render(w http.ResponseWriter, data pageData) {

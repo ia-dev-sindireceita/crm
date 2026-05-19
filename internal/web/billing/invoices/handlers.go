@@ -17,6 +17,7 @@ import (
 	"github.com/pericles-luz/crm/internal/billing"
 	"github.com/pericles-luz/crm/internal/billing/dunning"
 	"github.com/pericles-luz/crm/internal/billing/pix"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -151,11 +152,12 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.deps.Now().UTC()
 	view := listView{
-		Banner:      banner,
-		Rows:        listRows(rows, listLimit),
-		GeneratedAt: now.Format(time.RFC3339),
-		CSRFMeta:    csrf.MetaTag(token),
-		HXHeaders:   csrf.HXHeadersAttr(token),
+		Banner:           banner,
+		Rows:             listRows(rows, listLimit),
+		GeneratedAt:      now.Format(time.RFC3339),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	h.writeHTML(w, http.StatusOK, listLayoutTmpl, view)
 }
@@ -200,13 +202,14 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.deps.Now().UTC()
 	view := detailView{
-		Banner:      banner,
-		Invoice:     invoiceRowFrom(inv),
-		Charge:      chargeV,
-		Status:      statusFragmentFrom(invoiceID, charge),
-		CSRFMeta:    csrf.MetaTag(token),
-		HXHeaders:   csrf.HXHeadersAttr(token),
-		GeneratedAt: now.Format(time.RFC3339),
+		Banner:           banner,
+		Invoice:          invoiceRowFrom(inv),
+		Charge:           chargeV,
+		Status:           statusFragmentFrom(invoiceID, charge),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		GeneratedAt:      now.Format(time.RFC3339),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	h.writeHTML(w, http.StatusOK, detailLayoutTmpl, view)
 }
@@ -295,21 +298,23 @@ func (h *Handler) fail(w http.ResponseWriter, status int, msg string, err error)
 // ---------------------------------------------------------------------------
 
 type listView struct {
-	Banner      bannerView
-	Rows        []invoiceRow
-	GeneratedAt string
-	CSRFMeta    template.HTML
-	HXHeaders   template.HTMLAttr
+	Banner           bannerView
+	Rows             []invoiceRow
+	GeneratedAt      string
+	CSRFMeta         template.HTML
+	HXHeaders        template.HTMLAttr
+	TenantThemeStyle template.CSS
 }
 
 type detailView struct {
-	Banner      bannerView
-	Invoice     invoiceRow
-	Charge      chargeView
-	Status      statusFragment
-	CSRFMeta    template.HTML
-	HXHeaders   template.HTMLAttr
-	GeneratedAt string
+	Banner           bannerView
+	Invoice          invoiceRow
+	Charge           chargeView
+	Status           statusFragment
+	CSRFMeta         template.HTML
+	HXHeaders        template.HTMLAttr
+	GeneratedAt      string
+	TenantThemeStyle template.CSS
 }
 
 type invoiceRow struct {

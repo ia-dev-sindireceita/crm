@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/customdomain/management"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 )
@@ -108,6 +110,10 @@ type pageData struct {
 	// every script in base.html also has a `src=` that matches the policy
 	// 'self' source.
 	Nonce string
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085). base.html emits the <style id="tenant-theme">
+	// slot when this is non-empty.
+	TenantThemeStyle template.CSS
 }
 
 type listPartialData struct {
@@ -174,11 +180,12 @@ func (h *Handler) serveList(w http.ResponseWriter, r *http.Request) {
 		views = append(views, h.viewFor(d, nil, csrf))
 	}
 	data := pageData{
-		Title:         "Domínios personalizados",
-		CSRFToken:     csrf,
-		PrimaryDomain: h.primaryDomain,
-		Domains:       views,
-		Nonce:         csp.Nonce(r.Context()),
+		Title:            "Domínios personalizados",
+		CSRFToken:        csrf,
+		PrimaryDomain:    h.primaryDomain,
+		Domains:          views,
+		Nonce:            csp.Nonce(r.Context()),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := renderTemplate(w, "base", data); err != nil {

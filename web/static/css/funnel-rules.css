@@ -31,7 +31,7 @@
 }
 
 .funnel-rules-shell__actions a:focus-visible {
-  outline: 3px solid #54aeff;
+  outline: 3px solid var(--color-accent, #54aeff);
   outline-offset: 2px;
 }
 
@@ -147,7 +147,7 @@
 
 .funnel-rules-row__actions button:focus-visible,
 .funnel-rules-row__actions a:focus-visible {
-  outline: 3px solid #54aeff;
+  outline: 3px solid var(--color-accent, #54aeff);
   outline-offset: 2px;
 }
 
@@ -357,6 +357,6 @@
 }
 
 .funnel-rules-form__actions button:focus-visible {
-  outline: 3px solid #54aeff;
+  outline: 3px solid var(--color-accent, #54aeff);
   outline-offset: 2px;
 }

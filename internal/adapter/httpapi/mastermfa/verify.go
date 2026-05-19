@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
 
@@ -392,8 +393,9 @@ func (h *VerifyHandler) renderForm(w http.ResponseWriter, r *http.Request, errMs
 		w.WriteHeader(http.StatusUnauthorized)
 	}
 	data := verifyViewData{
-		ErrorMessage: errMsg,
-		ReturnPath:   ResolveReturn(r.URL.Query().Get("return"), ""),
+		ErrorMessage:     errMsg,
+		ReturnPath:       ResolveReturn(r.URL.Query().Get("return"), ""),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "verify.html", data); err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: verify template render failed",
@@ -405,6 +407,9 @@ func (h *VerifyHandler) renderForm(w http.ResponseWriter, r *http.Request, errMs
 type verifyViewData struct {
 	ErrorMessage string
 	ReturnPath   string
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 // isSixDigit reports whether s is exactly six ASCII decimal digits.

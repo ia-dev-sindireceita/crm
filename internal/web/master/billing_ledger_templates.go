@@ -1,6 +1,7 @@
 package master
 
 import (
+	"context"
 	"html/template"
 	"io"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/branding"
 )
 
 // billingPageData drives the layout + panel partial for GET /master/
@@ -22,6 +24,11 @@ type billingPageData struct {
 
 	CSRFMeta  template.HTML
 	HXHeaders template.HTMLAttr
+
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085) so the master shell picks up the tenant's
+	// custom palette when one is configured.
+	TenantThemeStyle template.CSS
 }
 
 // ledgerPageData drives the layout + panel partial + rows-only
@@ -42,32 +49,41 @@ type ledgerPageData struct {
 
 	CSRFMeta  template.HTML
 	HXHeaders template.HTMLAttr
+
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 // newBillingPageData converts the BillingView aggregate into the
 // template view-model. csrfToken is the request-scoped token (must be
 // non-empty by the time this is called — the handler 500s otherwise).
-func newBillingPageData(view BillingView, csrfToken string) billingPageData {
+// ctx carries the per-request runtime theming style attached by
+// middleware.Theme (SIN-63085).
+func newBillingPageData(ctx context.Context, view BillingView, csrfToken string) billingPageData {
 	return billingPageData{
-		TenantID:     view.TenantID,
-		Subscription: view.Subscription,
-		Invoices:     view.Invoices,
-		Grants:       view.Grants,
-		CSRFMeta:     csrf.MetaTag(csrfToken),
-		HXHeaders:    csrf.HXHeadersAttr(csrfToken),
+		TenantID:         view.TenantID,
+		Subscription:     view.Subscription,
+		Invoices:         view.Invoices,
+		Grants:           view.Grants,
+		CSRFMeta:         csrf.MetaTag(csrfToken),
+		HXHeaders:        csrf.HXHeadersAttr(csrfToken),
+		TenantThemeStyle: branding.ThemeStyleFromContext(ctx),
 	}
 }
 
 // newLedgerPageData converts the LedgerPage payload into the template
-// view-model. csrfToken is the request-scoped CSRF token.
-func newLedgerPageData(tenantID uuid.UUID, page LedgerPage, pageSize int, csrfToken string) ledgerPageData {
+// view-model. csrfToken is the request-scoped CSRF token. ctx carries
+// the per-request runtime theming style (SIN-63085).
+func newLedgerPageData(ctx context.Context, tenantID uuid.UUID, page LedgerPage, pageSize int, csrfToken string) ledgerPageData {
 	data := ledgerPageData{
-		TenantID:  tenantID,
-		Entries:   page.Entries,
-		PageSize:  pageSize,
-		HasMore:   page.HasMore,
-		CSRFMeta:  csrf.MetaTag(csrfToken),
-		HXHeaders: csrf.HXHeadersAttr(csrfToken),
+		TenantID:         tenantID,
+		Entries:          page.Entries,
+		PageSize:         pageSize,
+		HasMore:          page.HasMore,
+		CSRFMeta:         csrf.MetaTag(csrfToken),
+		HXHeaders:        csrf.HXHeadersAttr(csrfToken),
+		TenantThemeStyle: branding.ThemeStyleFromContext(ctx),
 	}
 	if page.HasMore {
 		data.NextCursorAtRF = page.NextCursorOccurredAt.UTC().Format(time.RFC3339Nano)
@@ -158,6 +174,7 @@ var billingLayoutTmpl = template.Must(template.New("billing.layout").Funcs(billi
   <meta charset="utf-8">
   <title>Master · Histórico de cobrança</title>
   {{.CSRFMeta}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -302,6 +319,7 @@ var ledgerLayoutTmpl = template.Must(template.New("ledger.layout").Funcs(billing
   <meta charset="utf-8">
   <title>Master · Ledger de tokens</title>
   {{.CSRFMeta}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

@@ -94,7 +94,7 @@
   border-radius: 999px;
   font-size: 0.85em;
   background: #ddf4ff;
-  color: #0969da;
+  color: var(--color-primary, #0969da);
 }
 
 .campaign-status--expired {

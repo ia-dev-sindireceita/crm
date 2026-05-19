@@ -10,6 +10,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/billing"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -47,7 +48,7 @@ func (h *Handler) ListTenants(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
-	data := h.buildPageData(res, plans, token, "", "")
+	data := h.buildPageData(r, res, plans, token, "", "")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
 	tmpl := masterLayoutTmpl
@@ -117,7 +118,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
-	data := h.buildPageData(res, plans, token, "Tenant criado com sucesso.", "")
+	data := h.buildPageData(r, res, plans, token, "Tenant criado com sucesso.", "")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
 	if err := tenantsTableTmpl.Execute(w, data); err != nil {
@@ -211,7 +212,7 @@ func (h *Handler) parseListOptions(r *http.Request) ListOptions {
 // full page and the table partial. Keeping the data shape identical
 // across templates means a partial swap renders byte-identical output
 // to a full re-render of the same region.
-func (h *Handler) buildPageData(res ListResult, plans []billing.Plan, token, flash, formError string) pageData {
+func (h *Handler) buildPageData(r *http.Request, res ListResult, plans []billing.Plan, token, flash, formError string) pageData {
 	if res.PageSize <= 0 {
 		res.PageSize = h.defaultPageSize
 	}
@@ -223,17 +224,18 @@ func (h *Handler) buildPageData(res ListResult, plans []billing.Plan, token, fla
 		totalPages = (res.TotalCount + res.PageSize - 1) / res.PageSize
 	}
 	return pageData{
-		Tenants:    res.Tenants,
-		Page:       res.Page,
-		PageSize:   res.PageSize,
-		TotalCount: res.TotalCount,
-		TotalPages: totalPages,
-		Plans:      plans,
-		Flash:      flash,
-		FormError:  formError,
-		CSRFMeta:   csrf.MetaTag(token),
-		HXHeaders:  csrf.HXHeadersAttr(token),
-		CSRFInput:  csrf.FormHidden(token),
+		Tenants:          res.Tenants,
+		Page:             res.Page,
+		PageSize:         res.PageSize,
+		TotalCount:       res.TotalCount,
+		TotalPages:       totalPages,
+		Plans:            plans,
+		Flash:            flash,
+		FormError:        formError,
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		CSRFInput:        csrf.FormHidden(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 }
 
@@ -264,7 +266,7 @@ func (h *Handler) renderCreateError(w http.ResponseWriter, r *http.Request, msg 
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
-	data := h.buildPageData(res, plans, token, "", msg)
+	data := h.buildPageData(r, res, plans, token, "", msg)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := tenantsTableTmpl.Execute(w, data); err != nil {

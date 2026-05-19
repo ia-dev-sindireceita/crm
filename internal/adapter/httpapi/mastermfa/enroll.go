@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
 
@@ -87,9 +88,10 @@ func (h *EnrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	data := enrollViewData{
-		OTPAuthURI:    res.OTPAuthURI,
-		SecretEncoded: res.SecretEncoded,
-		RecoveryCodes: formatRecoveryCodes(res.RecoveryCodes),
+		OTPAuthURI:       res.OTPAuthURI,
+		SecretEncoded:    res.SecretEncoded,
+		RecoveryCodes:    formatRecoveryCodes(res.RecoveryCodes),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "enroll_result.html", data); err != nil {
 		// At this point we've already written headers — log and let
@@ -110,6 +112,9 @@ type enrollViewData struct {
 	OTPAuthURI    string
 	SecretEncoded string
 	RecoveryCodes []string
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 // formatRecoveryCodes renders each plaintext code with the midpoint

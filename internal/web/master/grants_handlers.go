@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -48,7 +49,7 @@ func (h *Handler) ShowGrantsForm(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
-	data := h.buildGrantsPageData(tenantID, p.UserID, grants, "", "", string(GrantKindFreeSubscriptionPeriod), token)
+	data := h.buildGrantsPageData(r, tenantID, p.UserID, grants, "", "", string(GrantKindFreeSubscriptionPeriod), token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
 	tmpl := grantsLayoutTmpl
@@ -123,7 +124,7 @@ func (h *Handler) IssueGrant(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
-	data := h.buildGrantsPageData(tenantID, p.UserID, grants,
+	data := h.buildGrantsPageData(r, tenantID, p.UserID, grants,
 		"Cortesia concedida com sucesso.", "",
 		string(GrantKindFreeSubscriptionPeriod), token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -200,7 +201,7 @@ func (h *Handler) RevokeGrant(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
-	data := h.buildGrantsPageData(tenantID, p.UserID, grants,
+	data := h.buildGrantsPageData(r, tenantID, p.UserID, grants,
 		"Grant revogado com sucesso.", "",
 		string(GrantKindFreeSubscriptionPeriod), token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -219,7 +220,7 @@ func (h *Handler) renderGrantsError(w http.ResponseWriter, r *http.Request, tena
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
-	data := h.buildGrantsPageData(tenantID, actor, grants, "", msg, kind, token)
+	data := h.buildGrantsPageData(r, tenantID, actor, grants, "", msg, kind, token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := grantsPanelTmpl.Execute(w, data); err != nil {
@@ -230,17 +231,18 @@ func (h *Handler) renderGrantsError(w http.ResponseWriter, r *http.Request, tena
 // buildGrantsPageData stitches the view model used by the layout and
 // the panel partial. Keeping a single shape across both means an HTMX
 // partial swap is byte-identical to a full page re-render.
-func (h *Handler) buildGrantsPageData(tenantID, actor uuid.UUID, grants []GrantRow, flash, formError, kind, token string) grantsPageData {
+func (h *Handler) buildGrantsPageData(r *http.Request, tenantID, actor uuid.UUID, grants []GrantRow, flash, formError, kind, token string) grantsPageData {
 	return grantsPageData{
-		TenantID:  tenantID,
-		ActorID:   actor,
-		Grants:    grants,
-		Flash:     flash,
-		FormError: formError,
-		Kind:      kind,
-		CSRFInput: csrf.FormHidden(token),
-		HXHeaders: csrf.HXHeadersAttr(token),
-		CSRFMeta:  csrf.MetaTag(token),
+		TenantID:         tenantID,
+		ActorID:          actor,
+		Grants:           grants,
+		Flash:            flash,
+		FormError:        formError,
+		Kind:             kind,
+		CSRFInput:        csrf.FormHidden(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		CSRFMeta:         csrf.MetaTag(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 }
 

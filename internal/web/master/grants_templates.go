@@ -26,6 +26,9 @@ type grantsPageData struct {
 	CSRFInput template.HTML
 	HXHeaders template.HTMLAttr
 	CSRFMeta  template.HTML
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 var grantsTemplateFuncs = template.FuncMap{
@@ -93,6 +96,7 @@ var grantsLayoutTmpl = template.Must(template.New("grants.layout").Funcs(grantsT
   <meta charset="utf-8">
   <title>Master · Cortesias</title>
   {{.CSRFMeta}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

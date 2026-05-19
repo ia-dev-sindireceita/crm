@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/aipolicy"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -114,6 +115,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 			AllowedLanguages: AllowedLanguages,
 			Anonymize:        true,
 		},
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	h.writeHTML(w, http.StatusOK, pageTmpl, data)
 }

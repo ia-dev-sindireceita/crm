@@ -15,6 +15,10 @@ type pageData struct {
 	Rows         []rowData
 	Preview      previewData
 	FormDefaults formDefaults
+
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 // listPartialData is the view-model returned to HTMX after a
@@ -218,6 +222,7 @@ var pageTmpl = mustParse("aipolicy.page", `<!doctype html>
 <head>
   <meta charset="utf-8">
   <title>Configuração de IA — {{.TenantName}}</title>
+  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/aipolicy.css">
   <script src="/static/vendor/htmx.min.js" defer></script>
 </head>

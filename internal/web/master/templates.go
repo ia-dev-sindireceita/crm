@@ -28,6 +28,12 @@ type pageData struct {
 	CSRFMeta  template.HTML
 	HXHeaders template.HTMLAttr
 	CSRFInput template.HTML
+
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085); the layout's <head> renders it via the
+	// {{with}} slot so a tenant with a custom palette sees its colours
+	// applied across the master shell.
+	TenantThemeStyle template.CSS
 }
 
 // rowData drives the per-row partial returned by PATCH /master/
@@ -171,6 +177,7 @@ var masterLayoutTmpl = template.Must(template.New("master.layout").Funcs(templat
   <meta charset="utf-8">
   <title>Master · Tenants</title>
   {{.CSRFMeta}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

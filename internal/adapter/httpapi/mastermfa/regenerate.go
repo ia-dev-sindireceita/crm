@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
 
@@ -92,7 +93,8 @@ func (h *RegenerateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	data := regenerateViewData{
-		RecoveryCodes: formatRecoveryCodes(codes),
+		RecoveryCodes:    formatRecoveryCodes(codes),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "regenerate_result.html", data); err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: regenerate render failed",
@@ -103,4 +105,7 @@ func (h *RegenerateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type regenerateViewData struct {
 	RecoveryCodes []string
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }

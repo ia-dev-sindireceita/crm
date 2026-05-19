@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/catalog"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -188,11 +189,12 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeHTML(w, http.StatusOK, pageTmpl, pageData{
-		TenantName:  tenant.Name,
-		GeneratedAt: h.deps.Now().UTC().Format(time.RFC3339),
-		Rows:        rowsFromProducts(products),
-		CSRFMeta:    csrf.MetaTag(token),
-		HXHeaders:   csrf.HXHeadersAttr(token),
+		TenantName:       tenant.Name,
+		GeneratedAt:      h.deps.Now().UTC().Format(time.RFC3339),
+		Rows:             rowsFromProducts(products),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	})
 }
 
@@ -278,11 +280,12 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeHTML(w, http.StatusOK, detailTmpl, detailData{
-		Product:   rowFromProduct(p),
-		Arguments: rowsFromArguments(args),
-		Preview:   previewData{Argument: rowFromPreview(preview), Source: src},
-		CSRFMeta:  csrf.MetaTag(token),
-		HXHeaders: csrf.HXHeadersAttr(token),
+		Product:          rowFromProduct(p),
+		Arguments:        rowsFromArguments(args),
+		Preview:          previewData{Argument: rowFromPreview(preview), Source: src},
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	})
 }
 

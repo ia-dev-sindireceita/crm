@@ -13,6 +13,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/loginhandler"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -208,8 +209,9 @@ func (h *LoginHandler) renderForm(w http.ResponseWriter, r *http.Request, errMsg
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	data := loginViewData{
-		ErrorMessage: errMsg,
-		NextPath:     ResolveReturn(r.URL.Query().Get("next"), ""),
+		ErrorMessage:     errMsg,
+		NextPath:         ResolveReturn(r.URL.Query().Get("next"), ""),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "login.html", data); err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: login template render failed",
@@ -221,6 +223,12 @@ func (h *LoginHandler) renderForm(w http.ResponseWriter, r *http.Request, errMsg
 type loginViewData struct {
 	ErrorMessage string
 	NextPath     string
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085). Empty (zero-value) by default — the master
+	// console does not resolve a tenant palette, so the layout's
+	// {{with}} guard skips the <style> emit unless an upstream layer
+	// explicitly attaches a style to the request context.
+	TenantThemeStyle template.CSS
 }
 
 // remoteIP strips the port off r.RemoteAddr and parses the host

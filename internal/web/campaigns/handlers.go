@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/campaigns"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -168,10 +169,11 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.deps.Now().UTC()
 	view := listView{
-		Rows:        rowsFrom(rows, stats, tenant.Host, now),
-		GeneratedAt: now.Format(time.RFC3339),
-		CSRFMeta:    csrf.MetaTag(token),
-		HXHeaders:   csrf.HXHeadersAttr(token),
+		Rows:             rowsFrom(rows, stats, tenant.Host, now),
+		GeneratedAt:      now.Format(time.RFC3339),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	h.writeHTML(w, http.StatusOK, listLayoutTmpl, view)
 }
@@ -184,8 +186,9 @@ func (h *Handler) newForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeHTML(w, http.StatusOK, formLayoutTmpl, formView{
-		CSRFMeta:  csrf.MetaTag(token),
-		HXHeaders: csrf.HXHeadersAttr(token),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	})
 }
 
@@ -269,11 +272,12 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.deps.Now().UTC()
 	h.writeHTML(w, http.StatusOK, detailLayoutTmpl, detailView{
-		Row:         rowFrom(camp, stats[camp.ID], tenant.Host, now),
-		Clicks:      clicksFrom(clicks),
-		CSRFMeta:    csrf.MetaTag(token),
-		HXHeaders:   csrf.HXHeadersAttr(token),
-		GeneratedAt: now.Format(time.RFC3339),
+		Row:              rowFrom(camp, stats[camp.ID], tenant.Host, now),
+		Clicks:           clicksFrom(clicks),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		GeneratedAt:      now.Format(time.RFC3339),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	})
 }
 
@@ -346,10 +350,11 @@ func (h *Handler) renderListPartial(w http.ResponseWriter, r *http.Request, tena
 func (h *Handler) renderFormError(w http.ResponseWriter, r *http.Request, in formInput, ferr formError) {
 	token := h.deps.CSRFToken(r)
 	h.writeHTML(w, http.StatusUnprocessableEntity, formLayoutTmpl, formView{
-		Input:     in,
-		Error:     ferr,
-		CSRFMeta:  csrf.MetaTag(token),
-		HXHeaders: csrf.HXHeadersAttr(token),
+		Input:            in,
+		Error:            ferr,
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	})
 }
 
@@ -474,28 +479,31 @@ func domainCreateMessage(err error) formError {
 
 // listView is the data shape the dashboard layout consumes.
 type listView struct {
-	Rows        []rowView
-	GeneratedAt string
-	CSRFMeta    template.HTML
-	HXHeaders   template.HTMLAttr
+	Rows             []rowView
+	GeneratedAt      string
+	CSRFMeta         template.HTML
+	HXHeaders        template.HTMLAttr
+	TenantThemeStyle template.CSS
 }
 
 // detailView is the per-campaign drill-down shape.
 type detailView struct {
-	Row         rowView
-	Clicks      []clickRow
-	CSRFMeta    template.HTML
-	HXHeaders   template.HTMLAttr
-	GeneratedAt string
+	Row              rowView
+	Clicks           []clickRow
+	CSRFMeta         template.HTML
+	HXHeaders        template.HTMLAttr
+	GeneratedAt      string
+	TenantThemeStyle template.CSS
 }
 
 // formView is the create-form layout shape. Input carries the
 // previous submission so 422 re-renders preserve user typing.
 type formView struct {
-	Input     formInput
-	Error     formError
-	CSRFMeta  template.HTML
-	HXHeaders template.HTMLAttr
+	Input            formInput
+	Error            formError
+	CSRFMeta         template.HTML
+	HXHeaders        template.HTMLAttr
+	TenantThemeStyle template.CSS
 }
 
 // clicksTableView is the partial used by the HTMX poll. Stats refresh

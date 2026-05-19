@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/branding"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -165,9 +166,10 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := inboxLayoutTmpl.Execute(w, layoutData{
-		CSRFMeta:  csrf.MetaTag(token),
-		HXHeaders: csrf.HXHeadersAttr(token),
-		List:      listData{Items: rows},
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		List:             listData{Items: rows},
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render layout", "err", err)
 	}
@@ -361,9 +363,10 @@ type listData struct {
 
 // layoutData drives the full-page inbox shell template.
 type layoutData struct {
-	CSRFMeta  template.HTML
-	HXHeaders template.HTMLAttr
-	List      listData
+	CSRFMeta         template.HTML
+	HXHeaders        template.HTMLAttr
+	List             listData
+	TenantThemeStyle template.CSS
 }
 
 // viewData drives the right-pane conversation view template. AssistButton

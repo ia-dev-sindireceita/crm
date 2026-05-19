@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/funnel"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -146,15 +147,17 @@ func (h *Handler) board(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := boardLayoutTmpl.Execute(w, struct {
-		Board     boardView
-		CSRFMeta  template.HTML
-		HXHeaders template.HTMLAttr
-		CSRFToken string
+		Board            boardView
+		CSRFMeta         template.HTML
+		HXHeaders        template.HTMLAttr
+		CSRFToken        string
+		TenantThemeStyle template.CSS
 	}{
-		Board:     toBoardView(board),
-		CSRFMeta:  csrf.MetaTag(token),
-		HXHeaders: csrf.HXHeadersAttr(token),
-		CSRFToken: token,
+		Board:            toBoardView(board),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		CSRFToken:        token,
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}); err != nil {
 		h.deps.Logger.Error("web/funnel: render board", "err", err)
 	}

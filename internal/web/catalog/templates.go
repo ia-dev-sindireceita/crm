@@ -51,6 +51,9 @@ type pageData struct {
 	Rows        []productRow
 	CSRFMeta    template.HTML
 	HXHeaders   template.HTMLAttr
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 // listPartialData drives the HTMX-swapped list after a mutation.
@@ -79,6 +82,9 @@ type detailData struct {
 	Preview   previewData
 	CSRFMeta  template.HTML
 	HXHeaders template.HTMLAttr
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 // argumentRow is one row in the per-product argument table.
@@ -386,6 +392,7 @@ var pageTmpl = mustParse("catalog.page", `<!doctype html>
 <meta charset="utf-8">
 <title>Catálogo · {{.TenantName}}</title>
 {{.CSRFMeta}}
+{{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
 </head>
 <body {{.HXHeaders}}>
 <main>
@@ -413,6 +420,7 @@ var detailTmpl = mustParse("catalog.detail", `<!doctype html>
 <meta charset="utf-8">
 <title>{{.Product.Name}} · Catálogo</title>
 {{.CSRFMeta}}
+{{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
 </head>
 <body {{.HXHeaders}}>
 <main>

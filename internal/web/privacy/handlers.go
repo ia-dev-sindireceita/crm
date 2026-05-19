@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/legal"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -143,12 +144,13 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		model = FallbackModel
 	}
 	data := pageData{
-		DPAVersion:    legal.DPAVersion,
-		DPAFilename:   legal.DPAFilename(),
-		Subprocessors: legal.Subprocessors(),
-		ActiveModel:   model,
-		GeneratedAt:   h.deps.Now().UTC().Format(time.RFC3339),
-		TenantName:    tenant.Name,
+		DPAVersion:       legal.DPAVersion,
+		DPAFilename:      legal.DPAFilename(),
+		Subprocessors:    legal.Subprocessors(),
+		ActiveModel:      model,
+		GeneratedAt:      h.deps.Now().UTC().Format(time.RFC3339),
+		TenantName:       tenant.Name,
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
@@ -187,6 +189,9 @@ type pageData struct {
 	ActiveModel   string
 	GeneratedAt   string
 	TenantName    string
+	// TenantThemeStyle carries the per-request runtime theming inline
+	// style (SIN-63085).
+	TenantThemeStyle template.CSS
 }
 
 // Compile-time check: the template can resolve every field on

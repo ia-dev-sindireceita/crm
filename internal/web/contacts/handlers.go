@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/contacts"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	"github.com/pericles-luz/crm/internal/tenancy"
@@ -118,8 +119,9 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := contactLayoutTmpl.Execute(w, layoutData{
-		CSRFMeta:  csrf.MetaTag(token),
-		HXHeaders: csrf.HXHeadersAttr(token),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		Panel: panelData{
 			ContactID: contactID,
 			Identity:  res.Identity,
@@ -195,7 +197,8 @@ type panelData struct {
 
 // layoutData drives the full-page contact view.
 type layoutData struct {
-	CSRFMeta  template.HTML
-	HXHeaders template.HTMLAttr
-	Panel     panelData
+	CSRFMeta         template.HTML
+	HXHeaders        template.HTMLAttr
+	Panel            panelData
+	TenantThemeStyle template.CSS
 }
