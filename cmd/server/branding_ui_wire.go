@@ -87,4 +87,3 @@ func buildBrandingStack(logger *slog.Logger, metrics middleware.ThemeMetrics) br
 		Cleanup: func() {},
 	}
 }
-
