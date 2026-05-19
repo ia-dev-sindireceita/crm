@@ -14,9 +14,51 @@ package views
 import (
 	"embed"
 	"html/template"
+	"reflect"
 
 	csrfhelpers "github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 )
+
+// tenantThemeStyle is the FuncMap helper that reads .TenantThemeStyle
+// from the page data via reflection. The indirection lets the layout
+// emit <style id="tenant-theme"> without forcing every handler's data
+// struct to grow a new field — page templates and their data shapes
+// are owned by per-feature packages (campaigns, inbox, master) and a
+// SIN-63085-scoped PR cannot reasonably mutate every one.
+//
+// Returns:
+//   - the field value when it exists and is a template.CSS or string,
+//   - empty template.CSS otherwise (the {{with}} guard in the layout
+//     then skips the <style> element entirely).
+//
+// Pure: no request state, no globals, safe across goroutines.
+func tenantThemeStyle(data any) template.CSS {
+	if data == nil {
+		return ""
+	}
+	v := reflect.ValueOf(data)
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return ""
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return ""
+	}
+	f := v.FieldByName("TenantThemeStyle")
+	if !f.IsValid() {
+		return ""
+	}
+	switch x := f.Interface().(type) {
+	case template.CSS:
+		return x
+	case string:
+		return template.CSS(x)
+	default:
+		return ""
+	}
+}
 
 //go:embed *.html
 var assets embed.FS
@@ -28,9 +70,10 @@ var assets embed.FS
 // so the {{}} interpolation does not double-escape the already-escaped
 // payload.
 var csrfFuncs = template.FuncMap{
-	"csrfMeta":       csrfhelpers.MetaTag,
-	"csrfHXHeaders":  csrfhelpers.HXHeadersAttr,
-	"csrfFormHidden": csrfhelpers.FormHidden,
+	"csrfMeta":         csrfhelpers.MetaTag,
+	"csrfHXHeaders":    csrfhelpers.HXHeadersAttr,
+	"csrfFormHidden":   csrfhelpers.FormHidden,
+	"tenantThemeStyle": tenantThemeStyle,
 }
 
 // Login renders GET /login and the re-rendered POST /login form on

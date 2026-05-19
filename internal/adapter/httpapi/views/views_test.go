@@ -8,10 +8,12 @@ package views_test
 
 import (
 	"bytes"
+	"html/template"
 	"strings"
 	"testing"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/views"
+	"github.com/pericles-luz/crm/internal/branding"
 )
 
 // TestLogin_LayoutRenders covers the GET /login data shape. CSRFToken
@@ -99,6 +101,59 @@ func TestHello_LayoutRendersWithoutCSRF(t *testing.T) {
 	}
 	if strings.Contains(got, "hx-headers") {
 		t.Fatal("hx-headers rendered when CSRFToken is empty")
+	}
+}
+
+// TestLayout_RendersTenantThemeStyle covers the SIN-63085 slot: when
+// a non-empty TenantThemeStyle is supplied (the production path —
+// middleware.Theme always attaches at least DefaultThemeStyle), the
+// layout emits a <style id="tenant-theme">…</style> block inside
+// <head>. The id is asserted exactly because the HTMX layer relies
+// on it to know the style survives across swaps (head is never
+// targeted by hx-swap).
+func TestLayout_RendersTenantThemeStyle(t *testing.T) {
+	t.Parallel()
+	style := branding.DefaultThemeStyle
+	var buf bytes.Buffer
+	data := struct {
+		Next             string
+		Error            string
+		CSRFToken        string
+		TenantThemeStyle template.CSS
+	}{Next: "/hello-tenant", TenantThemeStyle: style}
+	if err := views.Login.ExecuteTemplate(&buf, "layout", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	got := buf.String()
+	wantTag := `<style id="tenant-theme">` + string(style) + `</style>`
+	if !strings.Contains(got, wantTag) {
+		t.Fatalf("layout did not render tenant theme tag.\nwant fragment: %q\nrendered: %q", wantTag, got)
+	}
+	if !strings.Contains(got, "--color-primary:#1f6feb") {
+		t.Fatalf("CSS variables not present in <style>: %q", got)
+	}
+}
+
+// TestLayout_OmitsTenantThemeStyleWhenEmpty pins the {{with}} guard:
+// when the handler did not attach a theme style (a legacy code path,
+// or a 500 fallback render) the layout MUST NOT emit an empty
+// <style id="tenant-theme"></style> tag. Empty stylesheet tags are
+// fine functionally but make the snapshot regression test noisier
+// than it needs to be.
+func TestLayout_OmitsTenantThemeStyleWhenEmpty(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	data := struct {
+		Next             string
+		Error            string
+		CSRFToken        string
+		TenantThemeStyle template.CSS
+	}{Next: "/hello-tenant"}
+	if err := views.Login.ExecuteTemplate(&buf, "layout", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	if strings.Contains(buf.String(), `id="tenant-theme"`) {
+		t.Fatalf("empty TenantThemeStyle must not emit <style> tag: %q", buf.String())
 	}
 }
 

@@ -81,6 +81,14 @@ type Metrics struct {
 	// both label sets are closed enums; no tenant/scope_id leaks into
 	// the metric (PII-safety per ADR 0093).
 	AIConsentTotal *prometheus.CounterVec
+	// TenantThemeCacheHits counts theme-middleware lookups partitioned
+	// by outcome (SIN-63085 §Observability). The "result" label is a
+	// closed enum: hit | miss | no_tenant | error. Cache hit ratio is
+	// derived as `hit / (hit + miss)`; AC #5 of SIN-63085 calls for
+	// > 95% in load tests. tenant_id is intentionally absent — the
+	// metric is per-process, not per-tenant, so cardinality stays
+	// constant regardless of customer count.
+	TenantThemeCacheHits *prometheus.CounterVec
 }
 
 // NewMetrics builds a fresh registry plus the three SIN-62218
@@ -115,8 +123,12 @@ func NewMetrics() *Metrics {
 			Name: "ai_consent_total",
 			Help: "Operator decisions on the LGPD per-scope AI consent modal, partitioned by scope_kind (tenant|team|channel) and outcome (accepted|cancelled). [SIN-62929 / Fase 3 decisão #8]",
 		}, []string{"scope_kind", "outcome"}),
+		TenantThemeCacheHits: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tenant_theme_cache_hits_total",
+			Help: "Theme middleware lookups partitioned by outcome (hit|miss|no_tenant|error). Hit ratio = hit / (hit + miss); SIN-63085 AC #5 targets > 95%.",
+		}, []string{"result"}),
 	}
-	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies, m.WebhookTimestampWindowDrops, m.AIConsentTotal)
+	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies, m.WebhookTimestampWindowDrops, m.AIConsentTotal, m.TenantThemeCacheHits)
 	return m
 }
 
@@ -164,6 +176,19 @@ const (
 	AIConsentOutcomeAccepted  = "accepted"
 	AIConsentOutcomeCancelled = "cancelled"
 )
+
+// ObserveThemeCacheLookup increments the tenant_theme_cache_hits_total
+// counter for the given result label. Implements
+// middleware.ThemeMetrics so the theme middleware can record outcomes
+// without importing this package's full surface. Safe with a nil
+// receiver so wireup that omits Metrics compiles and behaves as a
+// no-op (the metric is observability, not load-bearing logic).
+func (m *Metrics) ObserveThemeCacheLookup(result string) {
+	if m == nil {
+		return
+	}
+	m.TenantThemeCacheHits.WithLabelValues(result).Inc()
+}
 
 // Handler returns the http.Handler that exposes m's registry over
 // /metrics. Callers wire this into a route that bypasses tenant /

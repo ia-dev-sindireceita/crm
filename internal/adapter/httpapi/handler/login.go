@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"html/template"
 	"log/slog"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/loginhandler"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/views"
+	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -49,11 +51,13 @@ type LoginConfig struct {
 // originally-requested URL.
 func LoginGet(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		Next      string
-		Error     string
-		CSRFToken string
+		Next             string
+		Error            string
+		CSRFToken        string
+		TenantThemeStyle template.CSS
 	}{
-		Next: SanitizeNext(r.URL.Query().Get("next")),
+		Next:             SanitizeNext(r.URL.Query().Get("next")),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := views.Login.ExecuteTemplate(w, "layout", data); err != nil {
@@ -84,7 +88,7 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 		sess, err := cfg.IAM.Login(r.Context(), r.Host, email, password, ipAddr, r.UserAgent(), r.URL.Path)
 		if err != nil {
 			if errors.Is(err, iam.ErrInvalidCredentials) {
-				renderLoginError(w, next)
+				renderLoginError(w, r, next)
 				return
 			}
 			// *iam.AccountLockedError → 429 + Retry-After; any other
@@ -117,16 +121,18 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 	}
 }
 
-func renderLoginError(w http.ResponseWriter, next string) {
+func renderLoginError(w http.ResponseWriter, r *http.Request, next string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
 	data := struct {
-		Next      string
-		Error     string
-		CSRFToken string
+		Next             string
+		Error            string
+		CSRFToken        string
+		TenantThemeStyle template.CSS
 	}{
-		Next:  next,
-		Error: "Email ou senha inválidos.",
+		Next:             next,
+		Error:            "Email ou senha inválidos.",
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	_ = views.Login.ExecuteTemplate(w, "layout", data)
 }
