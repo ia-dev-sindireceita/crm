@@ -24,6 +24,15 @@ import (
 // All optional timestamps are pointers so the templates can branch on
 // nil vs set without sentinel values. The HTTP layer converts to view
 // models for rendering.
+//
+// FailedAt + FailureReason capture the terminal "verification gave up"
+// state the customdomain-verifier worker writes after exhausting its
+// in-memory attempt cap ([SIN-63080]). A non-nil FailedAt is a one-way
+// transition — the row drops out of ListPendingVerification and the UI
+// renders it as StatusFailed. FailureReason carries a short controlled-
+// vocabulary string (cap_exceeded / token_mismatch_cap / resolver_cap)
+// so support can answer "why did this stop being polled?" without
+// joining the audit log.
 type Domain struct {
 	ID                 uuid.UUID
 	TenantID           uuid.UUID
@@ -33,6 +42,8 @@ type Domain struct {
 	VerifiedWithDNSSEC bool
 	TLSPausedAt        *time.Time
 	DeletedAt          *time.Time
+	FailedAt           *time.Time
+	FailureReason      string
 	DNSResolutionLogID *uuid.UUID
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -49,7 +60,8 @@ const (
 	StatusPending         // verified_at IS NULL, no error
 	StatusVerified        // verified_at IS NOT NULL, tls_paused_at IS NULL
 	StatusPaused          // tls_paused_at IS NOT NULL
-	StatusError           // last verify attempt failed
+	StatusError           // last verify attempt failed (transient)
+	StatusFailed          // failed_at IS NOT NULL — verifier worker gave up (terminal)
 )
 
 func (s Status) String() string {
@@ -62,6 +74,8 @@ func (s Status) String() string {
 		return "paused"
 	case StatusError:
 		return "error"
+	case StatusFailed:
+		return "failed"
 	default:
 		return "unknown"
 	}
@@ -69,13 +83,18 @@ func (s Status) String() string {
 
 // StatusOf maps a Domain plus optional last-verify error to its UI
 // state. Verified-and-paused renders as Paused (the operational
-// concern dominates the visual cue).
+// concern dominates the visual cue). StatusFailed (verifier worker
+// cap exhausted) outranks everything except Paused — a paused row
+// that also has failed_at set is still operationally a paused row.
 func StatusOf(d Domain, lastVerifyErr error) Status {
 	if d.TLSPausedAt != nil {
 		return StatusPaused
 	}
 	if d.VerifiedAt != nil {
 		return StatusVerified
+	}
+	if d.FailedAt != nil {
+		return StatusFailed
 	}
 	if lastVerifyErr != nil {
 		return StatusError

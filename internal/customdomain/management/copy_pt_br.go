@@ -57,6 +57,8 @@ func StatusLabelPTBR(s Status) string {
 		return "Pausado"
 	case StatusError:
 		return "Erro"
+	case StatusFailed:
+		return "Falhou"
 	default:
 		return "Desconhecido"
 	}
@@ -64,6 +66,9 @@ func StatusLabelPTBR(s Status) string {
 
 // StatusBadgeColor maps Status to one of four CSS classes used by the
 // table partial. Kept in this package so HTTP code reuses the mapping.
+// StatusFailed renders red because it carries the strongest "the user
+// needs to act" signal (the verifier worker gave up and the row is now
+// terminal — re-enrolling is the recovery path).
 func StatusBadgeColor(s Status) string {
 	switch s {
 	case StatusPending:
@@ -72,7 +77,7 @@ func StatusBadgeColor(s Status) string {
 		return "green"
 	case StatusPaused:
 		return "gray"
-	case StatusError:
+	case StatusError, StatusFailed:
 		return "red"
 	default:
 		return "gray"
