@@ -30,3 +30,20 @@ var ErrPaletteNotFound = errors.New("branding: palette not found")
 type PaletteStore interface {
 	GetByTenantID(ctx context.Context, tenantID uuid.UUID) (Palette, error)
 }
+
+// PaletteWriter is the write-side port the branding admin UI
+// (SIN-63084) reaches for to persist an overridden palette and to
+// revert manual overrides. It is intentionally a separate interface
+// from PaletteStore so the runtime theming layer (which only reads)
+// keeps its dependency surface narrow.
+//
+// Implementations MUST:
+//   - honour ctx (deadline, cancellation),
+//   - upsert atomically on SetForTenant: a concurrent reader either
+//     sees the previous palette or the new one, never a partial row,
+//   - treat DeleteForTenant against an absent tenant as a success — the
+//     UI revert flow may issue a delete even when no override exists.
+type PaletteWriter interface {
+	SetForTenant(ctx context.Context, tenantID uuid.UUID, p Palette) error
+	DeleteForTenant(ctx context.Context, tenantID uuid.UUID) error
+}

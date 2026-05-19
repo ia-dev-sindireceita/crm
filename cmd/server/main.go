@@ -262,6 +262,14 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webFunnelRulesHandler, webFunnelRulesCleanup := buildWebFunnelRulesHandler(ctx, getenv)
 	defer webFunnelRulesCleanup()
 
+	// SIN-63084 — HTMX branding admin (Fase 5). No DB dependency
+	// (the in-memory PaletteStore stands in for the SIN-63075 postgres
+	// adapter), so the handler is always non-nil here. The cleanup is
+	// a no-op but the signature stays consistent with the other
+	// web/* wires for orthogonality.
+	webBrandingHandler, webBrandingCleanup := buildWebBrandingHandler(slog.Default())
+	defer webBrandingCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
@@ -274,6 +282,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		WebCatalog:     webCatalogHandler,
 		WebCampaigns:   webCampaignsHandler,
 		WebFunnelRules: webFunnelRulesHandler,
+		WebBranding:    webBrandingHandler,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

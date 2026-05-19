@@ -329,6 +329,25 @@ type Deps struct {
 	//   GET    /c/{slug}
 	WebCampaignPublic http.Handler
 
+	// WebBranding is the HTMX admin UI for the tenant branding surface
+	// (SIN-63084 / Fase 5). Same envelope as WebCatalog / WebAIPolicy:
+	// RequireAuth installs the principal, RequireAction(iam.
+	// ActionTenantBrandingManage) gates every method. Gerente only,
+	// matching the visual-identity blast radius (the palette feeds
+	// every authenticated page via the runtime theme middleware).
+	//
+	// Mounted only when the wire layer supplies a non-nil handler so
+	// existing router tests that don't exercise the branding surface
+	// keep their pre-PR behaviour.
+	//
+	// Routes mounted:
+	//   GET    /branding
+	//   POST   /branding/logo
+	//   POST   /branding/palette/override
+	//   POST   /branding/palette/save
+	//   POST   /branding/palette/revert
+	WebBranding http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -647,6 +666,28 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/campaigns", webCampaigns)
 				authed.Method(http.MethodGet, "/campaigns/{slug}", webCampaigns)
 				authed.Method(http.MethodGet, "/campaigns/{slug}/clicks", webCampaigns)
+			}
+
+			// SIN-63084 — HTMX branding admin (Fase 5). Same envelope
+			// as WebCatalog / WebAIPolicy: RequireAuth installs the
+			// principal, RequireAction(ActionTenantBrandingManage)
+			// gates every method. The page is read-then-write; chi
+			// dispatches by verb so the GET form short-circuits CSRF
+			// while the POSTs run the full csrfmw chain.
+			if deps.WebBranding != nil {
+				webBranding := http.Handler(deps.WebBranding)
+				if deps.Authorizer != nil {
+					webBranding = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantBrandingManage, nil)(webBranding),
+					)
+				} else {
+					webBranding = middleware.RequireAuth(middleware.RequireAuthDeps{})(webBranding)
+				}
+				authed.Method(http.MethodGet, "/branding", webBranding)
+				authed.Method(http.MethodPost, "/branding/logo", webBranding)
+				authed.Method(http.MethodPost, "/branding/palette/override", webBranding)
+				authed.Method(http.MethodPost, "/branding/palette/save", webBranding)
+				authed.Method(http.MethodPost, "/branding/palette/revert", webBranding)
 			}
 
 			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses

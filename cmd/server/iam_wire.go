@@ -135,6 +135,12 @@ type iamHandlerOpts struct {
 	// tenanted group but outside the authed sub-group — the redirect
 	// is unauthenticated by design (AC #1).
 	WebCampaignPublic http.Handler
+
+	// WebBranding is the SIN-63084 HTMX branding admin mux. Nil keeps
+	// the /branding* routes unmounted; the wire in branding_ui_wire.go
+	// has no DB dependency and only returns nil on a programmer error
+	// in webbranding.New.
+	WebBranding http.Handler
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -243,6 +249,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebCampaigns:      opts.WebCampaigns,
 		WebFunnelRules:    opts.WebFunnelRules,
 		WebCampaignPublic: webCampaignPublic,
+		WebBranding:       opts.WebBranding,
 	})
 
 	fullCleanup := func() {

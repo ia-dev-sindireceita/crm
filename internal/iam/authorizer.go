@@ -90,6 +90,13 @@ const (
 	// because a misconfigured rule can move every event to a single
 	// stage. Mirrors the catalog/campaign manage gates.
 	ActionTenantFunnelRuleManage Action = "tenant.funnel_rule.manage"
+
+	// Fase 5 — branding admin (SIN-63084). One action gates the
+	// /branding HTMX surface (logo upload, palette preview, override,
+	// save, revert). Gerente only — common / atendente cannot mutate
+	// the tenant's visual identity because the palette feeds every
+	// authenticated page via the SIN-63085 theme middleware.
+	ActionTenantBrandingManage Action = "tenant.branding.manage"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -227,6 +234,9 @@ func defaultRolesByAction() map[Action][]Role {
 		// Fase 4 — funnel-rule editor (SIN-62961). Gerente only — see
 		// the constant declaration for the rationale.
 		ActionTenantFunnelRuleManage: {RoleTenantGerente},
+
+		// Fase 5 — branding admin (SIN-63084). Gerente only.
+		ActionTenantBrandingManage: {RoleTenantGerente},
 	}
 }
 
