@@ -230,7 +230,7 @@ func TestTheme_TTLExpiry(t *testing.T) {
 	if calls := store.Calls(); calls != 1 {
 		t.Fatalf("within TTL: expected 1 store call, got %d", calls)
 	}
-	clock.Advance(2 * time.Second) // total 61s — past TTL
+	clock.Advance(2 * time.Second)                                   // total 61s — past TTL
 	h.ServeHTTP(httptest.NewRecorder(), themeRequestWithTenant(tid)) // miss again
 	if calls := store.Calls(); calls != 2 {
 		t.Fatalf("post-TTL: expected 2 store calls, got %d", calls)
