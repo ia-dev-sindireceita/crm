@@ -30,6 +30,7 @@ import (
 
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	slackadapter "github.com/pericles-luz/crm/internal/adapter/notify/slack"
 	rlredis "github.com/pericles-luz/crm/internal/adapter/ratelimit/redis"
 	"github.com/pericles-luz/crm/internal/iam"
@@ -141,6 +142,15 @@ type iamHandlerOpts struct {
 	// has no DB dependency and only returns nil on a programmer error
 	// in webbranding.New.
 	WebBranding http.Handler
+
+	// Theme is the SIN-63085 per-tenant theme middleware, built by
+	// branding_ui_wire.go on top of the same PaletteStore that backs
+	// the WebBranding handler. Mounted by httpapi.NewRouter inside
+	// the tenanted group so every authenticated render sees the
+	// resolved palette via branding.ThemeStyleFromContext. Nil keeps
+	// the chain unchanged — pages fall back to DefaultThemeStyle and
+	// the AC #4 cache-invalidation seam is a no-op.
+	Theme *middleware.ThemeMiddleware
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -250,6 +260,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebFunnelRules:    opts.WebFunnelRules,
 		WebCampaignPublic: webCampaignPublic,
 		WebBranding:       opts.WebBranding,
+		Theme:             opts.Theme,
 	})
 
 	fullCleanup := func() {
