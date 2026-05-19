@@ -112,4 +112,3 @@ func validatePaletteContrast(p branding.Palette) (string, bool) {
 	}
 	return "", true
 }
-

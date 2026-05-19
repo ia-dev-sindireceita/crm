@@ -68,12 +68,12 @@ type CacheInvalidator interface {
 // Deps bundles the handler's collaborators. Required ports are
 // nil-checked at construction so a misconfigured wire fails boot.
 type Deps struct {
-	Extractor       branding.PaletteExtractor
-	Store           branding.PaletteStore
-	Writer          branding.PaletteWriter
-	CSRFToken       CSRFTokenFn
-	ThemeCache      CacheInvalidator
-	Logger          *slog.Logger
+	Extractor  branding.PaletteExtractor
+	Store      branding.PaletteStore
+	Writer     branding.PaletteWriter
+	CSRFToken  CSRFTokenFn
+	ThemeCache CacheInvalidator
+	Logger     *slog.Logger
 }
 
 // Handler serves the SIN-63084 HTMX surface.
