@@ -35,6 +35,7 @@ import (
 	rlredis "github.com/pericles-luz/crm/internal/adapter/ratelimit/redis"
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/iam/ratelimit"
+	"github.com/pericles-luz/crm/internal/obs"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -151,6 +152,18 @@ type iamHandlerOpts struct {
 	// the chain unchanged — pages fall back to DefaultThemeStyle and
 	// the AC #4 cache-invalidation seam is a no-op.
 	Theme *middleware.ThemeMiddleware
+
+	// Metrics is the process-wide obs.Metrics constructed at boot.
+	// SIN-63105 threads it through httpapi.Deps.Metrics so the
+	// /metrics scrape endpoint is mounted and the per-route
+	// HTTPMetrics middleware records http_requests_total /
+	// http_request_duration_seconds. The same pointer also backs
+	// the SIN-63085 theme middleware's ObserveThemeCacheLookup hook
+	// (wired via buildBrandingStack), so tenant_theme_cache_hits_total
+	// is observable on the same scrape. Nil keeps the router behaving
+	// as it did pre-SIN-63105 — /metrics returns 404 and the counters
+	// stay silent.
+	Metrics *obs.Metrics
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -261,6 +274,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebCampaignPublic: webCampaignPublic,
 		WebBranding:       opts.WebBranding,
 		Theme:             opts.Theme,
+		Metrics:           opts.Metrics,
 	})
 
 	fullCleanup := func() {
