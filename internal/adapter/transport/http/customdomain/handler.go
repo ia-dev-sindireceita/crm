@@ -26,6 +26,8 @@ type Handler struct {
 	now           func() time.Time
 	primaryDomain string
 	logger        *slog.Logger
+	rateLimiter   VerifyRateLimiter       // nil → no rate-limiting (tests that don't exercise it)
+	audit         management.AuditLogger  // nil → rate-limit denials not audited
 }
 
 // UseCase is the narrow management surface the handler relies on.
@@ -47,6 +49,12 @@ type Config struct {
 	Now           func() time.Time
 	PrimaryDomain string
 	Logger        *slog.Logger
+	// RateLimiter gates POST .../verify per (tenant, IP). nil disables
+	// rate-limiting (acceptable for tests that don't exercise it).
+	RateLimiter VerifyRateLimiter
+	// Audit receives denied:rate_limited events when RateLimiter fires.
+	// nil silently drops the audit emit; the 429 is still returned.
+	Audit management.AuditLogger
 }
 
 // New returns a Handler. Returns an error for missing required deps.
@@ -81,6 +89,8 @@ func New(cfg Config) (*Handler, error) {
 		now:           now,
 		primaryDomain: primary,
 		logger:        logger,
+		rateLimiter:   cfg.RateLimiter,
+		audit:         cfg.Audit,
 	}, nil
 }
 
@@ -92,7 +102,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tenant/custom-domains/{id}/instructions", h.serveInstructions)
 	mux.HandleFunc("GET /tenant/custom-domains/{id}/status", h.serveStatusRow)
 	mux.HandleFunc("GET /tenant/custom-domains/{id}/delete", h.serveDeleteModal)
-	mux.HandleFunc("POST /api/customdomains/{id}/verify", h.serveVerify)
+	verifyHandler := VerifyRateLimitMiddleware(h.rateLimiter, h.audit, h.now, h.logger)(http.HandlerFunc(h.serveVerify))
+	mux.Handle("POST /api/customdomains/{id}/verify", verifyHandler)
 	mux.HandleFunc("PATCH /api/customdomains/{id}", h.serveSetPaused)
 	mux.HandleFunc("DELETE /api/customdomains/{id}", h.serveDelete)
 }
