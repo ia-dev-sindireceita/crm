@@ -36,8 +36,10 @@ func NewCustomDomainStore(db PgxRowsConn) *CustomDomainStore { return &CustomDom
 // customDomainColumns is the standard projection used by every SELECT
 // and every UPDATE/INSERT RETURNING. Keeping it as a constant makes it
 // impossible to forget a column when scanCustomDomainRow expects it.
+// SIN-63107: expanded to 14 cols — added failed_at + failure_reason after
+// deleted_at so the UI badge can render StatusFailed without a separate scanner.
 const customDomainColumns = `id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-       tls_paused_at, deleted_at, dns_resolution_log_id, token_issued_at, created_at, updated_at`
+       tls_paused_at, deleted_at, failed_at, failure_reason, dns_resolution_log_id, token_issued_at, created_at, updated_at`
 
 // listSQL returns active rows newest-first per the
 // idx_tenant_custom_domains_created_at partial index. Soft-deleted rows
@@ -191,12 +193,10 @@ func scanCustomDomain(rows pgx.Rows) (management.Domain, error) {
 // so a freshly enrolled domain gets attention promptly while a long-
 // pending backlog is processed FIFO.
 //
-// The projection includes failed_at + failure_reason so the worker can
-// stay defensive against rows another process raced into the failed
-// state between the index lookup and the scan.
+// SIN-63107: now uses customDomainColumns so the worker and the UI share
+// the same 14-column projection.
 const customDomainListPendingSQL = `
-SELECT id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-       tls_paused_at, deleted_at, failed_at, failure_reason, dns_resolution_log_id, created_at, updated_at
+SELECT ` + customDomainColumns + `
   FROM tenant_custom_domains
  WHERE deleted_at      IS NULL
    AND verified_at     IS NULL
@@ -235,9 +235,7 @@ UPDATE tenant_custom_domains
        failure_reason = $3,
        updated_at     = $2
  WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, tenant_id, host, verification_token, verified_at, verified_with_dnssec,
-          tls_paused_at, deleted_at, failed_at, failure_reason, dns_resolution_log_id, created_at, updated_at
-`
+RETURNING ` + customDomainColumns
 
 // MarkFailed flips failed_at + failure_reason. Called by the verifier
 // worker after exhausting its in-memory attempt cap. Idempotent at the
@@ -250,53 +248,10 @@ func (s *CustomDomainStore) MarkFailed(ctx context.Context, id uuid.UUID, at tim
 	return scanCustomDomainRowWithFailure(row)
 }
 
-// scanCustomDomainRow reads one row of the standard SELECT shape. ErrNoRows
-// maps to management.ErrStoreNotFound so callers can errors.Is without
-// importing pgx.
+// scanCustomDomainRow reads one row of the 14-column SELECT shape (SIN-63107).
+// ErrNoRows maps to management.ErrStoreNotFound so callers can errors.Is
+// without importing pgx.
 func scanCustomDomainRow(row pgx.Row) (management.Domain, error) {
-	var (
-		id, tenantID   [16]byte
-		host, token    string
-		verifiedAt     *time.Time
-		verifiedDNSSEC bool
-		pausedAt       *time.Time
-		deletedAt      *time.Time
-		dnsLogID       *[16]byte
-		tokenIssuedAt  time.Time
-		createdAt, upd time.Time
-	)
-	if err := row.Scan(&id, &tenantID, &host, &token, &verifiedAt, &verifiedDNSSEC, &pausedAt, &deletedAt, &dnsLogID, &tokenIssuedAt, &createdAt, &upd); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return management.Domain{}, management.ErrStoreNotFound
-		}
-		return management.Domain{}, fmt.Errorf("custom_domain scan: %w", err)
-	}
-	d := management.Domain{
-		ID:                 uuid.UUID(id),
-		TenantID:           uuid.UUID(tenantID),
-		Host:               host,
-		VerificationToken:  token,
-		VerifiedAt:         verifiedAt,
-		VerifiedWithDNSSEC: verifiedDNSSEC,
-		TLSPausedAt:        pausedAt,
-		DeletedAt:          deletedAt,
-		TokenIssuedAt:      tokenIssuedAt,
-		CreatedAt:          createdAt,
-		UpdatedAt:          upd,
-	}
-	if dnsLogID != nil {
-		uid := uuid.UUID(*dnsLogID)
-		d.DNSResolutionLogID = &uid
-	}
-	return d, nil
-}
-
-// scanCustomDomainRowWithFailure reads the extended SELECT shape used by
-// ListPendingVerification + MarkFailed (SIN-63080). The columns mirror
-// the standard projection plus failed_at + failure_reason. Kept as a
-// separate scanner so the existing fixtures around scanCustomDomainRow
-// (custom_domain_store_test.go) stay untouched.
-func scanCustomDomainRowWithFailure(row pgx.Row) (management.Domain, error) {
 	var (
 		id, tenantID   [16]byte
 		host, token    string
@@ -307,9 +262,10 @@ func scanCustomDomainRowWithFailure(row pgx.Row) (management.Domain, error) {
 		failedAt       *time.Time
 		failureReason  *string
 		dnsLogID       *[16]byte
+		tokenIssuedAt  time.Time
 		createdAt, upd time.Time
 	)
-	if err := row.Scan(&id, &tenantID, &host, &token, &verifiedAt, &verifiedDNSSEC, &pausedAt, &deletedAt, &failedAt, &failureReason, &dnsLogID, &createdAt, &upd); err != nil {
+	if err := row.Scan(&id, &tenantID, &host, &token, &verifiedAt, &verifiedDNSSEC, &pausedAt, &deletedAt, &failedAt, &failureReason, &dnsLogID, &tokenIssuedAt, &createdAt, &upd); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return management.Domain{}, management.ErrStoreNotFound
 		}
@@ -325,6 +281,7 @@ func scanCustomDomainRowWithFailure(row pgx.Row) (management.Domain, error) {
 		TLSPausedAt:        pausedAt,
 		DeletedAt:          deletedAt,
 		FailedAt:           failedAt,
+		TokenIssuedAt:      tokenIssuedAt,
 		CreatedAt:          createdAt,
 		UpdatedAt:          upd,
 	}
@@ -337,6 +294,11 @@ func scanCustomDomainRowWithFailure(row pgx.Row) (management.Domain, error) {
 	}
 	return d, nil
 }
+
+// scanCustomDomainRowWithFailure is an alias kept for the worker callers
+// (ListPendingVerification + MarkFailed). Now that scanCustomDomainRow
+// covers all 14 columns it is identical.
+var scanCustomDomainRowWithFailure = scanCustomDomainRow
 
 // Compile-time guard: the store satisfies management.Store.
 var _ management.Store = (*CustomDomainStore)(nil)

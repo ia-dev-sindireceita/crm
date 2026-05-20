@@ -53,6 +53,8 @@ type customDomainRow struct {
 	dnssec         bool
 	pausedAt       *time.Time
 	deletedAt      *time.Time
+	failedAt       *time.Time
+	failureReason  *string
 	dnsLogID       *[16]byte
 	tokenIssuedAt  time.Time
 	createdAt, upd time.Time
@@ -89,13 +91,14 @@ func (f *fakeRows) Scan(dest ...any) error {
 // fakeRows; the QueryRow path uses fakeRow from store_test.go which only
 // covers the limited shapes we already exercise. Custom-domain scans
 // pull a wider set of types (uuid pointers, *time.Time pointers).
+// SIN-63107: arity expanded to 14 columns (failed_at + failure_reason added).
 func scanIntoCustomDomainDest(dest []any, r customDomainRow) error {
-	if len(dest) != 12 {
+	if len(dest) != 14 {
 		return errors.New("scan: arity")
 	}
 	mapping := []any{
 		r.id, r.tenant, r.host, r.token, r.verifiedAt, r.dnssec,
-		r.pausedAt, r.deletedAt, r.dnsLogID, r.tokenIssuedAt, r.createdAt, r.upd,
+		r.pausedAt, r.deletedAt, r.failedAt, r.failureReason, r.dnsLogID, r.tokenIssuedAt, r.createdAt, r.upd,
 	}
 	for i, src := range mapping {
 		switch p := dest[i].(type) {
@@ -115,6 +118,12 @@ func scanIntoCustomDomainDest(dest []any, r customDomainRow) error {
 			v, ok := src.(string)
 			if !ok {
 				return errors.New("scan: bad string")
+			}
+			*p = v
+		case **string:
+			v, ok := src.(*string)
+			if !ok && src != nil {
+				return errors.New("scan: bad **string")
 			}
 			*p = v
 		case *bool:
@@ -352,6 +361,60 @@ func TestCustomDomainStore_SoftDelete_NotFound(t *testing.T) {
 	_, err := pgstore.NewCustomDomainStore(conn).SoftDelete(context.Background(), uuid.New(), time.Now())
 	if !errors.Is(err, management.ErrStoreNotFound) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestCustomDomainStore_GetByID_Failed verifies that failed_at and
+// failure_reason are populated when the row carries those fields
+// (SIN-63107: scanCustomDomainRow expanded to 14 columns).
+func TestCustomDomainStore_GetByID_Failed(t *testing.T) {
+	t.Parallel()
+	failedAt := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	reason := "dns_timeout_exceeded"
+	r := mkRow()
+	r.failedAt = &failedAt
+	r.failureReason = &reason
+	conn := stubRowsConn{
+		queryRow: func(string, ...any) pgx.Row { return pgxRowAdapter{row: r} },
+	}
+	d, err := pgstore.NewCustomDomainStore(conn).GetByID(context.Background(), uuid.UUID(r.id))
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if d.FailedAt == nil || !d.FailedAt.Equal(failedAt) {
+		t.Fatalf("failedAt = %v", d.FailedAt)
+	}
+	if d.FailureReason != reason {
+		t.Fatalf("failureReason = %q", d.FailureReason)
+	}
+}
+
+// TestCustomDomainStore_List_FailedRowSurfaced verifies List populates
+// failed fields so the UI badge can render StatusFailed (SIN-63107).
+func TestCustomDomainStore_List_FailedRowSurfaced(t *testing.T) {
+	t.Parallel()
+	failedAt := time.Date(2026, 5, 20, 11, 0, 0, 0, time.UTC)
+	reason := "max_attempts_exceeded"
+	r := mkRow()
+	r.failedAt = &failedAt
+	r.failureReason = &reason
+	conn := stubRowsConn{
+		query: func(string, ...any) (pgx.Rows, error) {
+			return &fakeRows{values: []customDomainRow{r}}, nil
+		},
+	}
+	out, err := pgstore.NewCustomDomainStore(conn).List(context.Background(), uuid.UUID(r.tenant))
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("got %d rows", len(out))
+	}
+	if out[0].FailedAt == nil || !out[0].FailedAt.Equal(failedAt) {
+		t.Fatalf("failedAt = %v", out[0].FailedAt)
+	}
+	if out[0].FailureReason != reason {
+		t.Fatalf("failureReason = %q", out[0].FailureReason)
 	}
 }
 

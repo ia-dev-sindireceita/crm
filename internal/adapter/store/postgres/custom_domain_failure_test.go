@@ -20,10 +20,11 @@ import (
 	pgstore "github.com/pericles-luz/crm/internal/adapter/store/postgres"
 )
 
-// customDomainFailureRow mirrors the 13-column SELECT projection that
-// ListPendingVerification + MarkFailed emit. It is intentionally
-// distinct from customDomainRow so the scan-arity contracts cannot
-// silently drift.
+// customDomainFailureRow mirrors the 14-column SELECT projection that
+// ListPendingVerification + MarkFailed emit (SIN-63107: unified with
+// customDomainColumns which now includes token_issued_at + failed_at +
+// failure_reason). Intentionally distinct from customDomainRow so the
+// scan-arity contracts cannot silently drift.
 type customDomainFailureRow struct {
 	id, tenant     [16]byte
 	host, token    string
@@ -34,6 +35,7 @@ type customDomainFailureRow struct {
 	failedAt       *time.Time
 	failureReason  *string
 	dnsLogID       *[16]byte
+	tokenIssuedAt  time.Time
 	createdAt, upd time.Time
 	scanErr        error
 }
@@ -70,18 +72,18 @@ func (f *failureRows) Scan(dest ...any) error {
 	return scanIntoCustomDomainFailureDest(dest, r)
 }
 
-// scanIntoCustomDomainFailureDest implements Scan for the extended 13-
+// scanIntoCustomDomainFailureDest implements Scan for the unified 14-
 // column row shape: id, tenant_id, host, verification_token, verified_at,
 // verified_with_dnssec, tls_paused_at, deleted_at, failed_at,
-// failure_reason, dns_resolution_log_id, created_at, updated_at.
+// failure_reason, dns_resolution_log_id, token_issued_at, created_at, updated_at.
 func scanIntoCustomDomainFailureDest(dest []any, r customDomainFailureRow) error {
-	if len(dest) != 13 {
+	if len(dest) != 14 {
 		return errors.New("scan: arity")
 	}
 	mapping := []any{
 		r.id, r.tenant, r.host, r.token, r.verifiedAt, r.dnssec,
 		r.pausedAt, r.deletedAt, r.failedAt, r.failureReason,
-		r.dnsLogID, r.createdAt, r.upd,
+		r.dnsLogID, r.tokenIssuedAt, r.createdAt, r.upd,
 	}
 	for i, src := range mapping {
 		switch p := dest[i].(type) {
