@@ -79,6 +79,13 @@ jobs:
           tags: |
             ${{ env.IMAGE_REPO }}:${{ github.event.workflow_run.head_sha }}
             ${{ env.IMAGE_REPO }}:main
+          # SIN-63146 — inject the workflow_run head SHA into
+          # internal/version.commitSHA via the Dockerfile's COMMIT_SHA
+          # ARG. The smoke step below greps /health for this value and
+          # fails red if the running container still reports a stale
+          # SHA (i.e. `docker compose pull` was skipped on the VPS).
+          build-args: |
+            COMMIT_SHA=${{ github.event.workflow_run.head_sha }}
           # Inline cache keeps successive runs ~3 min faster than cold builds,
           # which is what makes AC #2 (≤ 8 min wall) feasible on the standard runner.
           cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
@@ -188,17 +195,37 @@ jobs:
       - name: smoke check /health
         env:
           STG_SMOKE_URL: ${{ secrets.STG_SMOKE_URL }}
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           # Retry briefly: compose `up -d` returns once containers are started,
           # but the app may still be booting. Total budget: 30s (6 * 5s).
+          #
+          # SIN-63146 — the gate now asserts the running commit_sha matches
+          # ${EXPECTED_SHA} (the workflow_run head SHA we just baked into the
+          # image). A 200 OK with the wrong SHA is treated as "old container
+          # still answering while the new one comes up" — retry it. We only
+          # fail red after the retry budget is exhausted with a stale SHA so
+          # operators get a clear "image pull was skipped" message instead of
+          # silently shipping a stale binary.
+          last_seen=""
           for attempt in 1 2 3 4 5 6; do
-            if curl -fsS --max-time 5 "${STG_SMOKE_URL}/health" >/dev/null; then
-              echo "smoke check OK on attempt ${attempt}"
-              exit 0
+            body="$(curl -fsS --max-time 5 "${STG_SMOKE_URL}/health" 2>/dev/null || true)"
+            if [ -n "${body}" ]; then
+              # jq -r prints "null" on a missing key — coalesce to empty so
+              # the comparison below treats it as a non-match.
+              got_sha="$(printf '%s' "${body}" | jq -r '.commit_sha // ""' 2>/dev/null || echo "")"
+              last_seen="${got_sha}"
+              if [ "${got_sha}" = "${EXPECTED_SHA}" ]; then
+                echo "smoke check OK on attempt ${attempt} — commit_sha=${got_sha}"
+                exit 0
+              fi
+              echo "smoke check attempt ${attempt}: /health returned commit_sha=${got_sha:-<missing>}, want ${EXPECTED_SHA} — retrying"
+            else
+              echo "smoke check attempt ${attempt}: no response from /health — retrying"
             fi
-            echo "smoke check attempt ${attempt} failed, retrying…"
             sleep 5
           done
-          echo "smoke check FAILED — manual rollback required (see docs/deploy/staging.md)"
+          echo "smoke check FAILED — container running commit ${last_seen:-<unreachable>}, expected ${EXPECTED_SHA} (image stale or compose pull skipped)"
+          echo "Manual rollback required — see docs/deploy/staging.md"
           exit 1

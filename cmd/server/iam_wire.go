@@ -37,6 +37,7 @@ import (
 	"github.com/pericles-luz/crm/internal/iam/ratelimit"
 	"github.com/pericles-luz/crm/internal/obs"
 	"github.com/pericles-luz/crm/internal/tenancy"
+	"github.com/pericles-luz/crm/internal/version"
 )
 
 const envSlackWebhook = "SLACK_WEBHOOK_URL"
@@ -258,9 +259,15 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		},
 		TenantResolver: tenants,
 		Logger:         logger,
-		Policies:       policies,
-		RateLimiter:    limiter,
-		Authorizer:     audited,
+		// SIN-63146 — surface the build SHA on /health so cd-stg can
+		// detect a stale `docker compose pull`. The value comes from
+		// the -ldflags="-X .../internal/version.commitSHA=…" injected
+		// by Dockerfile + cd-stg.yml; without an ldflag it returns
+		// "unknown".
+		CommitSHA:   version.CommitSHA(),
+		Policies:    policies,
+		RateLimiter: limiter,
+		Authorizer:  audited,
 		// SessionToucher is nil — Activity middleware deferred to batch
 		// that lands the session role/last_activity DB columns (0077).
 		// Master MFA deps deferred to batch 17 (SIN-62526).

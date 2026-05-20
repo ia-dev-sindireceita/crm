@@ -68,7 +68,10 @@ func tenantedRequest(t *testing.T, method, target string, body io.Reader, tenant
 func TestHealth_Returns200JSON(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
-	handler.Health(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	handler.Health("0123456789abcdef0123456789abcdef01234567").ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodGet, "/health", nil),
+	)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", rec.Code)
 	}
@@ -77,6 +80,45 @@ func TestHealth_Returns200JSON(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
 		t.Fatalf("body=%q does not contain status:ok", rec.Body.String())
+	}
+}
+
+// TestHealth_EmbedsCommitSHA exercises the SIN-63146 contract: /health
+// MUST surface the build-time commit SHA so the cd-stg smoke gate can
+// reject stale containers. The handler accepts the SHA via constructor —
+// no os.Getenv, no globals.
+func TestHealth_EmbedsCommitSHA(t *testing.T) {
+	t.Parallel()
+	const want = "0123456789abcdef0123456789abcdef01234567"
+	rec := httptest.NewRecorder()
+	handler.Health(want).ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodGet, "/health", nil),
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"commit_sha":"`+want+`"`) {
+		t.Fatalf("body=%q missing commit_sha=%s", rec.Body.String(), want)
+	}
+}
+
+// TestHealth_EmptyStringFallsBackToUnknown locks down the empty-input
+// contract documented on Health(): an empty SHA must serialise as
+// "unknown" so JSON consumers cannot mistake "field absent" for "container
+// is still starting".
+func TestHealth_EmptyStringFallsBackToUnknown(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	handler.Health("").ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodGet, "/health", nil),
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"commit_sha":"unknown"`) {
+		t.Fatalf("body=%q must report commit_sha=unknown when no SHA injected", rec.Body.String())
 	}
 }
 
