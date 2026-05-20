@@ -430,6 +430,14 @@ func (h *Handler) serveSetPaused(w http.ResponseWriter, r *http.Request) {
 
 // serveRegenerateToken issues a fresh verification token for an unverified
 // domain. Returns the updated <tr> so HTMX swaps it in place.
+//
+// Authorization: tenant-scoped via requireTenant, matching the existing
+// mutating endpoints on this package (serveVerify, serveSetPaused,
+// serveDelete). The route is mounted behind the tenant-context middleware
+// in cmd/server/customdomain_wire.go; no in-package role gate today. A
+// role-aware gate covering /api/customdomains/* writes belongs at the
+// wire-up level so every mutating endpoint inherits it uniformly — see
+// SIN-63125 PR thread.
 func (h *Handler) serveRegenerateToken(w http.ResponseWriter, r *http.Request) {
 	tenant := h.requireTenant(w, r)
 	if tenant == uuid.Nil {
