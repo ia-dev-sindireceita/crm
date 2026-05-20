@@ -2,6 +2,7 @@ package validation
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"strings"
 
@@ -251,14 +252,26 @@ func (v *Validator) ValidateHostOnly(ctx context.Context, host string) error {
 	return nil
 }
 
-// containsToken does a constant-style equality check in a loop. The token
-// is a server-issued opaque string — there is no timing-side-channel risk
-// because the attacker controls the TXT side, not our side, and they get
-// no signal beyond pass/fail. Using == here keeps the implementation
-// boring and easy to review.
+// containsToken compares each TXT record to the expected token using a
+// constant-time primitive. Defense in depth (AGENTS.md security lens:
+// "constant-time comparison for secrets" — the per-domain verification
+// token is treated as a secret in the threat model, even though it is
+// burned only once at enrollment and rotated on every retry).
+//
+// We accept that subtle.ConstantTimeCompare returns 0 immediately when
+// the lengths differ — i.e. the length of `expected` is leaked. That
+// length is part of the public product spec (32 hex chars) so there is
+// nothing secret to protect there.
+//
+// We short-circuit on the first match. The attacker controls the TXT
+// side, so the position of the matching record cannot leak anything
+// about the secret expected value: by the time a TXT comparison
+// succeeds, the attacker already knew which slot they put it in.
 func containsToken(txts []string, expected string) bool {
+	want := []byte(expected)
 	for _, t := range txts {
-		if strings.TrimSpace(t) == expected {
+		got := []byte(strings.TrimSpace(t))
+		if subtle.ConstantTimeCompare(got, want) == 1 {
 			return true
 		}
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -466,5 +468,52 @@ func TestValidate_TXTTokenIsTrimmed(t *testing.T) {
 
 	if _, err := v.Validate(context.Background(), "acme.example", "tok"); err != nil {
 		t.Fatalf("trimmed TXT should match: %v", err)
+	}
+}
+
+// TestContainsToken_UsesConstantTimePrimitive is a lint-style regression
+// for SIN-63126 (F-3). It locks in that the TXT-token equality check in
+// validate.go uses crypto/subtle.ConstantTimeCompare and not variable-
+// time primitives. Sindireceita's security bar (AGENTS.md security lens:
+// "constant-time comparison for secrets") treats the verification token
+// as a secret, so any reintroduction of `==` / `bytes.Equal` /
+// `strings.EqualFold` against it must trip this test.
+//
+// Microsecond-level timing benchmarks are unreliable across CI runners,
+// so the regression is a source-level grep — same approach the F-3
+// ticket calls out as sufficient.
+func TestContainsToken_UsesConstantTimePrimitive(t *testing.T) {
+	body, err := os.ReadFile("validate.go")
+	if err != nil {
+		t.Fatalf("read validate.go: %v", err)
+	}
+	src := string(body)
+
+	if !strings.Contains(src, "subtle.ConstantTimeCompare") {
+		t.Fatalf("validate.go must use crypto/subtle.ConstantTimeCompare for TXT token equality (SIN-63126)")
+	}
+
+	// Carve out containsToken's body and reject variable-time primitives
+	// inside it. We do not enforce the wider file because other equality
+	// checks (e.g. host string compare in tests, audit detail strings)
+	// legitimately use ==.
+	fnRe := regexp.MustCompile(`(?s)func containsToken\([^)]*\)\s*bool\s*\{(.*?)\n\}`)
+	m := fnRe.FindStringSubmatch(src)
+	if len(m) < 2 {
+		t.Fatalf("could not locate containsToken in validate.go")
+	}
+	fnBody := m[1]
+	for _, banned := range []string{
+		"bytes.Equal",
+		"strings.EqualFold",
+		// Token equality with `==` is the original regression. We allow
+		// `len(...) == N` style guards by checking the more specific
+		// `== expected` / `== want` patterns instead of bare `==`.
+		"== expected",
+		"== want",
+	} {
+		if strings.Contains(fnBody, banned) {
+			t.Fatalf("containsToken must not use %q for token equality (SIN-63126); got:\n%s", banned, fnBody)
+		}
 	}
 }
