@@ -32,6 +32,8 @@ type fakeUseCase struct {
 	pauseResp   management.Domain
 	pauseErr    error
 	deleteErr   error
+	regenResp   management.Domain
+	regenErr    error
 	enrollCalls []enrollCall
 }
 
@@ -65,6 +67,9 @@ func (f *fakeUseCase) SetPaused(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ b
 	return f.pauseResp, f.pauseErr
 }
 func (f *fakeUseCase) Delete(_ context.Context, _ uuid.UUID, _ uuid.UUID) error { return f.deleteErr }
+func (f *fakeUseCase) RegenerateToken(_ context.Context, _ uuid.UUID, _ uuid.UUID) (management.Domain, error) {
+	return f.regenResp, f.regenErr
+}
 
 const testCSRFSecret = "0123456789abcdef0123456789abcdef" // 32 bytes
 

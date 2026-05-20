@@ -179,6 +179,42 @@ func (s *CustomDomainStore) SoftDelete(ctx context.Context, id uuid.UUID, at tim
 	return scanCustomDomainRow(row)
 }
 
+const customDomainRotateTokenSQL = `
+UPDATE tenant_custom_domains
+   SET verification_token = $2,
+       token_issued_at    = $3,
+       updated_at         = $3
+ WHERE id = $1
+   AND verified_at  IS NULL
+   AND deleted_at   IS NULL
+RETURNING ` + customDomainColumns
+
+// RotateToken replaces verification_token + token_issued_at iff the row is
+// still unverified and not soft-deleted. Returns ErrAlreadyVerified when
+// verified_at IS NOT NULL, ErrStoreNotFound when the row is missing or deleted.
+func (s *CustomDomainStore) RotateToken(ctx context.Context, id uuid.UUID, newToken string, issuedAt time.Time) (management.Domain, error) {
+	row := s.db.QueryRow(ctx, customDomainRotateTokenSQL, id, newToken, issuedAt)
+	d, err := scanCustomDomainRow(row)
+	if err == nil {
+		return d, nil
+	}
+	if !errors.Is(err, management.ErrStoreNotFound) {
+		return management.Domain{}, err
+	}
+	// Zero rows: distinguish verified vs missing/deleted.
+	var verifiedAt *time.Time
+	probeErr := s.db.QueryRow(ctx,
+		`SELECT verified_at FROM tenant_custom_domains WHERE id = $1 AND deleted_at IS NULL`, id,
+	).Scan(&verifiedAt)
+	if probeErr == nil {
+		return management.Domain{}, management.ErrAlreadyVerified
+	}
+	if errors.Is(probeErr, pgx.ErrNoRows) {
+		return management.Domain{}, management.ErrStoreNotFound
+	}
+	return management.Domain{}, fmt.Errorf("custom_domain rotate token probe: %w", probeErr)
+}
+
 // scanCustomDomain wraps a *pgx.Rows into the same row shape scanCustomDomainRow expects.
 func scanCustomDomain(rows pgx.Rows) (management.Domain, error) {
 	return scanCustomDomainRow(rows)

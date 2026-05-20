@@ -114,6 +114,23 @@ func (s *fakeStore) SoftDelete(_ context.Context, id uuid.UUID, at time.Time) (m
 	return d, nil
 }
 
+func (s *fakeStore) RotateToken(_ context.Context, id uuid.UUID, newToken string, issuedAt time.Time) (management.Domain, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.rows[id]
+	if !ok || d.DeletedAt != nil {
+		return management.Domain{}, management.ErrStoreNotFound
+	}
+	if d.VerifiedAt != nil {
+		return management.Domain{}, management.ErrAlreadyVerified
+	}
+	d.VerificationToken = newToken
+	d.TokenIssuedAt = issuedAt
+	d.UpdatedAt = issuedAt
+	s.rows[id] = d
+	return d, nil
+}
+
 // fakeGate stubs the enrollment quota gate. Allow returns the next
 // queued decision; tests with multiple Enroll calls queue a slice.
 type fakeGate struct {
@@ -1088,5 +1105,101 @@ func TestEnroll_SetsTokenIssuedAt(t *testing.T) {
 	persisted := store.rows[res.Domain.ID]
 	if !persisted.TokenIssuedAt.Equal(now) {
 		t.Fatalf("persisted TokenIssuedAt = %v, want %v", persisted.TokenIssuedAt, now)
+	}
+}
+
+func TestRegenerateToken_HappyPath(t *testing.T) {
+	t.Parallel()
+	tenantID := uuid.New()
+	now := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	uc := mustNew(t, management.Config{
+		Store: store, Gate: &fakeGate{},
+		TokenGen: detTokenGen("oldtok"), Now: fixedNow(now),
+	})
+	// Enroll to get a pending domain.
+	res, err := uc.Enroll(context.Background(), tenantID, "regen.example.com")
+	if err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+	oldToken := res.Domain.VerificationToken
+
+	// Regenerate with a new token generator.
+	newNow := now.Add(time.Hour)
+	uc2 := mustNew(t, management.Config{
+		Store: store, Gate: &fakeGate{},
+		TokenGen: detTokenGen("newtok"), Now: fixedNow(newNow),
+	})
+	d, err := uc2.RegenerateToken(context.Background(), tenantID, res.Domain.ID)
+	if err != nil {
+		t.Fatalf("RegenerateToken: %v", err)
+	}
+	if d.VerificationToken == oldToken {
+		t.Fatalf("token unchanged after regeneration")
+	}
+	if !d.TokenIssuedAt.Equal(newNow) {
+		t.Fatalf("TokenIssuedAt = %v, want %v", d.TokenIssuedAt, newNow)
+	}
+}
+
+func TestRegenerateToken_AlreadyVerified(t *testing.T) {
+	t.Parallel()
+	tenantID := uuid.New()
+	now := time.Now().UTC()
+	store := newFakeStore()
+	uc := mustNew(t, management.Config{
+		Store: store, Gate: &fakeGate{},
+		TokenGen: detTokenGen("tok"), Now: fixedNow(now),
+	})
+	res, err := uc.Enroll(context.Background(), tenantID, "verified.example.com")
+	if err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+	// Mark verified directly in the store.
+	d := store.rows[res.Domain.ID]
+	t2 := now
+	d.VerifiedAt = &t2
+	store.rows[res.Domain.ID] = d
+
+	_, err = uc.RegenerateToken(context.Background(), tenantID, res.Domain.ID)
+	if !errors.Is(err, management.ErrAlreadyVerified) {
+		t.Fatalf("expected ErrAlreadyVerified, got %v", err)
+	}
+}
+
+func TestRegenerateToken_AuditFingerprint(t *testing.T) {
+	t.Parallel()
+	tenantID := uuid.New()
+	now := time.Now().UTC()
+	store := newFakeStore()
+	audit := &fakeAudit{}
+	uc := mustNew(t, management.Config{
+		Store: store, Gate: &fakeGate{},
+		TokenGen: detTokenGen("audittok"), Now: fixedNow(now),
+		Audit: audit,
+	})
+	res, err := uc.Enroll(context.Background(), tenantID, "audit.example.com")
+	if err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+	_, err = uc.RegenerateToken(context.Background(), tenantID, res.Domain.ID)
+	if err != nil {
+		t.Fatalf("RegenerateToken: %v", err)
+	}
+	var regenEv *management.AuditEvent
+	for i := range audit.events {
+		if audit.events[i].Action == "regenerate_token" {
+			ev := audit.events[i]
+			regenEv = &ev
+		}
+	}
+	if regenEv == nil {
+		t.Fatal("no regenerate_token audit event emitted")
+	}
+	if regenEv.Outcome != "ok" {
+		t.Fatalf("Outcome = %q, want ok", regenEv.Outcome)
+	}
+	if len(regenEv.TokenFingerprint) != 16 {
+		t.Fatalf("TokenFingerprint length = %d, want 16", len(regenEv.TokenFingerprint))
 	}
 }

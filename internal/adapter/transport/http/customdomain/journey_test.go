@@ -352,6 +352,23 @@ func (s *journeyDomainStore) SoftDelete(_ context.Context, id uuid.UUID, at time
 	return d, nil
 }
 
+func (s *journeyDomainStore) RotateToken(_ context.Context, id uuid.UUID, newToken string, issuedAt time.Time) (management.Domain, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.rows[id]
+	if !ok || d.DeletedAt != nil {
+		return management.Domain{}, management.ErrStoreNotFound
+	}
+	if d.VerifiedAt != nil {
+		return management.Domain{}, management.ErrAlreadyVerified
+	}
+	d.VerificationToken = newToken
+	d.TokenIssuedAt = issuedAt
+	d.UpdatedAt = issuedAt
+	s.rows[id] = d
+	return d, nil
+}
+
 // journeySlugStore is the in-memory slugreservation.Store. Insert
 // returns slugreservation.ErrSlugReserved when an active reservation
 // already exists for the slug — same partial-unique-index semantics

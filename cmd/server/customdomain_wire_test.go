@@ -407,6 +407,9 @@ func (fakeStubUseCase) SetPaused(context.Context, uuid.UUID, uuid.UUID, bool) (m
 	return management.Domain{}, nil
 }
 func (fakeStubUseCase) Delete(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (fakeStubUseCase) RegenerateToken(context.Context, uuid.UUID, uuid.UUID) (management.Domain, error) {
+	return management.Domain{}, nil
+}
 
 // overCount drives the hard-cap branch.
 type overCount struct{ n int }

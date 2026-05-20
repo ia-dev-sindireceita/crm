@@ -37,6 +37,7 @@ type UseCase interface {
 	Get(ctx context.Context, tenantID, id uuid.UUID) (management.Domain, error)
 	Enroll(ctx context.Context, tenantID uuid.UUID, host string) (management.EnrollResult, error)
 	Verify(ctx context.Context, tenantID, id uuid.UUID) (management.VerifyOutcome, error)
+	RegenerateToken(ctx context.Context, tenantID, id uuid.UUID) (management.Domain, error)
 	SetPaused(ctx context.Context, tenantID, id uuid.UUID, paused bool) (management.Domain, error)
 	Delete(ctx context.Context, tenantID, id uuid.UUID) error
 }
@@ -102,8 +103,15 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tenant/custom-domains/{id}/instructions", h.serveInstructions)
 	mux.HandleFunc("GET /tenant/custom-domains/{id}/status", h.serveStatusRow)
 	mux.HandleFunc("GET /tenant/custom-domains/{id}/delete", h.serveDeleteModal)
-	verifyHandler := VerifyRateLimitMiddleware(h.rateLimiter, h.audit, h.now, h.logger)(http.HandlerFunc(h.serveVerify))
-	mux.Handle("POST /api/customdomains/{id}/verify", verifyHandler)
+	// SIN-63124 (F-1) wrapped POST /verify through VerifyRateLimitMiddleware.
+	// SIN-63125 (F-2) piggybacks on the same infra so /regenerate-token
+	// shares the (tenant, IP) token bucket — a tenant under abuse cannot
+	// dodge the limiter by alternating between /verify and
+	// /regenerate-token. Same limiter instance, same 10/min burst 5, same
+	// denied:rate_limited audit outcome.
+	limit := VerifyRateLimitMiddleware(h.rateLimiter, h.audit, h.now, h.logger)
+	mux.Handle("POST /api/customdomains/{id}/verify", limit(http.HandlerFunc(h.serveVerify)))
+	mux.Handle("POST /api/customdomains/{id}/regenerate-token", limit(http.HandlerFunc(h.serveRegenerateToken)))
 	mux.HandleFunc("PATCH /api/customdomains/{id}", h.serveSetPaused)
 	mux.HandleFunc("DELETE /api/customdomains/{id}", h.serveDelete)
 }
@@ -143,6 +151,7 @@ type domainView struct {
 	VerifiedAtFmt      string
 	CreatedAtFmt       string
 	VerifiedWithDNSSEC bool
+	CanRegenerateToken bool
 	CSRFToken          string
 }
 
@@ -166,6 +175,7 @@ func (h *Handler) viewFor(d management.Domain, lastErr error, csrf string) domai
 		VerifiedAtFmt:      verified,
 		CreatedAtFmt:       d.CreatedAt.Format("02/01/2006 15:04"),
 		VerifiedWithDNSSEC: d.VerifiedWithDNSSEC,
+		CanRegenerateToken: d.VerifiedAt == nil && d.DeletedAt == nil,
 		CSRFToken:          csrf,
 	}
 }
@@ -413,6 +423,38 @@ func (h *Handler) serveSetPaused(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.serverError(w, r, err)
+		return
+	}
+	h.renderRow(w, r, d, nil, csrf)
+}
+
+// serveRegenerateToken issues a fresh verification token for an unverified
+// domain. Returns the updated <tr> so HTMX swaps it in place.
+func (h *Handler) serveRegenerateToken(w http.ResponseWriter, r *http.Request) {
+	tenant := h.requireTenant(w, r)
+	if tenant == uuid.Nil {
+		return
+	}
+	if err := VerifyCSRF(r, h.csrf); err != nil {
+		h.forbidden(w, r, "CSRF token inválido. Recarregue a página.")
+		return
+	}
+	id, err := parseID(r)
+	if err != nil {
+		http.Error(w, "ID do domínio inválido.", http.StatusBadRequest)
+		return
+	}
+	d, err := h.uc.RegenerateToken(r.Context(), tenant, id)
+	csrf, _ := IssueCSRFToken(w, r, h.csrf)
+	if err != nil {
+		switch {
+		case errors.Is(err, management.ErrAlreadyVerified):
+			http.Error(w, management.CopyPTBR(management.ReasonAlreadyVerified, 0, nil), http.StatusConflict)
+		case errors.Is(err, management.ErrStoreNotFound), errors.Is(err, management.ErrTenantMismatch):
+			h.notFound(w, r)
+		default:
+			h.serverError(w, r, err)
+		}
 		return
 	}
 	h.renderRow(w, r, d, nil, csrf)
