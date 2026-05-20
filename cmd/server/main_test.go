@@ -48,6 +48,51 @@ func TestNewMux_RoutesHealth(t *testing.T) {
 	}
 }
 
+// TestNewMux_HealthEmitsCommitSHA pins the SIN-63165 wireup fix: /health
+// served through newMux MUST emit commit_sha so cd-stg.yml's version gate
+// (SIN-63146) can compare it against github.sha. Pre-fix this assertion
+// failed because cmd/server/main.go shadowed handler.Health with an
+// inline {"status":"ok"} handler. Without a ldflag the value falls back
+// to "unknown"; never empty, never absent.
+func TestNewMux_HealthEmitsCommitSHA(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(newMux())
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusOK)
+	}
+	if got := res.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf("body[status] = %q, want %q", body["status"], "ok")
+	}
+	sha, ok := body["commit_sha"]
+	if !ok {
+		t.Fatalf("body missing commit_sha field; got %v", body)
+	}
+	if sha == "" {
+		t.Fatalf("body[commit_sha] is empty; want non-empty (default %q)", "unknown")
+	}
+	// With no -ldflags injection (vanilla `go test`), version.CommitSHA
+	// returns the literal "unknown" sentinel — keep callers honest.
+	if sha != "unknown" {
+		t.Fatalf("body[commit_sha] = %q, want %q under vanilla `go test`", sha, "unknown")
+	}
+}
+
 func TestRun_ShutsDownOnContextCancel(t *testing.T) {
 	t.Parallel()
 	addr := freePort(t)

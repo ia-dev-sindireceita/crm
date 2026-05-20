@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -33,6 +32,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/handler"
 	crmslog "github.com/pericles-luz/crm/internal/adapter/observability/slog"
 	pgstore "github.com/pericles-luz/crm/internal/adapter/store/postgres"
 	tlsasktransport "github.com/pericles-luz/crm/internal/adapter/transport/http/tlsask"
@@ -40,6 +40,7 @@ import (
 	"github.com/pericles-luz/crm/internal/customdomain/ratelimit/sliding"
 	"github.com/pericles-luz/crm/internal/customdomain/tls_ask"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
+	"github.com/pericles-luz/crm/internal/version"
 )
 
 const (
@@ -437,16 +438,23 @@ func runInternal(ctx context.Context, addr string, handler http.Handler) error {
 	return nil
 }
 
+// healthHandler is the public /health closure constructed from
+// handler.Health with the build-time commit SHA. It is wired here so the
+// cd-stg smoke gate (SIN-63146) can compare the served commit_sha against
+// the GitHub workflow head SHA. See SIN-63165 for the wireup-shadow bug
+// this var fixes.
+var healthHandler = handler.Health(version.CommitSHA())
+
+// newMux builds the public stdlib mux. /health is mounted here on the
+// stdlib ServeMux — NOT inside the chi router in iam_wire.go's iamRoutes.
+// Stdlib pattern-matching gives the most specific registration priority,
+// so a chi /health would never be reached through this mux (the bug fixed
+// in SIN-63165). If you need a new public route, declare it in iamRoutes
+// in iam_wire.go and let the chi handler resolve it; do NOT add it here.
 func newMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", healthHandler)
+	mux.Handle("/health", healthHandler)
 	return mux
-}
-
-func healthHandler(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // dependencies bundles the external clients buildInternalHandler needs.
