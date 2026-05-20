@@ -26,8 +26,10 @@ import (
 )
 
 // freshDBWithIAM builds a per-test DB and applies 0004-0006 on top of the
-// harness's default 0001-0003 sequence. Cleanup is handled by the
-// underlying testpg.DB t.Cleanup hook.
+// harness's default 0001-0003 sequence, then layers 0077_session_activity
+// so the sessions table carries the role + last_activity columns the
+// adapter reads/writes (SIN-63158). Cleanup is handled by the underlying
+// testpg.DB t.Cleanup hook.
 func freshDBWithIAM(t *testing.T) *testpg.DB {
 	t.Helper()
 	db := harness.DB(t)
@@ -37,6 +39,7 @@ func freshDBWithIAM(t *testing.T) *testpg.DB {
 		"0004_create_tenant.up.sql",
 		"0005_create_users.up.sql",
 		"0006_create_sessions.up.sql",
+		"0077_session_activity.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
@@ -285,5 +288,194 @@ func TestSessionStore_Create_RejectsNilTenant(t *testing.T) {
 	err := store.Create(context.Background(), iam.Session{ID: id, TenantID: uuid.Nil})
 	if err == nil {
 		t.Fatalf("Create with uuid.Nil tenant must fail")
+	}
+}
+
+// TestSessionStore_RoleLastActivity_RoundTrip is the SIN-63158 regression:
+// before the fix, Create skipped role/last_activity (the schema DEFAULT
+// filled them) and Get did not SELECT them, so the caller saw Role="" and
+// the RequireAction check on /hello-tenant returned 403. This locks both
+// branches at once.
+//
+//	A: explicit Role + LastActivity round-trip identically.
+//	B: zero Role + zero LastActivity translate to RoleTenantCommon and
+//	   CreatedAt respectively, matching the iam.Session.Role docstring
+//	   contract and the schema DEFAULT for last_activity.
+func TestSessionStore_RoleLastActivity_RoundTrip(t *testing.T) {
+	db := freshDBWithIAM(t)
+	tenantID, userID, _ := seedTenant(t, db, "acme.crm.local", "alice@acme.test")
+	store := postgres.NewSessionStore(db.RuntimePool())
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	t.Run("explicit role and last_activity", func(t *testing.T) {
+		id, err := iam.NewSessionID()
+		if err != nil {
+			t.Fatalf("NewSessionID: %v", err)
+		}
+		sess := iam.Session{
+			ID:           id,
+			TenantID:     tenantID,
+			UserID:       userID,
+			ExpiresAt:    now.Add(time.Hour),
+			CreatedAt:    now,
+			LastActivity: now.Add(-5 * time.Minute),
+			Role:         iam.RoleTenantGerente,
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		got, err := store.Get(ctx, tenantID, id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Role != iam.RoleTenantGerente {
+			t.Fatalf("Role round-trip wrong: got %q want %q", got.Role, iam.RoleTenantGerente)
+		}
+		if !got.LastActivity.Equal(sess.LastActivity) {
+			t.Fatalf("LastActivity mismatch: got %v want %v", got.LastActivity, sess.LastActivity)
+		}
+	})
+
+	t.Run("empty role + zero last_activity get defaulted by the adapter", func(t *testing.T) {
+		id, err := iam.NewSessionID()
+		if err != nil {
+			t.Fatalf("NewSessionID: %v", err)
+		}
+		sess := iam.Session{
+			ID:        id,
+			TenantID:  tenantID,
+			UserID:    userID,
+			ExpiresAt: now.Add(time.Hour),
+			CreatedAt: now,
+			// Role and LastActivity left zero — the adapter MUST translate
+			// to RoleTenantCommon and CreatedAt respectively.
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		got, err := store.Get(ctx, tenantID, id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Role != iam.RoleTenantCommon {
+			t.Fatalf("Role default wrong: got %q want %q", got.Role, iam.RoleTenantCommon)
+		}
+		if !got.LastActivity.Equal(now) {
+			t.Fatalf("LastActivity default wrong: got %v want %v (CreatedAt)", got.LastActivity, now)
+		}
+	})
+}
+
+// TestSessionStore_Touch exercises the activity middleware's hot path
+// (UPDATE sessions SET last_activity = …) against a real Postgres. With
+// SIN-63158's Get/Create fixes the round-trip is observable end-to-end
+// here, so the Touch surface no longer has to be inferred from the SQL
+// alone.
+func TestSessionStore_Touch(t *testing.T) {
+	db := freshDBWithIAM(t)
+	tenantID, userID, _ := seedTenant(t, db, "acme.crm.local", "alice@acme.test")
+	store := postgres.NewSessionStore(db.RuntimePool())
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	id, _ := iam.NewSessionID()
+	if err := store.Create(ctx, iam.Session{
+		ID:           id,
+		TenantID:     tenantID,
+		UserID:       userID,
+		ExpiresAt:    now.Add(time.Hour),
+		CreatedAt:    now,
+		LastActivity: now,
+		Role:         iam.RoleTenantCommon,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	later := now.Add(5 * time.Minute)
+	if err := store.Touch(ctx, tenantID, id, later); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	got, err := store.Get(ctx, tenantID, id)
+	if err != nil {
+		t.Fatalf("Get after Touch: %v", err)
+	}
+	if !got.LastActivity.Equal(later) {
+		t.Fatalf("LastActivity not bumped: got %v want %v", got.LastActivity, later)
+	}
+
+	// Unknown session id collapses to ErrSessionNotFound, matching the
+	// auth-middleware "session vanished mid-flight" branch.
+	if err := store.Touch(ctx, tenantID, uuid.New(), later); !errors.Is(err, iam.ErrSessionNotFound) {
+		t.Fatalf("Touch unknown id err=%v want ErrSessionNotFound", err)
+	}
+
+	// Cross-tenant Touch also collapses to ErrSessionNotFound: RLS hides
+	// the row, the UPDATE affects zero rows, the adapter returns the
+	// sentinel. This is the same channel-closing posture as Get.
+	tenantB, _, _ := seedTenant(t, db, "globex.crm.local", "bob@globex.test")
+	if err := store.Touch(ctx, tenantB, id, later); !errors.Is(err, iam.ErrSessionNotFound) {
+		t.Fatalf("cross-tenant Touch err=%v want ErrSessionNotFound", err)
+	}
+}
+
+func TestSessionStore_Touch_RejectsNilTenant(t *testing.T) {
+	db := freshDBWithIAM(t)
+	store := postgres.NewSessionStore(db.RuntimePool())
+	if err := store.Touch(context.Background(), uuid.Nil, uuid.New(), time.Now()); err == nil {
+		t.Fatalf("Touch with uuid.Nil tenant must fail")
+	}
+}
+
+// fixedTenantResolver is a minimal iam.TenantResolver that maps a single
+// host to a pre-seeded tenant id. Used by the e2e Login test below; pulling
+// in the real postgres tenant_resolver would add migration coupling for no
+// extra coverage of this issue's bug surface.
+type fixedTenantResolver struct {
+	host     string
+	tenantID uuid.UUID
+}
+
+func (r fixedTenantResolver) ResolveByHost(_ context.Context, host string) (uuid.UUID, error) {
+	if host != r.host {
+		return uuid.Nil, iam.ErrTenantNotFound
+	}
+	return r.tenantID, nil
+}
+
+// TestSessionStore_LoginRoundTrip_PersistsRole is the SIN-63158 end-to-end
+// regression: it wires the real postgres SessionStore and
+// UserCredentialReader into iam.Service.Login, then asserts that
+// ValidateSession returns a session whose Role is RoleTenantCommon — the
+// exact failure mode that caused 403 on /hello-tenant in staging.
+func TestSessionStore_LoginRoundTrip_PersistsRole(t *testing.T) {
+	db := freshDBWithIAM(t)
+	tenantID, _, plaintext := seedTenant(t, db, "acme.crm.local", "alice@acme.test")
+
+	svc := &iam.Service{
+		Tenants:  fixedTenantResolver{host: "acme.crm.local", tenantID: tenantID},
+		Users:    postgres.NewUserCredentialReader(db.RuntimePool()),
+		Sessions: postgres.NewSessionStore(db.RuntimePool()),
+		TTL:      time.Hour,
+	}
+
+	ctx := context.Background()
+	sess, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", plaintext, net.IPv4(192, 0, 2, 7), "ua/test", "/login")
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if sess.Role != iam.RoleTenantCommon {
+		t.Fatalf("Login returned Role=%q, want %q", sess.Role, iam.RoleTenantCommon)
+	}
+
+	got, err := svc.ValidateSession(ctx, tenantID, sess.ID)
+	if err != nil {
+		t.Fatalf("ValidateSession: %v", err)
+	}
+	if got.Role != iam.RoleTenantCommon {
+		t.Fatalf("ValidateSession returned Role=%q, want %q (this is the /hello-tenant 403 bug)", got.Role, iam.RoleTenantCommon)
+	}
+	if got.LastActivity.IsZero() {
+		t.Fatalf("ValidateSession returned zero LastActivity; activity middleware would never accept this session")
 	}
 }

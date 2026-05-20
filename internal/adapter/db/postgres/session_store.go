@@ -39,15 +39,31 @@ func NewSessionStore(pool *pgxpool.Pool) *SessionStore {
 // Create inserts the session row inside a tenant-scoped transaction. The
 // tenant_id is written explicitly — we do not rely on the RLS policy to
 // fill it.
+//
+// SIN-63158: role and last_activity are written explicitly. An empty
+// Session.Role is translated to RoleTenantCommon per the iam.Session.Role
+// docstring contract (migration 0077 mirrors this default at the schema
+// level; the adapter writes it on the way IN so a subsequent Get returns
+// the canonical value regardless of which path filled the row). A zero
+// LastActivity uses CreatedAt so the activity middleware does not reject
+// the very first request after login.
 func (s *SessionStore) Create(ctx context.Context, sess iam.Session) error {
 	if sess.TenantID == uuid.Nil {
 		return fmt.Errorf("postgres: SessionStore.Create: tenant id is nil")
 	}
+	role := sess.Role
+	if role == "" {
+		role = iam.RoleTenantCommon
+	}
+	lastActivity := sess.LastActivity
+	if lastActivity.IsZero() {
+		lastActivity = sess.CreatedAt
+	}
 	return WithTenant(ctx, s.pool, sess.TenantID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
-			INSERT INTO sessions (id, tenant_id, user_id, expires_at, ip, user_agent, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, sess.ID, sess.TenantID, sess.UserID, sess.ExpiresAt, ipForDB(sess.IPAddr), nullIfEmpty(sess.UserAgent), sess.CreatedAt)
+			INSERT INTO sessions (id, tenant_id, user_id, expires_at, ip, user_agent, created_at, last_activity, role)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, sess.ID, sess.TenantID, sess.UserID, sess.ExpiresAt, ipForDB(sess.IPAddr), nullIfEmpty(sess.UserAgent), sess.CreatedAt, lastActivity, string(role))
 		if err != nil {
 			return fmt.Errorf("postgres: SessionStore.Create exec: %w", err)
 		}
@@ -66,12 +82,13 @@ func (s *SessionStore) Get(ctx context.Context, tenantID, sessionID uuid.UUID) (
 	err := WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		var ip *netip.Prefix
 		var ua *string
+		var role string
 		row := tx.QueryRow(ctx, `
-			SELECT id, tenant_id, user_id, expires_at, ip, user_agent, created_at
+			SELECT id, tenant_id, user_id, expires_at, ip, user_agent, created_at, last_activity, role
 			FROM sessions
 			WHERE id = $1
 		`, sessionID)
-		if err := row.Scan(&out.ID, &out.TenantID, &out.UserID, &out.ExpiresAt, &ip, &ua, &out.CreatedAt); err != nil {
+		if err := row.Scan(&out.ID, &out.TenantID, &out.UserID, &out.ExpiresAt, &ip, &ua, &out.CreatedAt, &out.LastActivity, &role); err != nil {
 			return err
 		}
 		if ip != nil {
@@ -80,6 +97,7 @@ func (s *SessionStore) Get(ctx context.Context, tenantID, sessionID uuid.UUID) (
 		if ua != nil {
 			out.UserAgent = *ua
 		}
+		out.Role = iam.Role(role)
 		return nil
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
