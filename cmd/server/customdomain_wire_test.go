@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -735,5 +736,74 @@ func TestBuildCustomDomainHandler_WithFakeResolver_HappyPath(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBuildCustomDomainHandler_VerifyRateLimitWiredAtBoundary is the
+// SIN-63133 boundary smoke: prove that the SIN-63124 rate-limiter is
+// actually constructed and reachable from the public mux. Without this
+// test, the wire-up could regress (RateLimiter back to nil) and CI
+// would stay green because the middleware silently no-ops on nil
+// (PR #215, ratelimit.go:190).
+//
+// Fires 11 POSTs to /api/customdomains/{id}/verify from the same
+// (tenant, IP) pair using real wall-clock time. Defaults of the wired
+// limiter are 10/min, burst 5 — under sub-second timing the 11th
+// request is reliably denied with 429 + integer Retry-After header.
+func TestBuildCustomDomainHandler_VerifyRateLimitWiredAtBoundary(t *testing.T) {
+	t.Parallel()
+	getenv := func(k string) string {
+		switch k {
+		case envCustomDomainUI:
+			return "1"
+		case "DATABASE_URL":
+			return "postgres://example/db"
+		case envCustomDomainCSRF:
+			return strings.Repeat("a", 32)
+		case envCustomDomainPrimary:
+			return "exemplo.com"
+		}
+		return ""
+	}
+	dial := func(_ context.Context, _ string) (customDomainPool, error) {
+		return &fakeCustomDomainPool{}, nil
+	}
+	h, cleanup := buildCustomDomainHandlerWith(context.Background(), getenv, dial)
+	if h == nil {
+		t.Fatal("expected handler when deps satisfied")
+	}
+	defer cleanup()
+
+	tenantHeader := uuid.New().String()
+	domainID := uuid.New().String()
+	target := "/api/customdomains/" + domainID + "/verify"
+
+	var (
+		got429       bool
+		retryAfter   string
+		nonLimitCode int
+	)
+	for i := 0; i < 11; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(""))
+		req.Header.Set(envCustomDomainTenantHd, tenantHeader)
+		req.RemoteAddr = "203.0.113.7:54321" // fixed peer → same (tenant, IP) bucket
+		h.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			got429 = true
+			retryAfter = rec.Header().Get("Retry-After")
+		} else if nonLimitCode == 0 {
+			nonLimitCode = rec.Code
+		}
+	}
+	if !got429 {
+		t.Fatalf("11 rapid POSTs from same (tenant, IP) produced no 429: limiter not wired (first non-429 status = %d)", nonLimitCode)
+	}
+	if retryAfter == "" {
+		t.Fatal("429 response missing Retry-After header")
+	}
+	secs, err := strconv.Atoi(retryAfter)
+	if err != nil || secs < 1 {
+		t.Fatalf("Retry-After = %q; want positive integer seconds", retryAfter)
 	}
 }

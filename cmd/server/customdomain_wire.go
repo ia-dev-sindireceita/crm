@@ -318,10 +318,20 @@ func buildCustomDomainHandlerWithRedis(ctx context.Context, getenv func(string) 
 		log.Printf("crm: custom-domain UI disabled — management.New: %v", err)
 		return nil, noop
 	}
+	// SIN-63133 — wire the SIN-63124 per-(tenant, IP) rate-limiter into
+	// the handler so POST /api/customdomains/{id}/verify is actually
+	// gated in production. Defaults: 10 req/min, burst 5, 10m idle TTL,
+	// 5m janitor cadence (IdleTTL/2). The same managementAudit instance
+	// passed to management.New is reused so denied:rate_limited events
+	// land on the same slog pipeline as enrollment/verify audits.
+	verifyLimiter := customdomainhttp.NewMemoryVerifyRateLimiter(customdomainhttp.VerifyRateLimitConfig{})
+	mgmtAudit := managementAudit{logger: slog.Default()}
 	handler, err := customdomainhttp.New(customdomainhttp.Config{
 		UseCase:       uc,
 		CSRF:          customdomainhttp.CSRFConfig{Secret: secret, Secure: getenv("HTTP_TLS_TERMINATED") == "1"},
 		PrimaryDomain: primary,
+		RateLimiter:   verifyLimiter,
+		Audit:         mgmtAudit,
 	})
 	if err != nil {
 		pool.Close()
@@ -329,6 +339,17 @@ func buildCustomDomainHandlerWithRedis(ctx context.Context, getenv func(string) 
 		log.Printf("crm: custom-domain UI disabled — handler: %v", err)
 		return nil, noop
 	}
+	// SIN-63133 — janitor goroutine bound to the boot context so SIGTERM
+	// (`signal.NotifyContext` in main) cancels it without leaking. Sweep
+	// runs on the configured cadence (default IdleTTL/2 = 5m). Exit on
+	// ctx.Done is graceful; the limiter remains queryable after the
+	// janitor exits, but the process is shutting down anyway.
+	go func() {
+		if err := verifyLimiter.RunJanitor(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("crm: custom-domain verify rate-limit janitor: %v", err)
+		}
+	}()
+	log.Printf("crm: custom-domain verify rate-limit janitor sweeping every %s", verifyLimiter.SweepInterval())
 	cleanup := func() {
 		pool.Close()
 		gateCleanup()

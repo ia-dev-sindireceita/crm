@@ -34,12 +34,14 @@ type VerifyRateLimiter interface {
 // VerifyRateLimitConfig groups the construction-time knobs accepted by
 // NewMemoryVerifyRateLimiter. Zero values use the SIN-63124 defaults
 // (10 requests/minute per (tenant, IP) pair, burst 5, idle TTL 10
-// minutes, real time).
+// minutes, real time). SweepInterval defaults to IdleTTL/2 so the
+// janitor reclaims idle buckets at twice the eviction frequency.
 type VerifyRateLimitConfig struct {
-	Rate    rate.Limit
-	Burst   int
-	IdleTTL time.Duration
-	Now     func() time.Time
+	Rate          rate.Limit
+	Burst         int
+	IdleTTL       time.Duration
+	SweepInterval time.Duration
+	Now           func() time.Time
 }
 
 // Defaults for VerifyRateLimitConfig — keep aligned with the SIN-63124
@@ -68,10 +70,11 @@ type bucket struct {
 // scales the API beyond a single pod must layer a Redis-backed
 // limiter on top (out of scope for SIN-63124).
 type MemoryVerifyRateLimiter struct {
-	rate    rate.Limit
-	burst   int
-	idleTTL time.Duration
-	now     func() time.Time
+	rate          rate.Limit
+	burst         int
+	idleTTL       time.Duration
+	sweepInterval time.Duration
+	now           func() time.Time
 
 	mu      sync.Mutex
 	buckets map[string]*bucket
@@ -92,16 +95,47 @@ func NewMemoryVerifyRateLimiter(cfg VerifyRateLimitConfig) *MemoryVerifyRateLimi
 	if ttl <= 0 {
 		ttl = defaultVerifyRateLimitIdleTTL
 	}
+	sweep := cfg.SweepInterval
+	if sweep <= 0 {
+		sweep = ttl / 2
+	}
 	now := cfg.Now
 	if now == nil {
 		now = time.Now
 	}
 	return &MemoryVerifyRateLimiter{
-		rate:    r,
-		burst:   b,
-		idleTTL: ttl,
-		now:     now,
-		buckets: make(map[string]*bucket),
+		rate:          r,
+		burst:         b,
+		idleTTL:       ttl,
+		sweepInterval: sweep,
+		now:           now,
+		buckets:       make(map[string]*bucket),
+	}
+}
+
+// SweepInterval reports the cadence the janitor uses between Sweep
+// calls. Exposed so the wire layer can log the effective cadence at
+// boot without re-reading the env-driven config.
+func (m *MemoryVerifyRateLimiter) SweepInterval() time.Duration {
+	return m.sweepInterval
+}
+
+// RunJanitor blocks until ctx is cancelled, calling Sweep on
+// SweepInterval. Returns ctx.Err() on exit so the caller can
+// distinguish graceful shutdown from a programming error. Designed to
+// be spawned in its own goroutine from the wire layer alongside the
+// HTTP server's shutdown context, so SIGTERM cancels the janitor
+// without leaking the goroutine.
+func (m *MemoryVerifyRateLimiter) RunJanitor(ctx context.Context) error {
+	t := time.NewTicker(m.sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			m.Sweep()
+		}
 	}
 }
 

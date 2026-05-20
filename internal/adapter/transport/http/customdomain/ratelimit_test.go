@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,6 +99,89 @@ func TestMemoryVerifyRateLimiter_BucketsArePerTenantIP(t *testing.T) {
 	allowed, _ = lim.Allow(context.Background(), t1, "5.6.7.8")
 	if !allowed {
 		t.Fatal("same tenant, different IP should have independent bucket")
+	}
+}
+
+// TestMemoryVerifyRateLimiter_SweepIntervalDefaultsToIdleTTLHalf locks
+// in the SIN-63133 contract that an unset SweepInterval defaults to
+// IdleTTL/2 so the janitor wakes at twice the eviction frequency and a
+// configured IdleTTL stays the only knob the operator must reason
+// about for retention.
+func TestMemoryVerifyRateLimiter_SweepIntervalDefaultsToIdleTTLHalf(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		idleTTL time.Duration
+		sweepIn time.Duration
+		wantOut time.Duration
+	}{
+		{"defaults — IdleTTL=10m, Sweep=5m", 0, 0, 5 * time.Minute},
+		{"explicit IdleTTL only — 4m, Sweep=2m", 4 * time.Minute, 0, 2 * time.Minute},
+		{"explicit SweepInterval wins", 4 * time.Minute, 30 * time.Second, 30 * time.Second},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			lim := cd.NewMemoryVerifyRateLimiter(cd.VerifyRateLimitConfig{
+				IdleTTL:       tc.idleTTL,
+				SweepInterval: tc.sweepIn,
+			})
+			if got := lim.SweepInterval(); got != tc.wantOut {
+				t.Fatalf("SweepInterval() = %s, want %s", got, tc.wantOut)
+			}
+		})
+	}
+}
+
+// TestMemoryVerifyRateLimiter_RunJanitorSweepsThenExits proves that the
+// SIN-63133 janitor wakes on its ticker, calls Sweep, and exits cleanly
+// when its context is cancelled — the lifecycle invariant the cmd/server
+// wire-up depends on so SIGTERM doesn't leak the goroutine.
+func TestMemoryVerifyRateLimiter_RunJanitorSweepsThenExits(t *testing.T) {
+	t.Parallel()
+	var ts atomic.Int64
+	ts.Store(time.Now().UnixNano())
+	nowFn := func() time.Time { return time.Unix(0, ts.Load()) }
+	lim := cd.NewMemoryVerifyRateLimiter(cd.VerifyRateLimitConfig{
+		Rate:          cd.DefaultVerifyRate,
+		Burst:         5,
+		IdleTTL:       50 * time.Millisecond,
+		SweepInterval: 10 * time.Millisecond,
+		Now:           nowFn,
+	})
+	// Seed two buckets so the ticker has something to evict.
+	lim.Allow(context.Background(), uuid.New(), "10.0.0.1")
+	lim.Allow(context.Background(), uuid.New(), "10.0.0.2")
+	if lim.Len() != 2 {
+		t.Fatalf("seed: Len=%d, want 2", lim.Len())
+	}
+	// Jump the clock past IdleTTL so the next Sweep evicts both.
+	ts.Add(int64(200 * time.Millisecond))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- lim.RunJanitor(ctx) }()
+
+	// Wait for the janitor to fire at least once and evict.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for lim.Len() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lim.Len() != 0 {
+		cancel()
+		<-done
+		t.Fatalf("janitor did not sweep within deadline: Len=%d", lim.Len())
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunJanitor exit = %v, want context.Canceled", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("RunJanitor did not exit within 250ms of context cancel")
 	}
 }
 
