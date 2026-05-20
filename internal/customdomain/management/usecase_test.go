@@ -3,6 +3,7 @@ package management_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,8 +18,9 @@ import (
 // by tenant; soft-deleted rows are filtered out of List() but still
 // returned by GetByID() (deletion preserves the row for audit/RLS).
 type fakeStore struct {
-	mu   sync.Mutex
-	rows map[uuid.UUID]management.Domain
+	mu                 sync.Mutex
+	rows               map[uuid.UUID]management.Domain
+	beforeMarkVerified func(s *fakeStore) // SIN-63104: lets a test rotate the token between Get and the CAS write
 }
 
 func newFakeStore() *fakeStore {
@@ -61,12 +63,18 @@ func (s *fakeStore) Insert(_ context.Context, d management.Domain) (management.D
 	return d, nil
 }
 
-func (s *fakeStore) MarkVerified(_ context.Context, id uuid.UUID, at time.Time, withDNSSEC bool, logID *uuid.UUID) (management.Domain, error) {
+func (s *fakeStore) MarkVerified(_ context.Context, id uuid.UUID, expectedToken string, at time.Time, withDNSSEC bool, logID *uuid.UUID) (management.Domain, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.beforeMarkVerified != nil {
+		s.beforeMarkVerified(s)
+	}
 	d, ok := s.rows[id]
 	if !ok {
 		return management.Domain{}, management.ErrStoreNotFound
+	}
+	if d.VerificationToken != expectedToken {
+		return management.Domain{}, management.ErrTokenRotated
 	}
 	t := at
 	d.VerifiedAt = &t
@@ -129,13 +137,16 @@ type fakeValidator struct {
 
 func (v *fakeValidator) Validate(_ context.Context, _ string) error { return v.err }
 
-// fakeDNS stubs DNSChecker.
+// fakeDNS stubs DNSChecker. calls counts invocations so SIN-63104
+// regression tests can assert the TTL gate short-circuits before DNS.
 type fakeDNS struct {
 	result management.DNSCheckResult
 	err    error
+	calls  int
 }
 
 func (f *fakeDNS) Check(_ context.Context, _, _ string) (management.DNSCheckResult, error) {
+	f.calls++
 	return f.result, f.err
 }
 
@@ -377,7 +388,7 @@ func TestVerify_HappyPath(t *testing.T) {
 	now := time.Date(2026, 5, 6, 14, 0, 0, 0, time.UTC)
 	store.rows[domainID] = management.Domain{
 		ID: domainID, TenantID: tenant, Host: "shop.example.com",
-		VerificationToken: "tok", CreatedAt: now, UpdatedAt: now,
+		VerificationToken: "tok", TokenIssuedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	logID := uuid.New()
 	uc := mustNew(t, management.Config{
@@ -408,11 +419,12 @@ func TestVerify_TokenMismatch(t *testing.T) {
 	store := newFakeStore()
 	tenant := uuid.New()
 	domainID := uuid.New()
-	store.rows[domainID] = management.Domain{ID: domainID, TenantID: tenant, Host: "shop.example.com", VerificationToken: "tok"}
+	now := time.Now()
+	store.rows[domainID] = management.Domain{ID: domainID, TenantID: tenant, Host: "shop.example.com", VerificationToken: "tok", TokenIssuedAt: now}
 	uc := mustNew(t, management.Config{
 		Store: store, Gate: &fakeGate{},
 		DNS: &fakeDNS{err: management.ErrTokenMismatch},
-		Now: fixedNow(time.Now()),
+		Now: fixedNow(now),
 	})
 	out, err := uc.Verify(context.Background(), tenant, domainID)
 	if !errors.Is(err, management.ErrTokenMismatch) {
@@ -471,8 +483,9 @@ func TestVerify_DNSCheckerMissing(t *testing.T) {
 	store := newFakeStore()
 	tenant := uuid.New()
 	domainID := uuid.New()
-	store.rows[domainID] = management.Domain{ID: domainID, TenantID: tenant, Host: "shop.example.com", VerificationToken: "tok"}
-	uc := mustNew(t, management.Config{Store: store, Gate: &fakeGate{}, Now: fixedNow(time.Now())})
+	now := time.Now()
+	store.rows[domainID] = management.Domain{ID: domainID, TenantID: tenant, Host: "shop.example.com", VerificationToken: "tok", TokenIssuedAt: now}
+	uc := mustNew(t, management.Config{Store: store, Gate: &fakeGate{}, Now: fixedNow(now)})
 	_, err := uc.Verify(context.Background(), tenant, domainID)
 	if err == nil {
 		t.Fatal("expected error when DNSChecker is nil")
@@ -727,11 +740,11 @@ func (s *errStore) GetByID(ctx context.Context, id uuid.UUID) (management.Domain
 	return s.fakeStore.GetByID(ctx, id)
 }
 
-func (s *errStore) MarkVerified(ctx context.Context, id uuid.UUID, at time.Time, withDNSSEC bool, logID *uuid.UUID) (management.Domain, error) {
+func (s *errStore) MarkVerified(ctx context.Context, id uuid.UUID, expectedToken string, at time.Time, withDNSSEC bool, logID *uuid.UUID) (management.Domain, error) {
 	if s.failMarkVerified != nil {
 		return management.Domain{}, s.failMarkVerified
 	}
-	return s.fakeStore.MarkVerified(ctx, id, at, withDNSSEC, logID)
+	return s.fakeStore.MarkVerified(ctx, id, expectedToken, at, withDNSSEC, logID)
 }
 
 func (s *errStore) SetPaused(ctx context.Context, id uuid.UUID, p *time.Time) (management.Domain, error) {
@@ -776,9 +789,10 @@ func TestVerify_MarkVerifiedError(t *testing.T) {
 	tenant := uuid.New()
 	domainID := uuid.New()
 	base := newFakeStore()
-	base.rows[domainID] = management.Domain{ID: domainID, TenantID: tenant, Host: "shop.example.com", VerificationToken: "tok"}
+	now := time.Now()
+	base.rows[domainID] = management.Domain{ID: domainID, TenantID: tenant, Host: "shop.example.com", VerificationToken: "tok", TokenIssuedAt: now}
 	store := &errStore{fakeStore: base, failMarkVerified: errors.New("pg down")}
-	uc := mustNew(t, management.Config{Store: store, Gate: &fakeGate{}, DNS: &fakeDNS{}, Now: fixedNow(time.Now())})
+	uc := mustNew(t, management.Config{Store: store, Gate: &fakeGate{}, DNS: &fakeDNS{}, Now: fixedNow(now)})
 	_, err := uc.Verify(context.Background(), tenant, domainID)
 	if err == nil {
 		t.Fatal("expected error from MarkVerified")
@@ -853,5 +867,226 @@ func TestEnroll_DefaultTokenGen(t *testing.T) {
 	}
 	if len(res.Domain.VerificationToken) != 32 {
 		t.Fatalf("token len = %d, want 32", len(res.Domain.VerificationToken))
+	}
+}
+
+// --- SIN-63104 regression tests ---------------------------------------------
+//
+// These tests fail against pre-remediation code (no TTL gate, no CAS in
+// MarkVerified, no TokenFingerprint on AuditEvent) and pass against the
+// new code. See plan in /SIN/issues/SIN-63102#document-plan §7.
+
+// TestVerify_RejectsExpiredToken asserts the TTL gate short-circuits
+// Verify before DNS when the token has aged past TokenTTL. The DNS
+// lookup must not happen so an attacker who has briefly captured the
+// tenant's DNS zone after a months-old enrollment cannot replay.
+func TestVerify_RejectsExpiredToken(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	tenant := uuid.New()
+	domainID := uuid.New()
+	store.rows[domainID] = management.Domain{
+		ID: domainID, TenantID: tenant, Host: "shop.example.com",
+		VerificationToken: "tok",
+		// Issued two hours ago — outside the 1h TTL configured below.
+		TokenIssuedAt: now.Add(-2 * time.Hour),
+	}
+	dns := &fakeDNS{}
+	audit := &fakeAudit{}
+	uc := mustNew(t, management.Config{
+		Store: store, Gate: &fakeGate{}, DNS: dns, Audit: audit,
+		Now:      fixedNow(now),
+		TokenTTL: time.Hour,
+	})
+	out, err := uc.Verify(context.Background(), tenant, domainID)
+	if !errors.Is(err, management.ErrTokenExpired) {
+		t.Fatalf("err = %v, want ErrTokenExpired", err)
+	}
+	if out.Reason != management.ReasonTokenExpired {
+		t.Fatalf("reason = %v, want ReasonTokenExpired", out.Reason)
+	}
+	if dns.calls != 0 {
+		t.Fatalf("dns.calls = %d, want 0 (TTL must short-circuit DNS)", dns.calls)
+	}
+	if d := store.rows[domainID]; d.VerifiedAt != nil {
+		t.Fatalf("VerifiedAt = %v, want nil (no side effect on expiry)", d.VerifiedAt)
+	}
+	if len(audit.events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(audit.events))
+	}
+	ev := audit.events[0]
+	if ev.Action != "verify" || ev.Outcome != "denied:token_expired" || ev.Reason != management.ReasonTokenExpired {
+		t.Fatalf("audit event = %+v", ev)
+	}
+}
+
+// TestVerify_TokenAtTTLBoundary nails down the comparison semantics:
+// exactly-at-TTL is still acceptable (>, not >=); one nanosecond past
+// the TTL is rejected.
+func TestVerify_TokenAtTTLBoundary(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	ttl := time.Hour
+	cases := []struct {
+		name      string
+		issuedAt  time.Time
+		wantError bool
+	}{
+		{"exactly at TTL", now.Add(-ttl), false},
+		{"one nanosecond past TTL", now.Add(-ttl - time.Nanosecond), true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := newFakeStore()
+			tenant := uuid.New()
+			domainID := uuid.New()
+			store.rows[domainID] = management.Domain{
+				ID: domainID, TenantID: tenant, Host: "shop.example.com",
+				VerificationToken: "tok",
+				TokenIssuedAt:     tc.issuedAt,
+			}
+			dns := &fakeDNS{}
+			uc := mustNew(t, management.Config{
+				Store: store, Gate: &fakeGate{}, DNS: dns,
+				Now:      fixedNow(now),
+				TokenTTL: ttl,
+			})
+			_, err := uc.Verify(context.Background(), tenant, domainID)
+			if tc.wantError {
+				if !errors.Is(err, management.ErrTokenExpired) {
+					t.Fatalf("err = %v, want ErrTokenExpired", err)
+				}
+				return
+			}
+			if errors.Is(err, management.ErrTokenExpired) {
+				t.Fatalf("unexpected ErrTokenExpired at exact TTL boundary")
+			}
+		})
+	}
+}
+
+// TestVerify_RejectsRotatedToken exercises the compare-and-swap path:
+// when the row's verification_token changes between Get and
+// MarkVerified, the use-case must surface ReasonTokenRotated, refuse
+// to flip verified_at, and emit a denied:token_rotated audit event.
+func TestVerify_RejectsRotatedToken(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	tenant := uuid.New()
+	domainID := uuid.New()
+	store.rows[domainID] = management.Domain{
+		ID: domainID, TenantID: tenant, Host: "shop.example.com",
+		VerificationToken: "T1",
+		TokenIssuedAt:     now,
+	}
+	// Simulate a concurrent rotation that swaps the token between
+	// Get and MarkVerified. fakeStore.beforeMarkVerified runs under
+	// the same mutex so the swap is atomic with the CAS check.
+	store.beforeMarkVerified = func(s *fakeStore) {
+		d := s.rows[domainID]
+		d.VerificationToken = "T2"
+		s.rows[domainID] = d
+	}
+	dns := &fakeDNS{}
+	audit := &fakeAudit{}
+	uc := mustNew(t, management.Config{
+		Store: store, Gate: &fakeGate{}, DNS: dns, Audit: audit,
+		Now: fixedNow(now),
+	})
+	out, err := uc.Verify(context.Background(), tenant, domainID)
+	if !errors.Is(err, management.ErrTokenRotated) {
+		t.Fatalf("err = %v, want ErrTokenRotated", err)
+	}
+	if out.Reason != management.ReasonTokenRotated {
+		t.Fatalf("reason = %v, want ReasonTokenRotated", out.Reason)
+	}
+	if d := store.rows[domainID]; d.VerifiedAt != nil {
+		t.Fatalf("VerifiedAt = %v, want nil (CAS must prevent the write)", d.VerifiedAt)
+	}
+	var rotated *management.AuditEvent
+	for i := range audit.events {
+		if audit.events[i].Outcome == "denied:token_rotated" {
+			rotated = &audit.events[i]
+			break
+		}
+	}
+	if rotated == nil {
+		t.Fatalf("audit events missing denied:token_rotated: %+v", audit.events)
+	}
+	if rotated.Reason != management.ReasonTokenRotated {
+		t.Fatalf("audit reason = %v", rotated.Reason)
+	}
+}
+
+// TestVerify_AuditFingerprintRedacted guards the rule that the audit
+// trail must NEVER carry the raw verification_token. The fingerprint
+// is present, non-empty, but does not contain the token substring.
+func TestVerify_AuditFingerprintRedacted(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	rawToken := "deadbeefcafef00d1122334455667788"
+	store := newFakeStore()
+	tenant := uuid.New()
+	domainID := uuid.New()
+	store.rows[domainID] = management.Domain{
+		ID: domainID, TenantID: tenant, Host: "shop.example.com",
+		VerificationToken: rawToken,
+		TokenIssuedAt:     now,
+	}
+	audit := &fakeAudit{}
+	uc := mustNew(t, management.Config{
+		Store: store, Gate: &fakeGate{},
+		DNS:   &fakeDNS{result: management.DNSCheckResult{WithDNSSEC: false}},
+		Audit: audit,
+		Now:   fixedNow(now),
+	})
+	if _, err := uc.Verify(context.Background(), tenant, domainID); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(audit.events) == 0 {
+		t.Fatal("audit events empty")
+	}
+	verifyEvent := audit.events[len(audit.events)-1]
+	if verifyEvent.Action != "verify" {
+		t.Fatalf("last audit action = %q, want verify", verifyEvent.Action)
+	}
+	if verifyEvent.TokenFingerprint == "" {
+		t.Fatal("TokenFingerprint must be set on verify events that bind a token")
+	}
+	if strings.Contains(verifyEvent.TokenFingerprint, rawToken) {
+		t.Fatalf("TokenFingerprint must not contain raw token: %q", verifyEvent.TokenFingerprint)
+	}
+	// SHA-256 first 8 bytes → 16 hex chars per the spec.
+	if len(verifyEvent.TokenFingerprint) != 16 {
+		t.Fatalf("TokenFingerprint length = %d, want 16", len(verifyEvent.TokenFingerprint))
+	}
+}
+
+// TestEnroll_SetsTokenIssuedAt asserts Enroll stamps TokenIssuedAt to
+// the clock's now, so a fresh enrollment begins its TTL window now and
+// not at some zero-time epoch.
+func TestEnroll_SetsTokenIssuedAt(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	uc := mustNew(t, management.Config{
+		Store: store, Gate: &fakeGate{},
+		TokenGen: detTokenGen("tok"), Now: fixedNow(now),
+	})
+	res, err := uc.Enroll(context.Background(), uuid.New(), "shop.example.com")
+	if err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+	if !res.Domain.TokenIssuedAt.Equal(now) {
+		t.Fatalf("TokenIssuedAt = %v, want %v", res.Domain.TokenIssuedAt, now)
+	}
+	// And the persisted row must agree.
+	persisted := store.rows[res.Domain.ID]
+	if !persisted.TokenIssuedAt.Equal(now) {
+		t.Fatalf("persisted TokenIssuedAt = %v, want %v", persisted.TokenIssuedAt, now)
 	}
 }

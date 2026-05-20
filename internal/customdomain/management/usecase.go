@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +12,10 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// defaultTokenTTL is the verification-token expiry window used when
+// Config.TokenTTL is zero. SIN-63104.
+const defaultTokenTTL = 24 * time.Hour
 
 // UseCase is the management orchestrator. Construct once with New and
 // reuse; safe for concurrent calls as long as every embedded port is.
@@ -23,6 +28,7 @@ type UseCase struct {
 	audit     AuditLogger
 	tokenGen  TokenGenerator
 	now       Clock
+	tokenTTL  time.Duration
 }
 
 // Config groups dependencies so callers can leave the optional ones zero
@@ -36,6 +42,9 @@ type Config struct {
 	Audit     AuditLogger
 	TokenGen  TokenGenerator // optional — defaults to crypto/rand
 	Now       Clock          // optional — defaults to time.Now
+	// TokenTTL bounds how long a verification token stays acceptable for
+	// Verify after enrollment. Defaults to 24h when zero. SIN-63104.
+	TokenTTL time.Duration
 }
 
 // New wires the use-case from a Config. Returns an error when the
@@ -55,6 +64,10 @@ func New(cfg Config) (*UseCase, error) {
 	if now == nil {
 		now = time.Now
 	}
+	ttl := cfg.TokenTTL
+	if ttl <= 0 {
+		ttl = defaultTokenTTL
+	}
 	return &UseCase{
 		store:     cfg.Store,
 		gate:      cfg.Gate,
@@ -64,6 +77,7 @@ func New(cfg Config) (*UseCase, error) {
 		audit:     cfg.Audit,
 		tokenGen:  tokenGen,
 		now:       now,
+		tokenTTL:  ttl,
 	}, nil
 }
 
@@ -142,6 +156,7 @@ func (u *UseCase) Enroll(ctx context.Context, tenantID uuid.UUID, rawHost string
 		TenantID:          tenantID,
 		Host:              host,
 		VerificationToken: token,
+		TokenIssuedAt:     now,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -162,6 +177,18 @@ func (u *UseCase) Enroll(ctx context.Context, tenantID uuid.UUID, rawHost string
 // when the token matches. Idempotent: an already-verified row returns
 // VerifyOutcome{Verified: true, Reason: ReasonAlreadyVerified} without
 // re-hitting DNS.
+//
+// SIN-63104 hardenings:
+//
+//   - TTL gate before DNS: a token older than u.tokenTTL is rejected
+//     with ReasonTokenExpired so a stale DNS takeover can't replay an
+//     old enrollment.
+//   - Compare-and-swap on MarkVerified: the store update is gated by
+//     the expected verification_token so a concurrent rotation can't
+//     race the flip-to-verified.
+//   - TokenFingerprint on every token-bound audit event so ops can
+//     correlate a denied:token_rotated event with the rotation that
+//     caused it without leaking the token.
 func (u *UseCase) Verify(ctx context.Context, tenantID, id uuid.UUID) (VerifyOutcome, error) {
 	d, err := u.Get(ctx, tenantID, id)
 	if err != nil {
@@ -176,24 +203,63 @@ func (u *UseCase) Verify(ctx context.Context, tenantID, id uuid.UUID) (VerifyOut
 	if d.VerifiedAt != nil {
 		return VerifyOutcome{Domain: d, Verified: true, Reason: ReasonAlreadyVerified}, nil
 	}
+	now := u.now().UTC()
+	fp := tokenFingerprint(d.VerificationToken)
+	if now.Sub(d.TokenIssuedAt) > u.tokenTTL {
+		u.logEvent(ctx, AuditEvent{
+			TenantID:         tenantID,
+			DomainID:         id,
+			Host:             d.Host,
+			Action:           "verify",
+			Outcome:          "denied:token_expired",
+			Reason:           ReasonTokenExpired,
+			At:               now,
+			TokenFingerprint: fp,
+		})
+		return VerifyOutcome{Domain: d, Reason: ReasonTokenExpired}, ErrTokenExpired
+	}
 	if u.dns == nil {
-		u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: id, Host: d.Host, Action: "verify", Outcome: "error", Reason: ReasonInternal, At: u.now()})
+		u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: id, Host: d.Host, Action: "verify", Outcome: "error", Reason: ReasonInternal, At: now, TokenFingerprint: fp})
 		return VerifyOutcome{Domain: d, Reason: ReasonInternal}, errors.New("management: DNSChecker not configured")
 	}
 	res, err := u.dns.Check(ctx, d.Host, d.VerificationToken)
 	if err != nil {
 		reason := classifyValidationError(err)
-		u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: id, Host: d.Host, Action: "verify", Outcome: "denied:" + reason.String(), Reason: reason, At: u.now()})
+		u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: id, Host: d.Host, Action: "verify", Outcome: "denied:" + reason.String(), Reason: reason, At: now, TokenFingerprint: fp})
 		return VerifyOutcome{Domain: d, Reason: reason, Err: err}, err
 	}
-	now := u.now().UTC()
-	saved, err := u.store.MarkVerified(ctx, id, now, res.WithDNSSEC, res.LogID)
+	saved, err := u.store.MarkVerified(ctx, id, d.VerificationToken, now, res.WithDNSSEC, res.LogID)
+	if errors.Is(err, ErrTokenRotated) {
+		u.logEvent(ctx, AuditEvent{
+			TenantID:         tenantID,
+			DomainID:         id,
+			Host:             d.Host,
+			Action:           "verify",
+			Outcome:          "denied:token_rotated",
+			Reason:           ReasonTokenRotated,
+			At:               now,
+			TokenFingerprint: fp,
+		})
+		return VerifyOutcome{Domain: d, Reason: ReasonTokenRotated, Err: err}, err
+	}
 	if err != nil {
-		u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: id, Host: d.Host, Action: "verify", Outcome: "error", Reason: ReasonInternal, At: u.now()})
+		u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: id, Host: d.Host, Action: "verify", Outcome: "error", Reason: ReasonInternal, At: now, TokenFingerprint: fp})
 		return VerifyOutcome{Domain: d, Reason: ReasonInternal}, fmt.Errorf("management: mark verified: %w", err)
 	}
-	u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: id, Host: d.Host, Action: "verify", Outcome: "ok", At: u.now()})
+	u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: id, Host: d.Host, Action: "verify", Outcome: "ok", At: now, TokenFingerprint: fp})
 	return VerifyOutcome{Domain: saved, Verified: true}, nil
+}
+
+// tokenFingerprint returns the first 16 hex chars (64 bits) of the
+// SHA-256 of token. Enough entropy to correlate audit events across
+// rotation races; never reversible. Empty input returns empty output so
+// callers can pass through audit events that don't bind a token.
+func tokenFingerprint(token string) string {
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:8])
 }
 
 // SetPaused flips tls_paused_at. paused=true sets to now(); paused=false

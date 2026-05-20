@@ -54,6 +54,7 @@ type customDomainRow struct {
 	pausedAt       *time.Time
 	deletedAt      *time.Time
 	dnsLogID       *[16]byte
+	tokenIssuedAt  time.Time
 	createdAt, upd time.Time
 	scanErr        error
 }
@@ -89,12 +90,12 @@ func (f *fakeRows) Scan(dest ...any) error {
 // covers the limited shapes we already exercise. Custom-domain scans
 // pull a wider set of types (uuid pointers, *time.Time pointers).
 func scanIntoCustomDomainDest(dest []any, r customDomainRow) error {
-	if len(dest) != 11 {
+	if len(dest) != 12 {
 		return errors.New("scan: arity")
 	}
 	mapping := []any{
 		r.id, r.tenant, r.host, r.token, r.verifiedAt, r.dnssec,
-		r.pausedAt, r.deletedAt, r.dnsLogID, r.createdAt, r.upd,
+		r.pausedAt, r.deletedAt, r.dnsLogID, r.tokenIssuedAt, r.createdAt, r.upd,
 	}
 	for i, src := range mapping {
 		switch p := dest[i].(type) {
@@ -157,12 +158,13 @@ func (p pgxRowAdapter) Scan(dest ...any) error {
 
 func mkRow() customDomainRow {
 	return customDomainRow{
-		id:        [16]byte{0xaa},
-		tenant:    [16]byte{0xbb},
-		host:      "shop.example.com",
-		token:     "tok",
-		createdAt: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
-		upd:       time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+		id:            [16]byte{0xaa},
+		tenant:        [16]byte{0xbb},
+		host:          "shop.example.com",
+		token:         "tok",
+		tokenIssuedAt: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+		createdAt:     time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+		upd:           time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -292,7 +294,7 @@ func TestCustomDomainStore_MarkVerified(t *testing.T) {
 	conn := stubRowsConn{
 		queryRow: func(string, ...any) pgx.Row { return pgxRowAdapter{row: r} },
 	}
-	d, err := pgstore.NewCustomDomainStore(conn).MarkVerified(context.Background(), uuid.UUID(r.id), verified, true, &logID)
+	d, err := pgstore.NewCustomDomainStore(conn).MarkVerified(context.Background(), uuid.UUID(r.id), r.token, verified, true, &logID)
 	if err != nil {
 		t.Fatalf("MarkVerified: %v", err)
 	}
@@ -308,7 +310,7 @@ func TestCustomDomainStore_MarkVerified_NilLogID(t *testing.T) {
 	t.Parallel()
 	r := mkRow()
 	conn := stubRowsConn{queryRow: func(string, ...any) pgx.Row { return pgxRowAdapter{row: r} }}
-	if _, err := pgstore.NewCustomDomainStore(conn).MarkVerified(context.Background(), uuid.UUID(r.id), time.Now(), false, nil); err != nil {
+	if _, err := pgstore.NewCustomDomainStore(conn).MarkVerified(context.Background(), uuid.UUID(r.id), r.token, time.Now(), false, nil); err != nil {
 		t.Fatalf("MarkVerified: %v", err)
 	}
 }
@@ -350,5 +352,112 @@ func TestCustomDomainStore_SoftDelete_NotFound(t *testing.T) {
 	_, err := pgstore.NewCustomDomainStore(conn).SoftDelete(context.Background(), uuid.New(), time.Now())
 	if !errors.Is(err, management.ErrStoreNotFound) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// probeRow scripts a [16]byte / int / *time.Time SELECT probe used by
+// the MarkVerified CAS discriminator. Distinct from pgxRowAdapter, which
+// only handles the full custom-domain row shape.
+type probeRow struct {
+	probeVal int
+	err      error
+}
+
+func (p probeRow) Scan(dest ...any) error {
+	if p.err != nil {
+		return p.err
+	}
+	if len(dest) != 1 {
+		return errors.New("probeRow: arity")
+	}
+	switch d := dest[0].(type) {
+	case *int:
+		*d = p.probeVal
+	default:
+		return errors.New("probeRow: unsupported dest")
+	}
+	return nil
+}
+
+// TestCustomDomainStore_MarkVerified_DriverError — SIN-63104. Non-
+// ErrNoRows errors from the CAS UPDATE must propagate unchanged
+// (neither ErrTokenRotated nor ErrStoreNotFound).
+func TestCustomDomainStore_MarkVerified_DriverError(t *testing.T) {
+	t.Parallel()
+	conn := stubRowsConn{
+		queryRow: func(string, ...any) pgx.Row { return pgxRowAdapter{err: errors.New("driver boom")} },
+	}
+	_, err := pgstore.NewCustomDomainStore(conn).MarkVerified(context.Background(), uuid.New(), "tok", time.Now(), false, nil)
+	if err == nil {
+		t.Fatal("expected driver error")
+	}
+	if errors.Is(err, management.ErrTokenRotated) || errors.Is(err, management.ErrStoreNotFound) {
+		t.Fatalf("unexpected typed error: %v", err)
+	}
+}
+
+// TestCustomDomainStore_MarkVerified_TokenRotated_ProbeHit — SIN-63104.
+// CAS UPDATE matches zero rows AND probe SELECT finds the row →
+// ErrTokenRotated.
+func TestCustomDomainStore_MarkVerified_TokenRotated_ProbeHit(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	conn := stubRowsConn{
+		queryRow: func(_ string, _ ...any) pgx.Row {
+			calls++
+			if calls == 1 {
+				return pgxRowAdapter{err: pgx.ErrNoRows}
+			}
+			return probeRow{probeVal: 1}
+		},
+	}
+	_, err := pgstore.NewCustomDomainStore(conn).MarkVerified(context.Background(), uuid.New(), "tok", time.Now(), false, nil)
+	if !errors.Is(err, management.ErrTokenRotated) {
+		t.Fatalf("err = %v, want ErrTokenRotated", err)
+	}
+}
+
+// TestCustomDomainStore_MarkVerified_NotFound_ProbeMiss — SIN-63104.
+// CAS UPDATE matches zero rows AND probe SELECT also returns ErrNoRows
+// → ErrStoreNotFound.
+func TestCustomDomainStore_MarkVerified_NotFound_ProbeMiss(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	conn := stubRowsConn{
+		queryRow: func(_ string, _ ...any) pgx.Row {
+			calls++
+			if calls == 1 {
+				return pgxRowAdapter{err: pgx.ErrNoRows}
+			}
+			return probeRow{err: pgx.ErrNoRows}
+		},
+	}
+	_, err := pgstore.NewCustomDomainStore(conn).MarkVerified(context.Background(), uuid.New(), "tok", time.Now(), false, nil)
+	if !errors.Is(err, management.ErrStoreNotFound) {
+		t.Fatalf("err = %v, want ErrStoreNotFound", err)
+	}
+}
+
+// TestCustomDomainStore_MarkVerified_ProbeDriverError — SIN-63104.
+// CAS UPDATE matches zero rows AND probe SELECT errors with a non-
+// ErrNoRows driver error → wrapped error, neither typed sentinel.
+func TestCustomDomainStore_MarkVerified_ProbeDriverError(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	conn := stubRowsConn{
+		queryRow: func(_ string, _ ...any) pgx.Row {
+			calls++
+			if calls == 1 {
+				return pgxRowAdapter{err: pgx.ErrNoRows}
+			}
+			return probeRow{err: errors.New("probe boom")}
+		},
+	}
+	_, err := pgstore.NewCustomDomainStore(conn).MarkVerified(context.Background(), uuid.New(), "tok", time.Now(), false, nil)
+	if err == nil {
+		t.Fatal("expected probe driver error")
+	}
+	if errors.Is(err, management.ErrTokenRotated) || errors.Is(err, management.ErrStoreNotFound) {
+		t.Fatalf("unexpected typed error: %v", err)
 	}
 }

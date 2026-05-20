@@ -41,6 +41,10 @@ func CopyPTBR(reason Reason, retryAfter time.Duration, reservedUntil *time.Time)
 		return "Este domínio já está verificado."
 	case ReasonInternal:
 		return "Erro interno. Tente novamente em alguns minutos."
+	case ReasonTokenExpired:
+		return "O token de verificação expirou. Gere um novo token e atualize o registro TXT no seu DNS."
+	case ReasonTokenRotated:
+		return "O token foi atualizado durante a verificação. Tente novamente."
 	default:
 		return ""
 	}

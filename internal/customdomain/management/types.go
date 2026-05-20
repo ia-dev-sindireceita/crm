@@ -45,8 +45,12 @@ type Domain struct {
 	FailedAt           *time.Time
 	FailureReason      string
 	DNSResolutionLogID *uuid.UUID
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// TokenIssuedAt is the moment VerificationToken was issued. The use
+	// case enforces a TTL window on Verify so stale tokens (e.g. after a
+	// DNS-zone takeover months later) cannot be replayed. SIN-63104.
+	TokenIssuedAt time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // Status is the four-state UI badge derived from the timestamps. Errors
@@ -118,6 +122,13 @@ const (
 	ReasonAlreadyVerified
 	ReasonForbidden
 	ReasonInternal
+	// ReasonTokenExpired is returned by Verify when the verification
+	// token's age exceeds the configured TTL. SIN-63104.
+	ReasonTokenExpired
+	// ReasonTokenRotated is returned when the verification_token in the
+	// store has changed between the read and the compare-and-swap
+	// MarkVerified write. SIN-63104.
+	ReasonTokenRotated
 )
 
 func (r Reason) String() string {
@@ -142,6 +153,10 @@ func (r Reason) String() string {
 		return "forbidden"
 	case ReasonInternal:
 		return "internal"
+	case ReasonTokenExpired:
+		return "token_expired"
+	case ReasonTokenRotated:
+		return "token_rotated"
 	default:
 		return "none"
 	}
@@ -177,4 +192,11 @@ var (
 	ErrTenantMismatch  = errors.New("management: domain belongs to a different tenant")
 	ErrAlreadyVerified = errors.New("management: domain already verified")
 	ErrSlugReserved    = errors.New("management: slug is reserved")
+	// ErrTokenExpired is returned by Verify when the token's age exceeds
+	// the configured TTL. SIN-63104.
+	ErrTokenExpired = errors.New("management: verification token expired")
+	// ErrTokenRotated is returned by Store.MarkVerified when the row's
+	// verification_token differs from the expected value (compare-and-
+	// swap mismatch). SIN-63104.
+	ErrTokenRotated = errors.New("management: verification token was rotated between read and write")
 )
