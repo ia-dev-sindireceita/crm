@@ -5,9 +5,15 @@
 --
 -- Run as app_admin (BYPASSRLS) so policies do not block the inserts.
 --
--- Password hashes are bcrypt cost 4 of the literal string "stg-password" —
--- adequate for staging fixtures, NEVER for prod. Keep this file
--- staging-only; the prod seed lives in PR9 and is sourced from secrets.
+-- Password hashes are argon2id PHC encodings of the literal string
+-- "stg-password" with the package-iam parameters (m=65536, t=3, p=4,
+-- 16-byte salt, 32-byte hash) — adequate for staging fixtures, NEVER
+-- for prod. Keep this file staging-only; the prod seed lives in PR9 and
+-- is sourced from secrets. SIN-63154 swapped bcrypt placeholders to
+-- argon2id because internal/iam.VerifyPassword only accepts argon2id
+-- (decodePHC rejects $2a$ outright). Regenerate via iam.HashPassword;
+-- a regression test in internal/iam/password_seed_test.go re-verifies
+-- each hash against the verifier on every `go test ./...`.
 --
 -- SIN-63146 — tenant FQDNs and per-tenant agent emails are templated on
 -- the `base_domain` psql variable so the same file seeds dev (default
@@ -35,17 +41,17 @@ INSERT INTO users (id, tenant_id, email, password_hash, role, is_master) VALUES
   ('00000000-0000-0000-0000-0000000a0e01',
    '00000000-0000-0000-0000-00000000ac01',
    'agent@acme.'   || :'base_domain',
-   '$2a$04$wHy3bTk0jS8eQ5G6wY1uMOZjhqGn0xj2mA4P0vYHt1nQd2u4ZJWne',
+   '$argon2id$v=19$m=65536,t=3,p=4$xdUl6TonL7/7uBXHOr1l6A$A1WB5t0HT3Du/tzT3o9wlZxcjiknaCozvcS9evnIPiM',
    'agent', false),
   ('00000000-0000-0000-0000-0000000e0e02',
    '00000000-0000-0000-0000-00000000eb02',
    'agent@globex.' || :'base_domain',
-   '$2a$04$wHy3bTk0jS8eQ5G6wY1uMOZjhqGn0xj2mA4P0vYHt1nQd2u4ZJWne',
+   '$argon2id$v=19$m=65536,t=3,p=4$V2UIy0HwezJHHCZ7V6GYzA$g+BY8yIY7FfEsS/87CjEaX7+iXLj18FmOUBQCpELZ8k',
    'agent', false),
   ('00000000-0000-0000-0000-0000000a57e7',
    NULL,
    'master@crm.local',
-   '$2a$04$wHy3bTk0jS8eQ5G6wY1uMOZjhqGn0xj2mA4P0vYHt1nQd2u4ZJWne',
+   '$argon2id$v=19$m=65536,t=3,p=4$KVbQRF4vARjcL2LzJ3tPAw$T1pX3waMktzhSjBoigZjPQmHGcJiN7tqeo0NvWX9WcE',
    'master', true)
 ON CONFLICT (id) DO NOTHING;
 
