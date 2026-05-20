@@ -7,6 +7,12 @@
 // and emit it as the `nonce` attribute on every <script> / <style> they
 // own. The policy never includes 'unsafe-inline'.
 //
+// Directives: default-src, script-src, style-src, object-src, base-uri,
+// font-src, frame-ancestors. font-src allows 'self' and data: URIs so
+// browser extensions (password managers, accessibility helpers) that
+// inject inline UI with embedded woff2 fonts do not flood the console
+// with CSP violation noise; see HeaderTemplate for the rationale.
+//
 // Design:
 //
 //   - The header template embeds the literal substring "{nonce}" wherever
@@ -46,6 +52,8 @@ const HeaderTemplate = "default-src 'self'; " +
 	"style-src 'self' 'nonce-{nonce}'; " +
 	"object-src 'none'; " +
 	"base-uri 'self'; " +
+	// font-src 'self' data: silences console noise from browser-extension UI (password managers, Grammarly, etc.) that embeds woff2 fonts as data: URIs; fonts are inert binary parsers and anti-XSS/anti-clickjacking coverage is unchanged. SIN-63155.
+	"font-src 'self' data:; " +
 	"frame-ancestors 'none'"
 
 // noncePlaceholder is the substring substituted with the per-request

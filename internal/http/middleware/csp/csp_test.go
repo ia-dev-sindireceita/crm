@@ -255,6 +255,44 @@ func TestMiddleware_RandReaderProductionMatches_internal(t *testing.T) {
 	_ = rand.Reader
 }
 
+// TestMiddleware_FontSrcAllowsSelfAndDataURIs asserts the SIN-63155
+// directive: font-src must permit 'self' and data: so browser-extension
+// UI that injects woff2 fonts as data: URIs does not pollute the console
+// with CSP violation reports. data: must NOT leak into any other
+// fetch-directive (default-src, script-src, style-src, img-src,
+// object-src) — only font-src.
+func TestMiddleware_FontSrcAllowsSelfAndDataURIs(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	Middleware(helloHandler).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	hdr := rec.Header().Get(HeaderName)
+	if !strings.Contains(hdr, "font-src 'self' data:") {
+		t.Errorf("CSP header missing %q\nfull header: %s", "font-src 'self' data:", hdr)
+	}
+
+	// data: must be scoped to font-src only. Walk each directive and
+	// fail loudly if any other directive permits data:.
+	for _, directive := range strings.Split(hdr, "; ") {
+		if strings.HasPrefix(directive, "font-src") {
+			continue
+		}
+		if strings.Contains(directive, "data:") {
+			t.Errorf("data: leaked into directive %q (full header: %s)", directive, hdr)
+		}
+	}
+
+	// Defence-in-depth: 'unsafe-inline' must remain banned everywhere
+	// and default-src must stay locked to 'self'.
+	if strings.Contains(hdr, "unsafe-inline") {
+		t.Errorf("CSP header must NOT contain 'unsafe-inline'; got: %s", hdr)
+	}
+	if !strings.Contains(hdr, "default-src 'self';") {
+		t.Errorf("default-src must remain 'self' only; got: %s", hdr)
+	}
+}
+
 // nonceFromHeader extracts the substring after `'nonce-` from the
 // script-src directive. Test helper — bails the test on a malformed
 // header so callers don't have to thread the err.
