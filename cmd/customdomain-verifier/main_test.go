@@ -465,7 +465,7 @@ func (fakeStore) GetByID(context.Context, uuid.UUID) (management.Domain, error) 
 func (fakeStore) Insert(context.Context, management.Domain) (management.Domain, error) {
 	return management.Domain{}, errors.New("fakeStore: Insert not implemented")
 }
-func (fakeStore) MarkVerified(context.Context, uuid.UUID, time.Time, bool, *uuid.UUID) (management.Domain, error) {
+func (fakeStore) MarkVerified(context.Context, uuid.UUID, string, time.Time, bool, *uuid.UUID) (management.Domain, error) {
 	return management.Domain{}, errors.New("fakeStore: MarkVerified not implemented")
 }
 func (fakeStore) SetPaused(context.Context, uuid.UUID, *time.Time) (management.Domain, error) {
