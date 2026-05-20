@@ -704,9 +704,15 @@ STG_SMOKE_URL="https://acme.crm.REPLACE_WITH_STG_DOMAIN"
 curl -fsS "${STG_SMOKE_URL}/health"
 ```
 
-If both smoke checks return `{"status":"ok"}` you are done; subsequent
-deploys are fully automated by the `cd-stg` workflow once you finish §6 and
-populate the GitHub Actions secrets.
+If both smoke checks return JSON shaped like `{"status":"ok","commit_sha":"<sha>"}`
+you are done; subsequent deploys are fully automated by the `cd-stg`
+workflow once you finish §6 and populate the GitHub Actions secrets.
+SIN-63146 added `commit_sha` to `/health`; the SHA is `unknown` for any
+image built without `--build-arg COMMIT_SHA=…` (e.g. a local `docker
+build .`), and equals `github.event.workflow_run.head_sha` for every
+image pushed by `cd-stg.yml`. The `cd-stg` smoke step now compares the
+two and fails red if they disagree — this is the tripwire for a stale
+`docker compose pull` and matches the SIN-63143 diagnosis.
 
 If the external check times out on `port 443` indefinitely, in that order:
 
@@ -721,6 +727,171 @@ If the external check times out on `port 443` indefinitely, in that order:
      challenge, 443 for the eventual cert handshake).
 2. `dig +short <fqdn>` from a workstation — confirm DNS resolves to the VPS.
 3. `sudo ufw status` on the VPS — confirm 80 and 443 are allowed.
+
+### 5c. Apply database migrations
+
+The local `make migrate-up` (Makefile) reads `compose/.env` and joins the
+dev compose network. On the VPS, Postgres is in the staging compose stack
+(`crm-stg-postgres-1`) and credentials live in `/opt/crm/stg/.env.stg`, so
+migrations need a one-shot `migrate/migrate` container scoped to that
+compose project. The image is pinned by SHA256 digest — never `:latest`
+— following the same policy as the infra images (see "Bumping infra
+image digests").
+
+The repo ships migrations only inside the Go module, not on the VPS
+filesystem. Push them once during provisioning and re-push after any
+migration is added (parallel to the `compose.stg.yml` scp flow in §4):
+
+```bash
+# On the workstation, in the cloned crm repo root.
+STG_HOST="REPLACE_STG_HOST"
+scp -r migrations "root@${STG_HOST}:/tmp/migrations"
+```
+
+Back on the VPS, install them under the staging stack root:
+
+```bash
+sudo install -d -o crm-deploy -g crm-deploy -m 0750 /opt/crm/stg/migrations
+sudo cp -a /tmp/migrations/. /opt/crm/stg/migrations/
+sudo chown -R crm-deploy:crm-deploy /opt/crm/stg/migrations
+```
+
+Resolve the `migrate/migrate` digest the same way as any other infra
+image (see "Bumping infra image digests" for the two flows). The Makefile
+pins `migrate/migrate:v4.17.1`; the snippet below uses that tag — replace
+the trailing `@sha256:…` with the digest you just resolved:
+
+```bash
+# Resolve once and pin:
+docker buildx imagetools inspect migrate/migrate:v4.17.1 \
+  --format '{{ .Manifest.Digest }}'
+# or via curl + the Docker Hub registry API as documented in
+# "Bumping infra image digests".
+MIGRATE_IMAGE="migrate/migrate:v4.17.1@sha256:REPLACE_WITH_RESOLVED_DIGEST"
+```
+
+Run the migrations against the staging Postgres:
+
+```bash
+COMPOSE_ARGS="--env-file /opt/crm/stg/.env.stg -f /opt/crm/stg/compose.stg.yml"
+
+# Resolve the compose project network so the migrate container can reach
+# the in-stack `postgres` hostname. Compose name = project name + _default.
+NETWORK="$(sudo -u crm-deploy docker compose ${COMPOSE_ARGS} ps -q postgres \
+  | xargs -r sudo docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' \
+  | head -n1)"
+test -n "${NETWORK}" || { echo "could not resolve compose network"; exit 1; }
+
+# Read DSN parts straight out of the env file (no shell-source — keeps
+# secrets out of this terminal session's env).
+read_env() { sudo grep -E "^${1}=" /opt/crm/stg/.env.stg | tail -n1 | cut -d= -f2-; }
+POSTGRES_USER_VAL="$(read_env POSTGRES_USER)"
+POSTGRES_PASSWORD_VAL="$(read_env POSTGRES_PASSWORD)"
+POSTGRES_DB_VAL="$(read_env POSTGRES_DB)"
+
+sudo -u crm-deploy docker run --rm \
+  --network "${NETWORK}" \
+  -v /opt/crm/stg/migrations:/migrations:ro \
+  "${MIGRATE_IMAGE}" \
+  -path /migrations \
+  -database "postgres://${POSTGRES_USER_VAL}:${POSTGRES_PASSWORD_VAL}@postgres:5432/${POSTGRES_DB_VAL}?sslmode=disable" \
+  up
+```
+
+Verify the migration table now lists every file under `/opt/crm/stg/migrations`:
+
+```bash
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER_VAL}" -d "${POSTGRES_DB_VAL}" \
+  -c "SELECT version, dirty FROM schema_migrations ORDER BY version DESC LIMIT 5;"
+```
+
+**Failure mode if you skip this step.** The app boots, `/health` returns
+`{"status":"ok","commit_sha":"<sha>"}` (it is static and does not touch
+the DB by design), and the `cd-stg` smoke gate stays green — but any
+endpoint that reads from a missing table returns `500`. A `/health` 200
+is therefore necessary but not sufficient for "deploy is healthy". After
+each migration release, run at least one DB-touching smoke check before
+declaring success. Two options that do not need an authenticated
+session:
+
+```bash
+# Option A — count rows in a known table from inside the postgres container:
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER_VAL}" -d "${POSTGRES_DB_VAL}" \
+  -c "SELECT count(*) FROM tenants;"
+
+# Option B — hit a tenant endpoint and check that the response body
+# isn't an HTTP 500 SQL error page. Replace the host with a real tenant
+# FQDN from .env.stg (STG_TENANT_HOSTS):
+curl -fsS "https://acme.crm.REPLACE_WITH_STG_DOMAIN/login" >/dev/null \
+  && echo "tenant DB path OK"
+```
+
+### 5d. Apply staging seed (with tenant FQDN substitution)
+
+`migrations/seed/stg.sql` defines two tenants (`acme`, `globex`) and one
+agent user per tenant. Until SIN-63146 the file hard-coded
+`acme.crm.local`/`globex.crm.local`; it now templates the FQDN suffix
+through the `:base_domain` psql variable so the same file seeds dev
+(`crm.local`) and staging (the real VPS suffix) without any sed/awk
+munging.
+
+The `make seed-stg` target wires the default `${STG_BASE_DOMAIN:-crm.local}`
+so the local dev flow is unchanged. On the VPS, pass the real suffix
+through `STG_BASE_DOMAIN`. The tenant rows end up as `acme.${base_domain}`
+and `globex.${base_domain}`; pick the value that matches the FQDNs
+already published in DNS and in `STG_TENANT_HOSTS`:
+
+```bash
+COMPOSE_ARGS="--env-file /opt/crm/stg/.env.stg -f /opt/crm/stg/compose.stg.yml"
+
+# Use the same suffix every other DNS / Caddy / TLS layer expects.
+# Example: tenants are acme.crm.someu.com.br and globex.crm.someu.com.br
+#          ⇒ STG_BASE_DOMAIN="crm.someu.com.br"
+# Tripwire: must NOT end in .local — that's the dev default, refusing
+# it here is the only line of defence against accidentally seeding
+# staging with dev hosts.
+STG_BASE_DOMAIN="REPLACE_WITH_STG_TENANT_SUFFIX"
+
+read_env() { sudo grep -E "^${1}=" /opt/crm/stg/.env.stg | tail -n1 | cut -d= -f2-; }
+POSTGRES_USER_VAL="$(read_env POSTGRES_USER)"
+POSTGRES_DB_VAL="$(read_env POSTGRES_DB)"
+
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
+  psql -v ON_ERROR_STOP=1 \
+       -v base_domain="${STG_BASE_DOMAIN}" \
+       -U "${POSTGRES_USER_VAL}" -d "${POSTGRES_DB_VAL}" \
+  < /opt/crm/stg/migrations/seed/stg.sql
+```
+
+The repo ships `scripts/stg-apply-seed.sh` as a one-liner wrapper around
+the same command, with the empty-string and `.local` tripwires baked in.
+Push it once with the other deploy artifacts (§4) and call it on every
+re-seed:
+
+```bash
+sudo install -o root -g crm-deploy -m 0750 \
+  /tmp/stg-apply-seed.sh /opt/crm/stg/bin/stg-apply-seed.sh
+
+STG_BASE_DOMAIN="REPLACE_WITH_STG_TENANT_SUFFIX" \
+  /opt/crm/stg/bin/stg-apply-seed.sh
+```
+
+**Validation.** Confirm the tenant rows have the expected hosts:
+
+```bash
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER_VAL}" -d "${POSTGRES_DB_VAL}" \
+  -c "SELECT name, host FROM tenants ORDER BY name;"
+```
+
+The output must match `acme.${STG_BASE_DOMAIN}` and
+`globex.${STG_BASE_DOMAIN}` — anything still showing `.local` means the
+substitution did not run (likely the operator forgot the `-v base_domain=`
+flag and Postgres errored with `psql:…: ERROR: syntax error at or near
+":"`, in which case `ON_ERROR_STOP=1` already rolled back the
+transaction). Re-run with the correct `STG_BASE_DOMAIN` and re-validate.
 
 ### 6. Capturing the staging host key
 

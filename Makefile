@@ -141,13 +141,15 @@ migrate-down: ## Roll back ALL DB migrations (destructive; SIN-62209)
 		-database "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@postgres:5432/$$POSTGRES_DB?sslmode=disable" \
 		down -all
 
-seed-stg: ## Apply staging seed fixtures (idempotent; SIN-62209)
+seed-stg: ## Apply staging seed fixtures (idempotent; SIN-62209, FQDN templated by SIN-63146)
 	@if [ ! -f $(COMPOSE_DIR)/.env ]; then \
 		echo "missing $(COMPOSE_DIR)/.env"; exit 1; \
 	fi
 	set -a; . $(COMPOSE_DIR)/.env; set +a; \
 	$(COMPOSE) exec -T postgres \
-		psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" \
+		psql -v ON_ERROR_STOP=1 \
+		-v base_domain="$${STG_BASE_DOMAIN:-crm.local}" \
+		-U "$$POSTGRES_USER" -d "$$POSTGRES_DB" \
 		< $(MIGRATIONS_DIR)/seed/stg.sql
 
 smoke-alert: ## Inject a synthetic alert into Slack #alerts (wired in PR10)

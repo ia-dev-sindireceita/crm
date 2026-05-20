@@ -45,13 +45,25 @@ COPY adapters ./adapters
 # this path visible in the build context.
 COPY web/static/vendor ./web/static/vendor
 
+# COMMIT_SHA is injected at link time into internal/version.commitSHA so
+# /health surfaces the build identifier (SIN-63146). cd-stg.yml passes
+# github.event.workflow_run.head_sha here; an unset arg keeps the in-binary
+# default ("unknown") so unqualified `docker build .` still produces a
+# runnable image.
+ARG COMMIT_SHA=unknown
+
 # CGO_ENABLED=0 + -trimpath + -ldflags="-s -w" yields a small, reproducible,
 # statically linked binary. GOFLAGS prevents the toolchain from auto-downloading
 # a different Go version at build time (we want the pinned 1.26.3 alpine image,
 # matching go.mod's `toolchain go1.26.3` directive — bumped here as a follow-up
 # to SIN-62297 c4b2c73 toolchain pin so the in-container compile matches CI).
+# -X github.com/.../internal/version.commitSHA=${COMMIT_SHA} injects the SHA
+# into the server binary only — workers omit the -X so changing the build
+# arg does not bust their cached layers for unrelated rebuilds.
 ENV CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=local
-RUN go build -trimpath -ldflags="-s -w" -o /out/server                ./cmd/server         && \
+RUN go build -trimpath \
+        -ldflags="-s -w -X github.com/pericles-luz/crm/internal/version.commitSHA=${COMMIT_SHA}" \
+        -o /out/server ./cmd/server && \
     go build -trimpath -ldflags="-s -w" -o /out/mediascan-worker      ./cmd/mediascan-worker && \
     go build -trimpath -ldflags="-s -w" -o /out/wallet-alerter-worker ./cmd/wallet-alerter-worker
 

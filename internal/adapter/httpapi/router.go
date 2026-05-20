@@ -114,6 +114,12 @@ type Deps struct {
 	IAM            IAMService
 	TenantResolver tenancy.Resolver
 	Logger         *slog.Logger
+	// CommitSHA is the build-time identifier injected at link time via
+	// the internal/version package (SIN-63146). It is surfaced verbatim
+	// by the /health handler so cd-stg.yml's smoke gate can detect a
+	// stale `docker compose pull`. Empty string is safe — the handler
+	// renders "unknown" so JSON consumers never see an empty field.
+	CommitSHA string
 	// Metrics, when non-nil, mounts /metrics + the per-request
 	// counters/histograms (SIN-62218). Nil keeps the router behaving
 	// exactly as it did pre-PR10 — useful for tests that don't want
@@ -438,8 +444,11 @@ func NewRouter(deps Deps) http.Handler {
 
 	// /health is the only route that bypasses the tenant scope. The LB
 	// must reach it without resolving a tenant by host (the host might
-	// be the raw load-balancer DNS name).
-	r.Get("/health", handler.Health)
+	// be the raw load-balancer DNS name). The commit SHA is injected
+	// at boot from internal/version (SIN-63146) so cd-stg can detect a
+	// stale `docker compose pull`; empty Deps.CommitSHA renders as
+	// "unknown" inside the handler.
+	r.Get("/health", handler.Health(deps.CommitSHA))
 
 	// /metrics is whitelist-mounted: no tenant, no auth, no metrics
 	// recursion. Access control belongs at the network edge (firewall
