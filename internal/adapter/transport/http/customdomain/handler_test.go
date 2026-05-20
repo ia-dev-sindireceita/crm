@@ -32,6 +32,8 @@ type fakeUseCase struct {
 	pauseResp   management.Domain
 	pauseErr    error
 	deleteErr   error
+	regenResp   management.Domain
+	regenErr    error
 	enrollCalls []enrollCall
 }
 
@@ -65,6 +67,9 @@ func (f *fakeUseCase) SetPaused(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ b
 	return f.pauseResp, f.pauseErr
 }
 func (f *fakeUseCase) Delete(_ context.Context, _ uuid.UUID, _ uuid.UUID) error { return f.deleteErr }
+func (f *fakeUseCase) RegenerateToken(_ context.Context, _ uuid.UUID, _ uuid.UUID) (management.Domain, error) {
+	return f.regenResp, f.regenErr
+}
 
 const testCSRFSecret = "0123456789abcdef0123456789abcdef" // 32 bytes
 
@@ -662,6 +667,152 @@ func TestServeSetPaused_ServerError(t *testing.T) {
 	rec := htmxRequest(t, mux, http.MethodPatch, "/api/customdomains/"+uuid.New().String()+"?paused=true")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
+// TestServeRegenerateToken_HappyPath verifies the HTTP contract for the
+// success branch: 200, the response carries the row template with the
+// new domain ID, and the use-case is invoked.
+func TestServeRegenerateToken_HappyPath(t *testing.T) {
+	t.Parallel()
+	id := uuid.New()
+	issuedAt := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	uc := &fakeUseCase{
+		regenResp: management.Domain{
+			ID:                id,
+			TenantID:          testTenant,
+			Host:              "shop.example.com",
+			VerificationToken: "freshly-rotated",
+			TokenIssuedAt:     issuedAt,
+			CreatedAt:         issuedAt,
+			UpdatedAt:         issuedAt,
+		},
+	}
+	mux := newServeMux(newHandlerForTest(t, uc))
+	rec := htmxRequest(t, mux, http.MethodPost, "/api/customdomains/"+id.String()+"/regenerate-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="domain-row-`+id.String()+`"`) {
+		t.Fatalf("response should render the row partial with the domain id: %s", body[:minInt(len(body), 500)])
+	}
+	// Pending row must still expose the regenerate-token button so the
+	// tenant can repeat the action if the new TXT also fails.
+	if !strings.Contains(body, "Gerar novo token") {
+		t.Fatalf("pending row missing regenerate-token button: %s", body[:minInt(len(body), 500)])
+	}
+	// The fresh token must NOT be reflected in the row template (the row
+	// only shows status; the token is only ever rendered via the
+	// instructions wizard).
+	if strings.Contains(body, "freshly-rotated") {
+		t.Fatalf("response leaks the verification token in the row partial: %s", body)
+	}
+}
+
+// TestServeRegenerateToken_BadCSRF guards the double-submit gate: a POST
+// without the X-CSRF-Token header (or matching cookie) must be rejected
+// with 403, and the use-case must NOT be invoked.
+func TestServeRegenerateToken_BadCSRF(t *testing.T) {
+	t.Parallel()
+	id := uuid.New()
+	uc := &fakeUseCase{
+		regenResp: management.Domain{ID: id, TenantID: testTenant, Host: "shop.example.com"},
+		regenErr:  errors.New("use-case must not be called"),
+	}
+	mux := newServeMux(newHandlerForTest(t, uc))
+	rec := httptest.NewRecorder()
+	req := withTenant(httptest.NewRequest(http.MethodPost, "/api/customdomains/"+id.String()+"/regenerate-token", nil), testTenant)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+// TestServeRegenerateToken_AlreadyVerified verifies that the
+// ErrAlreadyVerified branch surfaces as 409 with the PT-BR copy so HTMX
+// can swap the message into the row without re-rendering the page.
+func TestServeRegenerateToken_AlreadyVerified(t *testing.T) {
+	t.Parallel()
+	uc := &fakeUseCase{regenErr: management.ErrAlreadyVerified}
+	mux := newServeMux(newHandlerForTest(t, uc))
+	rec := htmxRequest(t, mux, http.MethodPost, "/api/customdomains/"+uuid.New().String()+"/regenerate-token")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "verificado") {
+		t.Fatalf("missing PT-BR already-verified copy: %s", rec.Body.String())
+	}
+}
+
+// TestServeRegenerateToken_NotFound verifies the ErrStoreNotFound /
+// ErrTenantMismatch branch returns 404 — the latter avoids the
+// information-leakage signal a 403 would carry between tenants.
+func TestServeRegenerateToken_NotFound(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"store_not_found", management.ErrStoreNotFound},
+		{"tenant_mismatch", management.ErrTenantMismatch},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			uc := &fakeUseCase{regenErr: tc.err}
+			mux := newServeMux(newHandlerForTest(t, uc))
+			rec := htmxRequest(t, mux, http.MethodPost, "/api/customdomains/"+uuid.New().String()+"/regenerate-token")
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", rec.Code)
+			}
+		})
+	}
+}
+
+// TestServeRegenerateToken_BadID guards the path-parsing branch: a
+// non-UUID id must return 400 before the use-case is touched.
+func TestServeRegenerateToken_BadID(t *testing.T) {
+	t.Parallel()
+	uc := &fakeUseCase{regenErr: errors.New("use-case must not be called")}
+	mux := newServeMux(newHandlerForTest(t, uc))
+	rec := htmxRequest(t, mux, http.MethodPost, "/api/customdomains/not-a-uuid/regenerate-token")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
+// TestServeRegenerateToken_RequiresTenant locks the tenant-required gate
+// at the handler boundary. Without the tenant context (the dev-only
+// middleware in cmd/server/customdomain_wire.go skips setting it when
+// X-Tenant-ID is absent), the handler must short-circuit with 401
+// before touching the CSRF check or the use-case.
+func TestServeRegenerateToken_RequiresTenant(t *testing.T) {
+	t.Parallel()
+	uc := &fakeUseCase{regenErr: errors.New("use-case must not be called")}
+	mux := newServeMux(newHandlerForTest(t, uc))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/customdomains/"+uuid.New().String()+"/regenerate-token", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+// TestServeRegenerateToken_ServerError verifies that an unexpected
+// use-case error from RegenerateToken is rendered as 500 — not leaked
+// as the underlying error string, and not mis-classified as 4xx.
+func TestServeRegenerateToken_ServerError(t *testing.T) {
+	t.Parallel()
+	uc := &fakeUseCase{regenErr: errors.New("rotation pg blew up")}
+	mux := newServeMux(newHandlerForTest(t, uc))
+	rec := htmxRequest(t, mux, http.MethodPost, "/api/customdomains/"+uuid.New().String()+"/regenerate-token")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "rotation pg blew up") {
+		t.Fatalf("error body leaks internal error: %s", rec.Body.String())
 	}
 }
 

@@ -35,6 +35,18 @@
         Verificar agora
       </button>
     {{end}}
+    {{if .CanRegenerateToken}}
+      <button type="button"
+              class="btn btn-sm"
+              aria-label="Gerar novo token de verificação para {{.Host}}"
+              hx-post="/api/customdomains/{{.ID}}/regenerate-token"
+              hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}'
+              hx-target="#domain-row-{{.ID}}"
+              hx-swap="outerHTML"
+              hx-confirm="Gerar novo token para {{.Host}}? O token anterior deixará de ser válido.">
+        Gerar novo token
+      </button>
+    {{end}}
     {{if eq .StatusName "verified"}}
       <button type="button"
               class="btn btn-sm"

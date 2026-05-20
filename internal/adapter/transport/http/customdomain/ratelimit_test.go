@@ -2,6 +2,7 @@ package customdomain_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,6 +14,12 @@ import (
 	cd "github.com/pericles-luz/crm/internal/adapter/transport/http/customdomain"
 	"github.com/pericles-luz/crm/internal/customdomain/management"
 )
+
+// errPoisonUseCase is the scripted failure mode used by the rate-limit
+// tests: if a request slips past the limiter and reaches the use-case,
+// the handler surfaces this as 500 — making the assertion "status =
+// 429" sufficient proof that the use-case was never invoked.
+var errPoisonUseCase = errors.New("use-case must not be invoked: limiter was bypassed")
 
 // fakeAudit records denied:rate_limited events for assertions.
 type fakeAudit struct {
@@ -270,5 +277,127 @@ func TestVerifyRateLimitMiddleware_NoTenantReturns401(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+// TestServeRegenerateToken_RateLimited is the SIN-63125 F-2 symmetric
+// case to TestVerifyRateLimitMiddleware_11thRequestReturns429 +
+// _AuditEventOnDenial. SIN-63125 piggybacks on the SIN-63124 limiter so
+// /verify and /regenerate-token share a single (tenant, IP) token bucket
+// — a tenant that exhausts /verify cannot dodge the gate by switching
+// to /regenerate-token, and vice versa. This test exercises the second
+// half of that property (denial on /regenerate-token) end-to-end:
+//
+//  1. After burst is exhausted, the next POST to /regenerate-token
+//     returns 429 with a Retry-After header (whole seconds, >= 1).
+//  2. The denial emits exactly one denied:rate_limited audit event
+//     carrying the tenant id.
+//  3. The use-case is NOT invoked — the limiter short-circuits before
+//     the handler runs (regenErr is set to a poison value that would
+//     surface as 500 if the handler were reached).
+func TestServeRegenerateToken_RateLimited(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	// Burst=1 so the very next request after the first triggers denial.
+	lim := cd.NewMemoryVerifyRateLimiter(cd.VerifyRateLimitConfig{
+		Rate:  cd.DefaultVerifyRate,
+		Burst: 1,
+		Now:   func() time.Time { return now },
+	})
+	audit := &fakeAudit{}
+	// Poison the use-case: if the limiter were bypassed and the handler
+	// ran, this would surface as a 500 — not a 429 — and the assertion
+	// below would catch the regression.
+	uc := &fakeUseCase{regenErr: errPoisonUseCase}
+	h := newHandlerWithRateLimiter(t, uc, lim, audit)
+	mux := newServeMux(h)
+
+	tenant := uuid.New()
+	domainID := uuid.New()
+	target := "/api/customdomains/" + domainID.String() + "/regenerate-token"
+
+	// Exhaust burst=1. This first request may itself 4xx (no CSRF token
+	// is attached), but the limiter still consumes its single token —
+	// matching the SIN-63124 verify-path semantics.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, target, nil)
+	req.RemoteAddr = "203.0.113.7:54321"
+	req = withTenant(req, tenant)
+	mux.ServeHTTP(rec, req)
+
+	// Second request triggers rate-limit denial at the middleware layer.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, target, nil)
+	req.RemoteAddr = "203.0.113.7:54321"
+	req = withTenant(req, tenant)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rec.Code)
+	}
+	retryAfter := rec.Header().Get("Retry-After")
+	if retryAfter == "" {
+		t.Fatal("Retry-After header missing on 429")
+	}
+	secs, err := strconv.Atoi(retryAfter)
+	if err != nil || secs < 1 {
+		t.Fatalf("Retry-After = %q, want integer >= 1", retryAfter)
+	}
+	if len(audit.events) != 1 {
+		t.Fatalf("audit events = %d, want exactly 1", len(audit.events))
+	}
+	ev := audit.events[0]
+	if ev.Outcome != "denied:rate_limited" {
+		t.Errorf("Outcome = %q, want denied:rate_limited", ev.Outcome)
+	}
+	if ev.TenantID != tenant {
+		t.Errorf("TenantID mismatch on denial audit")
+	}
+}
+
+// TestServeRegenerateToken_RateLimit_SharesBucketWithVerify locks the
+// shared-bucket invariant from the AC: exhausting the bucket via
+// /verify must immediately deny /regenerate-token on the same
+// (tenant, IP). The two endpoints MUST consult one limiter instance,
+// not two parallel ones — otherwise a tenant under abuse can alternate
+// endpoints to double the budget.
+func TestServeRegenerateToken_RateLimit_SharesBucketWithVerify(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	lim := cd.NewMemoryVerifyRateLimiter(cd.VerifyRateLimitConfig{
+		Rate:  cd.DefaultVerifyRate,
+		Burst: 1,
+		Now:   func() time.Time { return now },
+	})
+	audit := &fakeAudit{}
+	uc := &fakeUseCase{
+		verifyResp: management.VerifyOutcome{Verified: true},
+		regenErr:   errPoisonUseCase,
+	}
+	h := newHandlerWithRateLimiter(t, uc, lim, audit)
+	mux := newServeMux(h)
+
+	tenant := uuid.New()
+	clientAddr := "198.51.100.42:65000"
+
+	// Consume the single token via /verify.
+	verifyTarget := "/api/customdomains/" + uuid.New().String() + "/verify"
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, verifyTarget, nil)
+	req.RemoteAddr = clientAddr
+	req = withTenant(req, tenant)
+	mux.ServeHTTP(rec, req)
+
+	// Immediately try /regenerate-token from the same (tenant, IP).
+	// Bucket is shared, so the limiter must already be empty → 429.
+	regenTarget := "/api/customdomains/" + uuid.New().String() + "/regenerate-token"
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, regenTarget, nil)
+	req.RemoteAddr = clientAddr
+	req = withTenant(req, tenant)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (shared-bucket invariant broken)", rec.Code)
 	}
 }

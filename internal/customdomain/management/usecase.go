@@ -308,6 +308,40 @@ func (u *UseCase) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 	return nil
 }
 
+// RegenerateToken issues a fresh verification token for an unverified domain.
+// Returns ErrAlreadyVerified when the domain is already verified. The caller
+// is responsible for RBAC; this method only checks tenant ownership.
+func (u *UseCase) RegenerateToken(ctx context.Context, tenantID, id uuid.UUID) (Domain, error) {
+	d, err := u.Get(ctx, tenantID, id)
+	if err != nil {
+		return Domain{}, err
+	}
+	if d.VerifiedAt != nil {
+		u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: d.ID, Host: d.Host, Action: "regenerate_token", Outcome: "denied:" + ReasonAlreadyVerified.String(), Reason: ReasonAlreadyVerified, At: u.now()})
+		return Domain{}, ErrAlreadyVerified
+	}
+	newToken, err := u.tokenGen()
+	if err != nil {
+		return Domain{}, fmt.Errorf("management: generate token: %w", err)
+	}
+	now := u.now().UTC()
+	saved, err := u.store.RotateToken(ctx, d.ID, newToken, now)
+	if err != nil {
+		u.logEvent(ctx, AuditEvent{TenantID: tenantID, DomainID: d.ID, Host: d.Host, Action: "regenerate_token", Outcome: "error", Reason: ReasonInternal, At: u.now()})
+		return Domain{}, fmt.Errorf("management: rotate token: %w", err)
+	}
+	u.logEvent(ctx, AuditEvent{
+		TenantID:         tenantID,
+		DomainID:         d.ID,
+		Host:             d.Host,
+		Action:           "regenerate_token",
+		Outcome:          "ok",
+		At:               u.now(),
+		TokenFingerprint: tokenFingerprint(newToken),
+	})
+	return saved, nil
+}
+
 func (u *UseCase) logEvent(ctx context.Context, ev AuditEvent) {
 	if u.audit != nil {
 		u.audit.LogManagement(ctx, ev)

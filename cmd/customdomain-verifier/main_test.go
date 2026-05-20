@@ -474,6 +474,9 @@ func (fakeStore) SetPaused(context.Context, uuid.UUID, *time.Time) (management.D
 func (fakeStore) SoftDelete(context.Context, uuid.UUID, time.Time) (management.Domain, error) {
 	return management.Domain{}, errors.New("fakeStore: SoftDelete not implemented")
 }
+func (fakeStore) RotateToken(context.Context, uuid.UUID, string, time.Time) (management.Domain, error) {
+	return management.Domain{}, errors.New("fakeStore: RotateToken not implemented")
+}
 
 func TestAssembleUseCase_BuildsWithStubResolver(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
