@@ -40,6 +40,7 @@ func freshDBWithIAM(t *testing.T) *testpg.DB {
 		"0005_create_users.up.sql",
 		"0006_create_sessions.up.sql",
 		"0077_session_activity.up.sql",
+		"0111_sessions_csrf_token.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
@@ -477,5 +478,108 @@ func TestSessionStore_LoginRoundTrip_PersistsRole(t *testing.T) {
 	}
 	if got.LastActivity.IsZero() {
 		t.Fatalf("ValidateSession returned zero LastActivity; activity middleware would never accept this session")
+	}
+}
+
+// TestSessionStore_CSRFToken_RoundTrip is the SIN-63222 regression: before
+// migration 0111 + the adapter wireup, Create skipped sess.CSRFToken and
+// Get did not SELECT it, so iam.Service.ValidateSession returned a session
+// whose CSRFToken was "" — the RequireCSRF middleware then rejected every
+// authenticated POST/PATCH/DELETE with reason "csrf.token_missing". This
+// test pins both branches at once.
+func TestSessionStore_CSRFToken_RoundTrip(t *testing.T) {
+	db := freshDBWithIAM(t)
+	tenantID, userID, _ := seedTenant(t, db, "acme.crm.local", "alice@acme.test")
+	store := postgres.NewSessionStore(db.RuntimePool())
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	t.Run("explicit token round-trips", func(t *testing.T) {
+		id, err := iam.NewSessionID()
+		if err != nil {
+			t.Fatalf("NewSessionID: %v", err)
+		}
+		const token = "tok-xyz-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		sess := iam.Session{
+			ID:        id,
+			TenantID:  tenantID,
+			UserID:    userID,
+			ExpiresAt: now.Add(time.Hour),
+			CreatedAt: now,
+			CSRFToken: token,
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		got, err := store.Get(ctx, tenantID, id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.CSRFToken != token {
+			t.Fatalf("CSRFToken round-trip wrong: got %q want %q", got.CSRFToken, token)
+		}
+	})
+
+	t.Run("empty token persists as empty", func(t *testing.T) {
+		// Legacy / pre-mint paths may construct iam.Session without a
+		// CSRFToken; the column DEFAULT '' covers them. Verify the empty
+		// string round-trips so the migration default and the adapter
+		// agree on the "no token" representation.
+		id, err := iam.NewSessionID()
+		if err != nil {
+			t.Fatalf("NewSessionID: %v", err)
+		}
+		if err := store.Create(ctx, iam.Session{
+			ID:        id,
+			TenantID:  tenantID,
+			UserID:    userID,
+			ExpiresAt: now.Add(time.Hour),
+			CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		got, err := store.Get(ctx, tenantID, id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.CSRFToken != "" {
+			t.Fatalf("CSRFToken default wrong: got %q want %q", got.CSRFToken, "")
+		}
+	})
+}
+
+// TestSessionStore_LoginRoundTrip_PersistsCSRFToken is the SIN-63222
+// end-to-end regression: it wires the real postgres SessionStore and
+// UserCredentialReader into iam.Service.Login, then asserts that
+// ValidateSession returns a session whose CSRFToken matches the value
+// Login minted via iam/csrf.GenerateToken. Before the fix, ValidateSession
+// re-hydrated the row from Postgres and CSRFToken was always "" — the
+// failure mode that caused POST /logout to 403 in staging.
+func TestSessionStore_LoginRoundTrip_PersistsCSRFToken(t *testing.T) {
+	db := freshDBWithIAM(t)
+	tenantID, _, plaintext := seedTenant(t, db, "acme.crm.local", "alice@acme.test")
+
+	svc := &iam.Service{
+		Tenants:  fixedTenantResolver{host: "acme.crm.local", tenantID: tenantID},
+		Users:    postgres.NewUserCredentialReader(db.RuntimePool()),
+		Sessions: postgres.NewSessionStore(db.RuntimePool()),
+		TTL:      time.Hour,
+	}
+
+	ctx := context.Background()
+	sess, err := svc.Login(ctx, "acme.crm.local", "alice@acme.test", plaintext, net.IPv4(192, 0, 2, 7), "ua/test", "/login")
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if sess.CSRFToken == "" {
+		t.Fatalf("Login returned empty CSRFToken; iam.Login should mint one")
+	}
+
+	got, err := svc.ValidateSession(ctx, tenantID, sess.ID)
+	if err != nil {
+		t.Fatalf("ValidateSession: %v", err)
+	}
+	if got.CSRFToken != sess.CSRFToken {
+		t.Fatalf("ValidateSession CSRFToken=%q, want %q (this is the POST /logout 403 bug)", got.CSRFToken, sess.CSRFToken)
 	}
 }

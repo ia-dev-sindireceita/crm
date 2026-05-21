@@ -47,6 +47,11 @@ func NewSessionStore(pool *pgxpool.Pool) *SessionStore {
 // the canonical value regardless of which path filled the row). A zero
 // LastActivity uses CreatedAt so the activity middleware does not reject
 // the very first request after login.
+//
+// SIN-63222: csrf_token is written explicitly so the per-session CSRF
+// value minted in iam.Login survives the next request — without this the
+// RequireCSRF middleware always sees CSRFToken="" on re-hydration and
+// rejects every POST/PATCH/DELETE with reason "csrf.token_missing".
 func (s *SessionStore) Create(ctx context.Context, sess iam.Session) error {
 	if sess.TenantID == uuid.Nil {
 		return fmt.Errorf("postgres: SessionStore.Create: tenant id is nil")
@@ -61,9 +66,9 @@ func (s *SessionStore) Create(ctx context.Context, sess iam.Session) error {
 	}
 	return WithTenant(ctx, s.pool, sess.TenantID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
-			INSERT INTO sessions (id, tenant_id, user_id, expires_at, ip, user_agent, created_at, last_activity, role)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		`, sess.ID, sess.TenantID, sess.UserID, sess.ExpiresAt, ipForDB(sess.IPAddr), nullIfEmpty(sess.UserAgent), sess.CreatedAt, lastActivity, string(role))
+			INSERT INTO sessions (id, tenant_id, user_id, expires_at, ip, user_agent, created_at, last_activity, role, csrf_token)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, sess.ID, sess.TenantID, sess.UserID, sess.ExpiresAt, ipForDB(sess.IPAddr), nullIfEmpty(sess.UserAgent), sess.CreatedAt, lastActivity, string(role), sess.CSRFToken)
 		if err != nil {
 			return fmt.Errorf("postgres: SessionStore.Create exec: %w", err)
 		}
@@ -84,11 +89,11 @@ func (s *SessionStore) Get(ctx context.Context, tenantID, sessionID uuid.UUID) (
 		var ua *string
 		var role string
 		row := tx.QueryRow(ctx, `
-			SELECT id, tenant_id, user_id, expires_at, ip, user_agent, created_at, last_activity, role
+			SELECT id, tenant_id, user_id, expires_at, ip, user_agent, created_at, last_activity, role, csrf_token
 			FROM sessions
 			WHERE id = $1
 		`, sessionID)
-		if err := row.Scan(&out.ID, &out.TenantID, &out.UserID, &out.ExpiresAt, &ip, &ua, &out.CreatedAt, &out.LastActivity, &role); err != nil {
+		if err := row.Scan(&out.ID, &out.TenantID, &out.UserID, &out.ExpiresAt, &ip, &ua, &out.CreatedAt, &out.LastActivity, &role, &out.CSRFToken); err != nil {
 			return err
 		}
 		if ip != nil {
