@@ -1,0 +1,133 @@
+# Build + push the encrypted-backup sidecar image — SIN-63195.
+#
+# Fires on every push to `main` whose changeset touches the backup
+# pipeline's inputs (Dockerfile, scripts, age public recipient, the
+# workflow itself). On every fire:
+#
+#   1. Build `ghcr.io/pericles-luz/crm-backup` from infra/backup/Dockerfile.
+#   2. Push the image to GHCR.
+#   3. Cosign-sign the resulting digest (matches the app image policy
+#      from ADR 0084).
+#   4. Print the digest in the workflow summary so the operator can copy
+#      it into `BACKUP_IMAGE=...@sha256:<digest>` in `/opt/crm/stg/.env.stg`
+#      (same model as the initial `APP_IMAGE=` bootstrap — see
+#      docs/deploy/staging.md → "Bumping infra image digests" and
+#      § "Primeira instalação").
+#
+# The path-gated trigger keeps the rest of the CI surface unaffected —
+# this is a low-frequency artifact (Alpine + four apks + one downloaded
+# binary; bumps are expected to be monthly at most). cd-stg.yml deploys
+# the app on every green CI run; the backup image moves on its own
+# (much slower) cadence. The two are intentionally decoupled — see
+# `docs/adr/0102-backup-compose-sidecar.md` § "Decision".
+#
+# AC variance vs the SIN-63195 plan (CTO note): the plan asked for
+# cd-stg.yml to build+push the backup image and write `BACKUP_IMAGE=`
+# into `.env.stg` via SSH on every CD run. We diverged for two reasons:
+#   - boring-tech budget: a separate path-gated workflow keeps each CD
+#     pipeline single-purpose and avoids re-pushing an unchanged backup
+#     image on every app deploy;
+#   - contract surface: the existing `stg-deploy.sh` SSH constraint only
+#     accepts one image-ref argument; extending it would require a
+#     coordinated VPS-side script bump that this PR cannot atomically
+#     ship.
+# Operationally, the operator copies the digest from this workflow's
+# run summary into `.env.stg` once per backup-image bump — same flow as
+# the existing "Bumping infra image digests" runbook.
+
+name: build-backup-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/backup/**
+      - scripts/backup.sh
+      - scripts/restore-drill.sh
+      - scripts/generate-backup-key.sh
+      - infra/age-backup.pub
+      - .github/workflows/build-backup-image.yml
+
+permissions:
+  contents: read
+  packages: write
+  # OIDC token for cosign keyless signing — see docs/adr/0084-supply-chain.md.
+  id-token: write
+
+concurrency:
+  group: build-backup-image
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: ghcr.io/pericles-luz/crm-backup
+  # Same cosign release pin as cd-stg.yml — bump together when bumping
+  # the cosign action in cd-stg.yml.
+  COSIGN_VERSION: v2.4.1
+
+jobs:
+  build-backup-image:
+    name: build-backup-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+      image_ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: set up buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
+
+      - name: log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build & push backup image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
+        with:
+          context: .
+          file: infra/backup/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ github.sha }}
+            ${{ env.IMAGE_REPO }}:main
+          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
+          provenance: false
+
+      - name: compose digest ref
+        id: ref
+        run: echo "ref=${IMAGE_REPO}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: cosign sign image (keyless, GitHub OIDC)
+        env:
+          IMAGE_REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE_REF}"
+
+      - name: emit digest to job summary
+        env:
+          IMAGE_REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          {
+            echo "## Backup image published"
+            echo
+            echo '```'
+            echo "BACKUP_IMAGE=${IMAGE_REF}"
+            echo '```'
+            echo
+            echo 'Paste the line above into `/opt/crm/stg/.env.stg` to roll the staging stack onto the new backup image, then run `sudo -u crm-deploy /opt/crm/stg/bin/deploy.sh deploy <APP_IMAGE_REF>` (idempotent — the wrapper only rewrites APP_IMAGE, but `docker compose up -d` will pick up the new BACKUP_IMAGE on the same invocation).'
+            echo
+            echo 'See `docs/deploy/staging.md` → "Bumping infra image digests" for the canonical procedure.'
+          } >> "$GITHUB_STEP_SUMMARY"

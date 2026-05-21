@@ -1,0 +1,34 @@
+# Sindireceita backup recipient (age v1, X25519).
+#
+# ============================================================================
+# THIS FILE IS A NON-FUNCTIONAL BOOTSTRAP PLACEHOLDER.
+#
+# `backup.sh` will fail hard at `age -R` until this file is rotated. That is
+# intentional: it forces the operator to generate the production keypair on
+# the backup host (where the private half belongs) BEFORE any real PII is
+# encrypted to a recipient whose private half might still exist outside the
+# backup host's trust boundary.
+#
+# To install:
+#   1. Run `scripts/generate-backup-key.sh` on the backup host. It writes
+#      the private key to /etc/sindireceita/age-backup.key with mode 0440
+#      and ownership root:sindireceita-backup, and prints the matching
+#      public key on stdout.
+#   2. Replace the marker line at the bottom of this file with that public
+#      key. Keep the comment header.
+#   3. SOPS-encrypt the private key into infra/sops/age-backup.key.enc per
+#      docs/operations/backup-restore.md § "Primeira instalação".
+#   4. Stash a second copy of the cleartext private key in the offline
+#      cofre — see § "Cofre offline".
+#
+# Why a placeholder and not a "real" bootstrap key? See SIN-62220 must-fix #2
+# and the SIN-62250 security review: a real bootstrap keypair generated in
+# the dev workspace risks its private half lingering in /tmp on the heartbeat
+# host that produced it. A placeholder eliminates that vector by making
+# rotation a hard requirement, not a discipline check.
+#
+# Rotation procedure (after the first install): see docs/operations/backup-restore.md
+# § "Rotacao de chave".
+# ============================================================================
+
+age1placeholder0000000000000000000000000000000000000000000000000
