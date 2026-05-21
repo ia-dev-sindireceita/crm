@@ -1,0 +1,43 @@
+{{ define "setup.html" }}<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Ativar 2FA</title>
+</head>
+<body>
+<h1>Ativar 2FA</h1>
+<p>
+  Escaneie o código QR com seu aplicativo autenticador (Google
+  Authenticator, 1Password, Authy) ou digite o segredo manualmente.
+  <strong>Guarde os códigos de recuperação agora — eles aparecem
+  apenas uma vez.</strong>
+</p>
+
+<h2>Segredo</h2>
+<pre id="totp-secret">{{ .SecretEncoded }}</pre>
+
+<h2>otpauth URI</h2>
+<pre id="totp-otpauth">{{ .OTPAuthURI }}</pre>
+
+<h2>Códigos de recuperação</h2>
+<p>Salve estes 10 códigos. Cada código serve apenas uma vez.</p>
+<ul id="recovery-codes">
+{{ range .RecoveryCodes }}<li>{{ . }}</li>
+{{ end }}</ul>
+
+<form method="POST" action="/admin/2fa/setup/codes.txt" hx-post="/admin/2fa/setup/codes.txt">
+  <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+  <button type="submit">Baixar códigos (.txt)</button>
+</form>
+
+<h2>Confirmar ativação</h2>
+<p>Digite o código de 6 dígitos do seu autenticador para concluir.</p>
+<form method="POST" action="/admin/2fa/verify" hx-post="/admin/2fa/verify">
+  <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+  <input type="hidden" name="next" value="{{ .NextPath }}">
+  <label>Código TOTP: <input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required></label>
+  <button type="submit">Ativar e entrar</button>
+</form>
+</body>
+</html>
+{{ end }}

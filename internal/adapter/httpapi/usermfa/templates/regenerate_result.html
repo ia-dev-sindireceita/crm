@@ -1,0 +1,16 @@
+{{ define "regenerate_result.html" }}<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Novos códigos de recuperação</title>
+</head>
+<body>
+<h1>Novos códigos de recuperação</h1>
+<p><strong>Guarde estes códigos agora — eles aparecem apenas uma vez.</strong>
+Códigos antigos foram invalidados.</p>
+<ul id="recovery-codes">
+{{ range .RecoveryCodes }}<li>{{ . }}</li>
+{{ end }}</ul>
+</body>
+</html>
+{{ end }}

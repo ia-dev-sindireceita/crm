@@ -51,6 +51,23 @@ const (
 	SecurityEventMasterGrantIssued        SecurityEvent = "master.grant.issued"
 	SecurityEventSubscriptionCreated      SecurityEvent = "subscription.created"
 	SecurityEventInvoiceCancelledByMaster SecurityEvent = "invoice.cancelled_by_master"
+
+	// SIN-63184 / Fase 6 PR1: tenant 2FA TOTP events. The CHECK clause
+	// in migration 0107 mirrors these literals.
+	//
+	//   * 2fa_required           — a bypass attempt: an authenticated
+	//                              admin (or member with totp_required_at
+	//                              set) reached a guarded endpoint without
+	//                              a TOTP-verified session. AC #2.
+	//   * 2fa_recovery_used      — a single-use recovery code was
+	//                              consumed; the user's enrolment is
+	//                              flagged reenroll_required.
+	//   * 2fa_recovery_regenerated — the user regenerated their recovery
+	//                              codes; the prior active set was
+	//                              invalidated.
+	SecurityEvent2FARequired            SecurityEvent = "2fa_required"
+	SecurityEvent2FARecoveryUsed        SecurityEvent = "2fa_recovery_used"
+	SecurityEvent2FARecoveryRegenerated SecurityEvent = "2fa_recovery_regenerated"
 )
 
 // DataEvent is the controlled vocabulary of audit_log_data rows.
@@ -81,6 +98,9 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEventMasterGrantIssued:        {},
 	SecurityEventSubscriptionCreated:      {},
 	SecurityEventInvoiceCancelledByMaster: {},
+	SecurityEvent2FARequired:              {},
+	SecurityEvent2FARecoveryUsed:          {},
+	SecurityEvent2FARecoveryRegenerated:   {},
 }
 
 var allDataEvents = map[DataEvent]struct{}{

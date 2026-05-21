@@ -21,9 +21,10 @@ import (
 // an operator hold a master AND a tenant session in the same browser
 // without the looser tenant SameSite leaking into the master scope.
 const (
-	NameMaster = "__Host-sess-master"
-	NameTenant = "__Host-sess-tenant"
-	NameCSRF   = "__Host-csrf"
+	NameMaster        = "__Host-sess-master"
+	NameTenant        = "__Host-sess-tenant"
+	NameCSRF          = "__Host-csrf"
+	NameTenantPending = "__Host-mfa-pending"
 )
 
 // ErrCookieMissing is returned by Read when the cookie is absent or
@@ -99,6 +100,32 @@ func ClearTenant(w http.ResponseWriter) {
 // flags used on Set.
 func ClearCSRF(w http.ResponseWriter) {
 	clearBucket(w, NameCSRF, http.SameSiteStrictMode, false)
+}
+
+// SetTenantPending writes the short-lived pre-MFA tenant cookie used
+// between password-auth and TOTP-verify. The value is the
+// user_mfa_pending_session row id. SameSite=Strict because the cookie
+// only ever flows on the post-login redirect chain — any cross-site
+// navigation that lands on /admin/2fa/verify is illegitimate by
+// definition. MaxAge mirrors the pending row's TTL so an abandoned
+// half-login expires on both sides at once.
+func SetTenantPending(w http.ResponseWriter, value string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     NameTenantPending,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   maxAge,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// ClearTenantPending drops the pending-MFA cookie. Called after a
+// successful verify (the full session cookie supersedes it) or after
+// a fresh login that races a stale pending cookie.
+func ClearTenantPending(w http.ResponseWriter) {
+	clearBucket(w, NameTenantPending, http.SameSiteStrictMode, true)
 }
 
 func clearBucket(w http.ResponseWriter, name string, sameSite http.SameSite, httpOnly bool) {

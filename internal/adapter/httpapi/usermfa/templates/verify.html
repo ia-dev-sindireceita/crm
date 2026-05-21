@@ -1,0 +1,20 @@
+{{ define "verify.html" }}<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Confirmar 2FA</title>
+</head>
+<body>
+<h1>Confirmar 2FA</h1>
+{{ if .ErrorMessage }}<p class="error">{{ .ErrorMessage }}</p>{{ end }}
+<form method="POST" action="/admin/2fa/verify" hx-post="/admin/2fa/verify">
+  <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+  <input type="hidden" name="next" value="{{ .NextPath }}">
+  <label>Código TOTP ou de recuperação:
+    <input type="text" name="code" autocomplete="one-time-code" required>
+  </label>
+  <button type="submit">Entrar</button>
+</form>
+</body>
+</html>
+{{ end }}
