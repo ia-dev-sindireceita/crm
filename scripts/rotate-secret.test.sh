@@ -304,6 +304,252 @@ t_write_secret_tempfile() {
 }
 
 # ----------------------------------------------------------------------
+# urlencode — RFC 3986 unreserved set passes through, everything else
+# becomes %XX. Specifically guards `openssl rand -base64 32` chars:
+# `+`, `/`, `=`.
+# ----------------------------------------------------------------------
+
+t_urlencode_unreserved_passthrough() {
+	local got
+	got=$(urlencode "abcXYZ0123-._~")
+	[[ "$got" == "abcXYZ0123-._~" ]] \
+		|| { fail "urlencode unreserved = $got"; return; }
+	pass "urlencode unreserved passthrough"
+}
+
+t_urlencode_base64_special_chars() {
+	# Mirrors a worst-case `openssl rand -base64 32` output.
+	local got
+	got=$(urlencode "abc+def/ghi=")
+	[[ "$got" == "abc%2Bdef%2Fghi%3D" ]] \
+		|| { fail "urlencode base64 = $got"; return; }
+	pass "urlencode base64 special chars"
+}
+
+t_urlencode_dsn_dangerous_chars() {
+	# `:` `@` `/` `?` `#` `&` — all DSN delimiters that MUST be encoded
+	# inside a password so the URL stays well-formed.
+	local got
+	got=$(urlencode 'p:w@h/?x&#')
+	[[ "$got" == "p%3Aw%40h%2F%3Fx%26%23" ]] \
+		|| { fail "urlencode dsn-dangerous = $got"; return; }
+	pass "urlencode dsn-dangerous chars"
+}
+
+# ----------------------------------------------------------------------
+# env_keys_for_role — per-role mapping.
+# Regression test for PR #228 CTO blocker #2: original drive_db_role_swap
+# always wrote POSTGRES_USER / POSTGRES_PASSWORD; master_ops must route
+# through MASTER_OPS_DATABASE_URL / CRM_MASTER_OPS_PASSWORD instead.
+# ----------------------------------------------------------------------
+
+t_env_keys_app_runtime() {
+	local got
+	got=$(env_keys_for_role "app_runtime")
+	[[ "$got" == *"user POSTGRES_USER"* ]] \
+		|| { fail "app_runtime missing user key: $got"; return; }
+	[[ "$got" == *"password POSTGRES_PASSWORD"* ]] \
+		|| { fail "app_runtime missing password key: $got"; return; }
+	# Must NOT mention master-ops keys.
+	[[ "$got" != *"MASTER_OPS"* ]] \
+		|| { fail "app_runtime leaked master-ops key: $got"; return; }
+	pass "env_keys_for_role app_runtime"
+}
+
+t_env_keys_app_master_ops() {
+	local got
+	got=$(env_keys_for_role "app_master_ops")
+	[[ "$got" == *"dsn MASTER_OPS_DATABASE_URL"* ]] \
+		|| { fail "app_master_ops missing dsn key: $got"; return; }
+	[[ "$got" == *"password CRM_MASTER_OPS_PASSWORD"* ]] \
+		|| { fail "app_master_ops missing password key: $got"; return; }
+	# Regression guard: master_ops must NOT advertise POSTGRES_* keys.
+	[[ "$got" != *"POSTGRES_USER"* ]] \
+		|| { fail "app_master_ops leaked POSTGRES_USER: $got"; return; }
+	[[ "$got" != *"POSTGRES_PASSWORD"* ]] \
+		|| { fail "app_master_ops leaked POSTGRES_PASSWORD: $got"; return; }
+	pass "env_keys_for_role app_master_ops (no POSTGRES_* leak)"
+}
+
+t_env_keys_unknown_role_fails() {
+	if env_keys_for_role "bogus-role" >/dev/null 2>&1; then
+		fail "env_keys_for_role accepted unknown role"; return
+	fi
+	pass "env_keys_for_role rejects unknown role"
+}
+
+# ----------------------------------------------------------------------
+# rewrite_dsn_user_pw — replaces user/pw segment, preserves host/port/db,
+# URL-encodes the new password.
+# ----------------------------------------------------------------------
+
+t_rewrite_dsn_user_pw_replaces_segment() {
+	local tmp; tmp=$(mktemp)
+	printf 'MASTER_OPS_DATABASE_URL=postgres://old_user:old_pw@db.internal:5432/crm?sslmode=require\n' >"$tmp"
+	(
+		CRM_DEPLOY_ENV_FILE="$tmp"
+		MODE_DRY_RUN=0
+		rewrite_dsn_user_pw "MASTER_OPS_DATABASE_URL" "new_user" "new+pw/with=specials" >/dev/null 2>&1
+	)
+	local got
+	got=$(grep -E '^MASTER_OPS_DATABASE_URL=' "$tmp" | cut -d= -f2-)
+	[[ "$got" == "postgres://new_user:new%2Bpw%2Fwith%3Dspecials@db.internal:5432/crm?sslmode=require" ]] \
+		|| { fail "DSN rewrite wrong: $got"; rm -f "$tmp" "${tmp}.prev"; return; }
+	rm -f "$tmp" "${tmp}.prev"
+	pass "rewrite_dsn_user_pw preserves host/port/db + encodes pw"
+}
+
+t_rewrite_dsn_user_pw_no_user_in_original() {
+	local tmp; tmp=$(mktemp)
+	printf 'KEY=postgres://db.internal:5432/crm\n' >"$tmp"
+	(
+		CRM_DEPLOY_ENV_FILE="$tmp"
+		MODE_DRY_RUN=0
+		rewrite_dsn_user_pw "KEY" "u" "p" >/dev/null 2>&1
+	)
+	local got
+	got=$(grep -E '^KEY=' "$tmp" | cut -d= -f2-)
+	[[ "$got" == "postgres://u:p@db.internal:5432/crm" ]] \
+		|| { fail "DSN rewrite (no original user) wrong: $got"; rm -f "$tmp" "${tmp}.prev"; return; }
+	rm -f "$tmp" "${tmp}.prev"
+	pass "rewrite_dsn_user_pw handles DSN without user segment"
+}
+
+t_rewrite_dsn_user_pw_dry_run_does_not_write() {
+	local tmp; tmp=$(mktemp)
+	printf 'KEY=postgres://old:old@h:1/d\n' >"$tmp"
+	local before; before=$(cat "$tmp")
+	(
+		CRM_DEPLOY_ENV_FILE="$tmp"
+		MODE_DRY_RUN=1
+		rewrite_dsn_user_pw "KEY" "new" "newpw" 2>/dev/null
+	)
+	[[ "$(cat "$tmp")" == "$before" ]] \
+		|| { fail "DSN rewrite dry-run wrote: $(cat "$tmp")"; rm -f "$tmp"; return; }
+	rm -f "$tmp"
+	pass "rewrite_dsn_user_pw dry-run is no-op"
+}
+
+t_rewrite_dsn_user_pw_rejects_non_postgres() {
+	local tmp; tmp=$(mktemp)
+	printf 'KEY=https://example.com\n' >"$tmp"
+	local rc=0
+	(
+		CRM_DEPLOY_ENV_FILE="$tmp"
+		MODE_DRY_RUN=0
+		rewrite_dsn_user_pw "KEY" "u" "p"
+	) >/dev/null 2>&1 || rc=$?
+	rm -f "$tmp" "${tmp}.prev"
+	[[ "$rc" -ne 0 ]] \
+		|| { fail "rewrite_dsn_user_pw accepted https:// URL"; return; }
+	pass "rewrite_dsn_user_pw rejects non-postgres DSN"
+}
+
+# ----------------------------------------------------------------------
+# apply_role_env_swap — dispatches every (kind, key) row from
+# env_keys_for_role to update_env_file or rewrite_dsn_user_pw.
+# ----------------------------------------------------------------------
+
+t_apply_role_env_swap_app_runtime() {
+	local tmp; tmp=$(mktemp)
+	printf 'POSTGRES_USER=app_runtime\nPOSTGRES_PASSWORD=old\n' >"$tmp"
+	(
+		CRM_DEPLOY_ENV_FILE="$tmp"
+		MODE_DRY_RUN=0
+		apply_role_env_swap "app_runtime" "app_runtime_next" "new-pw" >/dev/null 2>&1
+	)
+	grep -qE '^POSTGRES_USER=app_runtime_next$' "$tmp" \
+		|| { fail "POSTGRES_USER not updated: $(cat "$tmp")"; rm -f "$tmp" "${tmp}.prev"; return; }
+	grep -qE '^POSTGRES_PASSWORD=new-pw$' "$tmp" \
+		|| { fail "POSTGRES_PASSWORD not updated: $(cat "$tmp")"; rm -f "$tmp" "${tmp}.prev"; return; }
+	rm -f "$tmp" "${tmp}.prev"
+	pass "apply_role_env_swap app_runtime updates POSTGRES_*"
+}
+
+t_apply_role_env_swap_app_master_ops() {
+	local tmp; tmp=$(mktemp)
+	printf 'MASTER_OPS_DATABASE_URL=postgres://app_master_ops:old@db:5432/crm\nCRM_MASTER_OPS_PASSWORD=old\nPOSTGRES_USER=keep-me\nPOSTGRES_PASSWORD=keep-me\n' >"$tmp"
+	(
+		CRM_DEPLOY_ENV_FILE="$tmp"
+		MODE_DRY_RUN=0
+		apply_role_env_swap "app_master_ops" "app_master_ops_next" "new-pw" >/dev/null 2>&1
+	)
+	# DSN was rewritten with new user + new pw.
+	grep -qE '^MASTER_OPS_DATABASE_URL=postgres://app_master_ops_next:new-pw@db:5432/crm$' "$tmp" \
+		|| { fail "MASTER_OPS_DATABASE_URL not rewritten: $(cat "$tmp")"; rm -f "$tmp" "${tmp}.prev"; return; }
+	# Companion password env var was updated too.
+	grep -qE '^CRM_MASTER_OPS_PASSWORD=new-pw$' "$tmp" \
+		|| { fail "CRM_MASTER_OPS_PASSWORD not updated: $(cat "$tmp")"; rm -f "$tmp" "${tmp}.prev"; return; }
+	# Regression guard for PR #228 blocker #2: POSTGRES_USER /
+	# POSTGRES_PASSWORD must NOT be touched when rotating master_ops.
+	grep -qE '^POSTGRES_USER=keep-me$' "$tmp" \
+		|| { fail "POSTGRES_USER got overwritten by master_ops swap: $(cat "$tmp")"; rm -f "$tmp" "${tmp}.prev"; return; }
+	grep -qE '^POSTGRES_PASSWORD=keep-me$' "$tmp" \
+		|| { fail "POSTGRES_PASSWORD got overwritten by master_ops swap: $(cat "$tmp")"; rm -f "$tmp" "${tmp}.prev"; return; }
+	rm -f "$tmp" "${tmp}.prev"
+	pass "apply_role_env_swap app_master_ops (no POSTGRES_* clobber)"
+}
+
+# ----------------------------------------------------------------------
+# Dry-run end-to-end — BYPASSRLS regression guard for PR #228 blocker #1.
+# The original drive_db_role_swap computed bypassrls_attr but never
+# emitted it; this test asserts the dry-run log contains 'BYPASSRLS '
+# (with a trailing space so 'NOBYPASSRLS' doesn't false-positive) when
+# called via the --bypassrls path, and the master_ops env keys appear.
+# ----------------------------------------------------------------------
+
+t_dry_run_master_ops_shows_bypassrls_and_master_ops_keys() {
+	local tmp; tmp=$(mktemp)
+	printf 'MASTER_OPS_DATABASE_URL=postgres://app_master_ops:old@db:5432/crm\nCRM_MASTER_OPS_PASSWORD=old\n' >"$tmp"
+	local out
+	out=$(
+		CRM_DEPLOY_ENV_FILE="$tmp" \
+		CRM_OPS_ACTOR_USER_ID="11111111-2222-3333-4444-555555555555" \
+		CRM_DB_ADMIN_DSN="postgres://app_admin@localhost/crm" \
+		bash "$SCRIPT" "db:app_master_ops" --dry-run 2>&1
+	)
+	rm -f "$tmp" "${tmp}.prev"
+	# CREATE ROLE line must contain bare BYPASSRLS (not NOBYPASSRLS).
+	if ! grep -qE 'CREATE ROLE app_master_ops_next .* BYPASSRLS PASSWORD' <<<"$out"; then
+		fail "dry-run master_ops did not emit BYPASSRLS: $out"; return
+	fi
+	# Env update lines must reference MASTER_OPS_DATABASE_URL and
+	# CRM_MASTER_OPS_PASSWORD, not POSTGRES_USER / POSTGRES_PASSWORD.
+	if ! grep -qE 'MASTER_OPS_DATABASE_URL' <<<"$out"; then
+		fail "dry-run master_ops did not log MASTER_OPS_DATABASE_URL: $out"; return
+	fi
+	if ! grep -qE 'CRM_MASTER_OPS_PASSWORD' <<<"$out"; then
+		fail "dry-run master_ops did not log CRM_MASTER_OPS_PASSWORD: $out"; return
+	fi
+	if grep -qE 'update env: POSTGRES_USER|update env: POSTGRES_PASSWORD' <<<"$out"; then
+		fail "dry-run master_ops leaked POSTGRES_* env update: $out"; return
+	fi
+	pass "dry-run db:app_master_ops emits BYPASSRLS + master_ops keys (no POSTGRES_* clobber)"
+}
+
+t_dry_run_app_runtime_shows_nobypassrls_and_postgres_keys() {
+	local tmp; tmp=$(mktemp)
+	printf 'POSTGRES_USER=app_runtime\nPOSTGRES_PASSWORD=old\n' >"$tmp"
+	local out
+	out=$(
+		CRM_DEPLOY_ENV_FILE="$tmp" \
+		CRM_OPS_ACTOR_USER_ID="11111111-2222-3333-4444-555555555555" \
+		CRM_DB_ADMIN_DSN="postgres://app_admin@localhost/crm" \
+		bash "$SCRIPT" "db:app_runtime" --dry-run 2>&1
+	)
+	rm -f "$tmp" "${tmp}.prev"
+	# CREATE ROLE line must contain NOBYPASSRLS (defense-in-depth for
+	# app_runtime — ADR 0071 explicitly forbids BYPASSRLS on this role).
+	if ! grep -qE 'CREATE ROLE app_runtime_next .* NOBYPASSRLS PASSWORD' <<<"$out"; then
+		fail "dry-run app_runtime did not emit NOBYPASSRLS: $out"; return
+	fi
+	if ! grep -qE 'update env: POSTGRES_USER=app_runtime_next' <<<"$out"; then
+		fail "dry-run app_runtime did not log POSTGRES_USER update: $out"; return
+	fi
+	pass "dry-run db:app_runtime emits NOBYPASSRLS + POSTGRES_* keys"
+}
+
+# ----------------------------------------------------------------------
 # Argument parsing — usage errors return 64.
 # ----------------------------------------------------------------------
 
@@ -442,6 +688,20 @@ t_restore_env_file_round_trip
 t_restore_env_file_missing_prev_is_warn
 t_name_is_in
 t_write_secret_tempfile
+t_urlencode_unreserved_passthrough
+t_urlencode_base64_special_chars
+t_urlencode_dsn_dangerous_chars
+t_env_keys_app_runtime
+t_env_keys_app_master_ops
+t_env_keys_unknown_role_fails
+t_rewrite_dsn_user_pw_replaces_segment
+t_rewrite_dsn_user_pw_no_user_in_original
+t_rewrite_dsn_user_pw_dry_run_does_not_write
+t_rewrite_dsn_user_pw_rejects_non_postgres
+t_apply_role_env_swap_app_runtime
+t_apply_role_env_swap_app_master_ops
+t_dry_run_master_ops_shows_bypassrls_and_master_ops_keys
+t_dry_run_app_runtime_shows_nobypassrls_and_postgres_keys
 t_parse_args_missing_name
 t_parse_args_unknown_flag
 t_parse_args_happy

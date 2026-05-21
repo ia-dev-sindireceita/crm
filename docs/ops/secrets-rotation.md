@@ -206,7 +206,7 @@ PGPASSWORD="<new>" psql "postgres://app_admin@<host>:5432/crm?sslmode=require" \
 | Field           | Value                                                                  |
 | --------------- | ---------------------------------------------------------------------- |
 | `<name>` arg    | `db:app_master_ops`                                                    |
-| Config key      | `MASTER_OPS_DATABASE_URL` password segment, `CRM_MASTER_OPS_PASSWORD`  |
+| Config keys     | `MASTER_OPS_DATABASE_URL` (DSN — user + password segment rewritten in place) + `CRM_MASTER_OPS_PASSWORD` (companion env, used by ops tooling that wants the password separately) |
 | Cadence         | 90 days                                                                |
 | Owner           | CTO                                                                    |
 | Downtime budget | zero (dual-role swap, same shape as `app_runtime`)                     |
@@ -214,8 +214,23 @@ PGPASSWORD="<new>" psql "postgres://app_admin@<host>:5432/crm?sslmode=require" \
 Same procedure as `app_runtime` (dual-role swap), with these
 differences:
 
-- The transition role is `app_master_ops_next`, with BYPASSRLS=true
-  (the master ops posture, per ADR 0071).
+- The transition role is `app_master_ops_next`, created with
+  **`BYPASSRLS=true`** (the master-ops posture per
+  [ADR 0071](../../docs/adr/0071-postgres-roles.md)). The
+  `CREATE ROLE` SQL in `scripts/rotate-secret.sh` interpolates the
+  `BYPASSRLS` keyword via `psql -v bypassrls_attr=…` so the attribute
+  actually reaches the database — a previous version of the script
+  hardcoded `NOBYPASSRLS` for both roles; that bug was fixed in the
+  same PR that introduced this runbook (regression test:
+  `t_dry_run_master_ops_shows_bypassrls_and_master_ops_keys` in
+  `scripts/rotate-secret.test.sh`).
+- The dual-role swap updates **`MASTER_OPS_DATABASE_URL`** (rewriting
+  the `user:password@` segment via `urlencode` + sed; the rest of the
+  DSN — host, port, db, query params — is preserved) and
+  **`CRM_MASTER_OPS_PASSWORD`**. It does NOT touch `POSTGRES_USER` /
+  `POSTGRES_PASSWORD` (regression test:
+  `t_apply_role_env_swap_app_master_ops` asserts the runtime envs are
+  left untouched when rotating master_ops).
 - The redeploy command targets the master-ops console pod, not the app
   pod: `CRM_REDEPLOY_CMD` should be overridden accordingly.
 - Validation also checks that the `master_ops_audit_trigger` still

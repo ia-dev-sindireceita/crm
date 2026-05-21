@@ -325,9 +325,107 @@ parse_args() {
 # Per-secret drivers (one function per scripted name)
 # ----------------------------------------------------------------------
 
+# urlencode <string> — percent-encode anything outside the unreserved
+# RFC 3986 set. Pure bash, no deps. Used by rewrite_dsn_user_pw so a
+# password containing '+', '/', '=', ':', '@' (typical of `openssl rand
+# -base64 32`) survives embedding in a postgres URL.
+urlencode() {
+	local s="$1" out="" i c
+	for (( i = 0; i < ${#s}; i++ )); do
+		c="${s:i:1}"
+		case "$c" in
+			[a-zA-Z0-9.~_-]) out+="$c" ;;
+			*)               out+=$(printf '%%%02X' "'$c") ;;
+		esac
+	done
+	printf '%s' "$out"
+}
+
+# rewrite_dsn_user_pw <env-key> <new-user> <new-pw> — replace the
+# `user:password@` segment of a postgres DSN env var (e.g.
+# MASTER_OPS_DATABASE_URL). Calls update_env_file so the .prev backup
+# and dry-run gating are consistent with the rest of the script. The
+# password is URL-encoded so special chars in CSPRNG output don't
+# corrupt the URL.
+rewrite_dsn_user_pw() {
+	local key="$1" user="$2" pw="$3"
+	local f="$CRM_DEPLOY_ENV_FILE"
+	if [[ ! -f "$f" ]]; then
+		die "deploy env file not found: $f" 1
+	fi
+	if (( MODE_DRY_RUN == 1 )); then
+		log "[dry-run] rewrite DSN $key user=$user password=***REDACTED***"
+		return 0
+	fi
+	local current
+	current=$(grep -E "^${key}=" "$f" | head -n1 | cut -d= -f2-)
+	if [[ -z "$current" ]]; then
+		die "rewrite_dsn_user_pw: $key not present in $f" 1
+	fi
+	local enc_user enc_pw
+	enc_user=$(urlencode "$user")
+	enc_pw=$(urlencode "$pw")
+	# postgres://USER:PW@HOST...  OR  postgres://HOST... (no user)
+	local new_dsn
+	if [[ "$current" =~ ^(postgres(ql)?://)[^@/]*@(.*)$ ]]; then
+		new_dsn="${BASH_REMATCH[1]}${enc_user}:${enc_pw}@${BASH_REMATCH[3]}"
+	elif [[ "$current" =~ ^(postgres(ql)?://)(.*)$ ]]; then
+		new_dsn="${BASH_REMATCH[1]}${enc_user}:${enc_pw}@${BASH_REMATCH[3]}"
+	else
+		die "rewrite_dsn_user_pw: $key is not a postgres:// DSN" 1
+	fi
+	update_env_file "$key" "$new_dsn"
+}
+
+# env_keys_for_role <role> — echoes the env-key convention this role's
+# dual-role swap must update. The two-line stdout form is `KIND KEY`
+# where KIND is one of `dsn` (rewrite user/pw inside a postgres DSN),
+# `user` (plain username key), or `password` (plain password key). The
+# caller iterates the lines and dispatches accordingly. Pure function.
+#
+# app_runtime  → user=POSTGRES_USER  password=POSTGRES_PASSWORD
+# app_master_ops → dsn=MASTER_OPS_DATABASE_URL  password=CRM_MASTER_OPS_PASSWORD
+#
+# The master_ops keys are documented in docs/ops/secrets-rotation.md §3
+# and reflect the wire in cmd/server/billing_renewer_wire.go +
+# cmd/server/wallet_allocator_wire.go which read MASTER_OPS_DATABASE_URL
+# as a full DSN.
+env_keys_for_role() {
+	case "$1" in
+		app_runtime)
+			printf 'user POSTGRES_USER\n'
+			printf 'password POSTGRES_PASSWORD\n'
+			;;
+		app_master_ops)
+			printf 'dsn MASTER_OPS_DATABASE_URL\n'
+			printf 'password CRM_MASTER_OPS_PASSWORD\n'
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+# apply_role_env_swap <role> <new-user> <new-pw> — drive the env-file
+# half of the dual-role swap using env_keys_for_role's mapping.
+apply_role_env_swap() {
+	local role="$1" user="$2" pw="$3"
+	local kind key
+	while IFS=' ' read -r kind key; do
+		case "$kind" in
+			user)     update_env_file "$key" "$user" ;;
+			password) update_env_file "$key" "$pw" ;;
+			dsn)      rewrite_dsn_user_pw "$key" "$user" "$pw" ;;
+			*) die "apply_role_env_swap: unknown kind '$kind'" 1 ;;
+		esac
+	done < <(env_keys_for_role "$role" || die "apply_role_env_swap: no mapping for '$role'" 1)
+}
+
 # drive_db_role_swap <role-name> [--bypassrls] — dual-role swap for
-# app_runtime / app_master_ops. Used by drive_db_app_runtime and
-# drive_db_app_master_ops to keep the orchestration in one place.
+# app_runtime / app_master_ops. Both BYPASSRLS-correctness and the
+# per-role env-key mapping route through here (the previous version
+# hardcoded NOBYPASSRLS + POSTGRES_USER which silently broke master_ops
+# rotations — see PR #228 CTO review).
 drive_db_role_swap() {
 	local role="$1"
 	local with_bypassrls="${2:-}"
@@ -340,32 +438,43 @@ drive_db_role_swap() {
 	pw_file=$(gen_password | write_secret_tempfile)
 	trap 'rm -f "'"$pw_file"'"' RETURN
 
-	local bypassrls_attr=""
+	local bypassrls_attr="NOBYPASSRLS"
 	if [[ "$with_bypassrls" == "--bypassrls" ]]; then
 		bypassrls_attr="BYPASSRLS"
-	else
-		bypassrls_attr="NOBYPASSRLS"
 	fi
 
 	if (( MODE_DRY_RUN == 1 )); then
 		log "[dry-run] CREATE ROLE $next_role LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE $bypassrls_attr PASSWORD '***REDACTED***'"
-		log "[dry-run] update env: POSTGRES_USER=$next_role, POSTGRES_PASSWORD=***REDACTED***"
+		local kind key
+		while IFS=' ' read -r kind key; do
+			case "$kind" in
+				user)     log "[dry-run] update env: $key=$next_role" ;;
+				password) log "[dry-run] update env: $key=***REDACTED***" ;;
+				dsn)      log "[dry-run] rewrite DSN $key user=$next_role password=***REDACTED***" ;;
+			esac
+		done < <(env_keys_for_role "$role" || die "drive_db_role_swap: no mapping for '$role'" 1)
 		log "[dry-run] redeploy + validate, then DROP ROLE $role; ALTER ROLE $next_role RENAME TO $role"
 		return 0
 	fi
 
 	local pw
 	pw=$(cat "$pw_file")
-	# Compose the CREATE ROLE statement. The password is interpolated
-	# via psql's :'var' binding so it is never echoed into the SQL log
-	# even on ON_ERROR_STOP=1 failure paths.
+	# Compose the CREATE ROLE statement. Password is interpolated via
+	# psql's :'var' binding so it is never echoed into the SQL log even
+	# on ON_ERROR_STOP=1 failure paths. BYPASSRLS is a SQL keyword
+	# (not a string value) so it is interpolated via :'bypassrls_attr'
+	# concatenation into the dynamic statement — the role attribute now
+	# actually reaches the CREATE ROLE, instead of being computed and
+	# discarded as in the original implementation.
 	PGPASSWORD="${CRM_DB_ADMIN_PASSWORD:-$PGPASSWORD}" psql "$CRM_DB_ADMIN_DSN" \
 		--quiet --no-psqlrc --set ON_ERROR_STOP=1 \
-		-v new_role="$next_role" -v new_pw="$pw" <<'SQL' >/dev/null
+		-v new_role="$next_role" -v new_pw="$pw" \
+		-v bypassrls_attr="$bypassrls_attr" <<'SQL' >/dev/null
 DO $$
 BEGIN
   EXECUTE format(
-    'CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD %L',
+    'CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE ' ||
+      :'bypassrls_attr' || ' PASSWORD %L',
     :'new_role', :'new_pw');
 END $$;
 SQL
@@ -373,8 +482,7 @@ SQL
 	# grant set via the helper below.
 	clone_grants "$role" "$next_role"
 
-	update_env_file "POSTGRES_USER" "$next_role"
-	update_env_file "POSTGRES_PASSWORD" "$pw"
+	apply_role_env_swap "$role" "$next_role" "$pw"
 
 	run_redeploy
 	validate_role_health "$next_role"
@@ -391,7 +499,10 @@ BEGIN
 END $$;
 COMMIT;
 SQL
-	update_env_file "POSTGRES_USER" "$role"
+	# Re-point the env back at the canonical role name now that the
+	# rename has landed. The password env var stays — same value, just
+	# now associated with the renamed role.
+	apply_role_env_swap "$role" "$role" "$pw"
 }
 
 # clone_grants <from-role> <to-role> — duplicate role memberships and
