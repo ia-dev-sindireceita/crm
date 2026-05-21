@@ -21,6 +21,10 @@
 #   - the `cosign sign` step is skipped (signing without a push is
 #     meaningless and would still mint an OIDC token);
 #   - the digest summary step is skipped (the digest is local-only).
+# The GHCR login step *does* run on `pull_request` too: `cache-to` writes
+# `:buildcache` to the registry on every build (mutable single tag, not
+# per-PR image pollution), so the step needs creds. Same-repo PRs carry
+# `packages: write` via the top-level `permissions:` block.
 # Recurrence-prevention rationale (SIN-63210): on 2026-05-21 PR #101
 # merged with a broken `.dockerignore` that excluded `scripts/` and the
 # resulting `main`-only build failed (run 26216850431). A `pull_request`
@@ -103,8 +107,13 @@ jobs:
       - name: set up buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
+      # Login on both `push` and `pull_request`. The image push itself is
+      # still gated to `push` via `push:` on the build-push-action below, but
+      # `cache-to: type=registry,…:buildcache` is unconditional and needs
+      # creds on PR runs too — otherwise buildx 403s exporting the cache
+      # layer (see SIN-63210). `:buildcache` is a single mutable tag, not
+      # per-PR image pollution, so PR runs reusing/rewriting it is fine.
       - name: log in to GHCR
-        if: github.event_name == 'push'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
         with:
           registry: ghcr.io
