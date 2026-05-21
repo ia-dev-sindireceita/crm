@@ -1,5 +1,6 @@
--- 0107_consent_record.up.sql
+-- 0113_consent_record.up.sql
 -- SIN-63185 / Fase 6 PR2: generic LGPD consent ledger for non-AI
+-- (Renumbered from 0107 by SIN-63230 to resolve a three-way 0107 collision.)
 -- purposes (terms_of_service, privacy_policy, marketing,
 -- cookies_analytics). The AI-specific ai_policy_consent table
 -- (migration 0101) stays unchanged — see ADR 0101 for the rationale.

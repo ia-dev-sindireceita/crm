@@ -1,7 +1,8 @@
 package postgres_test
 
 // SIN-63185 / Fase 6 PR2 acceptance for migration
-// 0107_consent_record:
+// 0113_consent_record (originally numbered 0107, renumbered by
+// SIN-63230 to resolve a three-way collision on 0107):
 //
 //   #1 up/down/up idempotent on the shared CI cluster
 //   #2 RLS enabled on consent_record (relrowsecurity = true and
@@ -36,13 +37,13 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
 )
 
-// freshDBWithConsentRecord applies the minimum chain 0107 needs:
+// freshDBWithConsentRecord applies the minimum chain 0113 needs:
 //   - 0004 tenants            (consent_record.tenant_id FK target)
 //   - 0005 users              (audit context for master_ops_audit
 //     trigger lineage)
 //   - 0083 split audit tables (audit_log_data's CHECK clause is
-//     extended by 0107)
-//   - 0107 consent_record     (the migration under test)
+//     extended by 0113)
+//   - 0113 consent_record     (the migration under test)
 //
 // 0083 itself needs only the harness default 0001-0003 plus 0004 +
 // 0005 (it references tenants/users via FK). master_ops_audit_trigger
@@ -56,7 +57,7 @@ func freshDBWithConsentRecord(t *testing.T) (*testpg.DB, context.Context) {
 		"0004_create_tenant.up.sql",
 		"0005_create_users.up.sql",
 		"0083_split_audit_log.up.sql",
-		"0107_consent_record.up.sql",
+		"0113_consent_record.up.sql",
 	)
 	return db, ctx
 }
@@ -85,12 +86,12 @@ func TestConsentRecordMigration_UpDownUp(t *testing.T) {
 	}
 
 	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(),
-		"0107_consent_record.down.sql"))
+		"0113_consent_record.down.sql"))
 	if err != nil {
 		t.Fatalf("read down: %v", err)
 	}
 	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(),
-		"0107_consent_record.up.sql"))
+		"0113_consent_record.up.sql"))
 	if err != nil {
 		t.Fatalf("read up: %v", err)
 	}

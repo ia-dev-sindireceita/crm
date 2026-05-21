@@ -1,5 +1,6 @@
--- 0107_user_mfa.up.sql
+-- 0112_user_mfa.up.sql
 -- Tenant-scope TOTP enrolment and recovery codes (SIN-63184, Fase 6 PR1).
+-- Renumbered from 0107 by SIN-63230 to resolve a three-way 0107 collision.
 --
 -- Counterpart of the master tables from 0086 — RLS-isolated per tenant
 -- so app_runtime cannot reach across tenants. Same hash/cipher contract:

@@ -72,7 +72,7 @@ hardware-key issuance is in place.
 
 ### D2 — Mandatory for admins; opt-in for members; bypass attempts audited
 
-Migration 0107_user_mfa enforces the role gate at the DB layer:
+Migration 0112_user_mfa enforces the role gate at the DB layer (originally numbered 0107, renumbered by SIN-63230 to resolve a collision):
 
 ```
 ALTER TABLE users

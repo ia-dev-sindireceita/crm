@@ -28,10 +28,13 @@
 -- new column is not a policy target. ALTER TABLE preserves owner and
 -- policies.
 --
--- Numbering note: 0111 is the next free index after Fase 6 siblings
--- 0107_user_mfa / 0107_consent_record / 0107_lgpd_deletion_request /
--- 0108_tenants_dpo_settings / 0109_tenants_privacy_policy_markdown /
--- 0110_audit_log_security_logout landed on main. Run as app_admin.
+-- Numbering note: 0111 was the next free index after Fase 6 siblings
+-- landed on main. The original 0107 collision between user_mfa and
+-- consent_record was resolved by SIN-63230 by renumbering them to
+-- 0112_user_mfa and 0113_consent_record; slot 0107 remains
+-- 0107_lgpd_deletion_request (+ 0108_tenants_dpo_settings,
+-- 0109_tenants_privacy_policy_markdown, 0110_audit_log_security_logout).
+-- Run as app_admin.
 -- Idempotent (IF NOT EXISTS).
 
 BEGIN;

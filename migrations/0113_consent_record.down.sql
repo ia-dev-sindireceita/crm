@@ -1,5 +1,5 @@
--- 0107_consent_record.down.sql
--- Reverse 0107_consent_record.up.sql.
+-- 0113_consent_record.down.sql (renumbered from 0107 by SIN-63230)
+-- Reverse 0113_consent_record.up.sql.
 --
 -- Down step is documented as a developer-environment rollback path,
 -- NOT a production reverse. Dropping consent_record loses every

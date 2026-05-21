@@ -1,4 +1,4 @@
--- 0107_user_mfa.down.sql
+-- 0112_user_mfa.down.sql (renumbered from 0107 by SIN-63230)
 
 BEGIN;
 

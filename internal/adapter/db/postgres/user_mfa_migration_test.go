@@ -1,7 +1,9 @@
 package postgres_test
 
-// SIN-63184 acceptance: migration 0107 round-trips up/down/up; the
-// new tenant MFA adapters store + load + invalidate per tenant.
+// SIN-63184 acceptance: migration 0112_user_mfa round-trips up/down/up;
+// the new tenant MFA adapters store + load + invalidate per tenant.
+// (Originally numbered 0107, renumbered to 0112 by SIN-63230 to
+// resolve a three-way collision on 0107.)
 
 import (
 	"context"
@@ -26,7 +28,7 @@ func TestUserMFAMigration_UpDownUp(t *testing.T) {
 		t.Fatal("tables missing after initial up")
 	}
 
-	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0107_user_mfa.down.sql"))
+	downBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0112_user_mfa.down.sql"))
 	if err != nil {
 		t.Fatalf("read down: %v", err)
 	}
@@ -37,7 +39,7 @@ func TestUserMFAMigration_UpDownUp(t *testing.T) {
 		t.Fatal("tables still present after down")
 	}
 
-	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0107_user_mfa.up.sql"))
+	upBody, err := os.ReadFile(filepath.Join(harness.MigrationsDir(), "0112_user_mfa.up.sql"))
 	if err != nil {
 		t.Fatalf("read up: %v", err)
 	}
@@ -276,7 +278,7 @@ func freshDBWithUserMFA(t *testing.T) *testpg.DB {
 		"0083_split_audit_log.up.sql",
 		"0091_audit_log_security_authz_allow.up.sql",
 		"0100_audit_log_security_billing_events.up.sql",
-		"0107_user_mfa.up.sql",
+		"0112_user_mfa.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)

@@ -1,6 +1,7 @@
 -- 0110_audit_log_security_logout.down.sql
--- Revert: restore the pre-PR6 CHECK clause (the migration-0107_user_mfa
--- shape that omits 'logout'). Will fail if any audit_log_security row
+-- Revert: restore the pre-PR6 CHECK clause (the migration-0112_user_mfa
+-- shape that omits 'logout'; originally numbered 0107 before SIN-63230).
+-- Will fail if any audit_log_security row
 -- already carries event_type='logout' — that is intentional, audit
 -- ledgers do not delete history. Operators MUST archive/relocate those
 -- rows before reverting.
