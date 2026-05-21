@@ -1,6 +1,8 @@
 # CRM
 
 Multi-tenant CRM (fork of `pericles-luz/crm`). Fase 0 bootstrap — see SIN-62192.
+<!-- SIN-63212 validator B: no-op README touch to confirm the build-backup-image gate does NOT fire on non-gated paths. -->
+
 
 ## Local bring-up
 
