@@ -21,10 +21,11 @@
 #   - the `cosign sign` step is skipped (signing without a push is
 #     meaningless and would still mint an OIDC token);
 #   - the digest summary step is skipped (the digest is local-only).
-# The GHCR login step *does* run on `pull_request` too: `cache-to` writes
-# `:buildcache` to the registry on every build (mutable single tag, not
-# per-PR image pollution), so the step needs creds. Same-repo PRs carry
-# `packages: write` via the top-level `permissions:` block.
+# The GHCR login step runs on `push` only. On `pull_request`, the fork's
+# GITHUB_TOKEN cannot write to pericles-luz/crm-backup (cross-account GHCR
+# write), so `cache-to` falls back to `type=gha` (GitHub Actions cache,
+# per-branch, no GHCR creds needed). `cache-from` mirrors the same split so
+# PR builds read from GHA cache rather than attempting an authenticated pull.
 # Recurrence-prevention rationale (SIN-63210): on 2026-05-21 PR #101
 # merged with a broken `.dockerignore` that excluded `scripts/` and the
 # resulting `main`-only build failed (run 26216850431). A `pull_request`
@@ -107,13 +108,8 @@ jobs:
       - name: set up buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
-      # Login on both `push` and `pull_request`. The image push itself is
-      # still gated to `push` via `push:` on the build-push-action below, but
-      # `cache-to: type=registry,…:buildcache` is unconditional and needs
-      # creds on PR runs too — otherwise buildx 403s exporting the cache
-      # layer (see SIN-63210). `:buildcache` is a single mutable tag, not
-      # per-PR image pollution, so PR runs reusing/rewriting it is fine.
       - name: log in to GHCR
+        if: github.event_name == 'push'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
         with:
           registry: ghcr.io
@@ -133,8 +129,11 @@ jobs:
           tags: |
             ${{ env.IMAGE_REPO }}:${{ github.sha }}
             ${{ env.IMAGE_REPO }}:main
-          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
+          # push events: registry cache (persists across runs, fast warm builds).
+          # pull_request events: GHA cache (fork token can't write to pericles-luz
+          # GHCR namespace; GHA cache is per-branch and scoped to the fork repo).
+          cache-from: ${{ github.event_name == 'push' && format('type=registry,ref={0}:buildcache', env.IMAGE_REPO) || 'type=gha' }}
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}:buildcache,mode=max', env.IMAGE_REPO) || 'type=gha,mode=max' }}
           provenance: false
 
       - name: compose digest ref
