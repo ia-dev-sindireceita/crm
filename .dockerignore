@@ -5,6 +5,8 @@ deploy
 docs
 migrations
 scripts
+!scripts/backup.sh
+!scripts/backup-restore.sh
 tools
 web
 !web/static/vendor
