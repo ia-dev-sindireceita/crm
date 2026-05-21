@@ -81,6 +81,13 @@ var iamRoutes = []string{
 	// inside the tenanted group. The custom-domain catch-all at "/"
 	// still loses to the more-specific "/c/" prefix on every request.
 	"/c/",
+	// SIN-63186 — LGPD admin surface (Fase 6 PR3). The stdlib mux
+	// dispatches "/admin/lgpd/" (subtree) to the chi router, which then
+	// re-matches "GET /admin/lgpd/export" and "POST /admin/lgpd/delete"
+	// inside the authed tenanted group. Without this prefix the
+	// custom-domain catch-all at "/" would shadow both routes and the
+	// SIN-63186 RequireAction gate would never run.
+	"/admin/lgpd/",
 	"/m/",
 	"/metrics",
 }
@@ -144,6 +151,14 @@ type iamHandlerOpts struct {
 	// has no DB dependency and only returns nil on a programmer error
 	// in webbranding.New.
 	WebBranding http.Handler
+
+	// WebLGPD carries the SIN-63186 admin handlers + lgpd_admin rate
+	// limit produced by buildLGPDStack. Built inside buildIAMHandler
+	// (like WebCampaignPublic) so it reuses the IAM pool + Redis; the
+	// caller-supplied opts value, when its Export / Delete slots are
+	// already set, wins so tests can inject stubs without standing up
+	// the postgres + redis stack.
+	WebLGPD httpapi.LGPDRoutes
 
 	// Theme is the SIN-63085 per-tenant theme middleware, built by
 	// branding_ui_wire.go on top of the same PaletteStore that backs
@@ -247,6 +262,22 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		}
 	}
 
+	// SIN-63186 — LGPD admin handlers + lgpd_admin rate limit. Built
+	// here so it reuses the IAM pool + Redis; opens a second pgxpool
+	// against MASTER_OPS_DATABASE_URL for the store constructor (the
+	// web handlers themselves only hit the runtime pool, but the store
+	// constructor takes both pools so the same store can back the
+	// retention worker without a second adapter). opts.WebLGPD, when
+	// the caller has wired Export / Delete, wins over the wire-built
+	// stack so tests can inject stubs.
+	lgpdRoutes := opts.WebLGPD
+	lgpdCleanup := func() {}
+	if lgpdRoutes.Export == nil || lgpdRoutes.Delete == nil {
+		stack := buildLGPDStack(ctx, pool, rdb, getenv)
+		lgpdRoutes = stack.Routes
+		lgpdCleanup = stack.Cleanup
+	}
+
 	h := httpapi.NewRouter(httpapi.Deps{
 		IAM: iamAdapter{
 			tenants:  tenants,
@@ -280,11 +311,13 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebFunnelRules:    opts.WebFunnelRules,
 		WebCampaignPublic: webCampaignPublic,
 		WebBranding:       opts.WebBranding,
+		WebLGPD:           lgpdRoutes,
 		Theme:             opts.Theme,
 		Metrics:           opts.Metrics,
 	})
 
 	fullCleanup := func() {
+		lgpdCleanup()
 		pool.Close()
 		cleanup()
 	}

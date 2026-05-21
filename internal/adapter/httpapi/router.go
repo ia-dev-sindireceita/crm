@@ -368,6 +368,29 @@ type Deps struct {
 	//   POST   /branding/palette/revert
 	WebBranding http.Handler
 
+	// WebLGPD is the LGPD data-subject admin surface (SIN-63186 /
+	// Fase 6 PR3). Two routes with DIFFERENT actions: export gates on
+	// ActionTenantLGPDExport, delete on ActionTenantLGPDDelete. Each
+	// inner handler is the per-method func extracted from
+	// internal/web/lgpd.Handler; mounting them separately (rather than
+	// the handler-owned mux) lets the router wrap each verb with the
+	// correct per-route Action constant so the AuditingAuthorizer
+	// records distinct audit_log_security event_type values for an
+	// export attempt vs a delete attempt.
+	//
+	// RateLimit is the shared lgpd_admin policy (10/min/tenant — AC #7)
+	// pre-built by the wire layer. Applied as the OUTERMOST middleware
+	// on both routes so a burst exceeding the cap is rejected before
+	// RequireAuth / RequireAction run — preventing audit-log spam under
+	// the same conditions that trip the limiter. Nil keeps the chain
+	// unchanged so router tests that don't exercise the rate-limit seam
+	// behave the same as the pre-PR build.
+	//
+	// Routes mounted (when Export and Delete are both non-nil):
+	//   GET  /admin/lgpd/export   — ActionTenantLGPDExport
+	//   POST /admin/lgpd/delete   — ActionTenantLGPDDelete
+	WebLGPD LGPDRoutes
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -384,6 +407,21 @@ type Deps struct {
 	//   POST  /master/tenants            — ActionMasterTenantCreate
 	//   PATCH /master/tenants/{id}/plan  — ActionMasterSubscriptionAssignPlan
 	MasterTenants MasterTenantsRoutes
+}
+
+// LGPDRoutes bundles the two inner handlers and the shared rate-limit
+// middleware for the LGPD data-subject admin surface (SIN-63186). Each
+// http.Handler slot is the per-method func extracted from
+// internal/web/lgpd.Handler so the router can apply a DIFFERENT
+// RequireAction gate on each verb (export vs delete). RateLimit, when
+// non-nil, is applied as the outermost wrapper on both routes so the
+// 10/min/tenant cap is enforced before authz logs anything. Nil slots
+// cause that specific route to be skipped — router tests that don't
+// exercise the LGPD surface keep their pre-PR behaviour.
+type LGPDRoutes struct {
+	Export    http.Handler
+	Delete    http.Handler
+	RateLimit func(http.Handler) http.Handler
 }
 
 // MasterTenantsRoutes bundles the three inner handlers for the master
@@ -718,6 +756,40 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/branding/palette/override", webBranding)
 				authed.Method(http.MethodPost, "/branding/palette/save", webBranding)
 				authed.Method(http.MethodPost, "/branding/palette/revert", webBranding)
+			}
+
+			// SIN-63186 — LGPD data-subject admin surface (Fase 6 PR3).
+			// Each verb is wrapped with the per-route Action constant
+			// from ADR 0090 so a tenant-role user hitting either route
+			// without RoleTenantGerente gets a 403 + audit_log_security
+			// row tagged with the specific event_type (export vs
+			// forget). Rate-limit (AC #7, 10/min/tenant via lgpd_admin
+			// policy) wraps OUTSIDE RequireAction so a burst is
+			// rejected before authz logs the deny — preventing
+			// audit-log spam under the same conditions that trip the
+			// limiter. When Authorizer is nil (router tests that don't
+			// exercise the authz seam) the gate skips and the inner
+			// handler still runs with a Principal.
+			if deps.WebLGPD.Export != nil && deps.WebLGPD.Delete != nil {
+				exportH := http.Handler(deps.WebLGPD.Export)
+				deleteH := http.Handler(deps.WebLGPD.Delete)
+				if deps.Authorizer != nil {
+					exportH = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantLGPDExport, nil)(exportH),
+					)
+					deleteH = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantLGPDDelete, nil)(deleteH),
+					)
+				} else {
+					exportH = middleware.RequireAuth(middleware.RequireAuthDeps{})(exportH)
+					deleteH = middleware.RequireAuth(middleware.RequireAuthDeps{})(deleteH)
+				}
+				if deps.WebLGPD.RateLimit != nil {
+					exportH = deps.WebLGPD.RateLimit(exportH)
+					deleteH = deps.WebLGPD.RateLimit(deleteH)
+				}
+				authed.Method(http.MethodGet, "/admin/lgpd/export", exportH)
+				authed.Method(http.MethodPost, "/admin/lgpd/delete", deleteH)
 			}
 
 			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses
