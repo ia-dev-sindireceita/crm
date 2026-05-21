@@ -19,6 +19,13 @@ volumes:
   # path divergence and keeps reloads atomic.
   clamav-db: {}
   clamav-log: {}
+  # SIN-63195 — per-host backup state. See compose.stg.yml header for the
+  # same volume in staging; dev usually never writes here (BACKUP_ENABLED=false
+  # default skips the cron entry point), but the named volume keeps the
+  # service definition parity-clean with stg so a dev who DOES exercise the
+  # backup script with `docker compose run --rm backup /usr/local/bin/backup.sh`
+  # gets the same on-disk layout.
+  sindireceita-backup-state: {}
 
 x-healthdefaults: &hd
   interval: 5s
@@ -244,6 +251,52 @@ services:
       # of the compose file.
     depends_on:
       nats: { condition: service_healthy }
+
+  # SIN-63195 — backup pipeline sidecar parity with staging. In local dev
+  # the cron is OFF by default (BACKUP_ENABLED=false in `.env.example`), so
+  # `docker compose up` does NOT fire pg_dump every night. Devs exercise the
+  # pipeline ad-hoc via:
+  #   docker compose run --rm backup /usr/local/bin/backup.sh
+  # See ADR 0102 for the full architecture and the hardening-invariant
+  # mapping vs the legacy host systemd unit.
+  backup:
+    image: crm-backup:dev
+    build:
+      context: ../..
+      dockerfile: infra/backup/Dockerfile
+    # In dev we do NOT auto-restart this container — if the dev runs the
+    # one-shot backup ad-hoc, they want to see the exit code, not have it
+    # respawned.
+    restart: "no"
+    networks: [crm]
+    # Same hardening posture as stg — see compose.stg.yml backup service
+    # comment for the 1:1 mapping vs the legacy systemd primitives.
+    user: "65534:65534"
+    read_only: true
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    mem_limit: 2g
+    env_file: .env
+    environment:
+      TZ: ${BACKUP_TZ:-America/Sao_Paulo}
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # Dev default bucket points at the local MinIO instance.
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-sindireceita-backup-dev}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-http://minio:9000}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-crm-admin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-change-me-too}
+      AWS_DEFAULT_REGION: us-east-1
+      BACKUP_AGE_RECIPIENTS: /opt/sindireceita/infra/age-backup.pub
+      BACKUP_NODE_ID: ${BACKUP_NODE_ID:-dev}
+      BACKUP_STATE_DIR: /var/lib/sindireceita
+    volumes:
+      - sindireceita-backup-state:/var/lib/sindireceita
+    depends_on:
+      postgres: { condition: service_healthy }
 
   caddy:
     image: caddy:2-alpine
