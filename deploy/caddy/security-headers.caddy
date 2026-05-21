@@ -9,14 +9,27 @@
 # every inline script/style emitted by HTMX swaps.
 #
 # HSTS max-age comes from the HSTS_MAX_AGE environment variable so the same
-# config survives staging → production with no code change:
-#   staging default: 300       (rollback in < 5 min if a header breaks something)
-#   production:      63072000  (set in Fase 1 once the staging soak is clean)
+# config survives staging → production with no code change. The Fase 6 default
+# is 31536000 (1 year), the minimum the browser HSTS preload list accepts
+# (https://hstspreload.org/#submission-requirements). The pen-test
+# [SIN-63218](Fase 6 pen-test F2) flagged the previous staging default of 300s
+# as a real MitM TLS downgrade window: any client that has been offline > 5min
+# would re-fetch /login over plain HTTP and a malicious WiFi could strip TLS.
 #
-# Submission to the HSTS preload list is deferred to Fase 6 per ADR 0082 §5.
+# Staging operators MAY override HSTS_MAX_AGE to a lower value during the
+# initial TLS soak for a brand-new host, but the baked default is the Fase 6
+# value so a fresh `docker compose up` is secure-by-default.
+#
+# `preload` is set here so any browser that has already pinned this origin
+# carries the eligibility flag. Submission to the public HSTS preload list at
+# https://hstspreload.org/ is one-way (removal takes weeks of stable
+# `Strict-Transport-Security: max-age=0`) and is therefore gated on explicit
+# CTO sign-off after Fase 6 is stable in production. The `preload` flag on the
+# header alone does not enroll the host — only `hstspreload.org` submission
+# does — so setting it here is reversible.
 
 header {
-	Strict-Transport-Security "max-age={$HSTS_MAX_AGE:300}; includeSubDomains"
+	Strict-Transport-Security "max-age={$HSTS_MAX_AGE:31536000}; includeSubDomains; preload"
 	X-Content-Type-Options "nosniff"
 	X-Frame-Options "DENY"
 	Referrer-Policy "strict-origin-when-cross-origin"

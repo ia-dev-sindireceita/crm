@@ -13,7 +13,11 @@
 set -euo pipefail
 
 URL="${1:-http://localhost:8080/}"
-EXPECTED_HSTS_MAX_AGE="${EXPECTED_HSTS_MAX_AGE:-300}"
+# Fase 6 default (SIN-63218): 1 year — matches deploy/caddy/security-headers.caddy.
+# Override via `EXPECTED_HSTS_MAX_AGE=...` only when validating a soak window
+# that is intentionally running a smaller max-age.
+EXPECTED_HSTS_MAX_AGE="${EXPECTED_HSTS_MAX_AGE:-31536000}"
+EXPECTED_HSTS_PRELOAD="${EXPECTED_HSTS_PRELOAD:-1}"
 
 # curl -sS shows transport errors but stays quiet on success; -I uses HEAD which
 # triggers Caddy's response headers without pulling the body.
@@ -56,6 +60,14 @@ header_value() {
 
 header_value "Strict-Transport-Security" "max-age=${EXPECTED_HSTS_MAX_AGE}"
 header_value "Strict-Transport-Security" "includeSubDomains"
+if [[ "$EXPECTED_HSTS_PRELOAD" == "1" ]]; then
+	# Fase 6 (SIN-63218): the `preload` flag MUST be present on the header
+	# so the host stays eligible for the HSTS preload list. Submission to
+	# https://hstspreload.org is one-way and gated on CTO sign-off — the
+	# flag here alone does not enroll the host, it just keeps the option
+	# open.
+	header_value "Strict-Transport-Security" "preload"
+fi
 header_value "X-Content-Type-Options"     "nosniff"
 header_value "X-Frame-Options"            "DENY"
 header_value "Referrer-Policy"            "strict-origin-when-cross-origin"

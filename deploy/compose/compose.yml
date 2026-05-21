@@ -312,9 +312,12 @@ services:
     # block, which only covers DNS-01 plugin lookups).
     dns: ["unbound"]
     environment:
-      # Fase 0 default mirrors staging so a bad header rolls back in < 5 min.
-      # Fase 1 production overrides to 63072000 (ADR 0082 / SIN-62229).
-      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-300}
+      # Fase 6 default ([SIN-63218](/SIN/issues/SIN-63218)): 1 year (31536000s)
+      # — the minimum the browser HSTS preload list accepts. Operators MAY
+      # override HSTS_MAX_AGE downward during a brand-new host's TLS soak, but
+      # the baked default is secure-by-default so a fresh `compose up` is not
+      # exposed to the 5-minute MitM downgrade window the pen-test flagged.
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-31536000}
     volumes:
       # Mount the directory (not just the Caddyfile) so the security-headers
       # import in deploy/caddy/security-headers.caddy resolves inside the container.

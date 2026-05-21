@@ -254,9 +254,14 @@ services:
     # $STG_TENANT_HOSTS.
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.stg", "--adapter", "caddyfile"]
     environment:
-      # In stg the soak window is short (rollback < 5 min); production
-      # overrides this in Fase 1 per ADR 0082 §1 (SIN-62229).
-      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-300}
+      # Fase 6 default ([SIN-63218](/SIN/issues/SIN-63218)): 1 year (31536000s)
+      # — the minimum the browser HSTS preload list accepts. Set this lower in
+      # /opt/crm/stg/.env.stg only during a brand-new host's TLS soak (e.g.
+      # `HSTS_MAX_AGE=300` while validating that the cert and routing path
+      # work); the baked default keeps staging at parity with production so a
+      # forgotten override does not silently re-open the MitM TLS downgrade
+      # window flagged by the pen-test.
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-31536000}
       # Let's Encrypt account contact + the comma-separated FQDN list Caddy
       # provisions certs for. Both come from /opt/crm/stg/.env.stg via
       # --env-file. Required (compose fails fast if missing).

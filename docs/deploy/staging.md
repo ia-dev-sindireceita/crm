@@ -590,7 +590,9 @@ POSTGRES_USER=crm
 POSTGRES_PASSWORD=REPLACE_WITH_HEX_FROM_OPENSSL_RAND
 MINIO_ROOT_USER=crm-admin
 MINIO_ROOT_PASSWORD=REPLACE_WITH_HEX_FROM_OPENSSL_RAND
-HSTS_MAX_AGE=300
+# Fase 6 hardening (SIN-63218): default is 1 year (HSTS preload-list minimum).
+# Override to a smaller value only during a brand-new host's TLS soak.
+HSTS_MAX_AGE=31536000
 # Let's Encrypt account contact for cert issuance / expiry warnings. MUST be
 # a real RFC 5322 address with a valid TLD — Let's Encrypt and ZeroSSL both
 # reject anything else with HTTP 400 invalidContact ("Domain name contains
