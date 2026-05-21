@@ -10,7 +10,12 @@
 // pure makes it trivial to mock in tests for the upper layers.
 package tenancy
 
-import "github.com/google/uuid"
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // Tenant is the aggregate the rest of the codebase refers to once a
 // request has been associated with a customer. id is the uuid persisted
@@ -29,4 +34,27 @@ type Tenant struct {
 	Name              string
 	Host              string
 	DefaultLeadUserID *uuid.UUID
+}
+
+// PrivacySettings is the LGPD-disclosure surface the public /privacy
+// page reads to render DPO contact + the currently-published privacy
+// policy (SIN-63191 / Fase 6 PR4).
+//
+// Every field is optional: a tenant whose master operator has not yet
+// filled the DPO contact or published a policy renders with the
+// platform-default fallback. The handler decides per-field whether to
+// fall back; this struct just carries the raw values from storage.
+type PrivacySettings struct {
+	DPOName               string
+	DPOEmail              string
+	PrivacyPolicyVersion  string
+	PrivacyPolicyURL      string
+	PrivacyPolicyMarkdown string
+	PrivacyPolicyUpdated  *time.Time
+}
+
+// PrivacySettingsReader is the read port the public /privacy page
+// depends on. Implementations live in internal/adapter/db/postgres.
+type PrivacySettingsReader interface {
+	LoadPrivacySettings(ctx context.Context, tenantID uuid.UUID) (PrivacySettings, error)
 }

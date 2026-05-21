@@ -88,6 +88,17 @@ var iamRoutes = []string{
 	// custom-domain catch-all at "/" would shadow both routes and the
 	// SIN-63186 RequireAction gate would never run.
 	"/admin/lgpd/",
+	// SIN-63191 — Fase 6 PR4. /admin/contacts/{id}/lgpd is shadowed by
+	// the existing /contacts/ prefix only when the chi router is wired,
+	// so we register a dedicated subtree under /admin/contacts/ for the
+	// LGPD page.
+	"/admin/contacts/",
+	// SIN-63191 — public LGPD pages. /privacy is the disclosure page
+	// (unauthenticated by design); /consent/ carries the cookie banner
+	// + decision POST. Both subtrees must hit the chi router so the
+	// custom-domain catch-all at "/" does not shadow them.
+	"/privacy",
+	"/consent/",
 	"/m/",
 	"/metrics",
 }
@@ -159,6 +170,18 @@ type iamHandlerOpts struct {
 	// already set, wins so tests can inject stubs without standing up
 	// the postgres + redis stack.
 	WebLGPD httpapi.LGPDRoutes
+
+	// WebPublicPrivacy is the SIN-63191 public LGPD disclosure page
+	// handler. Nil keeps GET /privacy unmounted. Built by the wire
+	// layer in privacy_public_wire.go on top of the postgres tenant
+	// resolver; the slot here lets cmd/server unit tests inject a
+	// stub without standing up the DB.
+	WebPublicPrivacy http.Handler
+
+	// WebConsent is the SIN-63191 cookie consent banner handler. Nil
+	// keeps GET /consent/cookies-banner and POST /consent/cookies
+	// unmounted. Built by the wire layer in consent_wire.go.
+	WebConsent http.Handler
 
 	// Theme is the SIN-63085 per-tenant theme middleware, built by
 	// branding_ui_wire.go on top of the same PaletteStore that backs
@@ -312,6 +335,8 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebCampaignPublic: webCampaignPublic,
 		WebBranding:       opts.WebBranding,
 		WebLGPD:           lgpdRoutes,
+		WebPublicPrivacy:  opts.WebPublicPrivacy,
+		WebConsent:        opts.WebConsent,
 		Theme:             opts.Theme,
 		Metrics:           opts.Metrics,
 	})

@@ -115,6 +115,28 @@ type DeletionRepository interface {
 	MarkFailed(ctx context.Context, id uuid.UUID, at time.Time) error
 }
 
+// DeletionLister is the small read port the admin UI page depends on
+// to render /admin/lgpd/requests (SIN-63191 / Fase 6 PR4). Kept
+// separate from DeletionRepository so existing repository consumers
+// (the JSON handler and the retention worker) do not have to satisfy
+// a new method — the pg adapter implements both interfaces, callers
+// pick the narrower one. accept-broad / return-narrow.
+type DeletionLister interface {
+	// ListByTenant returns rows for `tenant`, optionally filtered by
+	// status (pass DeletionStatus("") for "all"). Ordered by created_at
+	// DESC so the newest requests surface first in the admin UI list.
+	// Bounded by limit.
+	ListByTenant(ctx context.Context, tenant uuid.UUID, status DeletionStatus, limit int) ([]DeletionRequest, error)
+}
+
+// InRetention is the synthetic UI status surfaced on the
+// /admin/lgpd/requests page for rows whose worker has not yet
+// finalised them but whose `retention_until` is still in the future.
+// It is NOT persisted: the table only carries pending/completed/failed
+// per migration 0107. The handler derives this label from
+// (Status == pending && RetentionUntil > now).
+const InRetention = "in_retention"
+
 // RetentionPolicy decides how long fiscal/billing data must live after
 // an erasure request. The default 5 years matches Brazilian fiscal
 // legislation (CTN art. 173 + Decreto 9.580/2018) and is configurable

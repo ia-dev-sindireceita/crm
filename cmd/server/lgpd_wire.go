@@ -156,13 +156,37 @@ func buildLGPDStack(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client
 		return noopLGPDStack()
 	}
 
-	log.Printf("crm: web/lgpd /admin/lgpd/{export,delete} mounted (rate=%d/min/tenant, retention=%dy)", rate, policy.FiscalYears)
+	// SIN-63191 / Fase 6 PR4 — HTMX admin pages on top of the existing
+	// JSON/ZIP handlers. The UI handler shares the same Deletions port
+	// (now with ListByTenant), the same audit writer, and the same
+	// retention policy. Failure to build the UI is non-fatal — the
+	// router skips the extra routes and the API endpoints keep serving.
+	ui, err := weblgpd.NewUI(handler, weblgpd.UIDeps{
+		Deletions: store,
+		Lister:    store,
+		Audit:     splitLogger,
+		Policy:    policy,
+		CSRFToken: csrfTokenFromSessionContext,
+		Now:       func() time.Time { return time.Now().UTC() },
+	})
+	if err != nil {
+		log.Printf("crm: web/lgpd UI disabled — %v", err)
+	}
+
+	routes := httpapi.LGPDRoutes{
+		Export:    http.HandlerFunc(handler.Export),
+		Delete:    http.HandlerFunc(handler.Delete),
+		RateLimit: mw,
+	}
+	if ui != nil {
+		routes.ContactPage = http.HandlerFunc(ui.ContactPage)
+		routes.RequestsPage = http.HandlerFunc(ui.RequestsPage)
+		routes.DeleteForm = http.HandlerFunc(ui.DeleteForm)
+	}
+
+	log.Printf("crm: web/lgpd /admin/lgpd/{export,delete} mounted (rate=%d/min/tenant, retention=%dy, ui=%v)", rate, policy.FiscalYears, ui != nil)
 	return lgpdStack{
-		Routes: httpapi.LGPDRoutes{
-			Export:    http.HandlerFunc(handler.Export),
-			Delete:    http.HandlerFunc(handler.Delete),
-			RateLimit: mw,
-		},
+		Routes:  routes,
 		Cleanup: func() { masterPool.Close() },
 	}
 }

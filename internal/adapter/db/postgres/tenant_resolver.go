@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -62,6 +63,23 @@ const tenantByIDSQL = `SELECT id, name, host FROM tenants WHERE id = $1`
 // doc-comment above.
 const tenantDefaultLeadSQL = `SELECT default_lead_user_id FROM tenants WHERE id = $1`
 
+// tenantPrivacySettingsSQL serves the SIN-63191 public /privacy page.
+// Lives separately from the canonical tenant SELECT so the host/id
+// lookup query (consumed by tenant resolution middleware) does not
+// depend on migrations 0108/0109 — keeping bootstrap-only harnesses
+// that apply only 0004 green. Same "tenants is the resolver exception"
+// rationale as tenantDefaultLeadSQL.
+const tenantPrivacySettingsSQL = `
+	SELECT COALESCE(dpo_name, ''),
+	       COALESCE(dpo_email, ''),
+	       COALESCE(privacy_policy_version, ''),
+	       COALESCE(privacy_policy_url, ''),
+	       COALESCE(privacy_policy_markdown, ''),
+	       privacy_policy_updated_at
+	  FROM tenants
+	 WHERE id = $1
+`
+
 // ResolveByHost runs the host lookup. Misses become tenancy.ErrTenantNotFound
 // so the middleware can render the secure-by-default 404.
 func (r *TenantResolver) ResolveByHost(ctx context.Context, host string) (*tenancy.Tenant, error) {
@@ -111,6 +129,40 @@ func (r *TenantResolver) ResolveByID(ctx context.Context, id uuid.UUID) (*tenanc
 		return nil, fmt.Errorf("postgres: tenant by id lookup: %w", err)
 	}
 	return &tenancy.Tenant{ID: gotID, Name: name, Host: gotHost}, nil
+}
+
+// LoadPrivacySettings returns the LGPD-disclosure columns from the
+// tenants row for tenantID. uuid.Nil → ErrTenantNotFound. Missing rows
+// also collapse to ErrTenantNotFound. Empty string fields are valid
+// (the master operator has not yet filled them in); the handler
+// decides per-field whether to apply the platform-default fallback.
+// SIN-63191 / Fase 6 PR4.
+func (r *TenantResolver) LoadPrivacySettings(ctx context.Context, tenantID uuid.UUID) (tenancy.PrivacySettings, error) {
+	if r == nil || r.db == nil {
+		return tenancy.PrivacySettings{}, ErrNilPool
+	}
+	if tenantID == uuid.Nil {
+		return tenancy.PrivacySettings{}, tenancy.ErrTenantNotFound
+	}
+	var (
+		dpoName, dpoEmail, version, url, markdown string
+		updatedAt                                 *time.Time
+	)
+	row := r.db.QueryRow(ctx, tenantPrivacySettingsSQL, tenantID)
+	if err := row.Scan(&dpoName, &dpoEmail, &version, &url, &markdown, &updatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tenancy.PrivacySettings{}, tenancy.ErrTenantNotFound
+		}
+		return tenancy.PrivacySettings{}, fmt.Errorf("postgres: tenant privacy settings: %w", err)
+	}
+	return tenancy.PrivacySettings{
+		DPOName:               dpoName,
+		DPOEmail:              dpoEmail,
+		PrivacyPolicyVersion:  version,
+		PrivacyPolicyURL:      url,
+		PrivacyPolicyMarkdown: markdown,
+		PrivacyPolicyUpdated:  updatedAt,
+	}, nil
 }
 
 // DefaultLeadUserID returns tenants.default_lead_user_id for the given

@@ -284,21 +284,32 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	brandingStack := buildBrandingStack(slog.Default(), metrics)
 	defer brandingStack.Cleanup()
 
+	// SIN-63191 / Fase 6 PR4 — public LGPD-disclosure page + cookie
+	// consent banner. Both wires fail-soft when DATABASE_URL is unset;
+	// the routes simply stay unmounted in that case.
+	webPublicPrivacyHandler, webPublicPrivacyCleanup := buildPublicPrivacyHandler(ctx, getenv)
+	defer webPublicPrivacyCleanup()
+
+	webConsentHandler, webConsentCleanup := buildConsentHandler(ctx, getenv)
+	defer webConsentCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
 	// catch-all handler.
 	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv, iamHandlerOpts{
-		WebContacts:    webContactsHandler,
-		WebFunnel:      webFunnelHandler,
-		WebPrivacy:     webPrivacyHandler,
-		WebAIPolicy:    webAIPolicyHandler,
-		WebCatalog:     webCatalogHandler,
-		WebCampaigns:   webCampaignsHandler,
-		WebFunnelRules: webFunnelRulesHandler,
-		WebBranding:    brandingStack.Handler,
-		Theme:          brandingStack.Theme,
-		Metrics:        metrics,
+		WebContacts:      webContactsHandler,
+		WebFunnel:        webFunnelHandler,
+		WebPrivacy:       webPrivacyHandler,
+		WebAIPolicy:      webAIPolicyHandler,
+		WebCatalog:       webCatalogHandler,
+		WebCampaigns:     webCampaignsHandler,
+		WebFunnelRules:   webFunnelRulesHandler,
+		WebBranding:      brandingStack.Handler,
+		WebPublicPrivacy: webPublicPrivacyHandler,
+		WebConsent:       webConsentHandler,
+		Theme:            brandingStack.Theme,
+		Metrics:          metrics,
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

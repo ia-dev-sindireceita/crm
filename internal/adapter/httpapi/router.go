@@ -391,6 +391,30 @@ type Deps struct {
 	//   POST /admin/lgpd/delete   — ActionTenantLGPDDelete
 	WebLGPD LGPDRoutes
 
+	// SIN-63191 / Fase 6 PR4 — public LGPD-disclosure page. Mounted in
+	// the tenanted group BUT outside the authed sub-group (same envelope
+	// as WebCampaignPublic). The page is unauthenticated by design —
+	// LGPD art. 9 obliges the controller to publish the policy in a form
+	// accessible to any data subject; gating it behind login defeats the
+	// obligation.
+	//
+	// Routes mounted:
+	//   GET /privacy
+	WebPublicPrivacy http.Handler
+
+	// SIN-63191 / Fase 6 PR4 — cookie consent banner. Two routes, both
+	// mounted in the tenanted group BUT outside the authed sub-group so
+	// the banner is reachable from public /privacy as well as from
+	// authenticated layouts. The handler self-decides whether to record
+	// a ConsentRegistry row based on whether a Principal happens to be
+	// on the context (set by middleware.Auth when the visitor is
+	// logged in).
+	//
+	// Routes mounted:
+	//   GET  /consent/cookies-banner
+	//   POST /consent/cookies
+	WebConsent http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -418,10 +442,25 @@ type Deps struct {
 // 10/min/tenant cap is enforced before authz logs anything. Nil slots
 // cause that specific route to be skipped — router tests that don't
 // exercise the LGPD surface keep their pre-PR behaviour.
+//
+// SIN-63191 / Fase 6 PR4 extends the bundle with the HTMX admin pages:
+//
+//   - ContactPage backs GET /admin/contacts/{contactID}/lgpd — gated on
+//     ActionTenantLGPDDelete (the destructive verb owns the surface).
+//   - RequestsPage backs GET /admin/lgpd/requests — gated on
+//     ActionTenantLGPDDelete for the same reason.
+//   - DeleteForm backs POST /admin/lgpd/delete-form — form-encoded twin
+//     of /admin/lgpd/delete so the page degrades to a non-HTMX POST
+//     when JS is off; gated on ActionTenantLGPDDelete.
+//
+// All four UI routes share the lgpd_admin rate limit (RateLimit field).
 type LGPDRoutes struct {
-	Export    http.Handler
-	Delete    http.Handler
-	RateLimit func(http.Handler) http.Handler
+	Export       http.Handler
+	Delete       http.Handler
+	ContactPage  http.Handler
+	RequestsPage http.Handler
+	DeleteForm   http.Handler
+	RateLimit    func(http.Handler) http.Handler
 }
 
 // MasterTenantsRoutes bundles the three inner handlers for the master
@@ -535,6 +574,25 @@ func NewRouter(deps Deps) http.Handler {
 		// cmd/server/campaigns_public_wire.go.
 		if deps.WebCampaignPublic != nil {
 			tenanted.Method(http.MethodGet, "/c/{slug}", deps.WebCampaignPublic)
+		}
+
+		// SIN-63191 / Fase 6 PR4 — public LGPD-disclosure page.
+		// Unauthenticated by design (LGPD art. 9). Mounted alongside
+		// /c/{slug} so middleware.TenantScope resolves the tenant from
+		// the request host before the renderer runs.
+		if deps.WebPublicPrivacy != nil {
+			tenanted.Method(http.MethodGet, "/privacy", deps.WebPublicPrivacy)
+		}
+
+		// SIN-63191 / Fase 6 PR4 — cookie consent banner. Same
+		// rationale as /privacy: the banner must be reachable to
+		// anonymous visitors on /privacy as well as to logged-in
+		// users on every authenticated layout, so the routes live
+		// outside the authed sub-group. ConsentRegistry recording
+		// happens only when iam.PrincipalFromContext succeeds.
+		if deps.WebConsent != nil {
+			tenanted.Method(http.MethodGet, "/consent/cookies-banner", deps.WebConsent)
+			tenanted.Method(http.MethodPost, "/consent/cookies", deps.WebConsent)
 		}
 
 		loginPost := http.Handler(handler.LoginPost(handler.LoginConfig{
@@ -790,6 +848,54 @@ func NewRouter(deps Deps) http.Handler {
 				}
 				authed.Method(http.MethodGet, "/admin/lgpd/export", exportH)
 				authed.Method(http.MethodPost, "/admin/lgpd/delete", deleteH)
+			}
+
+			// SIN-63191 / Fase 6 PR4 — HTMX admin pages. All three
+			// share the lgpd_admin rate limit and the
+			// ActionTenantLGPDDelete gate (the destructive verb owns
+			// the surface — an operator who can read the requests list
+			// is the same one who can issue a deletion).
+			if deps.WebLGPD.ContactPage != nil {
+				h := http.Handler(deps.WebLGPD.ContactPage)
+				if deps.Authorizer != nil {
+					h = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantLGPDDelete, nil)(h),
+					)
+				} else {
+					h = middleware.RequireAuth(middleware.RequireAuthDeps{})(h)
+				}
+				if deps.WebLGPD.RateLimit != nil {
+					h = deps.WebLGPD.RateLimit(h)
+				}
+				authed.Method(http.MethodGet, "/admin/contacts/{contactID}/lgpd", h)
+			}
+			if deps.WebLGPD.RequestsPage != nil {
+				h := http.Handler(deps.WebLGPD.RequestsPage)
+				if deps.Authorizer != nil {
+					h = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantLGPDDelete, nil)(h),
+					)
+				} else {
+					h = middleware.RequireAuth(middleware.RequireAuthDeps{})(h)
+				}
+				if deps.WebLGPD.RateLimit != nil {
+					h = deps.WebLGPD.RateLimit(h)
+				}
+				authed.Method(http.MethodGet, "/admin/lgpd/requests", h)
+			}
+			if deps.WebLGPD.DeleteForm != nil {
+				h := http.Handler(deps.WebLGPD.DeleteForm)
+				if deps.Authorizer != nil {
+					h = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantLGPDDelete, nil)(h),
+					)
+				} else {
+					h = middleware.RequireAuth(middleware.RequireAuthDeps{})(h)
+				}
+				if deps.WebLGPD.RateLimit != nil {
+					h = deps.WebLGPD.RateLimit(h)
+				}
+				authed.Method(http.MethodPost, "/admin/lgpd/delete-form", h)
 			}
 
 			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses

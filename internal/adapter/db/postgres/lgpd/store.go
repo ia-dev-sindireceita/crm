@@ -24,6 +24,7 @@ import (
 // Compile-time port assertions.
 var (
 	_ domain.DeletionRepository = (*Store)(nil)
+	_ domain.DeletionLister     = (*Store)(nil)
 	_ domain.ExportRepository   = (*Store)(nil)
 	_ domain.PurgeRepository    = (*Store)(nil)
 )
@@ -158,6 +159,64 @@ func (s *Store) ListReady(ctx context.Context, at time.Time, limit int) ([]domai
 	})
 	if err != nil {
 		return nil, fmt.Errorf("lgpd/postgres: list ready: %w", err)
+	}
+	return out, nil
+}
+
+// ListByTenant satisfies DeletionRepository. Reads through the runtime
+// pool (RLS scopes by app.tenant_id) so an admin user only sees their
+// own tenant's queue — the cross-tenant view is reserved for the
+// master-ops worker (ListReady). An empty status (DeletionStatus(""))
+// returns every row; a controlled-vocabulary value applies the filter.
+// SIN-63191 / Fase 6 PR4.
+func (s *Store) ListByTenant(ctx context.Context, tenant uuid.UUID, status domain.DeletionStatus, limit int) ([]domain.DeletionRequest, error) {
+	if tenant == uuid.Nil {
+		return nil, errors.New("lgpd/postgres: zero tenant")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []domain.DeletionRequest
+	err := postgres.WithTenant(ctx, s.runtimePool, tenant, func(tx pgx.Tx) error {
+		var (
+			rows pgx.Rows
+			err  error
+		)
+		if status == "" {
+			rows, err = tx.Query(ctx, `
+				SELECT id, tenant_id, contact_id, requested_by_user_id,
+				       justification, status, retention_until,
+				       completed_at, created_at, updated_at
+				  FROM lgpd_deletion_request
+				 ORDER BY created_at DESC
+				 LIMIT $1
+			`, limit)
+		} else {
+			rows, err = tx.Query(ctx, `
+				SELECT id, tenant_id, contact_id, requested_by_user_id,
+				       justification, status, retention_until,
+				       completed_at, created_at, updated_at
+				  FROM lgpd_deletion_request
+				 WHERE status = $1
+				 ORDER BY created_at DESC
+				 LIMIT $2
+			`, string(status), limit)
+		}
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r domain.DeletionRequest
+			if err := scanDeletionRow(rows, &r); err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lgpd/postgres: list by tenant: %w", err)
 	}
 	return out, nil
 }
