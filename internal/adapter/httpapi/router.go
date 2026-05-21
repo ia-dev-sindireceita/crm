@@ -69,6 +69,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	httpratelimit "github.com/pericles-luz/crm/internal/adapter/httpapi/ratelimit"
 	"github.com/pericles-luz/crm/internal/iam"
+	"github.com/pericles-luz/crm/internal/iam/audit"
 	domainratelimit "github.com/pericles-luz/crm/internal/iam/ratelimit"
 	"github.com/pericles-luz/crm/internal/obs"
 	"github.com/pericles-luz/crm/internal/tenancy"
@@ -134,6 +135,16 @@ type Deps struct {
 	// *RBACAuthorizer. Nil is permitted for tests that don't gate any
 	// route on RequireAction.
 	Authorizer iam.Authorizer
+	// AuditLogger, when non-nil, is the audit.SplitLogger handed to
+	// router-mounted handlers that need to emit a security ledger row.
+	// SIN-63214 wires the tenant POST /logout handler with this logger
+	// so a SecurityEventLogout row lands in audit_log_security after
+	// the session row is deleted (handler-side seam added in PR #234 /
+	// SIN-63188). Nil keeps the route unchanged — the handler option
+	// short-circuits on a nil writer. Tests that don't exercise audit
+	// leave it at the zero value.
+	AuditLogger audit.SplitLogger
+
 	// Master, when non-zero, mounts the /m/* master-console routes.
 	// Zero value skips the group.
 	Master MasterDeps
@@ -642,7 +653,18 @@ func NewRouter(deps Deps) http.Handler {
 				)
 			}
 			authed.Method(http.MethodGet, "/hello-tenant", helloTenant)
-			authed.Method(http.MethodPost, "/logout", handler.Logout(deps.IAM))
+			// SIN-63214 — opt the tenant /logout handler into the
+			// SecurityEventLogout audit row added in PR #234. Both
+			// options are nil-safe: WithLogoutAudit(nil) leaves the
+			// handler in its pre-PR shape (no audit write) and
+			// WithLogoutLogger(nil) falls back to slog.Default()
+			// inside the constructor. Router tests that don't wire
+			// either dep keep their pre-PR behaviour.
+			authed.Method(http.MethodPost, "/logout", handler.Logout(
+				deps.IAM,
+				handler.WithLogoutAudit(deps.AuditLogger),
+				handler.WithLogoutLogger(deps.Logger),
+			))
 
 			// SIN-62855 — HTMX identity-split UI (SIN-62799 follow-up).
 			// Mount inside RequireAuth so the inner handler runs with an

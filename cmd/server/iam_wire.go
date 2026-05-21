@@ -270,6 +270,22 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		return nil, noop
 	}
 
+	// SIN-63214 — split audit logger for router-mounted handlers that
+	// need to emit a SecurityEvent* row (currently the tenant POST
+	// /logout, added in PR #234 / SIN-63188). Same pool + same writer
+	// shape the audited authorizer already uses; instantiated separately
+	// because the audited wrap keeps its own splitLogger encapsulated.
+	// A constructor failure is fatal at boot for the same reason the
+	// authz audit wrap is — silently running without the logout audit
+	// row would degrade the security ledger.
+	logoutAudit, err := postgresadapter.NewSplitAuditLogger(pool)
+	if err != nil {
+		pool.Close()
+		cleanup()
+		log.Printf("crm: IAM handler disabled — logout audit logger: %v", err)
+		return nil, noop
+	}
+
 	// SIN-62959 — public campaign redirect endpoint. Built here so it
 	// reuses the IAM pool + Redis (no second pgxpool / goredis client
 	// opened). A failure to build the handler is non-fatal — the
@@ -322,6 +338,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		Policies:    policies,
 		RateLimiter: limiter,
 		Authorizer:  audited,
+		AuditLogger: logoutAudit,
 		// SessionToucher is nil — Activity middleware deferred to batch
 		// that lands the session role/last_activity DB columns (0077).
 		// Master MFA deps deferred to batch 17 (SIN-62526).
