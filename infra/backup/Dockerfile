@@ -2,6 +2,7 @@
 #
 # Built and pushed by .github/workflows/build-backup-image.yml on every push
 # that touches `infra/backup/**` or `scripts/backup.sh` / `scripts/backup-restore.sh`.
+# (SIN-63212 validator A: no-op comment to confirm the pull_request gate fires.)
 # Consumed by `deploy/compose/compose.stg.yml` and `deploy/compose/compose.yml`
 # as `ghcr.io/pericles-luz/crm-backup@sha256:<digest>` (pinned inline like
 # every other infra image — see compose.stg.yml header for the policy).
