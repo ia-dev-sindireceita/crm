@@ -24,11 +24,12 @@ in [SIN-63195](/SIN/issues/SIN-63195) (see [ADR-0102](../adr/0102-backup-compose
 | `infra/sops/age-backup.key.enc` | SOPS-encrypted private key. Committed (ciphertext). |
 | `infra/backup/Dockerfile` | Sidecar image: Alpine + postgres-client + age + aws-cli + supercronic. |
 | `infra/backup/crontab` | supercronic crontab — fires `/usr/local/bin/backup.sh` at 03:15 America/Sao_Paulo. |
-| `/etc/sindireceita/age-backup.key` | Decrypted private key on the **staging/prod host**. Mode `0440`, owner `root:docker` (so the deploy user can bind-mount it into the on-demand restore-drill container). NEVER committed. NEVER bind-mounted into the scheduled sidecar — only into manual `restore-drill.sh` invocations. |
+| `/etc/sindireceita/age-backup.key` | Decrypted private key on the **staging/prod host**. Mode `0440`, owner `root:sindireceita-backup` (set by `scripts/generate-backup-key.sh`). NEVER committed. NEVER bind-mounted into the scheduled sidecar — only into manual `backup-restore.sh` invocations that pass `--user 0:0` so the container-side UID matches the file's `0440 root:*` ownership. |
 | `/opt/crm/stg/.env.stg` | Compose env-file. Holds `BACKUP_IMAGE`, `BACKUP_BUCKET`, `AWS_*`, `DATABASE_URL`, `BACKUP_NODE_ID`. Mode `0600`, owner `crm-deploy:crm-deploy`. NEVER committed. |
 | `sindireceita-backup-state` (named docker volume) | Holds `backup-last-success.json` so the size-threshold check has prior-day data to compare against. |
 | `scripts/backup.sh` | `pg_dump` → `age -R` → `aws s3 cp` with per-stage exit checks, dump-size threshold, S3 head-object verify, structured stderr logs. Baked into the sidecar image at `/usr/local/bin/backup.sh`. |
-| `scripts/restore-drill.sh` | `aws s3 cp - | age -d -i KEY | pg_restore`. Baked into the sidecar image at `/usr/local/bin/restore-drill.sh`; the private age key is bind-mounted ad-hoc at invocation time. |
+| `scripts/backup-restore.sh` | `aws s3 cp - \| age -d -i KEY \| pg_restore`. Inner restore pipeline. Baked into the sidecar image at `/usr/local/bin/backup-restore.sh`; the private age key is bind-mounted ad-hoc at invocation time AND the invocation passes `--user 0:0` so UID inside container matches the host-side `0440 root:sindireceita-backup` ownership. Uses libpq `PG*` env vars (NOT a URL on argv) so the restore target's password is invisible to `ps aux`. |
+| `scripts/restore-drill.sh` | Outer quarterly drill orchestrator (SIN-63187, PR #226). Provisions an isolated docker stack, calls into the inner restore pipeline above for the real (non-synthetic) decrypt path, validates `/health` + DB queries, writes a dated drill report. |
 | `scripts/generate-backup-key.sh` | Bootstraps the keypair. **Runs on the host, not in the container** — the private key never enters the image. |
 | `scripts/tests/backup_test.sh` | Hermetic shell-test harness for `backup.sh` (run with `bash scripts/tests/backup_test.sh`). |
 | `internal/backup/*.go` | Go-level invariant tests: placeholder integrity, ciphertext shape, compose-service security posture. |
@@ -42,14 +43,22 @@ step assumes a shell with `sudo` on the host.
    [SIN-62215](/SIN/issues/SIN-62215)). The `crm-deploy` user, `/opt/crm/stg`
    directory, and SSH-constrained deploy key are prerequisites for everything
    below; this runbook layers on top of that base install.
-2. **Lay down `/etc/sindireceita`** as the only host-side directory the
-   backup pipeline touches:
+2. **Create the `sindireceita-backup` group and lay down `/etc/sindireceita`**.
+   `scripts/generate-backup-key.sh` writes the private key as
+   `0440 root:sindireceita-backup`; the group MUST exist before that script
+   runs (the script aborts if it does not).
    ```bash
-   sudo install -d -m 0750 -o root -g docker /etc/sindireceita
+   sudo groupadd --system sindireceita-backup
+   sudo install -d -m 0750 -o root -g sindireceita-backup /etc/sindireceita
    ```
-   Owner `root`, group `docker` so the `crm-deploy` user (member of `docker`)
-   can bind-mount files from here into the restore-drill container at
-   invocation time, but cannot rewrite them outside an explicit `sudoedit`.
+   Owner `root`, group `sindireceita-backup` so a future audit can grant a
+   second human key custodian read access by adding them to that group
+   without `sudo`. The container-side restore path uses `--user 0:0`
+   instead of group membership (see § "Restore drill") — root inside the
+   container reads the host-side `0440` key directly. The `crm-deploy`
+   user does not need the key (and is not in the group) — it only invokes
+   `docker compose run --rm --user 0:0 …` which gets uid 0 inside the
+   container.
 3. **Provision compose-side env in `/opt/crm/stg/.env.stg`.** The compose
    `backup` service reads this file via `env_file`. Required additions
    beyond the base set provisioned by `staging.md`:
@@ -250,22 +259,47 @@ sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
 
 The restore drill must run end-to-end at least once per quarter. It re-hydrates
 the latest dump into an ephemeral Postgres and runs a smoke query. The
-restore drill is the **only** invocation path that mounts the private age
-key into a container — the scheduled backup service never sees it.
+restore-pipeline invocation is the **only** path that mounts the private
+age key into a container — the scheduled backup service never sees it.
+
+The quarterly drill *orchestrator* (`scripts/restore-drill.sh`, SIN-63187 /
+PR #226) provisions an isolated drill stack and writes a dated report. The
+*inner* restore pipeline below (`backup-restore.sh`) is what the
+orchestrator calls for the real (non-synthetic) decrypt path, and what an
+operator runs ad-hoc during incident response.
 
 ```bash
 # Run as the crm-deploy user (member of docker) so docker compose run
-# succeeds without sudo. The private key is bind-mounted read-only with an
-# absolute path; only this command mounts it.
+# succeeds without sudo. The private key is bind-mounted read-only.
+#
+# --user 0:0 is REQUIRED. The sidecar image runs as nobody (UID 65534)
+# by default; the host-side key is `0440 root:sindireceita-backup`, and
+# bind mounts preserve host UID/GID — nobody cannot read it. Running the
+# restore container as root inside the namespace lets it read the
+# bind-mounted key. The container still has `read_only: true`, `cap_drop:
+# ALL`, `no-new-privileges:true`, and `tmpfs: /tmp` from the compose
+# service definition; the only attack-surface change vs the scheduled
+# cron run is the UID inside the container, which has no host effect
+# (uid 0 inside a non-userns-mapped container is uid 0 on the host but
+# bounded by cap_drop ALL and read-only root FS). See SIN-63195
+# SE-review BLOCKER #2 for the rationale.
+#
+# PG* env vars (NOT a URL on argv) keep the restore-target password out
+# of `ps aux`. SIN-63195 SE-review MEDIUM #1.
 sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
   --env-file /opt/crm/stg/.env.stg \
   run --rm \
+    --user 0:0 \
     -v /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro \
     -e BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key \
-    -e RESTORE_URL='postgres://drill:drill@postgres:5432/sindireceita_drill' \
+    -e PGHOST=postgres \
+    -e PGPORT=5432 \
+    -e PGDATABASE=sindireceita_drill \
+    -e PGUSER=drill \
+    -e PGPASSWORD="$DRILL_PASSWORD" \
     -e RESTORE_VERIFY_SQL='select count(*) from users' \
     -e RESTORE_VERIFY_MIN=1 \
-    backup /usr/local/bin/restore-drill.sh
+    backup /usr/local/bin/backup-restore.sh
 ```
 
 Pass criteria:
@@ -332,23 +366,28 @@ the recipients file and encrypts to all of them.
    ```
 4. **Stash a second copy of the cleartext private key in the offline cofre.**
    The cofre configuration is fixed — see § Cofre offline.
-5. Smoke-test by running the restore drill with **each** private key:
+5. Smoke-test by running the restore drill with **each** private key (same
+   `--user 0:0` + `PG*` env-var pattern as the quarterly drill above):
    ```bash
    # old key
    sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
      --env-file /opt/crm/stg/.env.stg run --rm \
+       --user 0:0 \
        -v /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro \
        -e BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key \
-       -e RESTORE_URL='postgres://drill:drill@postgres:5432/scratch' \
-       backup /usr/local/bin/restore-drill.sh
+       -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE=scratch \
+       -e PGUSER=drill -e PGPASSWORD="$DRILL_PASSWORD" \
+       backup /usr/local/bin/backup-restore.sh
 
    # new key
    sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
      --env-file /opt/crm/stg/.env.stg run --rm \
+       --user 0:0 \
        -v /etc/sindireceita/age-backup.key.new:/etc/sindireceita/age-backup.key:ro \
        -e BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key \
-       -e RESTORE_URL='postgres://drill:drill@postgres:5432/scratch' \
-       backup /usr/local/bin/restore-drill.sh
+       -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE=scratch \
+       -e PGUSER=drill -e PGPASSWORD="$DRILL_PASSWORD" \
+       backup /usr/local/bin/backup-restore.sh
    ```
 6. **One retention window later**, when every dump in the bucket can be
    decrypted by the new key alone, swap atomically and drop the old line:
@@ -554,7 +593,7 @@ When activated (i.e. once the org has at least two key custodians):
 | Tampered `age` binary in the image | partial — image is cosign-signed via `build-backup-image.yml` and pinned by digest in `compose.stg.yml`; upstream Alpine `age` package is the source of trust. Bumping the Alpine pin is a PR-reviewed change. |
 
 `age` v1.0+ is required (HMAC of the ciphertext). Earlier `age` releases
-lack the MAC; both `backup.sh` and `restore-drill.sh` enforce this at
+lack the MAC; both `backup.sh` and `backup-restore.sh` enforce this at
 runtime via an `age --version` preflight, and `TestBackupScriptRejectsOldAge`
 guards against accidental removal of that check.
 

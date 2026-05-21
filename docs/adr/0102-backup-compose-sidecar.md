@@ -24,8 +24,26 @@ that CD pipeline.
 
 Backup runs as a sidecar service in `compose.stg.yml` and `compose.yml`. Scheduling
 is handled by supercronic inside the container; logs go to stdout (Loki); the age
-public key ships in the image; the age private key is only mounted at restore-drill
+public key ships in the image; the age private key is only mounted at restore-pipeline
 invocation, never into the scheduled service.
+
+Image build + publish lives in a **separate, path-gated workflow**
+(`.github/workflows/build-backup-image.yml`) that fires only when
+`infra/backup/**` or `scripts/backup*.sh` change. The compose service
+consumes the image via the env-var pattern `${BACKUP_IMAGE:?required}`,
+identical in shape to `${APP_IMAGE:?required}` (introduced in Fase 0 PR9
+/ [SIN-62215](/SIN/issues/SIN-62215)). The operator bootstraps and bumps
+`BACKUP_IMAGE=` in `/opt/crm/stg/.env.stg` via the existing
+`docs/deploy/staging.md` → "Bumping infra image digests" procedure
+(CTO-confirmed on the SIN-63195 thread, 2026-05-21: "do not refactor
+back to extending `cd-stg.yml` + `stg-deploy.sh`"; see "Alternatives
+considered" #4 below for the trade-off summary). This deliberately
+decouples the backup-image cadence from the app deploy pipeline:
+- `cd-stg.yml` stays single-purpose (resolve digest → SSH → compose pull → up).
+- `build-backup-image.yml` rebuilds + cosign-signs the backup image
+  only when its inputs change.
+- Reversible: the backup workflow can be reverted independently without
+  touching the app's build/deploy pipeline.
 
 ## Consequences
 
@@ -95,23 +113,47 @@ file.
 Manual one-shot invocation: `docker compose run --rm backup
 /usr/local/bin/backup.sh` (for stg/prod smoke tests).
 
-## Restore drill stays out-of-band
+## Restore pipeline stays out-of-band
 
-The restore drill is **not** part of the scheduled sidecar service. It is
-invoked manually:
+The encrypted-restore pipeline (`scripts/backup-restore.sh` →
+`/usr/local/bin/backup-restore.sh` in the image) is **not** part of the
+scheduled sidecar service. It is invoked manually:
 
 ```bash
 docker compose run --rm \
+  --user 0:0 \
   -v /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro \
   --env BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key \
-  backup /usr/local/bin/restore-drill.sh
+  --env PGHOST=postgres --env PGDATABASE=sindireceita_drill \
+  --env PGUSER=drill --env PGPASSWORD="$DRILL_PASSWORD" \
+  backup /usr/local/bin/backup-restore.sh
 ```
 
-The private age key is bind-mounted only at restore-drill invocation; the
-scheduled backup service has zero filesystem path to reach it. This preserves
-the legacy `InaccessiblePaths` invariant and is the foundation for the
-defense-in-depth lens: even if the scheduled container is compromised, the
-private key cannot decrypt the backups (the recipient half is public-only).
+Three invariants here, asserted by tests:
+
+1. `--user 0:0` is required because the bind-mounted host key is
+   `0440 root:sindireceita-backup`; the container's default UID (65534
+   / nobody) is not in that group. Running the restore container as root
+   inside the namespace reads the file directly. The container still has
+   `read_only: true`, `cap_drop: ALL`, `no-new-privileges:true`, and
+   `tmpfs: /tmp` from the compose service definition — only the UID
+   inside the container changes vs the scheduled cron run.
+2. `PG*` env vars (NOT `--dbname=postgres://user:pw@host/db`) keep the
+   restore-target password out of `ps aux`. SIN-63195 SE-review MEDIUM #1.
+3. The private age key is bind-mounted only at restore-pipeline
+   invocation; the scheduled backup service has zero filesystem path to
+   reach it. This preserves the legacy `InaccessiblePaths` invariant.
+
+A separate, higher-level quarterly drill orchestrator
+(`scripts/restore-drill.sh`, introduced by SIN-63187 / PR #226)
+provisions an isolated docker stack, calls the inner pipeline above for
+the real (non-synthetic) decrypt path, validates `/health` and a sample
+DB query, then writes a dated drill report. The two scripts compose;
+they are not duplicates.
+
+Defense-in-depth lens: even if the scheduled container is compromised,
+the private key cannot decrypt the backups (the recipient half is
+public-only).
 
 ## Alternatives considered
 

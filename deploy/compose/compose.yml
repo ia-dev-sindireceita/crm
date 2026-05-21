@@ -280,6 +280,12 @@ services:
     tmpfs:
       - /tmp
     mem_limit: 2g
+    # SIN-63195 SE-review MEDIUM #2: AWS_* credentials MUST come from
+    # env_file (read by the docker daemon, never bind-mounted) and NEVER
+    # from `environment:` — values placed in `environment:` are visible
+    # via `docker inspect`, mirroring the same warning at the
+    # wallet-alerter-worker service definition above. The bootstrap
+    # values for local MinIO live in `.env.example`; copy that to `.env`.
     env_file: .env
     environment:
       TZ: ${BACKUP_TZ:-America/Sao_Paulo}
@@ -287,9 +293,6 @@ services:
       # Dev default bucket points at the local MinIO instance.
       BACKUP_BUCKET: ${BACKUP_BUCKET:-sindireceita-backup-dev}
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-http://minio:9000}
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-crm-admin}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-change-me-too}
-      AWS_DEFAULT_REGION: us-east-1
       BACKUP_AGE_RECIPIENTS: /opt/sindireceita/infra/age-backup.pub
       BACKUP_NODE_ID: ${BACKUP_NODE_ID:-dev}
       BACKUP_STATE_DIR: /var/lib/sindireceita

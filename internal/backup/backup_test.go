@@ -710,3 +710,120 @@ func TestComposeBackupSidecarHardeningInvariants(t *testing.T) {
 		})
 	}
 }
+
+// TestRunbookRestorePipelineInvocation is the regression test for the
+// SIN-63195 SE-review BLOCKER #2 fix. The documented restore-pipeline
+// invocation in docs/operations/backup-restore.md MUST satisfy two
+// invariants, or the quarterly Fase 6 drill ([SIN-62199]) literally
+// cannot execute:
+//
+//  1. The container runs with `--user 0:0` so the bind-mounted host
+//     private key (host perms `0440 root:sindireceita-backup`) is
+//     readable. The scheduled backup service runs as `user: 65534`
+//     (nobody) by compose default; nobody is not in the
+//     sindireceita-backup group, so without the explicit `--user 0:0`
+//     the read fails EACCES and pg_restore never sees the cleartext
+//     dump. The container retains `read_only`, `cap_drop: ALL`,
+//     `no-new-privileges`, and `tmpfs /tmp` from the service
+//     definition; `--user 0:0` only changes the UID inside the
+//     container namespace.
+//
+//  2. The restore target is passed via `PG*` env vars (NOT a
+//     `RESTORE_URL=postgres://user:pw@host/db` form). pg_restore /
+//     psql read PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD from the
+//     environment, which is invisible to `ps aux`. A URL-on-argv form
+//     leaks the password to anything that can read `/proc/<pid>/cmdline`
+//     on the host (SE-review MEDIUM #1).
+//
+// If a future doc edit removes either invariant, this test fails. The
+// "Restore drill (Fase 6)" section is the canonical operator-facing
+// invocation and the one the quarterly drill orchestrator
+// (`scripts/restore-drill.sh`, SIN-63187) calls for the real-decrypt
+// path; the rotation section's invocations are also asserted via grep
+// to keep the patterns consistent across the doc.
+func TestRunbookRestorePipelineInvocation(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	path := filepath.Join(root, "docs", "operations", "backup-restore.md")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	// Extract the "Restore drill (Fase 6)" section, which is the
+	// canonical operator-facing invocation. Bounded by `^## Restore drill`
+	// header through the next `^## ` (next H2) — `(?ms)` lets `.*?`
+	// cross newlines and anchors `^` to a line.
+	re := regexp.MustCompile(`(?ms)^## Restore drill \(Fase 6\)\s*\n(.*?)(?:^## |\z)`)
+	loc := re.FindSubmatchIndex(body)
+	if loc == nil {
+		t.Fatalf("could not locate `## Restore drill (Fase 6)` section in %s", path)
+	}
+	section := body[loc[2]:loc[3]]
+
+	required := []struct {
+		needle string
+		why    string
+	}{
+		{"--user 0:0",
+			"restore-pipeline container MUST run as root so bind-mounted host key (0440 root:sindireceita-backup) is readable — SIN-63195 SE BLOCKER #2"},
+		{"-v /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro",
+			"private age key MUST be bind-mounted read-only with the absolute host path"},
+		{"backup /usr/local/bin/backup-restore.sh",
+			"invocation MUST target the inner restore pipeline at /usr/local/bin/backup-restore.sh (NOT restore-drill.sh — the latter is the SIN-63187 outer drill orchestrator)"},
+		{"PGHOST=",
+			"restore target MUST use PG* env vars (libpq env interface), NOT --dbname=$URL on argv — SIN-63195 SE MEDIUM #1"},
+		{"PGPASSWORD=",
+			"restore target MUST pass password via PGPASSWORD env (NOT a libpq URL on argv) — SIN-63195 SE MEDIUM #1"},
+	}
+	for _, req := range required {
+		if !bytes.Contains(section, []byte(req.needle)) {
+			t.Errorf("Restore drill (Fase 6) section in %s missing required token %q (%s).\nsection start:\n%s",
+				path, req.needle, req.why, section[:min(len(section), 800)])
+		}
+	}
+
+	// Negative: the older `RESTORE_URL='postgres://...@host/db'` form
+	// MUST NOT appear in the doc — every documented invocation
+	// (including the rotation section) was migrated to the PG* split.
+	// Old runbook snippets that survive a future copy-paste are exactly
+	// what this test catches.
+	if bytes.Contains(body, []byte("RESTORE_URL='postgres://")) {
+		t.Errorf("%s still contains a legacy `RESTORE_URL='postgres://...` invocation. "+
+			"Replace with PG* env vars (libpq env interface) — SIN-63195 SE MEDIUM #1 forbids URL-on-argv.", path)
+	}
+}
+
+// TestComposeBackupSidecarKeyIsolationFromVolumes is a tighter SE-review
+// safety net for BLOCKER #2: even though TestComposeBackupSidecarDeniesPrivateKey
+// already greps for the literal `age-backup.key` token, this test
+// additionally asserts that the scheduled `backup` service in compose
+// declares NO host bind mounts under `/etc/sindireceita/` whatsoever.
+// The named docker volume `sindireceita-backup-state` for state is fine
+// (no host path); a host bind like `- /etc/sindireceita:...` would
+// expose the entire secrets directory — including the private key — to
+// the scheduled service even if the literal key path is not named.
+//
+// If you legitimately need to mount /etc/sindireceita into the
+// scheduled service for some future reason (you almost certainly do not
+// — restore is out-of-band by design), update this test in the SAME
+// commit and explain why on the PR.
+func TestComposeBackupSidecarKeyIsolationFromVolumes(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	for _, composeRel := range []string{
+		"deploy/compose/compose.stg.yml",
+		"deploy/compose/compose.yml",
+	} {
+		composeRel := composeRel
+		t.Run(composeRel, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(root, composeRel)
+			block := readBackupServiceBlock(t, path)
+			if bytes.Contains(block, []byte("/etc/sindireceita")) {
+				t.Fatalf("compose service `backup` in %s mounts /etc/sindireceita (any path under it) — the scheduled service must not see host secrets. Block:\n%s",
+					path, block)
+			}
+		})
+	}
+}

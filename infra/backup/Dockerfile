@@ -1,7 +1,7 @@
 # Sindireceita backup sidecar — pg_dump | age | aws s3 cp pipeline.
 #
 # Built and pushed by .github/workflows/build-backup-image.yml on every push
-# that touches `infra/backup/**` or `scripts/backup.sh` / `scripts/restore-drill.sh`.
+# that touches `infra/backup/**` or `scripts/backup.sh` / `scripts/backup-restore.sh`.
 # Consumed by `deploy/compose/compose.stg.yml` and `deploy/compose/compose.yml`
 # as `ghcr.io/pericles-luz/crm-backup@sha256:<digest>` (pinned inline like
 # every other infra image — see compose.stg.yml header for the policy).
@@ -21,8 +21,12 @@
 #   - security_opt no-new-privileges at compose-service level
 #
 # The private age key is NEVER baked into the image and NEVER bind-mounted
-# into the scheduled service; it is only mounted at restore-drill invocation
-# time (see docs/operations/backup-restore.md and the AC in SIN-63195).
+# into the scheduled service; it is only mounted at backup-restore.sh
+# invocation time, AND the invocation MUST pass `--user 0:0` so the
+# UID/GID inside the container matches the host-side `0440 root:*`
+# ownership of `/etc/sindireceita/age-backup.key`. See
+# docs/operations/backup-restore.md § "Restore drill" and SIN-63195
+# SE-review BLOCKER #2 for the rationale.
 
 # Verify against the Alpine 3.20.3 manifest on docker hub. Image-pinning
 # policy from SIN-62215 requires tag@digest for every infra image. If this
@@ -57,7 +61,7 @@ RUN apk add --no-cache \
 # step. SecurityEngineer rev: confirm the SHA on PR review against the
 # release page checksum file.
 ENV SUPERCRONIC_URL="https://github.com/aptible/supercronic/releases/download/v0.2.34/supercronic-linux-amd64" \
-    SUPERCRONIC_SHA256="e8631edc1175192c5e8f4efaf6b1aa6e9a55b95a497e642d0a7caea0fa9e38f0" \
+    SUPERCRONIC_SHA256="a51b340a83c5bd035742f0d7191555f9663876405e494dbf824537d64f3e39c6" \
     SUPERCRONIC_BIN="/usr/local/bin/supercronic"
 
 # wget is in busybox so we do not need to apk add it. The sha256sum check
@@ -71,16 +75,20 @@ RUN wget -q -O "${SUPERCRONIC_BIN}" "${SUPERCRONIC_URL}" \
 # but the production image ships its own embedded copy so the sidecar can
 # run with `read_only: true` and zero host filesystem mounts (except tmpfs
 # /tmp and the env file).
-COPY scripts/backup.sh         /usr/local/bin/backup.sh
-COPY scripts/restore-drill.sh  /usr/local/bin/restore-drill.sh
-COPY infra/age-backup.pub      /opt/sindireceita/infra/age-backup.pub
-COPY infra/backup/crontab      /etc/sindireceita/crontab
+COPY scripts/backup.sh          /usr/local/bin/backup.sh
+COPY scripts/backup-restore.sh  /usr/local/bin/backup-restore.sh
+COPY infra/age-backup.pub       /opt/sindireceita/infra/age-backup.pub
+COPY infra/backup/crontab       /etc/sindireceita/crontab
 
 # Ownership: nobody:nobody (65534:65534). All paths are owned by root post-COPY
 # by default; chown to nobody so the unprivileged USER below can stat them.
 # The scripts MUST stay 0555 (no group/other write); the crontab is 0444.
+# Note: the scheduled cron path runs as nobody (USER below). The restore
+# path is invoked separately with `docker compose run --rm --user 0:0` so
+# the bind-mounted age private key (host-side `0440 root:*`) is readable.
+# The 0555 perms ensure either UID can `exec` the scripts.
 RUN chown -R 65534:65534 /opt/sindireceita \
- && chmod 0555 /usr/local/bin/backup.sh /usr/local/bin/restore-drill.sh \
+ && chmod 0555 /usr/local/bin/backup.sh /usr/local/bin/backup-restore.sh \
  && chmod 0444 /etc/sindireceita/crontab
 
 # /var/lib/sindireceita is where backup.sh writes backup-last-success.json.
@@ -94,9 +102,13 @@ USER 65534:65534
 WORKDIR /opt/sindireceita
 
 # Default command is supercronic against the embedded crontab. The crontab
-# fires `/usr/local/bin/backup.sh` at the wall-clock schedule. For the
-# restore drill or a manual one-shot backup, the operator runs
-# `docker compose run --rm backup /usr/local/bin/backup.sh` (or
-# `/usr/local/bin/restore-drill.sh` with the private key mounted ad-hoc).
+# fires `/usr/local/bin/backup.sh` at the wall-clock schedule. For a manual
+# one-shot backup the operator runs `docker compose run --rm backup
+# /usr/local/bin/backup.sh`. For the encrypted-restore pipeline the
+# operator runs `docker compose run --rm --user 0:0 -v
+# /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro
+# backup /usr/local/bin/backup-restore.sh` (the explicit `--user 0:0` is
+# required so the bind-mounted age key — host perms 0440 root:* — is
+# readable inside the container).
 ENTRYPOINT ["/usr/local/bin/supercronic"]
 CMD ["/etc/sindireceita/crontab"]
