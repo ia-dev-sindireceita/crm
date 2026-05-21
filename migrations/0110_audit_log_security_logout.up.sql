@@ -17,9 +17,10 @@
 -- migration. RLS / GRANT / index definitions on the table are also
 -- preserved.
 --
--- Numbering note: takes 0110 to leave room above the in-flight
--- 0107/0108 LGPD migrations on PR #225. If 0107/0108 land first the
--- next free index advances and this file may be renumbered on rebase.
+-- Numbering note: 0110 is the next free index after the Fase 6
+-- siblings landed on main (0107_user_mfa from PR1, 0107_consent_record
+-- from PR2, 0107_lgpd_deletion_request + 0108_tenants_dpo_settings
+-- from PR3, 0109_tenants_privacy_policy_markdown from PR4).
 --
 -- Idempotent (DROP CONSTRAINT IF EXISTS + recreate). Run as app_admin.
 

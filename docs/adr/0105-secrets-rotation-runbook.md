@@ -3,7 +3,8 @@
 - Status: Accepted
 - Date: 2026-05-21
 - Deciders: CTO, SecurityEngineer
-- Drives: [SIN-63188](/SIN/issues/SIN-63188) (this ADR — Fase 6 PR6 doc gate), [SIN-63189](/SIN/issues/SIN-63189) (Fase 6 PR7 — runbook + helper script implementation)
+- Drives: [SIN-63188](/SIN/issues/SIN-63188) (this ADR — Fase 6 PR6 doc gate)
+- Ratifies: shipped in [SIN-63189](/SIN/issues/SIN-63189) (Fase 6 PR7 — runbook + helper script, merged in PR #228, commit `48357dd`)
 - Builds on: [ADR 0084](./0084-supply-chain.md) §secrets (recipient files, ownership), [ADR 0104](./0104-backup-restore-rpo-rto-drill.md) §D3 (two-recipient age rotation), [ADR 0073](./0073-csrf-and-session.md) §D1 (CSRF cookie does not require a rotation — token rotation is per-session, separate from this ADR)
 - Lenses: **Defense in depth**, **Reversibility & blast radius**, **Operational excellence**
 
@@ -49,8 +50,8 @@ that misses its cadence by more than 50 % (e.g. 45 days for a
 
 ### D2 — Helper script: `scripts/rotate-secret.sh` (single entry point)
 
-[SIN-63189](/SIN/issues/SIN-63189) ships one script with a fixed
-contract:
+[SIN-63189](/SIN/issues/SIN-63189) (PR #228) ships one script with a
+fixed contract:
 
 ```
 scripts/rotate-secret.sh <secret-name>

@@ -4,7 +4,7 @@
 - Date: 2026-05-21
 - Deciders: CTO
 - Drives: [SIN-63188](/SIN/issues/SIN-63188) (this ADR — Fase 6 PR6 doc gate)
-- Ratifies: shipped/in-flight in [SIN-63185](/SIN/issues/SIN-63185) (Fase 6 PR2 — `ConsentRegistry` ledger, merged in PR #223, commit `6b1a8ba`), [SIN-63186](/SIN/issues/SIN-63186) (Fase 6 PR3 — `/admin/lgpd/export` + `/admin/lgpd/delete` + retention worker, PR #225 in review), [SIN-63191](/SIN/issues/SIN-63191) (Fase 6 PR4 — HTMX privacy & data-controls UI + DPO display)
+- Ratifies: shipped in [SIN-63185](/SIN/issues/SIN-63185) (Fase 6 PR2 — `ConsentRegistry` ledger, merged in PR #223, commit `6b1a8ba`), [SIN-63186](/SIN/issues/SIN-63186) (Fase 6 PR3 — `/admin/lgpd/export` + `/admin/lgpd/delete` + retention worker, merged in PR #225, commit `9cfdbdd`), [SIN-63191](/SIN/issues/SIN-63191) (Fase 6 PR4 — HTMX privacy & data-controls UI + DPO display + cookie banner, merged in PR #229, commit `7c26a59`)
 - Builds on: [ADR 0083](./0083-app-runtime-vs-master-ops.md) (split-role grants), [ADR 0084](./0084-supply-chain.md) §retention (audit retention floor), [ADR 0090](./0090-rbac-matrix.md) (`defaultPIIActions` for the export operator),
   migration 0083 (audit_log_security/data split), migration 0084 (`tenants.audit_data_retention_months`)
 - Related: [SIN-62354](/SIN/issues/SIN-62354) (DPA markdown bundle), [SIN-62355](/SIN/issues/SIN-62355) (staging FQDN — DPO endpoint reachability)
@@ -37,12 +37,12 @@ the LGPD surface across three PRs:
 - **PR2 / ConsentRegistry** ([SIN-63185](/SIN/issues/SIN-63185)) — a
   generic consent ledger covering `terms_of_service`, `privacy_policy`,
   marketing, analytics cookies. One row per (subject, purpose, version).
-- **PR3 / Export+Delete** ([SIN-63186](/SIN/issues/SIN-63186)) — the
-  `/admin/lgpd/{export,delete}` operator UI, the LGPD retention worker,
+- **PR3 / Export+Delete** ([SIN-63186](/SIN/issues/SIN-63186), PR #225) —
+  the `/admin/lgpd/{export,delete}` operator UI, the LGPD retention worker,
   and the tombstone schema.
-- **PR4 / Privacy UI** ([SIN-63191](/SIN/issues/SIN-63191)) — the
-  end-user-facing privacy controls, DPO display, and printable
-  privacy-policy view.
+- **PR4 / Privacy UI** ([SIN-63191](/SIN/issues/SIN-63191), PR #229) — the
+  end-user-facing privacy controls, DPO display, cookie banner, and
+  printable privacy-policy view.
 
 This ADR records the three correlated decisions across that split
 so the implementation PRs can land independently without each
@@ -95,8 +95,8 @@ Rationale for each invariant:
 
 ### D2 — Delete: tombstone + irreversible PII scrub, never row-DELETE
 
-`POST /admin/lgpd/delete` runs in one transaction (migration 0107 /
-0108 in PR3, subject to renumbering):
+`POST /admin/lgpd/delete` runs in one transaction (migrations
+`0107_lgpd_deletion_request` + `0108_tenants_dpo_settings` from PR3):
 
 ```
 BEGIN;
@@ -175,7 +175,7 @@ ADR 0085 §sweep.
 
 ### D4 — DPO contact: per-tenant, mandatory before first export
 
-Migration 0108 (subject to renumbering) adds four nullable columns
+Migration `0108_tenants_dpo_settings` adds four nullable columns
 to `tenants`:
 
 ```
