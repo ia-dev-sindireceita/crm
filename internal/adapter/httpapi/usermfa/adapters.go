@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	pg "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/iam"
@@ -155,40 +154,6 @@ func (m *TenantSessionMinter) MintTenantSession(ctx context.Context, tenantID, u
 		return iam.Session{}, fmt.Errorf("usermfa: create session: %w", err)
 	}
 	return sess, nil
-}
-
-// PostgresUserLabel resolves the otpauth:// label for a tenant user by
-// reading users.email under WithTenant.
-type PostgresUserLabel struct {
-	pool TenantPool
-}
-
-// TenantPool is the minimal pool surface needed by PostgresUserLabel.
-// *pgxpool.Pool satisfies it. Defining the interface here keeps the
-// adapter test-friendly without leaking the pool type.
-type TenantPool = pg.TxBeginner
-
-// NewPostgresUserLabel wraps a pool.
-func NewPostgresUserLabel(pool TenantPool) (*PostgresUserLabel, error) {
-	if pool == nil {
-		return nil, fmt.Errorf("usermfa: NewPostgresUserLabel: pool is nil")
-	}
-	return &PostgresUserLabel{pool: pool}, nil
-}
-
-// LookupLabel returns users.email for the supplied principal.
-func (a *PostgresUserLabel) LookupLabel(ctx context.Context, tenantID, userID uuid.UUID) (string, error) {
-	if tenantID == uuid.Nil || userID == uuid.Nil {
-		return "", fmt.Errorf("usermfa: PostgresUserLabel.LookupLabel: zero id")
-	}
-	var email string
-	err := pg.WithTenant(ctx, a.pool, tenantID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT email FROM users WHERE id = $1`, userID).Scan(&email)
-	})
-	if err != nil {
-		return "", fmt.Errorf("usermfa: PostgresUserLabel.LookupLabel: %w", err)
-	}
-	return email, nil
 }
 
 // parseIP is a best-effort net.IP parser. Returns nil on unparseable

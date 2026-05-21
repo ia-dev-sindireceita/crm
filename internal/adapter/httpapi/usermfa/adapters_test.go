@@ -155,13 +155,6 @@ func TestTenantSessionMinterCreateError(t *testing.T) {
 	}
 }
 
-func TestNewPostgresUserLabelValidates(t *testing.T) {
-	t.Parallel()
-	if _, err := NewPostgresUserLabel(nil); err == nil {
-		t.Fatalf("expected error for nil pool")
-	}
-}
-
 func TestParseIPCases(t *testing.T) {
 	t.Parallel()
 	if got := parseIP(""); got != nil {
