@@ -29,6 +29,12 @@ volumes:
   minio-data: {}
   caddy-data: {}
   caddy-config: {}
+  # SIN-63195 — per-host backup state. backup.sh writes
+  # backup-last-success.json here so the size-threshold check
+  # (LAST_SUCCESS_FLOOR_FRACTION_PCT) has prior-day data to compare against.
+  # Named volume so the state survives image upgrades (ephemeral image,
+  # durable state — matches the same pattern postgres-data uses).
+  sindireceita-backup-state: {}
 
 x-healthdefaults: &hd
   interval: 5s
@@ -156,6 +162,81 @@ services:
     healthcheck:
       <<: *hd
       test: ["CMD", "drill", "@127.0.0.1", "-p", "5353", "example.com"]
+
+  # SIN-63195 — encrypted Postgres backup pipeline as a compose sidecar.
+  # Replaces the legacy host-installed `sindireceita-backup.service` +
+  # `.timer` pair (lost in the 2026-05-09 fork reset per ADR 0085, preserved
+  # on tag `main-legacy-pre-reconcile-20260509`). Pipeline:
+  #   pg_dump (custom format) | age -R infra/age-backup.pub | aws s3 cp
+  # Scheduling: supercronic inside the sidecar (cron-in-container), wall-clock
+  # cron line `15 3 * * *` America/Sao_Paulo — matches the legacy
+  # `OnCalendar=*-*-* 03:15:00 America/Sao_Paulo` timing. See ADR 0102 for the
+  # decision rationale and the hardening-invariant mapping vs the systemd unit.
+  #
+  # The private age key lives offline (cofre fisico + SOPS-encrypted blob at
+  # infra/sops/age-backup.key.enc). The scheduled service NEVER mounts the
+  # private key — only the manual restore-drill invocation does, via
+  # `docker compose run --rm -v /etc/sindireceita/age-backup.key:...:ro backup
+  # /usr/local/bin/restore-drill.sh`. This preserves the legacy
+  # `InaccessiblePaths=/etc/sindireceita/age-backup.key` invariant and is
+  # enforced by internal/backup.TestComposeBackupSidecarDeniesPrivateKey.
+  backup:
+    # BACKUP_IMAGE is bootstrapped once into /opt/crm/stg/.env.stg after the
+    # first `.github/workflows/build-backup-image.yml` run publishes the
+    # initial digest to GHCR. Subsequent bumps follow the same model
+    # documented in docs/deploy/staging.md → "Bumping infra image digests"
+    # (PR-reviewed inline edit). Format MUST be:
+    #   BACKUP_IMAGE=ghcr.io/pericles-luz/crm-backup@sha256:<64 hex>
+    image: ${BACKUP_IMAGE:?BACKUP_IMAGE must be ghcr.io/pericles-luz/crm-backup@sha256:<digest>}
+    restart: unless-stopped
+    networks: [crm]
+    # Run as nobody:nobody (65534:65534). Maps to legacy
+    # `User=sindireceita-backup` on the systemd unit.
+    user: "65534:65534"
+    # Container root FS is read-only — image's own contents only.
+    # Maps to legacy `ProtectSystem=strict`.
+    read_only: true
+    # Block setuid/setgid privilege escalation — even a vulnerable binary
+    # in the image cannot raise effective caps mid-run. Maps to legacy
+    # `NoNewPrivileges=true`.
+    security_opt:
+      - "no-new-privileges:true"
+    # Drop every capability — `pg_dump`, `age`, and `aws s3 cp` need none.
+    # Maps to legacy `RestrictSUIDSGID=true` + `ProtectKernelModules` etc.
+    cap_drop:
+      - ALL
+    # Scratch space for the pg_dump output and the age ciphertext, both
+    # cleaned up via the script's EXIT trap. Maps to legacy
+    # `PrivateTmp=true`. The image's root FS is read_only, so without this
+    # mount even mktemp would fail.
+    tmpfs:
+      - /tmp
+    # Resource ceiling for the per-night run. Mirrors legacy
+    # `MemoryMax=2G` and `CPUQuota=200%`.
+    mem_limit: 2g
+    cpus: "2.0"
+    env_file: .env.stg
+    environment:
+      # SUPERCRONIC_TZ surfaces in the container as TZ so the embedded
+      # crontab fires at America/Sao_Paulo 03:15 (matching the legacy
+      # `OnCalendar=*-*-* 03:15:00 America/Sao_Paulo`).
+      TZ: ${BACKUP_TZ:-America/Sao_Paulo}
+      # DATABASE_URL composed against the in-network postgres service, same
+      # as the app's. The script connects to postgres:5432 via the crm
+      # bridge; no host port is required.
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # S3 / Backblaze B2 bucket name. AWS credentials and AWS_ENDPOINT_URL
+      # come from `.env.stg` (env_file above).
+      BACKUP_BUCKET: ${BACKUP_BUCKET:?BACKUP_BUCKET not set in /opt/crm/stg/.env.stg}
+      BACKUP_AGE_RECIPIENTS: /opt/sindireceita/infra/age-backup.pub
+      BACKUP_NODE_ID: ${BACKUP_NODE_ID:-stg}
+      BACKUP_STATE_DIR: /var/lib/sindireceita
+    volumes:
+      # Backup-state durability across image upgrades. The script writes
+      # backup-last-success.json here for the size-threshold check.
+      - sindireceita-backup-state:/var/lib/sindireceita
+    depends_on:
+      postgres: { condition: service_healthy }
 
   caddy:
     image: caddy:2.8.4-alpine3.20@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17

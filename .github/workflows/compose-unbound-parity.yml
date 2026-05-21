@@ -42,6 +42,12 @@ jobs:
           # `docker compose config` only validates the YAML + interpolation
           # and never tries to pull the image, so any non-empty value works.
           APP_IMAGE: ghcr.io/pericles-luz/crm@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          # SIN-63195 — `backup` sidecar adds two more `${VAR:?…}` guards
+          # in compose.stg.yml (BACKUP_IMAGE + BACKUP_BUCKET). Same CI
+          # placeholder pattern as APP_IMAGE above; `docker compose config`
+          # only validates interpolation, never pulls the image.
+          BACKUP_IMAGE: ghcr.io/pericles-luz/crm-backup@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          BACKUP_BUCKET: ci-placeholder
           POSTGRES_PASSWORD: ci-placeholder
           MINIO_ROOT_USER: ci-placeholder
           MINIO_ROOT_PASSWORD: ci-placeholder
