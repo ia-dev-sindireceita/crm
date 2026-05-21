@@ -63,6 +63,14 @@ const (
 	DataEventExportCSV    DataEvent = "export_csv"
 	DataEventLGPDExport   DataEvent = "lgpd_export"
 	DataEventLGPDForget   DataEvent = "lgpd_forget"
+
+	// SIN-63185 / Fase 6 PR2: generic LGPD consent ledger
+	// (consent_record, migration 0107). One audit_log_data row per
+	// Record/Revoke, target carries IP + user-agent. The CHECK clause
+	// on audit_log_data.event_type was extended in 0107 to accept
+	// these literals.
+	DataEventConsentGrant  DataEvent = "consent_grant"
+	DataEventConsentRevoke DataEvent = "consent_revoke"
 )
 
 var allSecurityEvents = map[SecurityEvent]struct{}{
@@ -84,11 +92,13 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 }
 
 var allDataEvents = map[DataEvent]struct{}{
-	DataEventReadPII:      {},
-	DataEventWriteContact: {},
-	DataEventExportCSV:    {},
-	DataEventLGPDExport:   {},
-	DataEventLGPDForget:   {},
+	DataEventReadPII:       {},
+	DataEventWriteContact:  {},
+	DataEventExportCSV:     {},
+	DataEventLGPDExport:    {},
+	DataEventLGPDForget:    {},
+	DataEventConsentGrant:  {},
+	DataEventConsentRevoke: {},
 }
 
 // IsKnown reports whether e is in the controlled vocabulary.
