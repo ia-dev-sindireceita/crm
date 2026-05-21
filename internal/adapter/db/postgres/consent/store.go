@@ -1,8 +1,14 @@
-// Package pgconsent is the pgx-backed Postgres adapter for
-// consent.ConsentRegistry. It targets migration 0107's consent_record
-// table; every query runs inside a WithTenant scope so the RLS
-// policies the migration installs gate every read and write.
-package pgconsent
+// Package consent is the pgx-backed Postgres adapter for the
+// internal/iam/consent.ConsentRegistry port. It targets migration 0107's
+// consent_record table; every query runs inside a WithTenant scope so
+// the RLS policies the migration installs gate every read and write.
+//
+// Location chosen per SIN-62216 / forbidimport: only packages under
+// internal/adapter/db/postgres/** (and internal/adapter/store/postgres/**)
+// may import pgx. Test files alias this package as `pgconsent` to
+// avoid the predictable collision with the domain `consent` package
+// (mirroring the alias the aipolicy adapter callers use).
+package consent
 
 import (
 	"context"
@@ -17,10 +23,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres"
-	"github.com/pericles-luz/crm/internal/iam/consent"
+	domain "github.com/pericles-luz/crm/internal/iam/consent"
 )
 
-// Store implements consent.ConsentRegistry on top of the
+// Store implements domain.ConsentRegistry on top of the
 // consent_record table. Construct via NewStore; the pool MUST be the
 // app_runtime pool so the RLS policies on consent_record gate every
 // query.
@@ -28,7 +34,7 @@ type Store struct {
 	pool postgres.TxBeginner
 }
 
-var _ consent.ConsentRegistry = (*Store)(nil)
+var _ domain.ConsentRegistry = (*Store)(nil)
 
 // NewStore wraps pool and returns a ready Store. A nil pool yields
 // postgres.ErrNilPool so cmd/server fails fast on misconfiguration.
@@ -52,13 +58,13 @@ const selectColumns = `id, tenant_id, subject_type, subject_id, purpose, version
 // The persisted record is returned with the ID, GrantedAt, and
 // Granted columns populated from the row that won the insert race
 // (whether new or pre-existing).
-func (s *Store) Record(ctx context.Context, rec consent.ConsentRecord) (consent.ConsentRecord, bool, error) {
+func (s *Store) Record(ctx context.Context, rec domain.ConsentRecord) (domain.ConsentRecord, bool, error) {
 	if err := validateRecord(rec); err != nil {
-		return consent.ConsentRecord{}, false, fmt.Errorf("pgconsent: Record: %w", err)
+		return domain.ConsentRecord{}, false, fmt.Errorf("pgconsent: Record: %w", err)
 	}
 
 	var (
-		persisted consent.ConsentRecord
+		persisted domain.ConsentRecord
 		created   bool
 	)
 	err := postgres.WithTenant(ctx, s.pool, rec.TenantID, func(tx pgx.Tx) error {
@@ -113,19 +119,19 @@ func (s *Store) Record(ctx context.Context, rec consent.ConsentRecord) (consent.
 		return nil
 	})
 	if err != nil {
-		return consent.ConsentRecord{}, false, fmt.Errorf("pgconsent: Record: %w", err)
+		return domain.ConsentRecord{}, false, fmt.Errorf("pgconsent: Record: %w", err)
 	}
 	return persisted, created, nil
 }
 
 // Latest returns the row with the most recent granted_at for
 // (tenant, subject, purpose), or (nil, nil) when none exist.
-func (s *Store) Latest(ctx context.Context, tenant uuid.UUID, subject consent.Subject, purpose consent.Purpose) (*consent.ConsentRecord, error) {
+func (s *Store) Latest(ctx context.Context, tenant uuid.UUID, subject domain.Subject, purpose domain.Purpose) (*domain.ConsentRecord, error) {
 	if err := validateLookup(tenant, subject, purpose); err != nil {
 		return nil, fmt.Errorf("pgconsent: Latest: %w", err)
 	}
 
-	var out *consent.ConsentRecord
+	var out *domain.ConsentRecord
 	err := postgres.WithTenant(ctx, s.pool, tenant, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `
 			SELECT `+selectColumns+`
@@ -158,12 +164,12 @@ func (s *Store) Latest(ctx context.Context, tenant uuid.UUID, subject consent.Su
 
 // History returns every row for (tenant, subject, purpose) ordered
 // by granted_at DESC. An empty slice (not nil) means no rows match.
-func (s *Store) History(ctx context.Context, tenant uuid.UUID, subject consent.Subject, purpose consent.Purpose) ([]consent.ConsentRecord, error) {
+func (s *Store) History(ctx context.Context, tenant uuid.UUID, subject domain.Subject, purpose domain.Purpose) ([]domain.ConsentRecord, error) {
 	if err := validateLookup(tenant, subject, purpose); err != nil {
 		return nil, fmt.Errorf("pgconsent: History: %w", err)
 	}
 
-	out := make([]consent.ConsentRecord, 0)
+	out := make([]domain.ConsentRecord, 0)
 	err := postgres.WithTenant(ctx, s.pool, tenant, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT `+selectColumns+`
@@ -202,12 +208,12 @@ func (s *Store) History(ctx context.Context, tenant uuid.UUID, subject consent.S
 // updated row. ErrNoActiveGrant is returned when no active grant
 // matches — the caller can present an idempotent "already revoked"
 // UI rather than retry.
-func (s *Store) Revoke(ctx context.Context, q consent.RevokeQuery) (consent.ConsentRecord, error) {
+func (s *Store) Revoke(ctx context.Context, q domain.RevokeQuery) (domain.ConsentRecord, error) {
 	if err := validateRevoke(q); err != nil {
-		return consent.ConsentRecord{}, fmt.Errorf("pgconsent: Revoke: %w", err)
+		return domain.ConsentRecord{}, fmt.Errorf("pgconsent: Revoke: %w", err)
 	}
 
-	var updated consent.ConsentRecord
+	var updated domain.ConsentRecord
 	err := postgres.WithTenant(ctx, s.pool, q.TenantID, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `
 			WITH target AS (
@@ -240,7 +246,7 @@ func (s *Store) Revoke(ctx context.Context, q consent.RevokeQuery) (consent.Cons
 		)
 		rec, err := scanRecord(row)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return consent.ErrNoActiveGrant
+			return domain.ErrNoActiveGrant
 		}
 		if err != nil {
 			return err
@@ -248,11 +254,11 @@ func (s *Store) Revoke(ctx context.Context, q consent.RevokeQuery) (consent.Cons
 		updated = rec
 		return nil
 	})
-	if errors.Is(err, consent.ErrNoActiveGrant) {
-		return consent.ConsentRecord{}, err
+	if errors.Is(err, domain.ErrNoActiveGrant) {
+		return domain.ConsentRecord{}, err
 	}
 	if err != nil {
-		return consent.ConsentRecord{}, fmt.Errorf("pgconsent: Revoke: %w", err)
+		return domain.ConsentRecord{}, fmt.Errorf("pgconsent: Revoke: %w", err)
 	}
 	return updated, nil
 }
@@ -268,9 +274,9 @@ type rowScanner interface {
 // a plain string the helper can parse with netip.ParseAddr; a NULL
 // ip column scans to (*string)(nil) which becomes the zero
 // netip.Addr in the result.
-func scanRecord(r rowScanner) (consent.ConsentRecord, error) {
+func scanRecord(r rowScanner) (domain.ConsentRecord, error) {
 	var (
-		rec           consent.ConsentRecord
+		rec           domain.ConsentRecord
 		subjectType   string
 		purpose       string
 		revokedAt     *time.Time
@@ -292,10 +298,10 @@ func scanRecord(r rowScanner) (consent.ConsentRecord, error) {
 		&ipText,
 		&userAgentText,
 	); err != nil {
-		return consent.ConsentRecord{}, err
+		return domain.ConsentRecord{}, err
 	}
-	rec.Subject.Type = consent.SubjectType(subjectType)
-	rec.Purpose = consent.Purpose(purpose)
+	rec.Subject.Type = domain.SubjectType(subjectType)
+	rec.Purpose = domain.Purpose(purpose)
 	if revokedAt != nil {
 		t := *revokedAt
 		rec.RevokedAt = &t
@@ -329,59 +335,59 @@ func scanRecord(r rowScanner) (consent.ConsentRecord, error) {
 // boundary invariants before reaching the SQL layer. The CHECK
 // constraints catch the same violations server-side; the adapter
 // rejects earlier so callers see a typed sentinel.
-func validateRecord(rec consent.ConsentRecord) error {
+func validateRecord(rec domain.ConsentRecord) error {
 	if rec.TenantID == uuid.Nil {
-		return consent.ErrInvalidTenant
+		return domain.ErrInvalidTenant
 	}
 	if !rec.Subject.Type.IsValid() {
-		return consent.ErrInvalidSubjectType
+		return domain.ErrInvalidSubjectType
 	}
 	if strings.TrimSpace(rec.Subject.ID) == "" {
-		return consent.ErrInvalidSubjectID
+		return domain.ErrInvalidSubjectID
 	}
 	if !rec.Purpose.IsValid() {
-		return consent.ErrInvalidPurpose
+		return domain.ErrInvalidPurpose
 	}
 	if strings.TrimSpace(rec.Version) == "" {
-		return consent.ErrInvalidVersion
+		return domain.ErrInvalidVersion
 	}
 	return nil
 }
 
 // validateRevoke rejects RevokeQuery values that violate the
 // boundary invariants before reaching the SQL layer.
-func validateRevoke(q consent.RevokeQuery) error {
+func validateRevoke(q domain.RevokeQuery) error {
 	if q.TenantID == uuid.Nil {
-		return consent.ErrInvalidTenant
+		return domain.ErrInvalidTenant
 	}
 	if !q.Subject.Type.IsValid() {
-		return consent.ErrInvalidSubjectType
+		return domain.ErrInvalidSubjectType
 	}
 	if strings.TrimSpace(q.Subject.ID) == "" {
-		return consent.ErrInvalidSubjectID
+		return domain.ErrInvalidSubjectID
 	}
 	if !q.Purpose.IsValid() {
-		return consent.ErrInvalidPurpose
+		return domain.ErrInvalidPurpose
 	}
 	if strings.TrimSpace(q.Reason) == "" {
-		return consent.ErrInvalidRevokeReason
+		return domain.ErrInvalidRevokeReason
 	}
 	return nil
 }
 
 // validateLookup rejects Latest/History inputs before SQL.
-func validateLookup(tenant uuid.UUID, subject consent.Subject, purpose consent.Purpose) error {
+func validateLookup(tenant uuid.UUID, subject domain.Subject, purpose domain.Purpose) error {
 	if tenant == uuid.Nil {
-		return consent.ErrInvalidTenant
+		return domain.ErrInvalidTenant
 	}
 	if !subject.Type.IsValid() {
-		return consent.ErrInvalidSubjectType
+		return domain.ErrInvalidSubjectType
 	}
 	if strings.TrimSpace(subject.ID) == "" {
-		return consent.ErrInvalidSubjectID
+		return domain.ErrInvalidSubjectID
 	}
 	if !purpose.IsValid() {
-		return consent.ErrInvalidPurpose
+		return domain.ErrInvalidPurpose
 	}
 	return nil
 }

@@ -16,9 +16,9 @@ import (
 
 	"github.com/google/uuid"
 
+	pgconsent "github.com/pericles-luz/crm/internal/adapter/db/postgres/consent"
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
 	"github.com/pericles-luz/crm/internal/iam/consent"
-	"github.com/pericles-luz/crm/internal/iam/consent/pgconsent"
 )
 
 func newConsentStorePG(t *testing.T, db *testpg.DB) *pgconsent.Store {
