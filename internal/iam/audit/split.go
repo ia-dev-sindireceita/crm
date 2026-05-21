@@ -68,6 +68,14 @@ const (
 	SecurityEvent2FARequired            SecurityEvent = "2fa_required"
 	SecurityEvent2FARecoveryUsed        SecurityEvent = "2fa_recovery_used"
 	SecurityEvent2FARecoveryRegenerated SecurityEvent = "2fa_recovery_regenerated"
+
+	// SIN-63188 / Fase 6 PR6: explicit logout audit. Emitted by both
+	// the tenant /logout handler and the master /m/logout handler
+	// after the server-side session row is deleted. Target jsonb
+	// carries {session_id, audience, reason}. The CHECK clause in
+	// migration 0110 mirrors this literal — extending the constant
+	// requires extending that migration first.
+	SecurityEventLogout SecurityEvent = "logout"
 )
 
 // DataEvent is the controlled vocabulary of audit_log_data rows.
@@ -109,6 +117,7 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEvent2FARequired:              {},
 	SecurityEvent2FARecoveryUsed:          {},
 	SecurityEvent2FARecoveryRegenerated:   {},
+	SecurityEventLogout:                   {},
 }
 
 var allDataEvents = map[DataEvent]struct{}{
