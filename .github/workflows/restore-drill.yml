@@ -1,0 +1,77 @@
+# Restore-drill CI gate (SIN-63187 / Fase 6 PR5).
+#
+# Opt-in via workflow_dispatch only. Fires scripts/restore-drill.sh in
+# --synthetic mode against a fabricated backup so we exercise the entire
+# pipeline (compose boot → pg restore → minio restore → app boot →
+# /health probe → authenticated DB query → report → teardown) without
+# needing real S3 vault credentials.
+#
+# Why not on push/pr: the synthetic drill takes ~3–5 minutes of runner
+# wall-clock and burns one full Docker compose stack. We don't need
+# that signal on every PR — the quarterly real drill is the load-bearing
+# check. This gate exists so an operator can manually re-validate the
+# drill script after any change that touches it, and so we have a
+# reproducible record on GHA when it runs.
+#
+# Pre-req upstream: SIN-62260 (systemd sandbox smoke for backup unit)
+# delivers the equivalent gate for the write-side. This gate is the
+# read-side companion.
+
+name: restore-drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_stack:
+        description: "Leave drill stack running after report (debug only)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-drill:
+    name: synthetic-drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # SHA-pinned per repo convention (SIN-62303): a tag re-publish on a
+      # third-party action would otherwise smuggle workflow code into CI.
+      - name: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: install prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq curl
+          # docker + compose plugin already preinstalled on ubuntu-latest.
+          docker --version
+          docker compose version
+          jq --version
+
+      - name: run synthetic drill
+        env:
+          KEEP: ${{ github.event.inputs.keep_stack }}
+        run: |
+          set -euo pipefail
+          flags=( --synthetic )
+          if [[ "${KEEP}" == "true" ]]; then
+            flags+=( --keep )
+          fi
+          # Tighten the budgets for CI so we surface a regression in the
+          # script's wall-clock immediately. The 4h / 24h numbers are
+          # for a real-data, residential-bandwidth drill — wildly
+          # generous for a 1-line synthetic dump on a hot runner.
+          RTO_BUDGET_SECONDS=600 RPO_BUDGET_SECONDS=60 \
+            scripts/restore-drill.sh "${flags[@]}"
+
+      - name: upload generated report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: restore-drill-report
+          path: docs/ops/restore-drills/restore-drill-report-*.md
+          if-no-files-found: warn
+          retention-days: 90

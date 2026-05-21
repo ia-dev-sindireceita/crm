@@ -1,0 +1,94 @@
+# docker-compose.restore-drill.yml — isolated stack for the quarterly
+# restore drill (SIN-63187). See docs/ops/restore-drill-runbook.md.
+#
+# This compose file is intentionally NOT a deploy artefact. It exists so
+# scripts/restore-drill.sh can boot a throwaway Postgres + MinIO + app
+# trio against a freshly-pulled backup, validate it, and tear the whole
+# thing down — including volumes — once the report is written.
+#
+# Why a dedicated compose vs reusing compose.yml:
+#   - Separate project name (`crm-restore-drill`) prevents the drill
+#     containers from colliding with a running local dev stack.
+#   - Separate volumes (`pg-drill`, `minio-drill`) avoid contaminating
+#     prod-like data on the operator's workstation.
+#   - No Caddy, no NATS, no clamav, no workers: the drill only needs to
+#     prove the data restores cleanly and the app boots against it.
+#   - `restart: "no"` everywhere — the drill is a one-shot per invocation;
+#     a crash should fail loudly rather than mask itself by restarting.
+#
+# Image policy: identical to the local-dev compose (alpine tags). The
+# drill is not a deploy surface, so the SHA-digest pinning required for
+# compose.stg.yml does not apply here.
+
+name: crm-restore-drill
+
+networks:
+  drill: { driver: bridge }
+
+volumes:
+  pg-drill: {}
+  minio-drill: {}
+
+x-healthdefaults: &hd
+  interval: 5s
+  timeout: 3s
+  retries: 24
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: "no"
+    networks: [drill]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-crm}
+      POSTGRES_USER: ${POSTGRES_USER:-crm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-drill-postgres-pw}
+    volumes: [pg-drill:/var/lib/postgresql/data]
+    healthcheck:
+      <<: *hd
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crm} -d ${POSTGRES_DB:-crm}"]
+
+  minio:
+    image: quay.io/minio/minio:latest
+    restart: "no"
+    networks: [drill]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-drillroot}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-drillrootpw}
+    volumes: [minio-drill:/data]
+    healthcheck:
+      <<: *hd
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/ready"]
+
+  # The app boots against the restored Postgres + MinIO. We do NOT mount
+  # NATS / Redis / clamav here — the AC only requires /health + one
+  # authenticated query, neither of which depends on those subsystems.
+  # If they become required later, add them as additional drill-only
+  # services rather than reusing the compose.yml definitions (which pull
+  # in workers, sidecars, and the Caddy edge).
+  app:
+    image: crm-server:dev
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: crm-server
+    restart: "no"
+    networks: [drill]
+    environment:
+      HTTP_ADDR: ":8080"
+      INTERNAL_HTTP_ADDR: ":8081"
+      DATABASE_URL: postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD:-drill-postgres-pw}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable
+      # The drill does not boot Redis on purpose; the bootstrap path
+      # tolerates an unreachable cache. If the codebase ever hard-requires
+      # a live Redis at startup, add a redis service to this compose.
+      REDIS_URL: ${REDIS_URL:-redis://disabled.invalid:6379/0}
+      CUSTOMDOMAIN_ASK_ENABLED: "false"
+    ports:
+      # Published on the host so the drill script can probe /health from
+      # outside the docker network without needing `docker exec curl`.
+      # Bound to 127.0.0.1 only — the drill is a localhost exercise.
+      - "127.0.0.1:18080:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
