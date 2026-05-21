@@ -97,6 +97,13 @@ const (
 	// the tenant's visual identity because the palette feeds every
 	// authenticated page via the SIN-63085 theme middleware.
 	ActionTenantBrandingManage Action = "tenant.branding.manage"
+
+	// Fase 6 PR3 — LGPD data-subject endpoints (SIN-63186). Gerente
+	// only on the tenant scope; master operators reach the same
+	// surface only under impersonation (which inherits the gerente
+	// role) per ADR 0090. Atendente / common are denied at the gate.
+	ActionTenantLGPDExport Action = "tenant.lgpd.export"
+	ActionTenantLGPDDelete Action = "tenant.lgpd.delete"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -237,6 +244,12 @@ func defaultRolesByAction() map[Action][]Role {
 
 		// Fase 5 — branding admin (SIN-63084). Gerente only.
 		ActionTenantBrandingManage: {RoleTenantGerente},
+
+		// Fase 6 PR3 — LGPD data-subject endpoints (SIN-63186).
+		// Gerente only at the application gate; master operators
+		// reach the surface via impersonation per ADR 0090.
+		ActionTenantLGPDExport: {RoleTenantGerente},
+		ActionTenantLGPDDelete: {RoleTenantGerente},
 	}
 }
 
@@ -273,6 +286,12 @@ func defaultMasterActions() map[Action]struct{} {
 func defaultPIIActions() map[Action]struct{} {
 	return map[Action]struct{}{
 		ActionTenantContactReadPII: {},
+		// Fase 6 PR3 — LGPD export ships every personal datum we have
+		// on a contact; master impersonation requires fresh step-up
+		// before the gate allows it. Delete is gated the same way
+		// because the operator must positively identify the subject.
+		ActionTenantLGPDExport: {},
+		ActionTenantLGPDDelete: {},
 	}
 }
 
