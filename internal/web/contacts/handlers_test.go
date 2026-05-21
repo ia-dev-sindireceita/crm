@@ -251,6 +251,52 @@ func TestView_NotFoundReturns404(t *testing.T) {
 	}
 }
 
+// TestView_NilContactIDReturns404 covers the SIN-63219 finding: the all-
+// zeros UUID is syntactically valid (uuid.Parse accepts it) but is the
+// reserved "nil" sentinel and never identifies a real contact. The
+// handler must short-circuit to 404 before invoking the use case so an
+// authenticated attacker cannot distinguish "uuid never existed" from
+// "DB error" via the response code.
+func TestView_NilContactIDReturns404(t *testing.T) {
+	t.Parallel()
+	load := &stubLoad{}
+	h := newHandler(t, load, &stubSplit{})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	r := reqWithTenant(http.MethodGet, "/contacts/00000000-0000-0000-0000-000000000000", "", uuid.New())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404; body=%q", rec.Code, rec.Body.String())
+	}
+	if load.called {
+		t.Fatalf("LoadIdentity should not be invoked for nil contact id")
+	}
+}
+
+// TestView_CrossTenantReturns404 confirms that when the underlying repo
+// returns ErrNotFound for a UUID that exists in another tenant (RLS
+// hides it), the handler emits 404 — not 403 — so the response cannot
+// be used to confirm cross-tenant existence (SIN-63219 AC #3).
+func TestView_CrossTenantReturns404(t *testing.T) {
+	t.Parallel()
+	load := &stubLoad{err: contacts.ErrNotFound}
+	h := newHandler(t, load, &stubSplit{})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	otherTenantContact := uuid.New()
+	r := reqWithTenant(http.MethodGet, "/contacts/"+otherTenantContact.String(), "", uuid.New())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404; body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(strings.ToLower(body), "forbidden") || strings.Contains(strings.ToLower(body), "cross-tenant") {
+		t.Errorf("body must not hint at cross-tenant existence; got %q", body)
+	}
+}
+
 func TestView_UseCaseErrorReturns500(t *testing.T) {
 	t.Parallel()
 	load := &stubLoad{err: errors.New("simulated read failure")}

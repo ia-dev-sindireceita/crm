@@ -101,6 +101,13 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid contact id", http.StatusBadRequest)
 		return
 	}
+	// uuid.Nil is syntactically valid but never identifies a real contact.
+	// Map it to 404 so it joins the regular "not found" path instead of
+	// tripping the use-case nil-guard and leaking a 500 — see SIN-63219.
+	if contactID == uuid.Nil {
+		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		return
+	}
 	res, err := h.deps.LoadIdentity.Execute(r.Context(), contactsusecase.LoadIdentityInput{
 		TenantID: tenant.ID, ContactID: contactID,
 	})
