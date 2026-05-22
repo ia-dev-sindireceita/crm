@@ -267,3 +267,65 @@ func TestHello_LayoutEscapesAdversarialCSRF(t *testing.T) {
 		t.Fatalf("adversarial token was not escaped: %q", got)
 	}
 }
+
+// TestLayout_LinksAuthStylesheet is the SIN-63294 pin: the layout's
+// <head> must reference /static/css/auth.css so the bare app shell
+// (form, button, alert) gets baseline styling. SIN-63085 wired the
+// tenant-theme tokens via inline <style>, but tokens alone carry
+// only colour variables — without an external stylesheet the browser
+// renders user-agent defaults and the page looks unformatted (the
+// staging regression Pericles caught after SIN-63275). The asserted
+// path matches the production /static/ mount on the custom-domain
+// catch-all; the companion static-asset test in cmd/server pins that
+// the file actually exists and is served as text/css.
+func TestLayout_LinksAuthStylesheet(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	data := struct {
+		Next      string
+		Error     string
+		CSRFToken string
+	}{Next: "/hello-tenant"}
+	if err := views.Login.ExecuteTemplate(&buf, "layout", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	got := buf.String()
+	const want = `<link rel="stylesheet" href="/static/css/auth.css" />`
+	if !strings.Contains(got, want) {
+		t.Fatalf("layout did not emit auth stylesheet link.\nwant fragment: %q\nrendered: %q", want, got)
+	}
+	// CSP intent: the external stylesheet is loaded from same-origin
+	// /static, so style-src 'self' covers it without a nonce. Verify
+	// the <link> does not carry a nonce attribute (would be wrong —
+	// nonce is only for inline <style>, never for <link>) and that
+	// the href stays same-origin (no absolute or protocol-relative
+	// URL slipped in via a future refactor).
+	if strings.Contains(got, `href="/static/css/auth.css" nonce=`) {
+		t.Fatalf("<link> tag must not carry a nonce attribute: %q", got)
+	}
+	if strings.Contains(got, `href="//`) || strings.Contains(got, `href="http`) {
+		t.Fatalf("<link> href must stay same-origin: %q", got)
+	}
+}
+
+// TestLayout_AuthStylesheetPresentOnHello asserts the link tag is
+// emitted on the authenticated layout too (not only login). Both
+// pages share the same layout.html via ParseFS in views.go, but a
+// future refactor that splits per-page <head> blocks would silently
+// drop the stylesheet from /hello-tenant and reproduce the SIN-63294
+// "tela sem formatação" bug on the post-login surface.
+func TestLayout_AuthStylesheetPresentOnHello(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	data := struct {
+		TenantName string
+		UserID     string
+		CSRFToken  string
+	}{TenantName: "acme", UserID: "user-1"}
+	if err := views.Hello.ExecuteTemplate(&buf, "layout", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	if !strings.Contains(buf.String(), `<link rel="stylesheet" href="/static/css/auth.css" />`) {
+		t.Fatalf("hello layout did not emit auth stylesheet link: %q", buf.String())
+	}
+}

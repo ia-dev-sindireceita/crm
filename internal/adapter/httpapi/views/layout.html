@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     {{- if .CSRFToken}}{{csrfMeta .CSRFToken}}{{end}}
     {{- with tenantThemeStyle .}}<style id="tenant-theme" nonce="{{cspNonce $}}">{{.}}</style>{{end}}
+    <link rel="stylesheet" href="/static/css/auth.css" />
     <title>{{block "title" .}}CRM{{end}}</title>
   </head>
   <body{{if .CSRFToken}} {{csrfHXHeaders .CSRFToken}}{{end}}>
