@@ -358,12 +358,17 @@ func buildCustomDomainHandlerWithRedis(ctx context.Context, getenv func(string) 
 }
 
 // registerCustomDomainRoutes returns a *http.ServeMux carrying the
-// SIN-62259 routes. The static-file handler is added here so the page
-// can resolve `/static/customdomain.css` and the bundled HTMX script.
+// SIN-62259 routes. The /static/ FileServer used to be mounted here
+// too, but that gated `/static/css/*` and the bundled HTMX vendor
+// tree on CUSTOM_DOMAIN_UI_ENABLED=1 — every tenant template
+// references those assets, so staging silently 404'd them for weeks
+// when the flag wasn't set (SIN-63303). The FileServer is now
+// mounted unconditionally on the public mux in cmd/server/main.go
+// runWith; do NOT reintroduce the duplicate `mux.Handle` here —
+// stdlib ServeMux panics on duplicate patterns.
 func registerCustomDomainRoutes(h *customdomainhttp.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	h.Register(mux)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
 	return mux
 }
 

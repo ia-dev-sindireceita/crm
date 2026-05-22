@@ -319,6 +319,20 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		log.Printf("crm: IAM routes mounted on public listener")
 	}
 
+	// SIN-63303 — public static assets. Every tenant template
+	// (privacy, funnel, campaigns, aipolicy, billing, master,
+	// layout/auth, etc.) references /static/css/* and the bundled
+	// /static/vendor/htmx tree. SIN-62259 originally registered the
+	// FileServer inside registerCustomDomainRoutes, which only runs
+	// when CUSTOM_DOMAIN_UI_ENABLED=1 — staging does not set the
+	// flag, so /static/* silently 404'd on every tenant host for
+	// weeks (the regression SIN-63299 thought it had fixed by
+	// shipping the bytes was actually a missing-route bug).
+	// Mount unconditionally on the public mux so the assets reach
+	// every host regardless of the custom-domain feature flag.
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
+	log.Printf("crm: /static/ FileServer mounted on public listener (rooted at web/static)")
+
 	// SIN-62334 F53: hard-fail boot when CUSTOM_DOMAIN_UI_ENABLED=1 and
 	// REDIS_URL is unset. Returning the error from runWith propagates to
 	// main(), which exits non-zero — the orchestrator restarts and the
@@ -330,9 +344,10 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	cdHandler, cdCleanup := buildCustomDomainHandler(ctx, getenv)
 	defer cdCleanup()
 	if cdHandler != nil {
-		// SIN-62259 routes are mounted at the root of the public mux. The
-		// handler returned by buildCustomDomainHandler already includes the
-		// /static/ tree.
+		// SIN-62259 routes are mounted at the root of the public mux.
+		// SIN-63303 moved the /static/ FileServer onto the public mux
+		// above; the custom-domain handler now only contributes the
+		// /tenant/custom-domains tree.
 		mux.Handle("/", cdHandler)
 		log.Printf("crm: custom-domain UI mounted on public listener")
 	}

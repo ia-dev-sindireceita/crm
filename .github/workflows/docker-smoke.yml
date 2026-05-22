@@ -184,3 +184,28 @@ jobs:
             echo "Check Dockerfile crm-server stage COPY --from=builder /src/web/static."
             exit 1
           fi
+
+      # SIN-63303 — runtime route smoke. The python re-serve step above
+      # catches *bytes missing from the image* but cannot detect *route
+      # missing from runWith*: pre-fix, the /static/ FileServer lived
+      # behind registerCustomDomainRoutes which is gated on
+      # CUSTOM_DOMAIN_UI_ENABLED=1, so /static/* silently 404'd on every
+      # tenant host in staging despite the bytes being present (the
+      # SIN-63299 postmortem). This step actually boots cmd/server's
+      # runWith via Go (no Postgres, no Redis, no CUSTOM_DOMAIN_UI_ENABLED)
+      # and asserts /static/css/auth.css returns 200 text/css through the
+      # real handler chain. If a future refactor re-buries the FileServer
+      # behind a feature flag, this step fails the PR red instead of
+      # waiting for a staging deploy to surface the regression.
+      - name: runtime route smoke runWith (crm-server)
+        if: matrix.target == 'crm-server'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: go test runWith static routes (crm-server)
+        if: matrix.target == 'crm-server'
+        run: |
+          set -euo pipefail
+          go test -count=1 -run '^TestRunWith_ServesStaticUnconditionally$|^TestRunWith_StaticServesVendorAssets$' ./cmd/server/...
