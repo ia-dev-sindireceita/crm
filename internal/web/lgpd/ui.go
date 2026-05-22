@@ -26,6 +26,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam"
 	domainaudit "github.com/pericles-luz/crm/internal/iam/audit"
 	domain "github.com/pericles-luz/crm/internal/lgpd"
@@ -137,6 +138,7 @@ func (u *UIHandler) contactPage(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 		Panel: contactPanelData{
 			ContactID: contactID,
 			TenantID:  tenant.ID,
@@ -201,6 +203,7 @@ func (u *UIHandler) requestsPage(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 		Panel: requestsPanelData{
 			Status:      filter,
 			StatusLabel: label,
@@ -386,7 +389,9 @@ type contactPageData struct {
 	CSRFMeta         template.HTML
 	HXHeaders        template.HTMLAttr
 	TenantThemeStyle template.CSS
-	Panel            contactPanelData
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce string
+	Panel    contactPanelData
 }
 
 // requestsPanelData drives the inner requests panel.
@@ -402,7 +407,9 @@ type requestsPageData struct {
 	CSRFMeta         template.HTML
 	HXHeaders        template.HTMLAttr
 	TenantThemeStyle template.CSS
-	Panel            requestsPanelData
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce string
+	Panel    requestsPanelData
 }
 
 // deleteAckFragment is the post-submit HTMX swap target.
@@ -455,7 +462,7 @@ var contactLayoutTmpl = template.Must(template.New("contact_lgpd.layout").Funcs(
   <meta charset="utf-8">
   <title>LGPD — controles do contato</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/lgpd.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -533,7 +540,7 @@ var requestsLayoutTmpl = template.Must(template.New("lgpd_requests.layout").Func
   <meta charset="utf-8">
   <title>LGPD — solicitações de deleção</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/lgpd.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

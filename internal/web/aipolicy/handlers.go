@@ -15,6 +15,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/aipolicy"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -116,6 +117,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 			Anonymize:        true,
 		},
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 	h.writeHTML(w, http.StatusOK, pageTmpl, data)
 }

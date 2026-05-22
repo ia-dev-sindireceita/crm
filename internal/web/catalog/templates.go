@@ -54,6 +54,10 @@ type pageData struct {
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
+	// when the csp.Middleware is absent — the layout still emits the
+	// attribute so the browser blocks the inline tag (fail-closed).
+	CSPNonce string
 }
 
 // listPartialData drives the HTMX-swapped list after a mutation.
@@ -85,6 +89,10 @@ type detailData struct {
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
+	// when the csp.Middleware is absent — the layout still emits the
+	// attribute so the browser blocks the inline tag (fail-closed).
+	CSPNonce string
 }
 
 // argumentRow is one row in the per-product argument table.
@@ -392,7 +400,7 @@ var pageTmpl = mustParse("catalog.page", `<!doctype html>
 <meta charset="utf-8">
 <title>Catálogo · {{.TenantName}}</title>
 {{.CSRFMeta}}
-{{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+{{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
 </head>
 <body {{.HXHeaders}}>
 <main>
@@ -420,7 +428,7 @@ var detailTmpl = mustParse("catalog.detail", `<!doctype html>
 <meta charset="utf-8">
 <title>{{.Product.Name}} · Catálogo</title>
 {{.CSRFMeta}}
-{{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+{{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
 </head>
 <body {{.HXHeaders}}>
 <main>

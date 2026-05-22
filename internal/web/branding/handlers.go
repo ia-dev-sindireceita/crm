@@ -15,6 +15,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -277,6 +278,7 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 		Preview:    previewFromPalette(pal),
 		ThemeStyle: branding.ThemeStyleFromPalette(pal),
 		Message:    "Paleta salva com sucesso.",
+		CSPNonce:   csp.Nonce(r.Context()),
 	})
 }
 
@@ -304,6 +306,7 @@ func (h *Handler) revert(w http.ResponseWriter, r *http.Request) {
 		Preview:    previewFromPalette(pal),
 		ThemeStyle: branding.DefaultThemeStyle,
 		Message:    "Paleta revertida para o padrão.",
+		CSPNonce:   csp.Nonce(r.Context()),
 	})
 }
 

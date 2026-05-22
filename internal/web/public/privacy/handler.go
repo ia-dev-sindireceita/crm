@@ -20,6 +20,7 @@ import (
 	"github.com/yuin/goldmark/renderer/html"
 
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -131,6 +132,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	data := pageData{
 		TenantName:       tenant.Name,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 		Version:          version,
 		UpdatedAt:        updated.Format("2006-01-02"),
 		UpdatedAtISO:     updated.Format(time.RFC3339),
@@ -220,14 +222,16 @@ func mailtoURL(addr string) string {
 type pageData struct {
 	TenantName       string
 	TenantThemeStyle template.CSS
-	Version          string
-	UpdatedAt        string
-	UpdatedAtISO     string
-	PolicyHTML       template.HTML
-	PolicyURL        string
-	DPOName          string
-	DPOEmail         string
-	DPOEmailMailto   string
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce       string
+	Version        string
+	UpdatedAt      string
+	UpdatedAtISO   string
+	PolicyHTML     template.HTML
+	PolicyURL      string
+	DPOName        string
+	DPOEmail       string
+	DPOEmailMailto string
 }
 
 // pageTmpl renders the public /privacy page. The cookie banner is
@@ -240,7 +244,7 @@ var pageTmpl = template.Must(template.New("public_privacy.layout").Parse(`<!doct
   <meta charset="utf-8">
   <title>Política de Privacidade — {{.TenantName}}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/privacy.css">
 </head>
 <body>

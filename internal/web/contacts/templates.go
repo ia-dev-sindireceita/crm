@@ -52,7 +52,7 @@ var contactLayoutTmpl = template.Must(template.New("contact.layout").Funcs(templ
   <meta charset="utf-8">
   <title>Identidade do contato</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/contacts.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

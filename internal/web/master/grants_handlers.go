@@ -17,6 +17,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -243,6 +244,7 @@ func (h *Handler) buildGrantsPageData(r *http.Request, tenantID, actor uuid.UUID
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		CSRFMeta:         csrf.MetaTag(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 }
 

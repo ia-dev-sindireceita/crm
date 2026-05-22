@@ -13,6 +13,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -170,6 +171,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		List:             listData{Items: rows},
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render layout", "err", err)
 	}
@@ -367,6 +369,10 @@ type layoutData struct {
 	HXHeaders        template.HTMLAttr
 	List             listData
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
+	// when csp.Middleware is absent — the template still emits the
+	// attribute so the browser blocks the inline tag (fail-closed).
+	CSPNonce string
 }
 
 // viewData drives the right-pane conversation view template. AssistButton
