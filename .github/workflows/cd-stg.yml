@@ -229,3 +229,97 @@ jobs:
           echo "smoke check FAILED — container running commit ${last_seen:-<unreachable>}, expected ${EXPECTED_SHA} (image stale or compose pull skipped)"
           echo "Manual rollback required — see docs/deploy/staging.md"
           exit 1
+
+      # SIN-63270 — login smoke gate. PR #104 shipped a panic-on-valid-creds
+      # regression (F10) that /health did not catch because /health never
+      # touches IAM. This step drives the same three-case matrix that
+      # internal/adapter/db/postgres/login_seed_e2e_test.go covers — valid
+      # creds → 302 + __Host-sess-tenant + __Host-csrf + Location
+      # /hello-tenant; wrong password → 401; unknown email → 401 — against
+      # the just-deployed image, so the deploy fails red on the next F10.
+      # Budget ≤ 30s end-to-end so a hung handler cannot wedge the job.
+      - name: smoke check /login
+        timeout-minutes: 1
+        env:
+          STG_BASE: ${{ secrets.STG_SMOKE_URL }}
+          STG_SEED_AGENT_EMAIL: ${{ secrets.STG_SEED_AGENT_EMAIL }}
+          STG_SEED_AGENT_PASSWORD: ${{ secrets.STG_SEED_AGENT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Defence-in-depth against accidental `set -x` upstream — GitHub
+          # masks secret values in logs, but we do not want the password
+          # bytes echoed at all.
+          set +x
+          smoke_run() {
+            local code
+
+            # 1) Valid creds → 302 with __Host-sess-tenant + __Host-csrf
+            #    cookies and Location: /hello-tenant. This is the case
+            #    that exploded with 500 on staging after PR #104.
+            code=$(curl -sS --max-time 5 -o /tmp/login.body -D /tmp/login.headers \
+              -w "%{http_code}" -X POST \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              --data-urlencode "email=${STG_SEED_AGENT_EMAIL}" \
+              --data-urlencode "password=${STG_SEED_AGENT_PASSWORD}" \
+              "${STG_BASE}/login")
+            if [ "$code" != "302" ]; then
+              echo "::error::login expected 302, got $code"
+              cat /tmp/login.body
+              return 1
+            fi
+            if ! grep -q "Set-Cookie: __Host-sess-tenant" /tmp/login.headers; then
+              echo "::error::missing __Host-sess-tenant cookie"
+              cat /tmp/login.headers
+              return 1
+            fi
+            if ! grep -q "Set-Cookie: __Host-csrf" /tmp/login.headers; then
+              echo "::error::missing __Host-csrf cookie"
+              cat /tmp/login.headers
+              return 1
+            fi
+            if ! grep -qi "^Location: /hello-tenant" /tmp/login.headers; then
+              echo "::error::missing/wrong Location header"
+              cat /tmp/login.headers
+              return 1
+            fi
+
+            # 2) Wrong password → 401 (regression guard for the
+            #    invalid-credentials branch).
+            code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" -X POST \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              --data-urlencode "email=${STG_SEED_AGENT_EMAIL}" \
+              --data-urlencode "password=definitely-not-the-password" \
+              "${STG_BASE}/login")
+            if [ "$code" != "401" ]; then
+              echo "::error::bad-password expected 401, got $code"
+              return 1
+            fi
+
+            # 3) Unknown user → 401 (regression guard against user
+            #    enumeration via a divergent error path).
+            code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" -X POST \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              --data-urlencode "email=does-not-exist@acme.crm.crm.someu.com.br" \
+              --data-urlencode "password=anything" \
+              "${STG_BASE}/login")
+            if [ "$code" != "401" ]; then
+              echo "::error::unknown-user expected 401, got $code"
+              return 1
+            fi
+          }
+
+          # Up to 3 attempts with 5s backoff between attempts. The /health
+          # gate above already absorbed pod-warmup, but the IAM path can
+          # take an extra second to warm the prepared-statement cache on
+          # the first request — three tries cover that without hiding a
+          # genuine regression.
+          for attempt in 1 2 3; do
+            if smoke_run; then
+              echo "login smoke OK on attempt ${attempt}"
+              exit 0
+            fi
+            echo "login smoke attempt ${attempt} failed, retrying…"
+            sleep 5
+          done
+          echo "login smoke FAILED — deploy regression (see docs/deploy/staging.md → \"Login smoke gate\")"
+          exit 1

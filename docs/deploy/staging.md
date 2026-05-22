@@ -951,10 +951,70 @@ beyond that, file a ticket and page the on-call.
 | `STG_HOST`         | DNS name or IP of the staging VPS.                                               |
 | `STG_HOST_KEY`     | Output of `ssh-keyscan -t ed25519 <stg-host>` — populates the runner's known_hosts. |
 | `STG_USER`         | Unprivileged deploy user (`crm-deploy` in this runbook).                         |
-| `STG_SMOKE_URL`    | Base URL the runner curls — e.g. `https://acme.crm.<stg-domain>`.                |
+| `STG_SMOKE_URL`    | Base URL the runner curls — e.g. `https://acme.crm.<stg-domain>`. Used by both the `/health` gate (SIN-63146) and the `/login` gate (SIN-63270). |
+| `STG_SEED_AGENT_EMAIL` | Email of the seeded staging tenant agent the `/login` smoke gate posts as — `agent@acme.<stg-domain>`, matching `migrations/seed/stg.sql`. Required by SIN-63270. |
+| `STG_SEED_AGENT_PASSWORD` | Password for the seed agent above (`stg-password` for the current seed). Set on the fork; coordinate with Pericles for upstream tier-2 if/when `cd-stg` runs on `pericles-luz/crm`. Required by SIN-63270. |
 
 `GHCR_TOKEN` is not used; the auto-issued `GITHUB_TOKEN` is preferred because
 it rotates on every run and is scoped to this repo's packages only.
+
+## Login smoke gate (SIN-63270)
+
+After the `/health` gate clears, `cd-stg` runs a second post-deploy gate
+that exercises the authenticated path against the just-deployed staging
+URL. The structural reason it exists is PR #104: a 43-commit deploy
+shipped a panic-on-valid-creds regression (F10) because no gate in the
+pipeline ever called `POST /login` end-to-end. `/health` cannot catch it
+— the handler does not touch IAM, the session store, or argon2
+verification.
+
+The gate is the deploy-pipeline counterpart of
+`internal/adapter/db/postgres/login_seed_e2e_test.go` (SIN-63269): same
+three cases, same assertions, but against the running staging stack so
+deploy-time regressions (image drift, env-var typo, missing migration)
+fail closed.
+
+**Matrix the gate enforces:**
+
+1. `agent@acme.<stg-domain>` + `stg-password` → `302 Found`,
+   `Set-Cookie: __Host-sess-tenant`, `Set-Cookie: __Host-csrf`,
+   `Location: /hello-tenant`.
+2. Same email + wrong password → `401 Unauthorized`.
+3. Unknown email + any password → `401 Unauthorized` (same body as
+   case 2 — divergence here would be a user-enumeration regression).
+
+**Budget:** the step caps at 1 minute (`timeout-minutes: 1`); inside
+that the retry loop runs up to 3 attempts at ~5 s each with a 5 s
+backoff between attempts (≤ ~25 s wall clock for the happy path, ≤ 30 s
+for two retries). `curl --max-time 5` bounds each individual hit so a
+hung handler cannot wedge the job. The gate deliberately does NOT
+assert cookie attribute strings (`HttpOnly; Secure; SameSite=Lax`) —
+those vary by environment and are covered by other tests.
+
+**Operator checklist when this gate goes red:**
+
+1. Read the workflow log — the first failed case logs `::error::…` plus
+   the relevant response body or headers.
+2. Mirror the failing case locally:
+   ```bash
+   STG_BASE="https://acme.crm.<stg-domain>"
+   STG_SEED_AGENT_EMAIL="agent@acme.<stg-domain>"
+   STG_SEED_AGENT_PASSWORD="stg-password"
+   curl -sS -o /tmp/login.body -D /tmp/login.headers -w "%{http_code}\n" \
+     -X POST -H "Content-Type: application/x-www-form-urlencoded" \
+     --data-urlencode "email=${STG_SEED_AGENT_EMAIL}" \
+     --data-urlencode "password=${STG_SEED_AGENT_PASSWORD}" \
+     "${STG_BASE}/login"
+   ```
+3. If the local repro also fails, proceed to `Manual rollback` above —
+   the deploy is broken on the authenticated path even though `/health`
+   is green.
+
+**Rotating the seed password:** if `stg-password` ever changes in
+`migrations/seed/stg.sql`, update `STG_SEED_AGENT_PASSWORD` on the
+`ia-dev-sindireceita/crm` fork (and on `pericles-luz/crm` for tier-2)
+in the same PR — the seed file and the secret value must match or
+case 1 of the gate goes red forever.
 
 ## Bumping infra image digests
 
