@@ -156,7 +156,7 @@ jobs:
               fail=1
               return
             }
-            if ! grep -iq "^content-type:.*${want_mime}" <<<"$hdrs"; then
+            if ! grep -iEq "^content-type:.*${want_mime}" <<<"$hdrs"; then
               echo "FAIL: ${path} — content-type mismatch (want ${want_mime})"
               echo "$hdrs"
               fail=1
