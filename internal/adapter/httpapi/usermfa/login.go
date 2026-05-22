@@ -14,6 +14,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/loginhandler"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/views"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -128,7 +129,7 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 		sess, err := cfg.IAM.Login(r.Context(), r.Host, email, password, ipAddr, r.UserAgent(), r.URL.Path)
 		if err != nil {
 			if errors.Is(err, iam.ErrInvalidCredentials) {
-				renderLoginError(w, next)
+				renderLoginError(w, r, next)
 				return
 			}
 			loginhandler.WriteLoginError(w, r, err, cfg.Logger)
@@ -180,16 +181,18 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 	}
 }
 
-func renderLoginError(w http.ResponseWriter, next string) {
+func renderLoginError(w http.ResponseWriter, r *http.Request, next string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
 	data := struct {
 		Next      string
 		Error     string
 		CSRFToken string
+		CSPNonce  string
 	}{
-		Next:  next,
-		Error: "Email ou senha inválidos.",
+		Next:     next,
+		Error:    "Email ou senha inválidos.",
+		CSPNonce: csp.Nonce(r.Context()),
 	}
 	_ = views.Login.ExecuteTemplate(w, "layout", data)
 }

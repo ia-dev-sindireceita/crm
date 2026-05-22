@@ -7,6 +7,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/views"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -34,11 +35,13 @@ func HelloTenant(w http.ResponseWriter, r *http.Request) {
 		UserID           string
 		CSRFToken        string
 		TenantThemeStyle template.CSS
+		CSPNonce         string
 	}{
 		TenantName:       tenant.Name,
 		UserID:           sess.UserID.String(),
 		CSRFToken:        sess.CSRFToken,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := views.Hello.ExecuteTemplate(w, "layout", data); err != nil {

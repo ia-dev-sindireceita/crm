@@ -60,6 +60,46 @@ func tenantThemeStyle(data any) template.CSS {
 	}
 }
 
+// cspNonce is the FuncMap helper that reads .CSPNonce from the page
+// data via reflection. SIN-63275 wired the CSP middleware to ship
+// `style-src 'self' 'nonce-…'` without `'unsafe-inline'`; every
+// <style> tag the layout owns therefore needs the per-request nonce
+// or the browser blocks the stylesheet. Reflection keeps the layout
+// agnostic to which per-feature data struct it is rendering — handlers
+// that read csp.Nonce(r.Context()) into a `CSPNonce string` field will
+// have it stamped automatically.
+//
+// Returns:
+//   - the nonce string when the field exists and is a string,
+//   - empty string otherwise — the layout still emits the attribute,
+//     and an empty nonce never matches a CSP directive (fail-closed:
+//     the inline <style> is blocked rather than silently allowed).
+//
+// Pure: no request state, no globals, safe across goroutines.
+func cspNonce(data any) string {
+	if data == nil {
+		return ""
+	}
+	v := reflect.ValueOf(data)
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return ""
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return ""
+	}
+	f := v.FieldByName("CSPNonce")
+	if !f.IsValid() {
+		return ""
+	}
+	if s, ok := f.Interface().(string); ok {
+		return s
+	}
+	return ""
+}
+
 //go:embed *.html
 var assets embed.FS
 
@@ -74,6 +114,7 @@ var csrfFuncs = template.FuncMap{
 	"csrfHXHeaders":    csrfhelpers.HXHeadersAttr,
 	"csrfFormHidden":   csrfhelpers.FormHidden,
 	"tenantThemeStyle": tenantThemeStyle,
+	"cspNonce":         cspNonce,
 }
 
 // Login renders GET /login and the re-rendered POST /login form on

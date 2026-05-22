@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
 
@@ -92,6 +93,7 @@ func (h *EnrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SecretEncoded:    res.SecretEncoded,
 		RecoveryCodes:    formatRecoveryCodes(res.RecoveryCodes),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "enroll_result.html", data); err != nil {
 		// At this point we've already written headers — log and let
@@ -115,6 +117,11 @@ type enrollViewData struct {
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS
+	// CSPNonce is the per-request CSP nonce (SIN-63275). Stamped on
+	// every <style> tag in enroll_result.html. Empty string means the
+	// request was not routed through csp.Middleware — the resulting
+	// nonce="" never matches a CSP directive, fail-closed.
+	CSPNonce string
 }
 
 // formatRecoveryCodes renders each plaintext code with the midpoint

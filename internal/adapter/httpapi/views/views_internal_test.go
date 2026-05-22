@@ -65,3 +65,59 @@ func TestTenantThemeStyle_InterfaceWrapper(t *testing.T) {
 		t.Fatalf("interface unwrap failed: %q", got)
 	}
 }
+
+// TestCSPNonce_TableDriven covers every branch of the FuncMap helper
+// that reads .CSPNonce off the page data. SIN-63275 — the layout
+// stamps the per-request nonce on every <style> tag it owns; this
+// helper is the reflection seam.
+func TestCSPNonce_TableDriven(t *testing.T) {
+	t.Parallel()
+
+	type withField struct {
+		CSPNonce string
+	}
+	type noField struct {
+		Other string
+	}
+	type otherType struct {
+		CSPNonce int
+	}
+
+	const nonce = "abc-123_XYZ"
+
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"nil", nil, ""},
+		{"struct with string field", withField{CSPNonce: nonce}, nonce},
+		{"pointer to struct", &withField{CSPNonce: nonce}, nonce},
+		{"struct without field", noField{Other: "x"}, ""},
+		{"struct with wrong field type", otherType{CSPNonce: 42}, ""},
+		{"non-struct", "just a string", ""},
+		{"nil pointer", (*withField)(nil), ""},
+		{"empty string field", withField{CSPNonce: ""}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := cspNonce(tc.in); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCSPNonce_InterfaceWrapper covers the reflect.Interface kind
+// branch — same shape as the tenantThemeStyle counterpart so a
+// handler that passes `any(data)` through plumbing still gets the
+// right field.
+func TestCSPNonce_InterfaceWrapper(t *testing.T) {
+	t.Parallel()
+	type d struct{ CSPNonce string }
+	var iface any = d{CSPNonce: "interface-nonce"}
+	if got := cspNonce(iface); got != "interface-nonce" {
+		t.Fatalf("interface unwrap failed: %q", got)
+	}
+}

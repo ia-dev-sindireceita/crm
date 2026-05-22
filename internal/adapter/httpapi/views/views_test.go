@@ -125,7 +125,12 @@ func TestLayout_RendersTenantThemeStyle(t *testing.T) {
 		t.Fatalf("ExecuteTemplate: %v", err)
 	}
 	got := buf.String()
-	wantTag := `<style id="tenant-theme">` + string(style) + `</style>`
+	// SIN-63275: the tenant-theme tag now always carries `nonce="…"`.
+	// This test renders without setting CSPNonce, so the helper returns
+	// an empty string and the layout emits `nonce=""` (intentional
+	// fail-closed when middleware is absent). The omit-when-empty
+	// regression is covered separately by TestLayout_OmitsTenantThemeStyleWhenEmpty.
+	wantTag := `<style id="tenant-theme" nonce="">` + string(style) + `</style>`
 	if !strings.Contains(got, wantTag) {
 		t.Fatalf("layout did not render tenant theme tag.\nwant fragment: %q\nrendered: %q", wantTag, got)
 	}
@@ -154,6 +159,88 @@ func TestLayout_OmitsTenantThemeStyleWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), `id="tenant-theme"`) {
 		t.Fatalf("empty TenantThemeStyle must not emit <style> tag: %q", buf.String())
+	}
+}
+
+// TestLayout_StampsCSPNonceOnTenantTheme pins the SIN-63275 wireup:
+// when both TenantThemeStyle and CSPNonce are populated the layout's
+// <style id="tenant-theme"> carries the per-request nonce. Without
+// this the strict `style-src 'self' 'nonce-…'` policy (no
+// `'unsafe-inline'`) blocks the stylesheet in the browser.
+func TestLayout_StampsCSPNonceOnTenantTheme(t *testing.T) {
+	t.Parallel()
+	style := branding.DefaultThemeStyle
+	const nonce = "test-csp-nonce-xyz"
+	var buf bytes.Buffer
+	data := struct {
+		Next             string
+		Error            string
+		CSRFToken        string
+		TenantThemeStyle template.CSS
+		CSPNonce         string
+	}{Next: "/hello-tenant", TenantThemeStyle: style, CSPNonce: nonce}
+	if err := views.Login.ExecuteTemplate(&buf, "layout", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	got := buf.String()
+	wantTag := `<style id="tenant-theme" nonce="` + nonce + `">` + string(style) + `</style>`
+	if !strings.Contains(got, wantTag) {
+		t.Fatalf("layout did not stamp CSP nonce on tenant-theme.\nwant fragment: %q\nrendered: %q", wantTag, got)
+	}
+}
+
+// TestLayout_CSPNonceEmptyStillEmitsAttribute pins the fail-closed
+// semantics. csp.Nonce returns "" when the middleware is missing; in
+// that case the layout still emits nonce="" — an empty nonce never
+// matches a CSP directive so the browser blocks the inline <style>
+// (csp.Nonce docstring). Silently dropping the attribute would let an
+// XSS-bound style sneak through if a future refactor relaxes the
+// CSP policy.
+func TestLayout_CSPNonceEmptyStillEmitsAttribute(t *testing.T) {
+	t.Parallel()
+	style := branding.DefaultThemeStyle
+	var buf bytes.Buffer
+	data := struct {
+		Next             string
+		Error            string
+		CSRFToken        string
+		TenantThemeStyle template.CSS
+		CSPNonce         string
+	}{Next: "/hello-tenant", TenantThemeStyle: style}
+	if err := views.Login.ExecuteTemplate(&buf, "layout", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, `<style id="tenant-theme" nonce="">`) {
+		t.Fatalf("layout did not emit empty nonce attribute when CSPNonce is empty: %q", got)
+	}
+}
+
+// TestLayout_CSPNonceEscapedAgainstInjection asserts the
+// html/template escaping path: a forged nonce containing quotes or
+// angle brackets must NOT break out of the attribute value. The
+// helper returns a string (not template.HTMLAttr) so the html/template
+// engine HTML-escapes it. A future refactor that swaps in
+// template.HTMLAttr without sanitisation would let an attacker inject
+// arbitrary attributes; this test fails fast in that case.
+func TestLayout_CSPNonceEscapedAgainstInjection(t *testing.T) {
+	t.Parallel()
+	style := branding.DefaultThemeStyle
+	const adversarial = `"><script>alert(1)</script>`
+	var buf bytes.Buffer
+	data := struct {
+		Next             string
+		Error            string
+		CSRFToken        string
+		TenantThemeStyle template.CSS
+		CSPNonce         string
+	}{Next: "/hello-tenant", TenantThemeStyle: style, CSPNonce: adversarial}
+	if err := views.Login.ExecuteTemplate(&buf, "layout", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	got := buf.String()
+	if strings.Contains(got, "<script>alert(1)</script>") {
+		t.Fatalf("adversarial nonce escaped attribute scope: %q", got)
 	}
 }
 

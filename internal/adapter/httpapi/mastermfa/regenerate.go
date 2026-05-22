@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
 
@@ -95,6 +96,7 @@ func (h *RegenerateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	data := regenerateViewData{
 		RecoveryCodes:    formatRecoveryCodes(codes),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "regenerate_result.html", data); err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: regenerate render failed",
@@ -108,4 +110,9 @@ type regenerateViewData struct {
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS
+	// CSPNonce is the per-request CSP nonce (SIN-63275). Stamped on
+	// every <style> tag in regenerate_result.html. Empty string means
+	// the request was not routed through csp.Middleware — the resulting
+	// nonce="" never matches a CSP directive, fail-closed.
+	CSPNonce string
 }

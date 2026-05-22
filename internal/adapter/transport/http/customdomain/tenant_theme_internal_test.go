@@ -19,7 +19,12 @@ import (
 func TestBaseTemplate_RendersTenantThemeStyle(t *testing.T) {
 	t.Parallel()
 	style := branding.DefaultThemeStyle
-	wantTag := `<style id="tenant-theme">` + string(style) + `</style>`
+	// SIN-63275: the tenant-theme tag now always carries `nonce="…"`.
+	// pageData here is initialised without Nonce, so the render emits
+	// `nonce=""` (fail-closed when middleware is absent). Other
+	// customdomain tests in the package set Nonce explicitly and assert
+	// the populated attribute via the rendered <script> tags.
+	wantTag := `<style id="tenant-theme" nonce="">` + string(style) + `</style>`
 	tmpl := parseBaseForTest(t)
 
 	var buf bytes.Buffer

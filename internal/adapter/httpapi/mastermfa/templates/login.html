@@ -6,8 +6,8 @@
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex,nofollow">
   <title>Console master — Sindireceita</title>
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
-  <style>
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <style nonce="{{.CSPNonce}}">
     body { font-family: system-ui, -apple-system, sans-serif; max-width: 24rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
     label { display: block; font-weight: 600; margin-top: 1rem; }
     input { width: 100%; padding: 0.5rem; font-size: 1rem; box-sizing: border-box; border: 1px solid #888; border-radius: 4px; }

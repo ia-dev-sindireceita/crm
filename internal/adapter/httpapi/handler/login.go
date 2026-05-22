@@ -14,6 +14,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/views"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -55,9 +56,11 @@ func LoginGet(w http.ResponseWriter, r *http.Request) {
 		Error            string
 		CSRFToken        string
 		TenantThemeStyle template.CSS
+		CSPNonce         string
 	}{
 		Next:             SanitizeNext(r.URL.Query().Get("next")),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := views.Login.ExecuteTemplate(w, "layout", data); err != nil {
@@ -129,10 +132,12 @@ func renderLoginError(w http.ResponseWriter, r *http.Request, next string) {
 		Error            string
 		CSRFToken        string
 		TenantThemeStyle template.CSS
+		CSPNonce         string
 	}{
 		Next:             next,
 		Error:            "Email ou senha inválidos.",
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 	_ = views.Login.ExecuteTemplate(w, "layout", data)
 }
