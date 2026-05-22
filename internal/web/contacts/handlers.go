@@ -24,6 +24,7 @@ import (
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/contacts"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -129,6 +130,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 		Panel: panelData{
 			ContactID: contactID,
 			Identity:  res.Identity,
@@ -208,4 +210,6 @@ type layoutData struct {
 	HXHeaders        template.HTMLAttr
 	Panel            panelData
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce string
 }

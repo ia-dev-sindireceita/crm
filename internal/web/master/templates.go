@@ -34,6 +34,10 @@ type pageData struct {
 	// {{with}} slot so a tenant with a custom palette sees its colours
 	// applied across the master shell.
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
+	// when csp.Middleware is absent — the template still emits the
+	// attribute so the browser blocks the inline tag (fail-closed).
+	CSPNonce string
 }
 
 // rowData drives the per-row partial returned by PATCH /master/
@@ -177,7 +181,7 @@ var masterLayoutTmpl = template.Must(template.New("master.layout").Funcs(templat
   <meta charset="utf-8">
   <title>Master · Tenants</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

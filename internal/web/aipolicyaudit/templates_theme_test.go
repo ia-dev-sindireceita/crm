@@ -12,7 +12,9 @@ import (
 func TestPageLayout_RendersTenantThemeStyle(t *testing.T) {
 	t.Parallel()
 	style := branding.DefaultThemeStyle
-	wantTag := `<style id="tenant-theme">` + string(style) + `</style>`
+	// SIN-63275: the tenant-theme tag now always carries `nonce="…"`.
+	// The nonce-present case is covered by TestPageLayout_StampCSPNonce.
+	wantTag := `<style id="tenant-theme" nonce="">` + string(style) + `</style>`
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, pageData{TenantThemeStyle: style}); err != nil {
 		t.Fatalf("Execute: %v", err)

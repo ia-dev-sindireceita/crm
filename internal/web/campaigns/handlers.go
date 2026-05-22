@@ -15,6 +15,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/campaigns"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -174,6 +175,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 	h.writeHTML(w, http.StatusOK, listLayoutTmpl, view)
 }
@@ -189,6 +191,7 @@ func (h *Handler) newForm(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	})
 }
 
@@ -278,6 +281,7 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		GeneratedAt:      now.Format(time.RFC3339),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	})
 }
 
@@ -355,6 +359,7 @@ func (h *Handler) renderFormError(w http.ResponseWriter, r *http.Request, in for
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	})
 }
 
@@ -484,6 +489,8 @@ type listView struct {
 	CSRFMeta         template.HTML
 	HXHeaders        template.HTMLAttr
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce string
 }
 
 // detailView is the per-campaign drill-down shape.
@@ -494,6 +501,8 @@ type detailView struct {
 	HXHeaders        template.HTMLAttr
 	GeneratedAt      string
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce string
 }
 
 // formView is the create-form layout shape. Input carries the
@@ -504,6 +513,8 @@ type formView struct {
 	CSRFMeta         template.HTML
 	HXHeaders        template.HTMLAttr
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce string
 }
 
 // clicksTableView is the partial used by the HTMX poll. Stats refresh

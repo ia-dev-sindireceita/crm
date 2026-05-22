@@ -15,7 +15,9 @@ import (
 func TestBoardLayout_RendersTenantThemeStyle(t *testing.T) {
 	t.Parallel()
 	style := branding.DefaultThemeStyle
-	wantTag := `<style id="tenant-theme">` + string(style) + `</style>`
+	// SIN-63275: the tenant-theme tag now always carries `nonce="…"`.
+	// The nonce-present case is covered by TestBoardLayout_StampCSPNonce.
+	wantTag := `<style id="tenant-theme" nonce="">` + string(style) + `</style>`
 	var buf bytes.Buffer
 	view := struct {
 		Board            boardView
@@ -23,6 +25,7 @@ func TestBoardLayout_RendersTenantThemeStyle(t *testing.T) {
 		HXHeaders        template.HTMLAttr
 		CSRFToken        string
 		TenantThemeStyle template.CSS
+		CSPNonce         string
 	}{TenantThemeStyle: style}
 	if err := boardLayoutTmpl.Execute(&buf, view); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -42,6 +45,7 @@ func TestBoardLayout_OmitsTenantThemeStyleWhenEmpty(t *testing.T) {
 		HXHeaders        template.HTMLAttr
 		CSRFToken        string
 		TenantThemeStyle template.CSS
+		CSPNonce         string
 	}{}
 	if err := boardLayoutTmpl.Execute(&buf, view); err != nil {
 		t.Fatalf("Execute: %v", err)

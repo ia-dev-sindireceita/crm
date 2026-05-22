@@ -15,6 +15,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/funnel"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -152,12 +153,14 @@ func (h *Handler) board(w http.ResponseWriter, r *http.Request) {
 		HXHeaders        template.HTMLAttr
 		CSRFToken        string
 		TenantThemeStyle template.CSS
+		CSPNonce         string
 	}{
 		Board:            toBoardView(board),
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		CSRFToken:        token,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}); err != nil {
 		h.deps.Logger.Error("web/funnel: render board", "err", err)
 	}

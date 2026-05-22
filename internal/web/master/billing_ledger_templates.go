@@ -10,6 +10,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 )
 
 // billingPageData drives the layout + panel partial for GET /master/
@@ -29,6 +30,10 @@ type billingPageData struct {
 	// style (SIN-63085) so the master shell picks up the tenant's
 	// custom palette when one is configured.
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
+	// when csp.Middleware is absent — the template still emits the
+	// attribute so the browser blocks the inline tag (fail-closed).
+	CSPNonce string
 }
 
 // ledgerPageData drives the layout + panel partial + rows-only
@@ -53,6 +58,10 @@ type ledgerPageData struct {
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
+	// when csp.Middleware is absent — the template still emits the
+	// attribute so the browser blocks the inline tag (fail-closed).
+	CSPNonce string
 }
 
 // newBillingPageData converts the BillingView aggregate into the
@@ -69,6 +78,7 @@ func newBillingPageData(ctx context.Context, view BillingView, csrfToken string)
 		CSRFMeta:         csrf.MetaTag(csrfToken),
 		HXHeaders:        csrf.HXHeadersAttr(csrfToken),
 		TenantThemeStyle: branding.ThemeStyleFromContext(ctx),
+		CSPNonce:         csp.Nonce(ctx),
 	}
 }
 
@@ -84,6 +94,7 @@ func newLedgerPageData(ctx context.Context, tenantID uuid.UUID, page LedgerPage,
 		CSRFMeta:         csrf.MetaTag(csrfToken),
 		HXHeaders:        csrf.HXHeadersAttr(csrfToken),
 		TenantThemeStyle: branding.ThemeStyleFromContext(ctx),
+		CSPNonce:         csp.Nonce(ctx),
 	}
 	if page.HasMore {
 		data.NextCursorAtRF = page.NextCursorOccurredAt.UTC().Format(time.RFC3339Nano)
@@ -174,7 +185,7 @@ var billingLayoutTmpl = template.Must(template.New("billing.layout").Funcs(billi
   <meta charset="utf-8">
   <title>Master · Histórico de cobrança</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -319,7 +330,7 @@ var ledgerLayoutTmpl = template.Must(template.New("ledger.layout").Funcs(billing
   <meta charset="utf-8">
   <title>Master · Ledger de tokens</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

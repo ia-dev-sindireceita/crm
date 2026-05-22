@@ -15,7 +15,7 @@ var listLayoutTmpl = template.Must(template.New("billing.invoices.list").Parse(`
   <meta charset="utf-8">
   <title>Faturas</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/billing-invoices.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/billing-invoices.js" defer></script>
@@ -76,7 +76,7 @@ var detailLayoutTmpl = template.Must(template.New("billing.invoices.detail").Par
   <meta charset="utf-8">
   <title>Fatura · {{.Invoice.Period}}</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/billing-invoices.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/billing-invoices.js" defer></script>
