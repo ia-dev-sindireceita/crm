@@ -605,7 +605,7 @@ ACME_EMAIL=REPLACE_WITH_REAL_OPS_EMAIL
 STG_TENANT_HOSTS=acme.crm.REPLACE_WITH_BASE, globex.crm.REPLACE_WITH_BASE
 # APP_IMAGE is rewritten by the deploy wrapper on every push. Bootstrap with
 # the digest you discover in §5 below — full ref like
-# ghcr.io/pericles-luz/crm@sha256:6b8f…f730ba.
+# ghcr.io/ia-dev-sindireceita/crm@sha256:6b8f…f730ba.
 APP_IMAGE=REPLACE_WITH_INITIAL_DIGEST_REF
 ```
 
@@ -620,7 +620,8 @@ private by default. The `crm-deploy` user must be authenticated against
 
 GitHub fine-grained PATs do NOT support package access for **user-owned**
 packages — the `Packages` permission only appears for organization-owned
-ones. For `ghcr.io/pericles-luz/crm`, use a classic PAT with the single
+ones. For `ghcr.io/ia-dev-sindireceita/crm` (the fork namespace cd-stg
+now pushes to — SIN-63281), use a classic PAT with the single
 `read:packages` scope (which is itself the smallest scope GitHub exposes for
 this use case).
 
@@ -631,7 +632,7 @@ this use case).
    is a sensible default).
 2. Copy the token (it starts with `ghp_…`) and run on the VPS:
    ```bash
-   GHCR_USER="pericles-luz"
+   GHCR_USER="ia-dev-sindireceita"
    GHCR_TOKEN="REPLACE_WITH_CLASSIC_PAT"
    sudo -u crm-deploy bash -c "echo '${GHCR_TOKEN}' | docker login ghcr.io -u '${GHCR_USER}' --password-stdin"
    ```
@@ -651,12 +652,41 @@ form does work for org packages.
 If staging-image visibility is acceptable (no embedded secrets, no
 proprietary code beyond what is already inferred from the public
 distroless+Go binary): visit
-`https://github.com/users/pericles-luz/packages/container/crm/settings`,
+`https://github.com/users/ia-dev-sindireceita/packages/container/crm/settings`,
 scroll to `Danger zone → Change visibility`, switch to `Public`. After that
 no `docker login` is needed on the VPS — anonymous pulls succeed.
 
 The CD workflow does not care which path you picked; it pushes with
 `secrets.GITHUB_TOKEN` either way.
+
+#### Troubleshooting: `cd-stg` push 403
+
+If `cd-stg` fails at the **build & push image** step with
+`unexpected status from HEAD request to https://ghcr.io/v2/<owner>/crm/blobs/sha256:…: 403 Forbidden`,
+the workflow is pushing to a namespace its `GITHUB_TOKEN` cannot write to.
+This is exactly the failure mode that broke 96/100 cd-stg runs between
+2026-05-16 and 2026-05-22 (SIN-63281), after the 2026-05-13
+fork↔upstream reconciliation (ADR 0085) moved CI into the fork while the
+workflow was still hard-coded to push under the upstream namespace.
+
+Diagnose and fix:
+
+1. `grep IMAGE_REPO .github/workflows/cd-stg.yml .github/workflows/build-backup-image.yml`
+   — both MUST be `ghcr.io/${{ github.repository_owner }}/<image>`. A
+   literal owner that differs from where the workflow runs is the bug.
+2. `tools/supply-chain/test_workflow_invariants.sh` has a lockstep guard
+   that catches drift between `cd-stg.yml` and `deploy/scripts/stg-deploy.sh`
+   on the namespace. Run it locally:
+   `bash tools/supply-chain/test_workflow_invariants.sh`.
+3. After fixing the workflow, the on-host `/opt/crm/stg/bin/deploy.sh`
+   needs the matching `EXPECTED_REPO` and `COSIGN_IDENTITY_REGEXP` — re-`scp`
+   the updated `deploy/scripts/stg-deploy.sh` per §4 above before the next
+   deploy.
+
+Recurrence-prevention rationale: a literal owner in `IMAGE_REPO`
+silently breaks every push for the side that doesn't own the token. The
+`${{ github.repository_owner }}` form makes the workflow self-correcting
+across forks/renames.
 
 ### 5. First boot
 
@@ -670,13 +700,13 @@ The `cd-stg` workflow has built and pushed images for every push to `main`
 since SIN-62215 merged, even when the SSH step failed (build/push happens
 before SSH). Pick whichever digest you want online first:
 
-- **GitHub UI** — open `https://github.com/users/pericles-luz/packages/container/package/crm`,
+- **GitHub UI** — open `https://github.com/users/ia-dev-sindireceita/packages/container/package/crm`,
   click into the version row that matches the SHA you want, and copy the
   `sha256:…` digest from the page header.
-- **`gh` CLI on a workstation** — `gh run view <RUN_ID> --repo pericles-luz/crm --log`
+- **`gh` CLI on a workstation** — `gh run view <RUN_ID> --repo ia-dev-sindireceita/crm --log`
   on a recent `cd-stg` run, then grep the `build & push image` block for
-  `pushing manifest for ghcr.io/pericles-luz/crm:…@sha256:…` — the digest
-  immediately after `@` is what you want.
+  `pushing manifest for ghcr.io/ia-dev-sindireceita/crm:…@sha256:…` — the
+  digest immediately after `@` is what you want.
 
 #### 5b. Run the first deploy
 
@@ -685,7 +715,7 @@ sidestep the `<digest>` placeholder trap):
 
 ```bash
 DIGEST="sha256:REPLACE_WITH_64_HEX_DIGEST"
-APP_IMAGE_REF="ghcr.io/pericles-luz/crm@${DIGEST}"
+APP_IMAGE_REF="ghcr.io/ia-dev-sindireceita/crm@${DIGEST}"
 
 # 1. Make .env.stg agree with what we are about to deploy.
 sudo sed -i "s|^APP_IMAGE=.*|APP_IMAGE=${APP_IMAGE_REF}|" /opt/crm/stg/.env.stg

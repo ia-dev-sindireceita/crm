@@ -13,8 +13,10 @@ production) via the existing GitHub Actions pipeline:
 - `.github/workflows/ci.yml` runs the test suite on every PR.
 - `.github/workflows/cd-stg.yml` reacts to a green `ci` run on `main`, builds
   the multi-stage distroless image from `Dockerfile`, pushes it to
-  `ghcr.io/pericles-luz/crm`, then SSHes into the staging VPS to invoke
-  `/opt/crm/stg/bin/deploy.sh` (sourced from `deploy/scripts/stg-deploy.sh`).
+  `ghcr.io/${{ github.repository_owner }}/crm` (today
+  `ghcr.io/ia-dev-sindireceita/crm` — see addendum below on SIN-63281),
+  then SSHes into the staging VPS to invoke `/opt/crm/stg/bin/deploy.sh`
+  (sourced from `deploy/scripts/stg-deploy.sh`).
 
 That host-side wrapper writes the new digest into `.env.stg`, runs
 `docker compose pull && up -d`, and prunes dangling images. The CD SSH key is
@@ -54,11 +56,11 @@ pipeline rather than parallel to it.
   key is stored anywhere — Sigstore Fulcio mints a short-lived certificate
   bound to the workflow identity for the duration of the run.
 - Identity binding (verifier side): the signer certificate's SAN must match
-  `^https://github\.com/pericles-luz/crm/` (literal dots escaped, scoped to
-  the `crm` repo specifically) and the OIDC issuer must be
-  `https://token.actions.githubusercontent.com`. Anything else is rejected,
-  including signatures minted by other repos under the same owner.
-  Org migration to `Sindireceita` is tracked in
+  `^https://github\.com/ia-dev-sindireceita/crm/` (literal dots escaped,
+  scoped to the fork `crm` repo specifically — see SIN-63281 addendum) and
+  the OIDC issuer must be `https://token.actions.githubusercontent.com`.
+  Anything else is rejected, including signatures minted by other repos
+  under the same owner. Org migration to `Sindireceita` is tracked in
   [SIN-62322](/SIN/issues/SIN-62322).
 
 ### 2. Deploy verify gate
@@ -114,7 +116,7 @@ Positive:
   to pull.
 - An attacker who steals our registry credentials still cannot push a signed
   image, because cosign keyless requires the GitHub OIDC token of an identity
-  matching `github\.com/pericles-luz/crm/` — and a compromise of any
+  matching `github\.com/ia-dev-sindireceita/crm/` — and a compromise of any
   *other* repo under the same owner cannot mint a signature that satisfies
   the gate either.
 - Every prod-bound image has a CycloneDX + SPDX SBOM tied to its digest,
@@ -248,3 +250,41 @@ checklist) when bumping action pins.
   `enabled: false` in `.github/dependabot.yml`.
 - The `security-alerts` gate can be made advisory-only by changing `exit 1`
   to `exit 0`; not recommended.
+
+## Addendum — SIN-63281 (2026-05-22): GHCR namespace moved to the fork
+
+After the 2026-05-13 fork↔upstream reconciliation (ADR 0085), CI runs in
+`ia-dev-sindireceita/crm` and the previous hard-coded `pericles-luz/crm`
+GHCR namespace in `cd-stg.yml` could no longer be authenticated: the
+fork's `secrets.GITHUB_TOKEN` does not have `packages:write` on the
+upstream owner's namespace. Result: 96/100 `cd-stg` runs between
+2026-05-16 and 2026-05-22 failed at `build & push image` with
+`unexpected status from HEAD request … 403 Forbidden`, and the CSP fix
+from [SIN-63275](/SIN/issues/SIN-63275) never reached staging.
+
+Resolution:
+
+- `cd-stg.yml` and `build-backup-image.yml` now push to
+  `ghcr.io/${{ github.repository_owner }}/crm` and
+  `ghcr.io/${{ github.repository_owner }}/crm-backup`. The token always
+  matches the namespace because both come from the same workflow run.
+- `deploy/scripts/stg-deploy.sh` `EXPECTED_REPO` and
+  `COSIGN_IDENTITY_REGEXP` both move to `ia-dev-sindireceita/crm`
+  (literal — the on-host gate must NOT trust an arbitrary owner; the
+  binding is part of the verify gate).
+- A new lockstep invariant in `tools/supply-chain/test_workflow_invariants.sh`
+  asserts the cd-stg workflow pushes under `github.repository_owner` AND
+  the on-host script accepts the matching literal namespace. Drift in
+  either direction breaks CI.
+
+Operator steps after merge (one-time, per `docs/deploy/staging.md` §4):
+
+1. `scp` the new `deploy/scripts/stg-deploy.sh` to
+   `/opt/crm/stg/bin/deploy.sh` on the VPS.
+2. Re-do `docker login ghcr.io` as `crm-deploy` with a PAT that has
+   `read:packages` on the new namespace, OR mark the fork GHCR package
+   public.
+
+Until both steps are done, the next deploy will fail with either exit 65
+(EXPECTED_REPO mismatch), exit 68 (cosign identity mismatch), or
+`unauthorized` from `docker compose pull`.

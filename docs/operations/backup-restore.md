@@ -66,7 +66,7 @@ step assumes a shell with `sudo` on the host.
    # Bootstrapped from `.github/workflows/build-backup-image.yml`'s job
    # summary after the first push to `infra/backup/**`. Same model as
    # APP_IMAGE — see docs/deploy/staging.md § "Bumping infra image digests".
-   BACKUP_IMAGE=ghcr.io/pericles-luz/crm-backup@sha256:<digest from job summary>
+   BACKUP_IMAGE=ghcr.io/ia-dev-sindireceita/crm-backup@sha256:<digest from job summary>
 
    # Object-store credentials and bucket. Re-used by aws-cli inside the
    # sidecar; never echoed to logs.

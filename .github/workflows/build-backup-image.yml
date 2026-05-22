@@ -5,7 +5,8 @@
 # workflow itself), and on every PR that touches the same paths. On every
 # `push` fire:
 #
-#   1. Build `ghcr.io/pericles-luz/crm-backup` from infra/backup/Dockerfile.
+#   1. Build `ghcr.io/${{ github.repository_owner }}/crm-backup` from
+#      infra/backup/Dockerfile (fork namespace; see SIN-63281).
 #   2. Push the image to GHCR.
 #   3. Cosign-sign the resulting digest (matches the app image policy
 #      from ADR 0084).
@@ -22,10 +23,11 @@
 #     meaningless and would still mint an OIDC token);
 #   - the digest summary step is skipped (the digest is local-only).
 # The GHCR login step runs on `push` only. On `pull_request`, the fork's
-# GITHUB_TOKEN cannot write to pericles-luz/crm-backup (cross-account GHCR
-# write), so `cache-to` falls back to `type=gha` (GitHub Actions cache,
-# per-branch, no GHCR creds needed). `cache-from` mirrors the same split so
-# PR builds read from GHA cache rather than attempting an authenticated pull.
+# GITHUB_TOKEN scope is read-only for packages even on the fork's own
+# namespace (forked-repo PRs don't get write tokens), so `cache-to` falls
+# back to `type=gha` (GitHub Actions cache, per-branch, no GHCR creds
+# needed). `cache-from` mirrors the same split so PR builds read from GHA
+# cache rather than attempting an authenticated pull.
 # Recurrence-prevention rationale (SIN-63210): on 2026-05-21 PR #101
 # merged with a broken `.dockerignore` that excluded `scripts/` and the
 # resulting `main`-only build failed (run 26216850431). A `pull_request`
@@ -88,7 +90,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_REPO: ghcr.io/pericles-luz/crm-backup
+  # SIN-63281 — push to the GHCR namespace of whichever owner runs this
+  # workflow (mirrors cd-stg.yml). The fork's GITHUB_TOKEN cannot write
+  # cross-account to ghcr.io/pericles-luz/*, so the previous hard-coded
+  # upstream repo failed with 403 on every `push` to main from the fork.
+  # Using github.repository_owner keeps the push self-correcting.
+  IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/crm-backup
   # Same cosign release pin as cd-stg.yml — bump together when bumping
   # the cosign action in cd-stg.yml.
   COSIGN_VERSION: v2.4.1
@@ -130,8 +137,9 @@ jobs:
             ${{ env.IMAGE_REPO }}:${{ github.sha }}
             ${{ env.IMAGE_REPO }}:main
           # push events: registry cache (persists across runs, fast warm builds).
-          # pull_request events: GHA cache (fork token can't write to pericles-luz
-          # GHCR namespace; GHA cache is per-branch and scoped to the fork repo).
+          # pull_request events: GHA cache (forked-repo PRs only get a
+          # read-only token, so they cannot write to any GHCR namespace;
+          # GHA cache is per-branch and scoped to the fork repo).
           cache-from: ${{ github.event_name == 'push' && format('type=registry,ref={0}:buildcache', env.IMAGE_REPO) || 'type=gha' }}
           cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}:buildcache,mode=max', env.IMAGE_REPO) || 'type=gha,mode=max' }}
           provenance: false

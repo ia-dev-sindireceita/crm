@@ -3,8 +3,9 @@
 # Built and pushed by .github/workflows/build-backup-image.yml on every push
 # that touches `infra/backup/**` or `scripts/backup.sh` / `scripts/backup-restore.sh`.
 # Consumed by `deploy/compose/compose.stg.yml` and `deploy/compose/compose.yml`
-# as `ghcr.io/pericles-luz/crm-backup@sha256:<digest>` (pinned inline like
-# every other infra image — see compose.stg.yml header for the policy).
+# as `ghcr.io/ia-dev-sindireceita/crm-backup@sha256:<digest>` (pinned inline
+# like every other infra image — see compose.stg.yml header for the policy;
+# fork namespace per SIN-63281).
 #
 # Stack:
 #   - postgres-client    (pg_dump)

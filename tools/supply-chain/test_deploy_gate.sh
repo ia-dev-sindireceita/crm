@@ -64,7 +64,8 @@ sed \
 chmod +x "${SANDBOX_SCRIPT}"
 
 # Provision the fake STG_DIR contents the script expects to find on first run.
-echo "APP_IMAGE=ghcr.io/pericles-luz/crm@sha256:0000000000000000000000000000000000000000000000000000000000000000" \
+# SIN-63281 — namespace tracks EXPECTED_REPO in deploy/scripts/stg-deploy.sh.
+echo "APP_IMAGE=ghcr.io/ia-dev-sindireceita/crm@sha256:0000000000000000000000000000000000000000000000000000000000000000" \
   > "${work}/stg/.env.stg"
 echo "services: {}" > "${work}/stg/compose.stg.yml"
 
@@ -90,7 +91,8 @@ pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*" >&2; failures=$((failures + 1)); }
 
 # A valid digest-pinned ref (regex requires exactly 64 lowercase hex chars).
-GOOD_REF="ghcr.io/pericles-luz/crm@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+# SIN-63281 — namespace tracks EXPECTED_REPO in deploy/scripts/stg-deploy.sh.
+GOOD_REF="ghcr.io/ia-dev-sindireceita/crm@sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 # ---- Case 1: verify succeeds → deploy proceeds -------------------------------
 echo "==> Case 1: cosign verify SUCCEEDS — deploy proceeds"
@@ -152,7 +154,7 @@ fi
 echo "==> Case 4: malformed image ref — script refuses (regex gate)"
 install_cosign 0
 rm -f "${work}/compose.log" "${work}/cosign.log"
-BAD_REF="ghcr.io/pericles-luz/crm:floating-tag-not-digest"
+BAD_REF="ghcr.io/ia-dev-sindireceita/crm:floating-tag-not-digest"
 if PATH="${work}/bin:${PATH}" "${SANDBOX_SCRIPT}" deploy "${BAD_REF}" >/dev/null 2>&1; then
   fail "stg-deploy.sh accepted a non-digest image ref"
 else

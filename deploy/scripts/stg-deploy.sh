@@ -9,11 +9,20 @@
 # runner — "deploy ghcr.io/.../crm@sha256:..." — arrives via $SSH_ORIGINAL_COMMAND.
 #
 # Contract:
-#   - Argument: APP_IMAGE reference, MUST match ghcr.io/pericles-luz/crm@sha256:[0-9a-f]{64}
+#   - Argument: APP_IMAGE reference, MUST match ghcr.io/ia-dev-sindireceita/crm@sha256:[0-9a-f]{64}
 #   - Effect:   updates /opt/crm/stg/.env.stg, runs `compose pull && up -d`,
 #               then prunes dangling images. Previous APP_IMAGE is recorded
 #               in /opt/crm/stg/.last-image so manual rollback can read it.
 #   - On any error: exits non-zero (CD job goes red, NO automatic rollback).
+#
+# SIN-63281 (2026-05-22): EXPECTED_REPO and the cosign identity regex
+# moved from `pericles-luz/crm` to `ia-dev-sindireceita/crm` together. The
+# fork's GITHUB_TOKEN can only write packages under its own owner, so
+# cd-stg.yml pushes the image under the fork namespace, the cosign
+# signature identifies the fork's workflow, and this verify gate must
+# accept that binding. After bumping this file, re-`scp` it to
+# /opt/crm/stg/bin/deploy.sh on the VPS per docs/deploy/staging.md §4.
+# Org migration of the upstream to `Sindireceita` is tracked in SIN-62322.
 
 set -euo pipefail
 
@@ -21,7 +30,7 @@ readonly STG_DIR="/opt/crm/stg"
 readonly ENV_FILE="${STG_DIR}/.env.stg"
 readonly COMPOSE_FILE="${STG_DIR}/compose.stg.yml"
 readonly LAST_IMAGE_FILE="${STG_DIR}/.last-image"
-readonly EXPECTED_REPO="ghcr.io/pericles-luz/crm"
+readonly EXPECTED_REPO="ghcr.io/ia-dev-sindireceita/crm"
 readonly DIGEST_RE="^${EXPECTED_REPO}@sha256:[0-9a-f]{64}$"
 
 # ADR 0084 / SIN-62247 — cosign keyless verify gate.
@@ -30,14 +39,15 @@ readonly DIGEST_RE="^${EXPECTED_REPO}@sha256:[0-9a-f]{64}$"
 # Override only via `${COSIGN}=` (test harness) or by editing this script
 # (PR-reviewed break-glass). There is no --skip-verify flag.
 #
-# Identity regex is pinned to the `crm` repository, not to the entire
-# `pericles-luz/*` namespace, so a compromise of any other repo under the
-# same owner cannot mint a signature that satisfies this gate. The literal
-# dots in `github.com` are escaped to remove the parser-differential class
-# where `.` (any char) would match `githubXcom`. Org migration to
-# `Sindireceita` is tracked in SIN-62322.
+# Identity regex is pinned to the `crm` repository under the fork owner
+# (ia-dev-sindireceita), not to the entire owner namespace, so a compromise
+# of any other repo under the same owner cannot mint a signature that
+# satisfies this gate. The literal dots in `github.com` are escaped to
+# remove the parser-differential class where `.` (any char) would match
+# `githubXcom`. Org migration of the upstream to `Sindireceita` is
+# tracked in SIN-62322.
 : "${COSIGN:=cosign}"
-: "${COSIGN_IDENTITY_REGEXP:=^https://github\.com/pericles-luz/crm/}"
+: "${COSIGN_IDENTITY_REGEXP:=^https://github\.com/ia-dev-sindireceita/crm/}"
 : "${COSIGN_OIDC_ISSUER:=https://token.actions.githubusercontent.com}"
 
 # Parse the original SSH command if invoked via authorized_keys command="..."

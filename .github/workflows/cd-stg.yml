@@ -33,7 +33,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_REPO: ghcr.io/pericles-luz/crm
+  # SIN-63281 — push to the GHCR namespace of whichever owner runs this
+  # workflow. The fork's GITHUB_TOKEN has packages:write only on its own
+  # namespace, so a hard-coded upstream repo (pericles-luz/crm) yielded
+  # `unexpected status … 403 Forbidden` on every cd-stg run after the
+  # 2026-05-13 fork↔upstream reconciliation (ADR 0085). Using
+  # github.repository_owner keeps the push self-correcting if the fork is
+  # ever moved or renamed. See docs/deploy/staging.md → "Troubleshooting:
+  # cd-stg push 403".
+  IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/crm
   # Pinned per ADR 0084. Bump the version + the installer SHA together.
   COSIGN_VERSION: v2.4.1
   SYFT_VERSION: v1.14.0
@@ -73,7 +81,7 @@ jobs:
           # SIN-62935 made Dockerfile multi-target (crm-server +
           # crm-mediascan-worker + crm-wallet-alerter-worker). Targeting
           # crm-server explicitly so a future stage reorder cannot
-          # silently push a worker image as ghcr.io/pericles-luz/crm.
+          # silently push a worker image as the crm-server image.
           target: crm-server
           push: true
           tags: |

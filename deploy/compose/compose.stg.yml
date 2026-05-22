@@ -1,8 +1,10 @@
 # Staging stack for the multi-tenant CRM — Fase 0 PR9 (SIN-62215).
 #
 # Contract with .github/workflows/cd-stg.yml:
-#   1. The CD job builds ghcr.io/pericles-luz/crm and resolves the pushed digest.
-#   2. It SSHes to the VPS and writes APP_IMAGE=ghcr.io/pericles-luz/crm@sha256:<d>
+#   1. The CD job builds ghcr.io/ia-dev-sindireceita/crm (the fork
+#      namespace; SIN-63281) and resolves the pushed digest.
+#   2. It SSHes to the VPS and writes
+#      APP_IMAGE=ghcr.io/ia-dev-sindireceita/crm@sha256:<d>
 #      into /opt/crm/stg/.env.stg (alongside the secrets that already live there).
 #   3. `docker compose -f compose.stg.yml pull && up -d --remove-orphans` then
 #      converges the stack on the new digest.
@@ -121,8 +123,10 @@ services:
 
   app:
     # APP_IMAGE is rewritten into /opt/crm/stg/.env.stg by the CD workflow each
-    # deploy. Format: ghcr.io/pericles-luz/crm@sha256:<digest>.
-    image: ${APP_IMAGE:?APP_IMAGE must be ghcr.io/pericles-luz/crm@sha256:<digest>}
+    # deploy. Format: ghcr.io/ia-dev-sindireceita/crm@sha256:<digest> (fork
+    # namespace per SIN-63281; was pericles-luz/crm before the 2026-05-13
+    # fork↔upstream reconciliation).
+    image: ${APP_IMAGE:?APP_IMAGE must be ghcr.io/ia-dev-sindireceita/crm@sha256:<digest>}
     restart: unless-stopped
     networks: [crm]
     env_file: .env.stg
@@ -185,9 +189,9 @@ services:
     # first `.github/workflows/build-backup-image.yml` run publishes the
     # initial digest to GHCR. Subsequent bumps follow the same model
     # documented in docs/deploy/staging.md → "Bumping infra image digests"
-    # (PR-reviewed inline edit). Format MUST be:
-    #   BACKUP_IMAGE=ghcr.io/pericles-luz/crm-backup@sha256:<64 hex>
-    image: ${BACKUP_IMAGE:?BACKUP_IMAGE must be ghcr.io/pericles-luz/crm-backup@sha256:<digest>}
+    # (PR-reviewed inline edit). Format MUST be (fork namespace per SIN-63281):
+    #   BACKUP_IMAGE=ghcr.io/ia-dev-sindireceita/crm-backup@sha256:<64 hex>
+    image: ${BACKUP_IMAGE:?BACKUP_IMAGE must be ghcr.io/ia-dev-sindireceita/crm-backup@sha256:<digest>}
     restart: unless-stopped
     networks: [crm]
     # Run as nobody:nobody (65534:65534). Maps to legacy

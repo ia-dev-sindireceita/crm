@@ -51,7 +51,29 @@ if require_file "${DEPLOY}"; then
   contains "${DEPLOY}" "--certificate-identity-regexp"                       "cosign identity binding"
   contains "${DEPLOY}" "--certificate-oidc-issuer"                           "cosign issuer binding"
   contains "${DEPLOY}" "token.actions.githubusercontent.com"                 "OIDC issuer is GitHub Actions"
-  contains "${DEPLOY}" 'https://github\.com/pericles-luz/crm/'               "identity regex pinned to crm repo (escaped dots)"
+  # SIN-63281 — pinned to the fork (ia-dev-sindireceita/crm); the upstream
+  # pin only worked while cd-stg.yml ran in the upstream repo. After the
+  # 2026-05-13 fork↔upstream reconciliation, CI runs in the fork and the
+  # cosign signature identifies that workflow.
+  contains "${DEPLOY}" 'https://github\.com/ia-dev-sindireceita/crm/'        "identity regex pinned to fork crm repo (escaped dots)"
+fi
+
+# SIN-63281 — lockstep guard: the GHCR namespace cd-stg.yml pushes to MUST
+# match the EXPECTED_REPO the on-host deploy script accepts. A drift here
+# is exactly what caused the 96/100 cd-stg failures from 2026-05-16 onward
+# (workflow pushed to upstream namespace it couldn't write; VPS script
+# expected upstream namespace). If either side moves, both must move.
+echo "==> cd-stg ↔ stg-deploy lockstep (SIN-63281 recurrence guard)"
+if require_file "${CD}" && require_file "${DEPLOY}"; then
+  # cd-stg.yml must push under the workflow's own repository_owner so the
+  # fork's GITHUB_TOKEN can authenticate the push.
+  contains "${CD}"     'IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/crm' \
+                                                                             "cd-stg IMAGE_REPO bound to repository_owner"
+  # The VPS-side EXPECTED_REPO must accept the namespace the fork's
+  # workflow actually pushes to. Both must point to ia-dev-sindireceita/crm
+  # until SIN-62322 migrates to Sindireceita; if you change one, change
+  # the other in the same PR.
+  contains "${DEPLOY}" 'EXPECTED_REPO="ghcr.io/ia-dev-sindireceita/crm"'      "stg-deploy EXPECTED_REPO matches fork namespace"
 fi
 
 echo "==> security-alerts.yml invariants"
