@@ -1,0 +1,129 @@
+/* SIN-63294 — baseline stylesheet for the views/ layout (/login,
+   /hello-tenant). Plain CSS, no preprocessor, no framework, no
+   @import — same boring-tech bar as privacy.css / inbox.css.
+
+   Tenant theme integration:
+     The runtime tenant-theme block (SIN-63085) writes the six tokens
+     onto :root via an inline <style id="tenant-theme">. This stylesheet
+     consumes the tokens through var(...) with a hard-coded fallback,
+     so:
+       - unbranded tenants render the GitHub-flavoured primer default,
+       - branded tenants get their palette without any HTML change,
+       - if middleware.Theme is missing entirely the page still has
+         readable contrast.
+
+   Accessibility:
+     - body text contrast >= 4.5:1 (#1f2328 on #ffffff with the
+       defaults — same numbers as branding.DefaultPalette).
+     - focus-visible outline on every interactive element so keyboard
+       users can follow tab order.
+     - alert role styling differs in BOTH colour and a left border so
+       the distinction is not colour-only (WCAG 1.4.1).
+
+   Scope (deliberately tight):
+     - applies to the bare app shell rendered by layout.html — main,
+       h1, form, label, input, button, p[role="alert"].
+     - element selectors only, no classes. Future class-based
+       components can layer on top without ordering surprises.
+*/
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--color-foreground, #1f2328);
+  background: var(--color-background, #ffffff);
+}
+
+main {
+  max-width: 28rem;
+  margin: 3rem auto;
+  padding: 1.5rem 1.25rem 2rem;
+}
+
+h1 {
+  margin: 0 0 1.25rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+form {
+  display: block;
+}
+
+label {
+  display: block;
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+input[type="email"],
+input[type="password"],
+input[type="text"] {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.5rem 0.625rem;
+  font: inherit;
+  color: var(--color-foreground, #1f2328);
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+input[type="email"]:focus-visible,
+input[type="password"]:focus-visible,
+input[type="text"]:focus-visible {
+  outline: 2px solid var(--color-primary, #1f6feb);
+  outline-offset: 1px;
+  border-color: var(--color-primary, #1f6feb);
+}
+
+button[type="submit"] {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--color-text-on-primary, #ffffff);
+  background: var(--color-primary, #1f6feb);
+  border: 1px solid var(--color-primary, #1f6feb);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button[type="submit"]:hover {
+  filter: brightness(0.95);
+}
+
+button[type="submit"]:focus-visible {
+  outline: 2px solid var(--color-primary, #1f6feb);
+  outline-offset: 2px;
+}
+
+p[role="alert"] {
+  margin: 0 0 1rem;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.95rem;
+  color: #7a1010;
+  background: #fde8e8;
+  border-left: 3px solid #d32f2f;
+  border-radius: 3px;
+}
+
+@media (max-width: 480px) {
+  main {
+    margin: 1.5rem auto;
+    padding: 1rem;
+  }
+
+  h1 {
+    font-size: 1.25rem;
+  }
+}
