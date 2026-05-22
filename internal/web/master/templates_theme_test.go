@@ -15,7 +15,11 @@ import (
 func TestMasterLayouts_RenderTenantThemeStyle(t *testing.T) {
 	t.Parallel()
 	style := branding.DefaultThemeStyle
-	wantTag := `<style id="tenant-theme">` + string(style) + `</style>`
+	// SIN-63275: the tenant-theme tag now always carries `nonce="…"`.
+	// View data here doesn't set CSPNonce, so the render emits
+	// `nonce=""` (fail-closed when middleware is absent). The
+	// nonce-present case is covered by TestMasterLayouts_StampCSPNonce.
+	wantTag := `<style id="tenant-theme" nonce="">` + string(style) + `</style>`
 
 	cases := []struct {
 		name string

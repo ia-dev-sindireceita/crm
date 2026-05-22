@@ -40,6 +40,10 @@ type saveData struct {
 	Preview    previewData
 	ThemeStyle template.CSS
 	Message    string
+	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
+	// when csp.Middleware is absent — the swapped <style> still emits
+	// the attribute so the browser blocks the inline tag (fail-closed).
+	CSPNonce string
 }
 
 // errorData is the tiny fragment returned for inline 4xx responses
@@ -156,10 +160,15 @@ const errorPartialSrc = `
 // document-level <style id="tenant-theme"> so the runtime theme
 // updates without a page reload (per the AC: "flush de tema via OOB
 // swap"). The success message is rendered into the flash slot.
+//
+// SIN-63275: the OOB `<style>` carries `nonce="{{.CSPNonce}}"` so the
+// fragment passes the strict `style-src 'self' 'nonce-…'` policy after
+// HTMX swaps it into the live document. Without the nonce, the browser
+// silently drops the swapped inline stylesheet.
 const saveSrc = `
 {{define "branding.saveResponse"}}
 {{template "branding.previewCard" .Preview}}
-<style id="tenant-theme" hx-swap-oob="outerHTML">{{.ThemeStyle}}</style>
+<style id="tenant-theme" nonce="{{.CSPNonce}}" hx-swap-oob="outerHTML">{{.ThemeStyle}}</style>
 <div id="branding-flash" class="branding-flash branding-flash--success"
      role="status"
      hx-swap-oob="outerHTML">

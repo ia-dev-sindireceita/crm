@@ -93,7 +93,7 @@ var boardLayoutTmpl = template.Must(template.New("funnel.layout").Funcs(funcs).P
   <meta charset="utf-8">
   <title>Funil</title>
   {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme">{{.}}</style>{{end}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/funnel.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/funnel-board.js" defer></script>

@@ -16,6 +16,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/catalog"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -195,6 +196,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	})
 }
 
@@ -286,6 +288,7 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	})
 }
 

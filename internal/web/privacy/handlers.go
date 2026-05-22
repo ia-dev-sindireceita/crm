@@ -30,6 +30,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/legal"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
@@ -151,6 +152,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:      h.deps.Now().UTC().Format(time.RFC3339),
 		TenantName:       tenant.Name,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
@@ -192,6 +194,8 @@ type pageData struct {
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce string
 }
 
 // Compile-time check: the template can resolve every field on

@@ -36,6 +36,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/aipolicy"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -117,6 +118,7 @@ func (h *Handler) viewTenant(w http.ResponseWriter, r *http.Request) {
 		Events:           mapRecords(page.Events),
 		NextCursor:       encodeCursor(page.Next),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	})
 }
 
@@ -175,6 +177,7 @@ func (h *Handler) viewMaster(w http.ResponseWriter, r *http.Request) {
 		Events:           mapRecords(page.Events),
 		NextCursor:       encodeCursor(page.Next),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	})
 }
 
@@ -346,6 +349,8 @@ type pageData struct {
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS
+	// CSPNonce carries the per-request CSP nonce (SIN-63275).
+	CSPNonce string
 }
 
 func (h *Handler) render(w http.ResponseWriter, data pageData) {

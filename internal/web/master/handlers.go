@@ -11,6 +11,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/billing"
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -236,6 +237,7 @@ func (h *Handler) buildPageData(r *http.Request, res ListResult, plans []billing
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		CSRFInput:        csrf.FormHidden(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:         csp.Nonce(r.Context()),
 	}
 }
 
