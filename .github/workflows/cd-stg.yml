@@ -238,3 +238,22 @@ jobs:
           echo "smoke check FAILED — container running commit ${last_seen:-<unreachable>}, expected ${EXPECTED_SHA} (image stale or compose pull skipped)"
           echo "Manual rollback required — see docs/deploy/staging.md"
           exit 1
+
+      # SIN-63304 — cherry-pick of the fork's SIN-63294 static-asset gate
+      # into upstream cd-stg. The fork's `smoke check /login` step (in
+      # ia-dev-sindireceita/crm `.github/workflows/cd-stg.yml`) has been
+      # asserting that /static/css/auth.css returns 200 + Content-Type
+      # text/css against the deployed staging URL since SIN-63294
+      # landed; upstream cd-stg only ran /health, which is exactly why
+      # the multi-week /static/* regression that SIN-63303 root-caused
+      # shipped green from this workflow. With this gate the next
+      # /static/* regression fails red here before the deploy is
+      # declared healthy. Same env (STG_BASE = secrets.STG_SMOKE_URL)
+      # and same assertion as the fork — see SIN-63303 + SIN-63299 for
+      # the incident this fences.
+      - name: smoke check /login
+        env:
+          STG_BASE: ${{ secrets.STG_SMOKE_URL }}
+        run: |
+          set -euo pipefail
+          curl -fsI "${STG_BASE}/static/css/auth.css" | grep -i "content-type:.*text/css"
