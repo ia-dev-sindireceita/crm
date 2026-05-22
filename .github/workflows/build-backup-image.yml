@@ -97,6 +97,14 @@ jobs:
   build-backup-image:
     name: build-backup-image
     runs-on: ubuntu-latest
+    # SIN-63281: only the upstream repo (pericles-luz/crm) owns the GHCR
+    # namespace `ghcr.io/pericles-luz/crm-backup`, so only upstream can
+    # push + sign. Fork PRs still validate the build (push: false,
+    # GHA cache) — those run pre-merge from the fork, do not need GHCR
+    # write, and would lose pre-merge coverage if we skipped them. We
+    # only suppress the `push` event on the fork, which is where the
+    # 403 came from.
+    if: ${{ github.event_name == 'pull_request' || github.repository_owner == 'pericles-luz' }}
     timeout-minutes: 8
     outputs:
       image_digest: ${{ steps.build.outputs.digest }}
