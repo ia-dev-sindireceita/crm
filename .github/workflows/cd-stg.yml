@@ -315,6 +315,42 @@ jobs:
               echo "::error::unknown-user expected 401, got $code"
               return 1
             fi
+
+            # 4) SIN-63294 — GET /login must reference the baseline auth
+            #    stylesheet. PR #244/#245 fixed the CSP-nonce on the
+            #    tenant-theme <style>, but the layout still shipped no
+            #    <link rel="stylesheet">, so the page rendered with
+            #    user-agent defaults ("tela sem formatação"). This grep
+            #    fails red if a future refactor strips the link tag from
+            #    internal/adapter/httpapi/views/layout.html.
+            code=$(curl -sS --max-time 5 -o /tmp/login.html -w "%{http_code}" \
+              "${STG_BASE}/login")
+            if [ "$code" != "200" ]; then
+              echo "::error::GET /login expected 200, got $code"
+              return 1
+            fi
+            if ! grep -qF '<link rel="stylesheet" href="/static/css/auth.css"' /tmp/login.html; then
+              echo "::error::SIN-63294 regression — /login HTML missing /static/css/auth.css link tag"
+              cat /tmp/login.html
+              return 1
+            fi
+
+            # 5) SIN-63294 — the referenced stylesheet must actually be
+            #    served as text/css. A missing file would 404 silently
+            #    in the browser and reproduce the same unstyled-page
+            #    bug. Status + content-type are both pinned.
+            code=$(curl -sS --max-time 5 -o /tmp/auth.css -D /tmp/auth.headers \
+              -w "%{http_code}" "${STG_BASE}/static/css/auth.css")
+            if [ "$code" != "200" ]; then
+              echo "::error::GET /static/css/auth.css expected 200, got $code"
+              cat /tmp/auth.headers
+              return 1
+            fi
+            if ! grep -qi "^Content-Type: text/css" /tmp/auth.headers; then
+              echo "::error::auth.css served with wrong Content-Type (expected text/css)"
+              cat /tmp/auth.headers
+              return 1
+            fi
           }
 
           # Up to 3 attempts with 5s backoff between attempts. The /health
