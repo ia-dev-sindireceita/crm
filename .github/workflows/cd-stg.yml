@@ -42,8 +42,17 @@ jobs:
   deploy-stg:
     name: deploy-stg
     runs-on: ubuntu-latest
-    # Only deploy when the CI run that triggered us was green.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Only deploy when the CI run that triggered us was green AND we are
+    # running on the upstream repo. SIN-63281: the fork
+    # (ia-dev-sindireceita/crm) does not own the GHCR namespace
+    # `pericles-luz/crm` and its GITHUB_TOKEN cannot write there — every
+    # post-reconcile push 403'd. Pericles' normative call (board comment on
+    # SIN-63281): "Só o repositório `pericles-luz/crm` pode mandar pra
+    # stg". Gating the job on owner keeps the workflow file identical on
+    # both repos (no fork drift) but turns the fork into a no-op for the
+    # deploy stage. Drop the owner check if the deploy account/registry
+    # ever moves off `pericles-luz`.
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.repository_owner == 'pericles-luz' }}
     timeout-minutes: 8
     outputs:
       image_digest: ${{ steps.build.outputs.digest }}

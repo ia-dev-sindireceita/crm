@@ -68,6 +68,53 @@ by SHA256 digest, never by floating tag. `grep -E ':(latest|alpine)$'
 deploy/compose/compose.stg.yml` MUST return zero matches; CI fails the build
 if it ever does.
 
+### Why the fork (`ia-dev-sindireceita/crm`) does not deploy (SIN-63281)
+
+Only the upstream repo (`pericles-luz/crm`) is allowed to push the staging
+image. This is normative — set by the board on SIN-63281 ("Só o repositório
+`pericles-luz/crm` pode mandar pra stg"). Mechanically the gate is enforced by
+a job-level `if` on both deploy workflows:
+
+| Workflow                                  | Gate                                                                  | What runs on the fork                                |
+| ----------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------- |
+| `.github/workflows/cd-stg.yml`            | `github.repository_owner == 'pericles-luz'`                           | Nothing — the `deploy-stg` job is skipped entirely.  |
+| `.github/workflows/build-backup-image.yml`| `github.event_name == 'pull_request' \|\| github.repository_owner == 'pericles-luz'` | PRs validate the build (`push: false`, GHA cache); pushes to fork-`main` are skipped. |
+
+Why this shape rather than a fork-side GHCR namespace:
+
+- The image (`ghcr.io/pericles-luz/crm` / `…/crm-backup`) and the cosign
+  identity regex pinned in `deploy/scripts/stg-deploy.sh` are bound to
+  `pericles-luz/crm`. Changing namespace would force a coordinated VPS-side
+  bump of `EXPECTED_REPO`, `COSIGN_IDENTITY_REGEXP`, GHCR pull credentials,
+  and `/opt/crm/stg/.env.stg` — see "GHCR pull credentials" below — and that
+  would still leave the supply-chain identity drifting from upstream.
+- The fork's `GITHUB_TOKEN` does not have `packages:write` against
+  `pericles-luz/*`, so even pinned to the upstream namespace it cannot push.
+  Before SIN-63281 this surfaced as a 403 on every `docker push` from the
+  fork (`cd-stg` red 96/96 runs from 2026-05-16 to 2026-05-22). With the
+  gate, the fork CI is green again and we stop spamming a doomed `docker
+  push` per merge.
+- The deploy lives on whichever clone of the workflow file runs on
+  `pericles-luz/crm` — same YAML, no divergence between fork and upstream.
+
+The supply-chain invariant lint (`tools/supply-chain/test_workflow_invariants.sh`)
+asserts the gate is present on both files, so removing it without a
+deliberate runbook update fails CI.
+
+**Diagnostic checklist if `cd-stg` 403s on `docker push` again:**
+
+1. Confirm the run is on `pericles-luz/crm`, not the fork. The fork's
+   `deploy-stg` job should be `Skipped`, not `Failed`. A `Failed` push from
+   the fork means the gate was edited away — `git log .github/workflows/cd-stg.yml`
+   and revert.
+2. On upstream, confirm `IMAGE_REPO` still reads `ghcr.io/pericles-luz/crm`
+   (workflow `env`). Drift here would mean the image is being pushed to a
+   namespace whose write-token upstream does not own.
+3. If both are correct, the 403 is a real GHCR-side issue (PAT expired,
+   package permissions changed). Check
+   `https://github.com/users/pericles-luz/packages/container/crm/settings`
+   and the cosign keyless OIDC binding — see ADR 0084.
+
 ## Custom-domain catch-all (F44 / Unbound) deploy gate
 
 Before any compose published to staging or prod can serve a `:443` catch-all

@@ -7,6 +7,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CD="${REPO_ROOT}/.github/workflows/cd-stg.yml"
+BACKUP="${REPO_ROOT}/.github/workflows/build-backup-image.yml"
 SA="${REPO_ROOT}/.github/workflows/security-alerts.yml"
 DB="${REPO_ROOT}/.github/dependabot.yml"
 DEPLOY="${REPO_ROOT}/deploy/scripts/stg-deploy.sh"
@@ -43,6 +44,19 @@ if require_file "${CD}"; then
   contains "${CD}" "--type cyclonedx"                    "cosign attest CycloneDX"
   contains "${CD}" "--type spdxjson"                     "cosign attest SPDX"
   contains "${CD}" "actions/upload-artifact"             "SBOM artifact upload"
+  # SIN-63281 — board direction: only pericles-luz/crm may push to stg.
+  # The deploy job MUST be gated on owner so the fork stops 403-ing on
+  # every CI-green push. Drop in lockstep with build-backup-image.yml below.
+  contains "${CD}" "github.repository_owner == 'pericles-luz'" \
+                                                         "fork no-op gate present (SIN-63281)"
+fi
+
+echo "==> build-backup-image.yml invariants (fork no-op gate)"
+if require_file "${BACKUP}"; then
+  # Same SIN-63281 gate; lockstep with cd-stg.yml. Fork PRs still build
+  # (validate-only); only push events are restricted to upstream.
+  contains "${BACKUP}" "github.repository_owner == 'pericles-luz'" \
+                                                         "fork no-op gate present (SIN-63281)"
 fi
 
 echo "==> stg-deploy.sh invariants (verify gate)"
