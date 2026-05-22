@@ -38,12 +38,20 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY adapters ./adapters
-# web/static/vendor is imported as a Go package by
-# internal/adapter/transport/http/customdomain/templates.go (SIN-62535).
-# It embeds CHECKSUMS.txt only; the JS payloads themselves stay out of the
-# binary. The matching `!web/static/vendor` exception in .dockerignore keeps
-# this path visible in the build context.
-COPY web/static/vendor ./web/static/vendor
+# web/static is needed at TWO layers:
+#  - web/static/vendor is imported as a Go package by
+#    internal/adapter/transport/http/customdomain/templates.go (SIN-62535).
+#    It embeds CHECKSUMS.txt only; the JS payloads themselves stay out
+#    of the binary.
+#  - web/static/css/*.css, web/static/js/*.js, web/static/customdomain.css
+#    and web/static/customdomain.js are served at runtime by the
+#    http.FileServer mounted in cmd/server/customdomain_wire.go
+#    (SIN-63299 — staging /login rendered without styles because the
+#    asset tree was missing from the crm-server runtime image).
+# The matching `!web/static` exception in .dockerignore keeps the full
+# tree visible in the build context; copying once here avoids duplicate
+# COPY layers and is the source for the runtime-stage COPY below.
+COPY web/static ./web/static
 
 # COMMIT_SHA is injected at link time into internal/version.commitSHA so
 # /health surfaces the build identifier (SIN-63146). cd-stg.yml passes
@@ -96,6 +104,16 @@ ENTRYPOINT ["/app/wallet-alerter-worker"]
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:a9329520abc449e3b14d5bc3a6ffae065bdde0f02667fa10880c49b35c109fd1 AS crm-server
 
 COPY --from=builder /out/server /app/crm
+
+# SIN-63299 — runtime static assets. The FileServer in
+# cmd/server/customdomain_wire.go resolves http.Dir("web/static") relative
+# to WORKDIR (/app), so the bytes need to land at /app/web/static. Without
+# this COPY the link tags for /static/css/auth.css, /static/css/privacy.css
+# and /static/customdomain.css 404 with text/plain and the rendered pages
+# fall back to user-agent defaults. distroless/static has no shell so the
+# only way to ship the bytes is a COPY layer; the docker-smoke crm-server
+# leg curls these routes at PR time to keep the regression fenced.
+COPY --from=builder /src/web/static /app/web/static
 
 USER 65532:65532
 WORKDIR /app

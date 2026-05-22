@@ -9,7 +9,18 @@ scripts
 !scripts/backup-restore.sh
 tools
 web
-!web/static/vendor
+# SIN-63299 — keep the whole web/static/ runtime asset tree in the build
+# context. cmd/server/customdomain_wire.go mounts a FileServer on
+# `web/static/` and templates reference /static/css/*.css,
+# /static/js/*.js, /static/customdomain.css and /static/customdomain.js
+# from real production pages. The previous `!web/static/vendor`-only
+# exception was tight enough to bring in CHECKSUMS.txt (imported via
+# go:embed) but left every other asset off the runtime image, so the
+# FileServer 404'd them in staging/prod (auth.css, privacy.css,
+# customdomain.css visibly broke /login after SIN-63294). Re-include the
+# tree as a whole; there is nothing under web/static/ that is not
+# runtime-served.
+!web/static
 *.md
 .env
 .env.*

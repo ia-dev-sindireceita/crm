@@ -89,3 +89,98 @@ jobs:
           exit-code: '1'
           ignore-unfixed: false
           vuln-type: os,library
+
+      # SIN-63299 — runtime asset smoke. The crm-server image must ship
+      # web/static/ to /app/web/static so the FileServer in
+      # cmd/server/customdomain_wire.go can serve /static/css/*,
+      # /static/customdomain.css and /static/customdomain.js. Before
+      # SIN-63299 this was untested at the container layer: unit tests
+      # in cmd/server/auth_css_static_test.go and privacy_wire_test.go
+      # used http.Dir("../../web/static") against the source tree, so
+      # the build-context regression that dropped the assets from the
+      # runtime image (SIN-63299 postmortem) passed every PR check. This
+      # step boots the just-built image and curls each asset route.
+      #
+      # The crm-server entrypoint normally needs DATABASE_URL, NATS, etc.
+      # to fully start. To keep the smoke independent of that, we run a
+      # minimal alpine sidecar that mounts the image's /app/web/static
+      # via `docker cp` and re-serves it through a stock python
+      # http.server pinned to the same FileServer semantics. That keeps
+      # the test asserting "the bytes are present in the runtime image
+      # at the expected path with the expected MIME type" without
+      # bringing up Postgres in CI. If a future change moves the assets
+      # to a different WORKDIR, this step will fail because `docker cp`
+      # of /app/web/static will return the wrong tree.
+      - name: runtime asset routes (crm-server)
+        if: matrix.target == 'crm-server'
+        run: |
+          set -euo pipefail
+          # Extract the asset tree from the image without booting the
+          # crm-server entrypoint (which needs DATABASE_URL et al.).
+          # `docker create` with the loaded image is enough to make the
+          # filesystem layers available to `docker cp`.
+          CID=$(docker create local/crm-server:smoke)
+          trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
+          mkdir -p ./smoke-static
+          docker cp "$CID:/app/web/static/." ./smoke-static/
+
+          # Serve the extracted tree with python's http.server, which
+          # uses mimetypes.guess_type and returns text/css for *.css and
+          # text/javascript for *.js (RFC 9239). Go 1.18+ mime.TypeByExtension
+          # also emits text/javascript, so the Content-Type check below
+          # accepts both text/* and application/* JS variants and is the
+          # closest local stand-in for the FileServer in
+          # cmd/server/customdomain_wire.go without booting the full
+          # crm-server entrypoint.
+          (cd smoke-static && python3 -m http.server 8081 >/tmp/static-srv.log 2>&1) &
+          SRV_PID=$!
+          trap 'kill "$SRV_PID" 2>/dev/null || true; docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
+
+          # Wait for the server to accept connections.
+          for i in $(seq 1 20); do
+            if curl -fsI "http://127.0.0.1:8081/" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+
+          # Each route MUST return 200 with a CSS or JS Content-Type.
+          # text/plain here is the FileServer's 404 default and the
+          # exact symptom from the SIN-63299 staging report.
+          fail=0
+          check() {
+            local path="$1" ; local want_mime="$2"
+            local hdrs
+            hdrs=$(curl -fsI "http://127.0.0.1:8081${path}") || {
+              echo "FAIL: ${path} — non-200"
+              fail=1
+              return
+            }
+            if ! grep -iEq "^content-type:.*${want_mime}" <<<"$hdrs"; then
+              echo "FAIL: ${path} — content-type mismatch (want ${want_mime})"
+              echo "$hdrs"
+              fail=1
+              return
+            fi
+            echo "OK:   ${path} (${want_mime})"
+          }
+
+          check /css/auth.css         text/css
+          check /css/privacy.css      text/css
+          check /css/aipanel.css      text/css
+          check /css/campaigns.css    text/css
+          check /css/contacts.css     text/css
+          check /css/funnel.css       text/css
+          check /css/funnel-rules.css text/css
+          check /css/inbox.css        text/css
+          check /customdomain.css     text/css
+          check /customdomain.js      '(text|application)/(javascript|x-javascript)'
+          check /js/campaigns.js      '(text|application)/(javascript|x-javascript)'
+          check /js/funnel-board.js   '(text|application)/(javascript|x-javascript)'
+
+          if [ "$fail" -ne 0 ]; then
+            echo "----"
+            echo "crm-server runtime image is missing one or more web/static/ assets."
+            echo "Check Dockerfile crm-server stage COPY --from=builder /src/web/static."
+            exit 1
+          fi
