@@ -47,17 +47,22 @@ INSERT INTO tenants (id, name, host) VALUES
   ('00000000-0000-0000-0000-00000000eb02', 'globex', 'globex.' || :'base_domain')
 ON CONFLICT (id) DO NOTHING;
 
+-- SIN-63342: tenant agent rows seed with role='tenant_common' (was
+-- 'agent'). The 0114 migration adds a CHECK constraint that rejects
+-- the legacy 'agent' value, and tenant Login already mapped 'agent'
+-- to RoleTenantCommon at the iam layer. Keeping storage and runtime
+-- aligned here means the seed re-applies cleanly on a fresh DB.
 INSERT INTO users (id, tenant_id, email, password_hash, role, is_master) VALUES
   ('00000000-0000-0000-0000-0000000a0e01',
    '00000000-0000-0000-0000-00000000ac01',
    'agent@acme.'   || :'base_domain',
    '$argon2id$v=19$m=65536,t=3,p=4$xdUl6TonL7/7uBXHOr1l6A$A1WB5t0HT3Du/tzT3o9wlZxcjiknaCozvcS9evnIPiM',
-   'agent', false),
+   'tenant_common', false),
   ('00000000-0000-0000-0000-0000000e0e02',
    '00000000-0000-0000-0000-00000000eb02',
    'agent@globex.' || :'base_domain',
    '$argon2id$v=19$m=65536,t=3,p=4$V2UIy0HwezJHHCZ7V6GYzA$g+BY8yIY7FfEsS/87CjEaX7+iXLj18FmOUBQCpELZ8k',
-   'agent', false),
+   'tenant_common', false),
   ('00000000-0000-0000-0000-0000000a57e7',
    NULL,
    'master@crm.local',

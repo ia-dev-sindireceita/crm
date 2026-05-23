@@ -138,10 +138,12 @@ func TestStgSeed_GerenteRowShape(t *testing.T) {
 		t.Fatalf("rows.Err: %v", err)
 	}
 
+	// SIN-63342: seed agent rows migrated from legacy 'agent' to
+	// 'tenant_common' so the 0114_users_role_check CHECK admits them.
 	want := []entry{
 		{"admin@acme." + baseDomain, "tenant_gerente"},
-		{"agent@acme." + baseDomain, "agent"},
-		{"agent@globex." + baseDomain, "agent"},
+		{"agent@acme." + baseDomain, "tenant_common"},
+		{"agent@globex." + baseDomain, "tenant_common"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)

@@ -68,7 +68,7 @@ func seedTenantUser(t *testing.T, db *testpg.DB, host, email string) (tenantID, 
 		t.Fatalf("insert tenant: %v", err)
 	}
 	if _, err := db.AdminPool().Exec(ctx,
-		`INSERT INTO users (id, tenant_id, email, password_hash, role) VALUES ($1, $2, $3, 'x', 'agent')`,
+		`INSERT INTO users (id, tenant_id, email, password_hash, role) VALUES ($1, $2, $3, 'x', 'tenant_common')`,
 		userID, tenantID, email); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}

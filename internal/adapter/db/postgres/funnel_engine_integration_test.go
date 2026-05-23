@@ -139,7 +139,7 @@ func seedFunnelEngineSystemUser(t *testing.T, pool *pgxpool.Pool, tenantID, acto
 	defer cancel()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO users (id, tenant_id, email, password_hash, role, is_master, created_at)
-		 VALUES ($1, $2, $3, $4, 'agent', FALSE, now())
+		 VALUES ($1, $2, $3, $4, 'tenant_common', FALSE, now())
 		 ON CONFLICT (id) DO NOTHING`,
 		actorID, tenantID, "rules-engine+"+actorID.String()+"@example.test", "x",
 	); err != nil {

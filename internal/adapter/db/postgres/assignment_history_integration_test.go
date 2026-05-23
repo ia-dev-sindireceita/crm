@@ -69,7 +69,7 @@ func seedUserForAssignment(t *testing.T, pool *pgxpool.Pool, tenantID uuid.UUID)
 	userID := uuid.New()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO users (id, tenant_id, email, password_hash, role)
-		 VALUES ($1, $2, $3, 'x', 'agent')`,
+		 VALUES ($1, $2, $3, 'x', 'tenant_common')`,
 		userID, tenantID, userID.String()+"@test",
 	); err != nil {
 		t.Fatalf("seed user: %v", err)
