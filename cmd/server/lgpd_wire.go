@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -69,7 +70,64 @@ const (
 	// per-tenant LGPD admin rate limiter. Lives under its own root so
 	// a flush of the auth-side limiter does not nuke the LGPD cap.
 	lgpdAdminRateRedisPrefix = "lgpd_admin:rl:"
+
+	// envAppEnv names the canonical deployment-environment knob —
+	// matches the EMAIL_PROVIDER fail-fast in
+	// internal/notify/email/factory/factory.go so a single env var
+	// drives every "must be configured outside dev" boot gate. Values
+	// other than the two listed below (incl. empty) are treated as
+	// dev/CI and the gate is permissive.
+	envAppEnv = "APP_ENV"
+
+	// appEnvStaging and appEnvProduction are the only two literal
+	// values that flip LGPDMasterOpsRequired into fail-closed mode.
+	// Strict matching is intentional: a typo like "stg" or "prod" is
+	// treated as dev so the gate cannot be silently bypassed by
+	// misnaming the env var (same defensive posture as
+	// iam.EnvIsProduction).
+	appEnvStaging    = "staging"
+	appEnvProduction = "production"
 )
+
+// ErrLGPDMasterOpsRequired is returned by LGPDMasterOpsRequired when
+// APP_ENV names a staging or production deploy AND
+// MASTER_OPS_DATABASE_URL is unset. SIN-63362 surfaced the failure
+// mode: cmd/server's LGPD wire silently returns a noopLGPDStack when
+// the master-ops DSN is missing, so the chi router omits every
+// /admin/lgpd/* route and the LGPD admin surface 404s on staging
+// without a single error in the logs. Treating the missing DSN as a
+// hard boot failure on staging+prod converts a fail-open
+// silent-disable into the fail-closed posture the LGPD compliance
+// surface requires.
+var ErrLGPDMasterOpsRequired = errors.New("lgpd: MASTER_OPS_DATABASE_URL is required when APP_ENV is staging or production")
+
+// LGPDMasterOpsRequired enforces the SIN-63362 boot gate: when the
+// process is running in staging or production, the LGPD admin stack
+// MUST be reachable, so the master-ops DSN it depends on cannot be
+// missing. Returns ErrLGPDMasterOpsRequired only when both
+// conditions hold; dev/CI environments (any APP_ENV outside
+// {"staging","production"}, including empty) keep the existing
+// fail-soft behaviour so unit tests / docker compose without the
+// master-ops pool still boot.
+//
+// Call this from cmd/server BEFORE buildIAMHandler so a misconfigured
+// staging/prod deploy aborts on startup with a clear log line rather
+// than serving traffic with the /admin/lgpd/* surface invisibly
+// disabled.
+func LGPDMasterOpsRequired(getenv func(string) string) error {
+	if getenv == nil {
+		return nil
+	}
+	switch getenv(envAppEnv) {
+	case appEnvStaging, appEnvProduction:
+	default:
+		return nil
+	}
+	if strings.TrimSpace(getenv(envMasterOpsDSN)) == "" {
+		return ErrLGPDMasterOpsRequired
+	}
+	return nil
+}
 
 // lgpdStack bundles the router-level routes payload plus a cleanup
 // hook for any pool the wire layer opens beyond the shared IAM pool.
