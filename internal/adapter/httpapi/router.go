@@ -68,6 +68,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	httpratelimit "github.com/pericles-luz/crm/internal/adapter/httpapi/ratelimit"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/iam/audit"
 	domainratelimit "github.com/pericles-luz/crm/internal/iam/ratelimit"
@@ -426,6 +427,48 @@ type Deps struct {
 	//   POST /consent/cookies
 	WebConsent http.Handler
 
+	// WebUserMFA is the tenant 2FA admin handler bundle (SIN-63337 /
+	// SIN-63338, Fase 6 F11). When non-nil, the chi router mounts five
+	// routes in the tenanted group (outside the authed sub-group, since
+	// the handler gates on __Host-mfa-pending rather than the standard
+	// __Host-sess-tenant session cookie):
+	//
+	//   GET  /admin/2fa/setup
+	//   POST /admin/2fa/setup
+	//   GET  /admin/2fa/verify
+	//   POST /admin/2fa/verify
+	//   POST /admin/2fa/regenerate
+	//
+	// A router-level wrapper redirects requests missing the pending
+	// cookie to /login?next=<original> (302) so the cd-stg smoke probe
+	// for /admin/2fa/verify is well-defined and bookmarked URLs degrade
+	// to a re-authentication prompt rather than a bare 401. The inner
+	// handler's requirePending check is still the source of truth for
+	// validation (presence + lookup + expiry).
+	//
+	// Nil keeps the routes unmounted (clean 404) so router tests and
+	// boots without IAM_MFA_SEED_KEY behave as they did pre-PR.
+	WebUserMFA http.Handler
+
+	// WebUserMFALogin, when non-nil, replaces the password-only POST
+	// /login handler with the MFA-aware wrapper from
+	// internal/adapter/httpapi/usermfa.LoginPost (SIN-63184 /
+	// SIN-63338). The wrapper consults the per-user MFA requirement
+	// after password authn succeeds; users with totp_required_at set
+	// get the __Host-mfa-pending cookie and a 303 to /admin/2fa/verify
+	// (or /setup when not enrolled), while non-MFA users follow the
+	// existing __Host-sess-tenant + /hello-tenant path.
+	//
+	// The wire layer (cmd/server/usermfa_wire.go) supplies a pre-wired
+	// handler bound to the same iam.Service that the password-only
+	// handler.LoginPost uses, so the rate-limit middleware (when
+	// non-nil) wraps the MFA-aware variant identically to the
+	// password-only one.
+	//
+	// Nil keeps the password-only POST /login intact — router tests
+	// without the wire dep behave as they did pre-PR.
+	WebUserMFALogin http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -606,13 +649,50 @@ func NewRouter(deps Deps) http.Handler {
 			tenanted.Method(http.MethodPost, "/consent/cookies", deps.WebConsent)
 		}
 
-		loginPost := http.Handler(handler.LoginPost(handler.LoginConfig{
-			IAM: deps.IAM,
-		}))
+		// SIN-63338 — MFA-aware POST /login (Fase 6 F11). When the wire
+		// layer supplies a non-nil WebUserMFALogin, the MFA-aware wrapper
+		// from internal/adapter/httpapi/usermfa.LoginPost replaces the
+		// password-only handler.LoginPost. The wrapper still calls IAM.Login
+		// for password authn, then consults the per-user MFA requirement
+		// before deciding which cookie (__Host-mfa-pending vs
+		// __Host-sess-tenant) to mint. Nil keeps the password-only handler
+		// intact so router tests + boots without IAM_MFA_SEED_KEY are
+		// unchanged.
+		var loginPost http.Handler
+		if deps.WebUserMFALogin != nil {
+			loginPost = deps.WebUserMFALogin
+		} else {
+			loginPost = handler.LoginPost(handler.LoginConfig{
+				IAM: deps.IAM,
+			})
+		}
 		if mw := buildLoginRateLimit(deps); mw != nil {
 			loginPost = mw(loginPost)
 		}
 		tenanted.Method(http.MethodPost, "/login", loginPost)
+
+		// SIN-63338 — tenant 2FA admin surface (Fase 6 F11). Mounted in
+		// the tenanted group BUT outside the authed sub-group because
+		// the handler gates on __Host-mfa-pending (the post-password
+		// pre-verify cookie minted by usermfa.LoginPost), not the
+		// standard __Host-sess-tenant session cookie. A user holding
+		// only the pending cookie has NO valid session yet, so passing
+		// through middleware.Auth would 302-loop them back to /login —
+		// breaking the verify flow.
+		//
+		// Browser-friendly gate: when no pending cookie is present, the
+		// router-level wrapper redirects to /login?next=<original> with
+		// a 302. The handler's own requirePending then validates the
+		// cookie's presence + lookup + expiry once the wrapper passes
+		// the request through.
+		if deps.WebUserMFA != nil {
+			userMFA := usermfaPendingRedirect(deps.WebUserMFA)
+			tenanted.Method(http.MethodGet, "/admin/2fa/setup", userMFA)
+			tenanted.Method(http.MethodPost, "/admin/2fa/setup", userMFA)
+			tenanted.Method(http.MethodGet, "/admin/2fa/verify", userMFA)
+			tenanted.Method(http.MethodPost, "/admin/2fa/verify", userMFA)
+			tenanted.Method(http.MethodPost, "/admin/2fa/regenerate", userMFA)
+		}
 
 		tenanted.Group(func(authed chi.Router) {
 			authed.Use(middleware.Auth(deps.IAM))
@@ -1111,6 +1191,30 @@ func buildLoginRateLimit(deps Deps) func(http.Handler) http.Handler {
 		panic(fmt.Errorf("httpapi: build login rate-limit: %w", err))
 	}
 	return mw
+}
+
+// usermfaPendingRedirect wraps the tenant 2FA admin handler with a
+// browser-friendly redirect when the __Host-mfa-pending cookie is
+// absent. The wrapped routes (GET/POST /admin/2fa/setup, /verify,
+// POST /admin/2fa/regenerate) are gated by the cookie minted by
+// usermfa.LoginPost on the post-password mfa-required branch; a
+// request without the cookie has no business reaching the handler,
+// and a 302 to /login?next=<original> is the right UX (re-authenticate,
+// then continue) AND the right shape for the cd-stg smoke probe (asserts
+// 302, not 404 — see SIN-63337 / F11 closure).
+//
+// The handler's own requirePending check still validates the cookie
+// (presence + lookup + expiry); this wrapper only handles the
+// "cookie missing entirely" branch.
+func usermfaPendingRedirect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := sessioncookie.Read(r, sessioncookie.NameTenantPending); err != nil {
+			target := "/login?next=" + r.URL.RequestURI()
+			http.Redirect(w, r, target, http.StatusFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // slogRequestLogger emits one structured log line per request. It is

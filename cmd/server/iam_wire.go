@@ -88,6 +88,14 @@ var iamRoutes = []string{
 	// custom-domain catch-all at "/" would shadow both routes and the
 	// SIN-63186 RequireAction gate would never run.
 	"/admin/lgpd/",
+	// SIN-63337 / SIN-63338 — tenant 2FA admin surface (Fase 6 F11).
+	// The stdlib mux dispatches "/admin/2fa/" (subtree) to the chi
+	// router, which then re-matches the five Go 1.22 method+pattern
+	// routes (GET/POST setup, GET/POST verify, POST regenerate) inside
+	// the tenanted group BUT outside the authed sub-group — the routes
+	// are gated by the __Host-mfa-pending cookie, not the standard
+	// __Host-sess-tenant session cookie.
+	"/admin/2fa/",
 	// SIN-63191 — Fase 6 PR4. /admin/contacts/{id}/lgpd is shadowed by
 	// the existing /contacts/ prefix only when the chi router is wired,
 	// so we register a dedicated subtree under /admin/contacts/ for the
@@ -257,6 +265,16 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	sessions := postgresadapter.NewSessionStore(pool)
 	logger := slog.Default()
 
+	// SIN-63338 — tenant 2FA wire (Fase 6 F11). Builds the
+	// /admin/2fa/* handler + MFA-aware POST /login wrapper on top of
+	// the same pool + sessions the password-only IAM service uses.
+	// Fail-soft: when IAM_MFA_SEED_KEY is unset, the returned stack is
+	// zero-valued and the router skips the 2FA routes / keeps the
+	// password-only POST /login intact. Built BEFORE the iamAdapter so
+	// the usermfa.LoginPost wrapper can take the same Login closure
+	// (via the iamAdapter built below) without re-deriving the per-
+	// request tenant lockout adapter.
+
 	// SIN-62765 — wrap the RBAC inner authorizer with the audit
 	// decorator so every recorded Decision lands in audit_log_security
 	// + the authz_* Prometheus counters. Failure to build the wrapper
@@ -317,16 +335,25 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		lgpdCleanup = stack.Cleanup
 	}
 
+	iamSvcAdapter := iamAdapter{
+		tenants:  tenants,
+		users:    users,
+		sessions: sessions,
+		logger:   logger,
+		limiter:  limiter,
+		policies: policies,
+		pool:     pool,
+	}
+
+	// SIN-63338 — instantiate the user MFA stack now that the iam
+	// adapter is wired. Fail-soft: an unset / malformed
+	// IAM_MFA_SEED_KEY returns a zero stack and the router skips the
+	// 2FA routes (clean 404) AND keeps the password-only POST /login
+	// intact.
+	userMFA := buildUserMFAStack(ctx, getenv, pool, iamSvcAdapter, sessions)
+
 	h := httpapi.NewRouter(httpapi.Deps{
-		IAM: iamAdapter{
-			tenants:  tenants,
-			users:    users,
-			sessions: sessions,
-			logger:   logger,
-			limiter:  limiter,
-			policies: policies,
-			pool:     pool,
-		},
+		IAM:            iamSvcAdapter,
 		TenantResolver: tenants,
 		Logger:         logger,
 		// SIN-63146 — surface the build SHA on /health so cd-stg can
@@ -354,6 +381,8 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebLGPD:           lgpdRoutes,
 		WebPublicPrivacy:  opts.WebPublicPrivacy,
 		WebConsent:        opts.WebConsent,
+		WebUserMFA:        userMFA.Handler,
+		WebUserMFALogin:   userMFA.LoginPost,
 		Theme:             opts.Theme,
 		Metrics:           opts.Metrics,
 	})

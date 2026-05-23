@@ -393,6 +393,31 @@ jobs:
               cat /tmp/auth.headers
               return 1
             fi
+
+            # 6) SIN-63337 / SIN-63338 (F11) — tenant 2FA wireup. Before
+            #    the SIN-63338 PR, the production router never imported
+            #    the internal/adapter/httpapi/usermfa handler, so
+            #    /admin/2fa/* returned 404 in staging even though the
+            #    handler + tests + templates shipped with the binary.
+            #    Probe the unauthenticated GET /admin/2fa/verify and
+            #    assert 302 — the router-level usermfaPendingRedirect
+            #    wrapper bounces a request without __Host-mfa-pending to
+            #    /login?next=. A 404 here means the wireup regressed
+            #    (handler unmounted) or IAM_MFA_SEED_KEY is unset on the
+            #    staging VPS — both are deploy-time regressions worth
+            #    failing red on.
+            code=$(curl -sS --max-time 5 -o /tmp/usermfa.body -D /tmp/usermfa.headers \
+              -w "%{http_code}" "${STG_BASE}/admin/2fa/verify")
+            if [ "$code" != "302" ]; then
+              echo "::error::GET /admin/2fa/verify expected 302 (F11 wireup), got $code"
+              cat /tmp/usermfa.headers
+              return 1
+            fi
+            if ! grep -qi "^Location: /login?next=" /tmp/usermfa.headers; then
+              echo "::error::SIN-63338 regression — /admin/2fa/verify 302 without /login?next= Location"
+              cat /tmp/usermfa.headers
+              return 1
+            fi
           }
 
           # Up to 3 attempts with 5s backoff between attempts. The /health
