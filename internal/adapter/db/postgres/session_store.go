@@ -215,6 +215,31 @@ func (u *UserCredentialReader) LookupCredentials(ctx context.Context, tenantID u
 	return id, hash, nil
 }
 
+// RoleByUser reads the raw users.role string for (tenantID, userID) and
+// returns it as iam.Role. The value is NOT gated against an allowlist
+// here — that is the use-case's job (iam.Service.resolveSessionRole
+// applies the SIN-63340 §Item 1 tenant-scoped allowlist that maps any
+// non-tenant value, including the high-risk 'master' string, down to
+// RoleTenantCommon). A missing row returns the zero Role ("") with a
+// nil error so Login can default the session role without 5xx-ing the
+// request. RLS gates the SELECT on the tenant pool's app.tenant_id so
+// cross-tenant probes resolve to the same zero-role / not-found path.
+func (u *UserCredentialReader) RoleByUser(ctx context.Context, tenantID, userID uuid.UUID) (iam.Role, error) {
+	var role string
+	err := WithTenant(ctx, u.pool, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT role FROM users WHERE id = $1
+		`, userID).Scan(&role)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return iam.Role(""), nil
+	}
+	if err != nil {
+		return iam.Role(""), fmt.Errorf("postgres: RoleByUser: %w", err)
+	}
+	return iam.Role(role), nil
+}
+
 // ipForDB returns nil for an unset address so the inet column receives a
 // SQL NULL. Otherwise it returns the address as a netip.Addr (pgx maps
 // netip directly to the inet type without the textual round-trip).

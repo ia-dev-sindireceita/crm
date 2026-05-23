@@ -96,13 +96,20 @@ func (r fakeResolver) ResolveByHost(_ context.Context, host string) (uuid.UUID, 
 	return uuid.Nil, ErrTenantNotFound
 }
 
-// fakeUsers maps (tenantID, email) -> (userID, password_hash).
+// fakeUsers maps (tenantID, email) -> (userID, password_hash) and
+// (tenantID, userID) -> role string. SIN-63336 widened
+// iam.UserCredentialReader with RoleByUser; the role map is optional —
+// callers that omit it land on the zero Role (""), which Login defaults
+// to RoleTenantCommon (the legacy hardcoded value preserved for
+// pre-63336 tests).
 type fakeUsers struct {
 	rows map[string]struct {
 		userID uuid.UUID
 		hash   string
 	}
-	err error
+	roles   map[string]Role
+	err     error
+	roleErr error
 }
 
 func (u fakeUsers) LookupCredentials(_ context.Context, tenantID uuid.UUID, email string) (uuid.UUID, string, error) {
@@ -113,6 +120,16 @@ func (u fakeUsers) LookupCredentials(_ context.Context, tenantID uuid.UUID, emai
 		return r.userID, r.hash, nil
 	}
 	return uuid.Nil, "", nil
+}
+
+func (u fakeUsers) RoleByUser(_ context.Context, tenantID, userID uuid.UUID) (Role, error) {
+	if u.roleErr != nil {
+		return Role(""), u.roleErr
+	}
+	if r, ok := u.roles[tenantID.String()+"|"+userID.String()]; ok {
+		return r, nil
+	}
+	return Role(""), nil
 }
 
 // silentLogger discards all log records — keeps test output clean.

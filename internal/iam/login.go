@@ -29,10 +29,11 @@ type TenantResolver interface {
 }
 
 // UserCredentialReader is the slice of the user-store the login flow needs
-// — just enough to fetch (id, password_hash) by email, scoped to a
-// resolved tenant. The postgres adapter is responsible for running the
-// SELECT inside WithTenant; the implementation contract is documented on
-// LookupCredentials.
+// — just enough to fetch (id, password_hash) by email and the persisted
+// users.role for a successfully-authenticated user, scoped to a resolved
+// tenant. The postgres adapter is responsible for running the SELECTs
+// inside WithTenant; the implementation contract is documented on each
+// method.
 //
 // The interface is deliberately narrow ("accept broad / return narrow"):
 // the rest of the user lifecycle (create, list, update password) is not
@@ -45,6 +46,21 @@ type UserCredentialReader interface {
 	// "DB error" purely by the zero-id sentinel. This makes the timing-
 	// equivalent dummy-verify branch unambiguous.
 	LookupCredentials(ctx context.Context, tenantID uuid.UUID, email string) (uuid.UUID, string, error)
+
+	// RoleByUser returns the raw users.role value for (tenantID, userID).
+	// The value MAY be a legacy or unknown string ("agent", "", arbitrary
+	// junk, the MFA "admin" marker, or even "master") because the DB
+	// column has no CHECK constraint today (SIN-63340 §Item 2). Callers
+	// in the tenant Login path MUST gate the value through a TENANT-
+	// scoped allowlist (see resolveSessionRole) — NEVER iam.Role.Valid(),
+	// which would honour users.role='master' and mint a master-scope
+	// session via the tenant hostname (SIN-63340 §Item 1, STRIDE-E).
+	// A missing row returns the zero Role ("") with a nil error so Login
+	// can default the session to RoleTenantCommon without surfacing the
+	// lookup as an infra failure. tenantID matches the LookupCredentials
+	// pattern so the postgres adapter can run the SELECT inside WithTenant
+	// and RLS gates cross-tenant probes.
+	RoleByUser(ctx context.Context, tenantID, userID uuid.UUID) (Role, error)
 }
 
 // Service is the IAM use-case façade. It composes a tenant resolver, the
@@ -293,9 +309,34 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 	// LastActivity = CreatedAt so CheckActivity does not reject the
 	// very first request after login (the helper rejects on
 	// now-lastActivity >= Idle, so any too-old value would trip
-	// immediately). Role defaults to RoleTenantCommon — the broadest
-	// of the four ADR 0073 §D3 pairs (Idle 30 min, Hard 8 h) — pending
-	// the per-user role lookup that will land with the next IAM PR.
+	// immediately).
+	//
+	// SIN-63336: per-user role lookup. After authn succeeds and before
+	// SessionStore.Create, ask the user-store for the persisted
+	// users.role value. The mapping uses a TENANT-SCOPED allowlist —
+	// only RoleTenantGerente, RoleTenantAtendente, RoleTenantCommon are
+	// honoured here. RoleMaster is INTENTIONALLY excluded because this
+	// is the tenant Login path: a tenant user row with users.role='master'
+	// (legacy / mis-typed / hostile write — users.role has no CHECK
+	// constraint today) MUST NOT mint a master-scope session via the
+	// tenant hostname. The master surface is entered via the dedicated
+	// master Service / login path, which keys off users.is_master=true.
+	// See SIN-63340 §Item 1 for the STRIDE-E (Elevation of Privilege)
+	// threat model that motivates this allowlist shape.
+	//
+	// Defense-in-depth defaults:
+	//   - lookup infra error: log a WARN and default to RoleTenantCommon
+	//     (the broadest of the three tenant ADR 0073 §D3 pairs). DO NOT
+	//     5xx the login — the user has successfully authenticated;
+	//     degrading to the least-privileged tenant role is preferable
+	//     to a failure that masks an outage as an auth bug.
+	//   - unknown/legacy/empty/cross-scope role string (incl. 'master',
+	//     'admin', 'agent', ''): default to RoleTenantCommon and log a
+	//     structured WARN with role_string=<raw>. Unknown strings MUST
+	//     NOT escalate to RoleTenantGerente / RoleMaster (privilege
+	//     risk) and MUST NOT fail the login (DoS risk).
+	//   - one of the three tenant iam.Role values: use it.
+	sessionRole := s.resolveSessionRole(ctx, tenantID, userID)
 	sess := Session{
 		ID:           id,
 		UserID:       userID,
@@ -305,7 +346,7 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 		IPAddr:       ipAddr,
 		UserAgent:    userAgent,
 		LastActivity: now,
-		Role:         RoleTenantCommon,
+		Role:         sessionRole,
 		CSRFToken:    csrfToken,
 	}
 	if err := s.Sessions.Create(ctx, sess); err != nil {
@@ -319,10 +360,17 @@ func (s *Service) Login(ctx context.Context, host, email, password string, ipAdd
 	// Future reviewer: do NOT remove this field thinking it is leaked
 	// PII. 32 bits is far below brute-force feasibility (90+ bits remain
 	// secret), and prefix alone cannot be used to hijack the session.
+	//
+	// SIN-63340 §Item 3 — session_role records the iam.Role minted on this
+	// session so SIEM can detect role-string injection attempts (a stream
+	// of "role not in tenant allowlist" WARN lines paired with login: ok
+	// session_role=tenant_common is the signal that resolveSessionRole
+	// downgraded a hostile/legacy users.role value).
 	logger.InfoContext(ctx, "login: ok",
 		slog.String("tenant_id", tenantID.String()),
 		slog.String("user_id", userID.String()),
 		slog.String("session_id_prefix", sess.ID.String()[:8]),
+		slog.String("session_role", string(sess.Role)),
 	)
 
 	// ADR 0070 §3 — re-hash on parameter change. The rehash MUST NOT
@@ -400,6 +448,53 @@ func (s *Service) scheduleRehash(tenantID, userID uuid.UUID, plain string) {
 			slog.String("tenant_id", tenantID.String()),
 		)
 	}()
+}
+
+// resolveSessionRole reads users.role for the (tenantID, userID) pair and
+// maps it to one of the THREE tenant iam.Role values via a tenant-scoped
+// allowlist. It returns RoleTenantCommon for every degraded path — DB
+// error, missing row, unknown string, empty string, AND cross-scope
+// values (most notably 'master', see below) — so the post-authn tenant
+// session is born with a safe least-privilege default no matter what
+// the storage layer reports. The raw string is logged on the not-allowed
+// branch so a future migration of legacy values ('agent') and a regression
+// in writes (mis-typed role, hostile insert) both surface in the
+// structured log for SIEM detection without exposing the password lookup.
+//
+// SIN-63340 §Item 1 — RoleMaster is INTENTIONALLY EXCLUDED from the
+// allowlist. The four valid iam.Role strings are master, tenant_gerente,
+// tenant_atendente, tenant_common; strictly using iam.Role.Valid() would
+// honour users.role='master' on a tenant row and mint a Session with
+// Role=RoleMaster (Authorizer.Can short-circuits on IsMaster()), giving
+// full cross-tenant master surface to a tenant-scope principal. That is
+// a STRIDE-E (Elevation of Privilege) vector — low current exploitability
+// because no known path writes users.role='master', but users.role has
+// no CHECK constraint by structure (SIN-63340 §Item 2). The
+// tenant-allowlist shape encoded here makes the gap fail-closed at the
+// application layer; a regression test in login_role_test.go pins the
+// "users.role='master' on tenant Login does NOT mint RoleMaster" property
+// so a future refactor that drifts back to iam.Role.Valid() fails CI.
+func (s *Service) resolveSessionRole(ctx context.Context, tenantID, userID uuid.UUID) Role {
+	logger := s.logger()
+	role, err := s.Users.RoleByUser(ctx, tenantID, userID)
+	if err != nil {
+		logger.WarnContext(ctx, "login: role lookup failed, defaulting to tenant_common",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("user_id", userID.String()),
+			slog.String("err", err.Error()),
+		)
+		return RoleTenantCommon
+	}
+	switch role {
+	case RoleTenantGerente, RoleTenantAtendente, RoleTenantCommon:
+		return role
+	}
+	logger.WarnContext(ctx, "login: role not in tenant allowlist, defaulting to tenant_common",
+		slog.String("tenant_id", tenantID.String()),
+		slog.String("user_id", userID.String()),
+		slog.String("role_string", string(role)),
+	)
+	return RoleTenantCommon
 }
 
 // Logout deletes the session row, scoped to the resolved tenant. A delete
