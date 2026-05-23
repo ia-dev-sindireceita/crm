@@ -185,6 +185,84 @@ jobs:
           printf '%s\n' "$STG_HOST_KEY" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      # SIN-63350 — preflight: detect cosign missing on VPS before deploy.
+      #
+      # The wrapper at /opt/crm/stg/bin/deploy.sh runs `command -v cosign`
+      # before both `deploy` and `migrate-up`. If cosign is not on the
+      # non-interactive SSH PATH (typical case: cosign installed at
+      # /usr/local/bin/cosign but the SSH `command="…"` authorized_keys
+      # constraint inherits a stripped PATH), the wrapper exits 67 with
+      # `stg-deploy: cosign not found in PATH`. cd-stg run 26334123677
+      # tripped exactly this: SIN-63335 / SIN-63348 forensics showed the
+      # failure was at `deploy via ssh`, NOT at migrate-up — the existing
+      # wrapper-stale preflight (between /health and migrate-up) runs too
+      # late to catch it.
+      #
+      # This preflight invokes the SIN-63350 `preflight` verb on the
+      # wrapper (deploy/scripts/stg-deploy.sh). The verb takes no
+      # image-ref, checks `command -v cosign`, and exits 0 (cosign
+      # present) or 67 (cosign missing). SSH propagates the exit code so
+      # the workflow goes red here, with the remediation block below
+      # naming the canonical install procedure in
+      # docs/deploy/staging.md §VPS-bootstrap (lines 437-474).
+      #
+      # Authentication / surface area: same locked-down SSH key + same
+      # authorized_keys command="/opt/crm/stg/bin/deploy.sh" constraint
+      # as the deploy / migrate-up / wrapper-stale-preflight steps. The
+      # wrapper itself is the only thing the runner can invoke. No new
+      # SSH key, no widened command=, no inlined cosign install bytes
+      # (operator-bootstrap per staging.md §VPS-bootstrap — CI never
+      # installs cosign on the VPS, by design).
+      - name: preflight cosign present on VPS
+        timeout-minutes: 1
+        env:
+          STG_HOST: ${{ secrets.STG_HOST }}
+          STG_USER: ${{ secrets.STG_USER }}
+        run: |
+          set -uo pipefail
+          # Capture stdout+stderr together so the remediation block can
+          # echo whatever the wrapper said. We intentionally do NOT
+          # short-circuit on a non-zero exit before printing the output.
+          output="$(ssh -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              "${STG_USER}@${STG_HOST}" \
+              "preflight" 2>&1)"
+          rc=$?
+          if [ "${rc}" -eq 0 ]; then
+            # The wrapper prints `stg-deploy: preflight OK — cosign
+            # present` on success. We surface the line so the workflow
+            # log shows positive confirmation rather than empty silence.
+            printf '%s\n' "${output:-preflight OK}"
+            exit 0
+          fi
+          echo "::error::cosign is not on PATH on ${STG_HOST} — cd-stg cannot proceed (stg-deploy exit ${rc})."
+          {
+            echo "stale-component: cosign binary on ${STG_HOST}"
+            echo "expected:        \`command -v cosign\` returns 0 under the cd-stg SSH command=…"
+            echo "                 constraint (non-interactive PATH)"
+            echo "observed:        ${output:-<empty>} (wrapper exit ${rc})"
+            echo
+            echo "remediation (operator, see docs/deploy/staging.md §VPS-bootstrap, lines 437-474):"
+            echo "  # On the VPS as root, install cosign >= v2.4 from the Sigstore"
+            echo "  # release, self-verify against its own signature, then drop into"
+            echo "  # /usr/local/bin so the deploy user's PATH sees it:"
+            echo "  COSIGN_VERSION=2.4.1"
+            echo "  BASE=\"https://github.com/sigstore/cosign/releases/download/v\${COSIGN_VERSION}\""
+            echo "  curl -fsSL \"\${BASE}/cosign-linux-amd64\"     -o /tmp/cosign"
+            echo "  curl -fsSL \"\${BASE}/cosign-linux-amd64.sig\" -o /tmp/cosign.sig"
+            echo "  curl -fsSL \"\${BASE}/cosign-linux-amd64.pem\" -o /tmp/cosign.pem"
+            echo "  install -m 0755 /tmp/cosign /usr/local/bin/cosign"
+            echo "  cosign verify-blob \\"
+            echo "    --certificate /tmp/cosign.pem \\"
+            echo "    --signature   /tmp/cosign.sig \\"
+            echo "    --certificate-identity-regexp '^https://github\\.com/sigstore/cosign/' \\"
+            echo "    --certificate-oidc-issuer     'https://token.actions.githubusercontent.com' \\"
+            echo "    /tmp/cosign"
+            echo "  rm -f /tmp/cosign /tmp/cosign.sig /tmp/cosign.pem"
+            echo "  # Re-run this workflow once \`cosign version\` succeeds."
+          } >&2
+          exit 1
+
       - name: deploy via ssh
         env:
           STG_HOST: ${{ secrets.STG_HOST }}

@@ -478,6 +478,12 @@ either the wrong release line, a different file than the one Sigstore
 signed, or a tampered copy. Re-pull and re-verify; never `chmod +x` a
 binary whose self-verify failed.
 
+The `cd-stg` workflow runs a `preflight cosign present on VPS` step before
+`deploy via ssh` (SIN-63350) — it SSHes the `preflight` verb on
+`/opt/crm/stg/bin/deploy.sh` and fails red with this remediation block if
+`command -v cosign` returns non-zero, so a missing or off-PATH cosign on
+the VPS surfaces before any image is pulled or signed.
+
 Bumping `COSIGN_VERSION` here MUST also bump `COSIGN_VERSION` in
 `.github/workflows/cd-stg.yml` so the signer and verifier track the same
 release line.

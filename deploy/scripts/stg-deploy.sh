@@ -19,7 +19,16 @@
 #                                 versions). Added in SIN-63332 to close the
 #                                 F10 deploy-procedure gap surfaced by
 #                                 PR #104.
+#       preflight              — no-op health probe: asserts `cosign` is on
+#                                 PATH and exits 0. Added in SIN-63350 so the
+#                                 CD pipeline can detect a missing cosign
+#                                 binary on the VPS BEFORE invoking deploy
+#                                 (which would otherwise fail mid-step with
+#                                 `stg-deploy: cosign not found in PATH`
+#                                 exit 67). No image-ref required, no
+#                                 side-effects.
 #   - Argument: APP_IMAGE reference, MUST match ghcr.io/pericles-luz/crm@sha256:[0-9a-f]{64}
+#                                    (only required for deploy/migrate-up).
 #   - Effect (deploy):     updates /opt/crm/stg/.env.stg, runs `compose pull && up -d`,
 #                          then prunes dangling images. Previous APP_IMAGE is recorded
 #                          in /opt/crm/stg/.last-image so manual rollback can read it.
@@ -27,6 +36,8 @@
 #                          crm-stg-postgres-1 inside the compose project network.
 #                          The migrations bytes come from the just-deployed image at
 #                          /migrations (see Dockerfile crm-server stage).
+#   - Effect (preflight):  reports cosign presence on PATH (exit 0) or missing
+#                          (exit 67). Read-only, never touches compose/env/DB.
 #   - On any error: exits non-zero (CD job goes red, NO automatic rollback).
 
 set -euo pipefail
@@ -73,9 +84,24 @@ else
   argv=( "$@" )
 fi
 
+# SIN-63350 — preflight verb dispatches BEFORE the {deploy|migrate-up}
+# image-ref argv validation because it deliberately takes no image-ref.
+# The cd-stg workflow SSHes `preflight` ahead of `deploy` so we fail red
+# with an actionable remediation when cosign is missing on the VPS PATH
+# (typical: cosign at /usr/local/bin/cosign but the non-interactive SSH
+# command="…" PATH excludes it). Read-only, never touches compose/env/DB.
+if [[ "${#argv[@]}" -eq 1 && "${argv[0]}" == "preflight" ]]; then
+  if ! command -v "${COSIGN}" >/dev/null 2>&1; then
+    echo "stg-deploy: preflight FAILED — ${COSIGN} not found in PATH (see docs/deploy/staging.md §VPS-bootstrap)" >&2
+    exit 67
+  fi
+  echo "stg-deploy: preflight OK — cosign present"
+  exit 0
+fi
+
 if [[ "${#argv[@]}" -ne 2 ]] || \
    [[ "${argv[0]}" != "deploy" && "${argv[0]}" != "migrate-up" ]]; then
-  echo "stg-deploy: usage: {deploy|migrate-up} <image-ref>" >&2
+  echo "stg-deploy: usage: {deploy|migrate-up} <image-ref> | preflight" >&2
   exit 64
 fi
 
