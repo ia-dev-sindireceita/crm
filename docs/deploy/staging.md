@@ -553,7 +553,11 @@ test "$(grep -c 'ssh-ed25519 ' /home/crm-deploy/.ssh/authorized_keys)" = "1" \
 
 The private half goes into the GitHub repo's `STG_SSH_KEY` secret. Once the
 constraint is in place the key cannot start a shell, open a tunnel, or run
-arbitrary commands — only `/opt/crm/stg/bin/deploy.sh` with a single argument.
+arbitrary commands — only `/opt/crm/stg/bin/deploy.sh` with the two-token
+remote command `<verb> <image-ref>`. The script enforces the contract:
+`<verb>` MUST be one of `deploy` or `migrate-up` (SIN-63332) and the
+image-ref MUST match `ghcr.io/pericles-luz/crm@sha256:<64 hex>`. Anything
+else aborts before any docker/migrate command runs.
 
 ### 4. Stack layout on the VPS
 
@@ -779,17 +783,39 @@ If the external check times out on `port 443` indefinitely, in that order:
 
 ### 5c. Apply database migrations
 
-The local `make migrate-up` (Makefile) reads `compose/.env` and joins the
-dev compose network. On the VPS, Postgres is in the staging compose stack
-(`crm-stg-postgres-1`) and credentials live in `/opt/crm/stg/.env.stg`, so
-migrations need a one-shot `migrate/migrate` container scoped to that
-compose project. The image is pinned by SHA256 digest — never `:latest`
-— following the same policy as the infra images (see "Bumping infra
-image digests").
+**Automatic path (SIN-63332).** On every `cd-stg` run after `main`
+goes green, the `migrate-up` step (between the `/health` and `/login`
+smokes) SSHes `migrate-up <APP_IMAGE_REF>` to
+`/opt/crm/stg/bin/deploy.sh`. The script extracts `/migrations` from the
+just-deployed image via `docker cp`, then runs a one-shot
+`migrate/migrate:v4.17.1` sidecar pinned by manifest-list digest inside
+the staging compose network. golang-migrate is idempotent — re-running
+against an already-migrated DB is a no-op — so the step is safe to
+re-trigger after a transient failure. The DSN parts are read from
+`/opt/crm/stg/.env.stg` (`POSTGRES_USER` / `POSTGRES_PASSWORD` /
+`POSTGRES_DB`); they are NOT inlined in the workflow and the GitHub
+runner never sees plaintext DB credentials. See SIN-63332 and the
+`migrate-up` step in `.github/workflows/cd-stg.yml`.
 
-The repo ships migrations only inside the Go module, not on the VPS
-filesystem. Push them once during provisioning and re-push after any
-migration is added (parallel to the `compose.stg.yml` scp flow in §4):
+Migrations no longer have to be `scp`-ed to the VPS by hand — the
+Dockerfile's `crm-server` stage now ships `/migrations` alongside the
+binary (SIN-63332), and `deploy.sh migrate-up` reads them straight from
+the just-deployed image. The manual procedure below is still documented
+as **break-glass** for the cases where the automatic step cannot be
+used (initial bring-up, recovery, or `cd-stg` itself is broken).
+
+**Break-glass: manual `migrate up` from the VPS.** The local `make
+migrate-up` (Makefile) reads `compose/.env` and joins the dev compose
+network. On the VPS, Postgres is in the staging compose stack
+(`crm-stg-postgres-1`) and credentials live in `/opt/crm/stg/.env.stg`,
+so manual migrations need the same one-shot `migrate/migrate` container
+the script uses, scoped to the staging compose project. The image is
+pinned by SHA256 digest — never `:latest` — following the same policy as
+the infra images (see "Bumping infra image digests").
+
+Manual mode also requires the migrations bytes on the VPS filesystem.
+Push them once during provisioning and re-push after any migration is
+added (parallel to the `compose.stg.yml` scp flow in §4):
 
 ```bash
 # On the workstation, in the cloned crm repo root.
@@ -857,12 +883,15 @@ sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
 
 **Failure mode if you skip this step.** The app boots, `/health` returns
 `{"status":"ok","commit_sha":"<sha>"}` (it is static and does not touch
-the DB by design), and the `cd-stg` smoke gate stays green — but any
-endpoint that reads from a missing table returns `500`. A `/health` 200
-is therefore necessary but not sufficient for "deploy is healthy". After
-each migration release, run at least one DB-touching smoke check before
-declaring success. Two options that do not need an authenticated
-session:
+the DB by design), and the `cd-stg` `/health` smoke stays green — but
+any endpoint that reads from a missing table returns `500`. A `/health`
+200 is therefore necessary but not sufficient for "deploy is healthy".
+The automatic `migrate-up` step (SIN-63332) is the **prevention** layer
+that closes this gap; the `/login` smoke gate (SIN-63270) is the
+**detection** layer that catches a real regression even when migrations
+are up to date. Both stay. If you ever need to verify the DB schema by
+hand — e.g. after a break-glass restore — two options that do not need
+an authenticated session:
 
 ```bash
 # Option A — count rows in a known table from inside the postgres container:

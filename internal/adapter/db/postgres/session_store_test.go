@@ -28,8 +28,10 @@ import (
 // freshDBWithIAM builds a per-test DB and applies 0004-0006 on top of the
 // harness's default 0001-0003 sequence, then layers 0077_session_activity
 // so the sessions table carries the role + last_activity columns the
-// adapter reads/writes (SIN-63158). Cleanup is handled by the underlying
-// testpg.DB t.Cleanup hook.
+// adapter reads/writes (SIN-63158), 0111 for the per-session CSRF token,
+// and 0112 for the users.totp_required_at column that SIN-63336 added to
+// the staging seed (so applyStgSeed does not 42703 on a fresh test DB).
+// Cleanup is handled by the underlying testpg.DB t.Cleanup hook.
 func freshDBWithIAM(t *testing.T) *testpg.DB {
 	t.Helper()
 	db := harness.DB(t)
@@ -40,7 +42,9 @@ func freshDBWithIAM(t *testing.T) *testpg.DB {
 		"0005_create_users.up.sql",
 		"0006_create_sessions.up.sql",
 		"0077_session_activity.up.sql",
+		"0083_split_audit_log.up.sql",
 		"0111_sessions_csrf_token.up.sql",
+		"0112_user_mfa.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
