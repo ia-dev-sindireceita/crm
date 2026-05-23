@@ -442,6 +442,22 @@ type Deps struct {
 	//   POST  /master/tenants            — ActionMasterTenantCreate
 	//   PATCH /master/tenants/{id}/plan  — ActionMasterSubscriptionAssignPlan
 	MasterTenants MasterTenantsRoutes
+
+	// UserMFA is the SIN-63361 user-side TOTP enforcement surface.
+	// When LoginPost is non-nil the router REPLACES the legacy
+	// handler.LoginPost mount on POST /login with the MFA-aware
+	// wrapper from internal/adapter/httpapi/usermfa — that wrapper
+	// consults the tenant-user MFARequirement before minting the
+	// session cookie and 303s to /admin/2fa/{setup,verify} when the
+	// principal is required to enroll/verify. Setup, Verify, and
+	// Regenerate are mounted on /admin/2fa/{setup,verify,regenerate}
+	// inside the tenanted group BUT outside the authed sub-group
+	// (the handlers gate on the __Host-mfa-pending cookie, not on
+	// the post-MFA tenant session cookie). Any nil slot causes the
+	// corresponding route to be skipped — router tests that don't
+	// exercise the MFA surface keep their pre-PR behaviour and the
+	// legacy single-step handler.LoginPost stays mounted.
+	UserMFA UserMFARoutes
 }
 
 // LGPDRoutes bundles the two inner handlers and the shared rate-limit
@@ -472,6 +488,37 @@ type LGPDRoutes struct {
 	RequestsPage http.Handler
 	DeleteForm   http.Handler
 	RateLimit    func(http.Handler) http.Handler
+}
+
+// UserMFARoutes bundles the four handlers from
+// internal/adapter/httpapi/usermfa that together gate the tenant
+// admin / opt-in user TOTP flow. cmd/server/usermfa_wire.go builds
+// them on top of the shared IAM pgxpool and supplies all four slots
+// together; router tests can inject any subset.
+//
+//   - LoginPost replaces handler.LoginPost on POST /login when set.
+//     The MFA-aware wrapper validates credentials via the same
+//     iam.Service.Login as the legacy handler, then consults the
+//     TenantUserMFARequirement reader: TOTP-required principals are
+//     handed a __Host-mfa-pending cookie and 303'd to /admin/2fa/setup
+//     (when not yet enrolled) or /admin/2fa/verify (when enrolled);
+//     non-MFA principals proceed exactly as today (302 to /hello-tenant
+//     with __Host-sess-tenant). The pre-/login rate-limit middleware
+//     from buildLoginRateLimit still wraps this handler.
+//   - Setup renders GET/POST /admin/2fa/setup — the QR + recovery
+//     codes pane. Gated on the __Host-mfa-pending cookie, not the
+//     tenant session cookie, so a half-authenticated user can complete
+//     enrolment.
+//   - Verify renders GET/POST /admin/2fa/verify — submits the TOTP
+//     or a recovery code. On success the handler mints the real
+//     tenant session and 303s to the originally-requested ?next=.
+//   - Regenerate renders POST /admin/2fa/regenerate — issues a fresh
+//     recovery-code set after a recent successful verify.
+type UserMFARoutes struct {
+	LoginPost  http.Handler
+	Setup      http.Handler
+	Verify     http.Handler
+	Regenerate http.Handler
 }
 
 // MasterTenantsRoutes bundles the three inner handlers for the master
@@ -606,13 +653,49 @@ func NewRouter(deps Deps) http.Handler {
 			tenanted.Method(http.MethodPost, "/consent/cookies", deps.WebConsent)
 		}
 
-		loginPost := http.Handler(handler.LoginPost(handler.LoginConfig{
-			IAM: deps.IAM,
-		}))
+		// SIN-63361 — MFA-aware POST /login. When deps.UserMFA.LoginPost
+		// is non-nil the router REPLACES the legacy handler.LoginPost
+		// mount with the wrapper from internal/adapter/httpapi/usermfa.
+		// The wrapper enforces the TenantUserMFARequirement contract
+		// (TOTP-required users get a pending cookie + 303 to
+		// /admin/2fa/{setup,verify}) before minting the tenant session.
+		// The same buildLoginRateLimit wrap applies either way, so the
+		// per-IP / per-email throttle that protects POST /login is
+		// preserved through the MFA wireup.
+		var loginPost http.Handler
+		if deps.UserMFA.LoginPost != nil {
+			loginPost = deps.UserMFA.LoginPost
+		} else {
+			loginPost = handler.LoginPost(handler.LoginConfig{
+				IAM: deps.IAM,
+			})
+		}
 		if mw := buildLoginRateLimit(deps); mw != nil {
 			loginPost = mw(loginPost)
 		}
 		tenanted.Method(http.MethodPost, "/login", loginPost)
+
+		// SIN-63361 — /admin/2fa/{setup,verify,regenerate}. Mounted in
+		// the tenanted group BUT outside the authed sub-group: the
+		// handlers gate on the __Host-mfa-pending cookie (the proof
+		// of credential success that has not yet completed TOTP), not
+		// on the post-MFA __Host-sess-tenant session cookie. Reaching
+		// these routes without the pending cookie returns 401 with a
+		// 2fa_required audit row. Each slot is nil-safe so router
+		// tests that don't wire the surface keep their pre-PR
+		// behaviour and the chi router falls through to its 404 for
+		// the missing routes.
+		if deps.UserMFA.Setup != nil {
+			tenanted.Method(http.MethodGet, "/admin/2fa/setup", deps.UserMFA.Setup)
+			tenanted.Method(http.MethodPost, "/admin/2fa/setup", deps.UserMFA.Setup)
+		}
+		if deps.UserMFA.Verify != nil {
+			tenanted.Method(http.MethodGet, "/admin/2fa/verify", deps.UserMFA.Verify)
+			tenanted.Method(http.MethodPost, "/admin/2fa/verify", deps.UserMFA.Verify)
+		}
+		if deps.UserMFA.Regenerate != nil {
+			tenanted.Method(http.MethodPost, "/admin/2fa/regenerate", deps.UserMFA.Regenerate)
+		}
 
 		tenanted.Group(func(authed chi.Router) {
 			authed.Use(middleware.Auth(deps.IAM))

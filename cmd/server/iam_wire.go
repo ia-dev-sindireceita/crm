@@ -88,6 +88,14 @@ var iamRoutes = []string{
 	// custom-domain catch-all at "/" would shadow both routes and the
 	// SIN-63186 RequireAction gate would never run.
 	"/admin/lgpd/",
+	// SIN-63361 — user-side TOTP enrolment + verify (Fase 6 / ADR
+	// 0102). The stdlib mux dispatches "/admin/2fa/" (subtree) to
+	// the chi router, which then re-matches the three routes
+	// (setup/verify/regenerate) inside the tenanted group. Without
+	// this prefix the custom-domain catch-all at "/" would shadow
+	// every enrolment URL and the seeded totp_required_at flag would
+	// be unreachable — exactly the SIN-63359 Lens 1 failure.
+	"/admin/2fa/",
 	// SIN-63191 — Fase 6 PR4. /admin/contacts/{id}/lgpd is shadowed by
 	// the existing /contacts/ prefix only when the chi router is wired,
 	// so we register a dedicated subtree under /admin/contacts/ for the
@@ -191,6 +199,16 @@ type iamHandlerOpts struct {
 	// the chain unchanged — pages fall back to DefaultThemeStyle and
 	// the AC #4 cache-invalidation seam is a no-op.
 	Theme *middleware.ThemeMiddleware
+
+	// WebUserMFA carries the SIN-63361 user-side TOTP handlers
+	// (LoginPost + Setup + Verify + Regenerate) built by
+	// buildUserMFAStack. The caller-supplied opts value wins when
+	// LoginPost is non-nil — the same pattern as opts.WebLGPD — so
+	// cmd/server unit tests can inject stub handlers without
+	// standing up the seed cipher / postgres stack. When all slots
+	// are nil the legacy password-only POST /login handler stays
+	// mounted and the /admin/2fa routes remain unmounted.
+	WebUserMFA httpapi.UserMFARoutes
 
 	// Metrics is the process-wide obs.Metrics constructed at boot.
 	// SIN-63105 threads it through httpapi.Deps.Metrics so the
@@ -317,6 +335,31 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		lgpdCleanup = stack.Cleanup
 	}
 
+	// SIN-63361 — user-side TOTP. Built here so it reuses the IAM
+	// pool + the iamAdapter that already implements the
+	// LoginAuthenticator slice the usermfa wrapper needs. Same wire
+	// rule as WebLGPD: the caller-supplied opts.WebUserMFA wins
+	// when LoginPost is non-nil so cmd/server unit tests can inject
+	// stubs without standing up the seed cipher. Failure inside
+	// buildUserMFAStack returns the noop stack — POST /login then
+	// falls back to the password-only handler.LoginPost and the
+	// /admin/2fa routes stay unmounted.
+	userMFARoutes := opts.WebUserMFA
+	userMFACleanup := func() {}
+	if userMFARoutes.LoginPost == nil {
+		stack := buildUserMFAStack(ctx, pool, iamAdapter{
+			tenants:  tenants,
+			users:    users,
+			sessions: sessions,
+			logger:   logger,
+			limiter:  limiter,
+			policies: policies,
+			pool:     pool,
+		}, logoutAudit, getenv)
+		userMFARoutes = stack.Routes
+		userMFACleanup = stack.Cleanup
+	}
+
 	h := httpapi.NewRouter(httpapi.Deps{
 		IAM: iamAdapter{
 			tenants:  tenants,
@@ -356,9 +399,11 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebConsent:        opts.WebConsent,
 		Theme:             opts.Theme,
 		Metrics:           opts.Metrics,
+		UserMFA:           userMFARoutes,
 	})
 
 	fullCleanup := func() {
+		userMFACleanup()
 		lgpdCleanup()
 		pool.Close()
 		cleanup()
