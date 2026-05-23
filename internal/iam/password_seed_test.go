@@ -39,7 +39,7 @@ func TestStgSeed_PasswordHashes_VerifyAgainstStgPassword(t *testing.T) {
 	// the algorithm in prose are not mistaken for hashes.
 	hashRe := regexp.MustCompile(`'(\$argon2id\$[^']+)'`)
 	matches := hashRe.FindAllStringSubmatchIndex(contents, -1)
-	if want := 3; len(matches) != want {
+	if want := 4; len(matches) != want {
 		t.Fatalf("expected %d argon2id hashes in %s, found %d", want, absPath, len(matches))
 	}
 
