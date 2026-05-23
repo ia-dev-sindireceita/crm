@@ -43,8 +43,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/adapter/crypto/aesgcm"
+	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/usermfa"
 	usermfaadapter "github.com/pericles-luz/crm/internal/adapter/usermfa"

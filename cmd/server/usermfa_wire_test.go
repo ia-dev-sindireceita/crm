@@ -353,8 +353,8 @@ func (stubSeedCipher) Decrypt([]byte) ([]byte, error) { return nil, errors.New("
 
 type stubCodeHasher struct{}
 
-func (stubCodeHasher) Hash(string) (string, error)            { return "", errors.New("stub") }
-func (stubCodeHasher) Verify(string, string) (bool, error)    { return false, errors.New("stub") }
+func (stubCodeHasher) Hash(string) (string, error)         { return "", errors.New("stub") }
+func (stubCodeHasher) Verify(string, string) (bool, error) { return false, errors.New("stub") }
 
 type stubAlerter struct{}
 

@@ -36,8 +36,8 @@ import (
 	"testing"
 	"time"
 
-	pg "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/adapter/crypto/aesgcm"
+	pg "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/usermfa"
