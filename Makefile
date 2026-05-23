@@ -58,6 +58,9 @@ logs: ## Tail logs from every service
 test: ## Run Go test suite with coverage
 	$(GO) test ./... -race -count=1 -cover
 
+test-workflow: ## Run workflow regression guards (cd-stg preflight, SIN-63348)
+	@bash tests/workflow/cd-stg-preflight_test.sh
+
 test-integration: ## Run webhook integration suite (Postgres real, build tag `integration`)
 	@if [ -z "$$TEST_POSTGRES_DSN" ]; then \
 		echo "test-integration: TEST_POSTGRES_DSN not set; falling back to testcontainers (requires Docker)."; \

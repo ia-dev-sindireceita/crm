@@ -239,6 +239,69 @@ jobs:
           echo "Manual rollback required — see docs/deploy/staging.md"
           exit 1
 
+      # SIN-63348 — preflight: detect stale VPS wrapper before migrate-up.
+      #
+      # The migrate-up step below SSHes the `migrate-up <image-ref>` verb to
+      # /opt/crm/stg/bin/deploy.sh. That verb only exists in stg-deploy.sh
+      # versions shipped after SIN-63332. If a human operator has not
+      # re-installed the wrapper on the VPS since then (the in-repo
+      # deploy/scripts/stg-deploy.sh does NOT auto-sync — see
+      # docs/deploy/staging.md §4), the old wrapper rejects the verb with
+      # `stg-deploy: usage: deploy <image-ref>` exit 64. SIN-63347 caught
+      # this on the merge that should have run the SIN-63332 step end-to-end
+      # (cd-stg run 26334123677 / job 77524925091). The cryptic usage line
+      # made the failure look like a workflow bug instead of a VPS-side
+      # staleness.
+      #
+      # The preflight invokes the wrapper with empty argv (no
+      # SSH_ORIGINAL_COMMAND, no positional args). The wrapper hits its
+      # usage-check branch and prints its current usage line to stderr,
+      # then exits 64. We grep stdout+stderr for the canonical label
+      # `migrate-up` — present in the SIN-63332+ wrapper, absent in the
+      # legacy `deploy <image-ref>` wrapper. The wrapper's non-zero exit
+      # is EXPECTED and ignored; the grep verdict is the gate.
+      #
+      # Authentication / surface area: same SSH key and same
+      # `command="/opt/crm/stg/bin/deploy.sh"` authorized_keys lockdown as
+      # the deploy and migrate-up steps. No new SSH key, no unrestricted
+      # shell path. Option C from SIN-63347 (second SSH key) was explicitly
+      # rejected; Option B (wrapper self-update verb) is deferred as a
+      # future TODO.
+      - name: preflight wrapper supports migrate-up
+        timeout-minutes: 1
+        env:
+          STG_HOST: ${{ secrets.STG_HOST }}
+          STG_USER: ${{ secrets.STG_USER }}
+        run: |
+          set -uo pipefail
+          # The wrapper exits 64 on empty argv (usage branch). We capture
+          # stdout+stderr and inspect content, NOT the exit code.
+          output="$(ssh -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              "${STG_USER}@${STG_HOST}" </dev/null 2>&1 || true)"
+          if printf '%s\n' "${output}" | grep -q 'migrate-up'; then
+            echo "preflight OK — /opt/crm/stg/bin/deploy.sh supports migrate-up"
+            exit 0
+          fi
+          # Wrapper is stale. Emit an actionable error that names exactly
+          # what is wrong, what the expected wrapper looks like, what was
+          # observed, and the operator remediation — see staging.md §4.
+          echo "::error::VPS wrapper /opt/crm/stg/bin/deploy.sh is STALE — missing the migrate-up verb (SIN-63332)."
+          {
+            echo "stale-component: /opt/crm/stg/bin/deploy.sh on ${STG_HOST}"
+            echo "expected:        a usage line that mentions 'migrate-up' (SIN-63332+ wrapper)"
+            echo "observed:        ${output:-<empty>}"
+            echo
+            echo "remediation (operator, see docs/deploy/staging.md §4):"
+            echo "  # From a workstation with the crm repo cloned at \`main\`:"
+            echo "  scp deploy/scripts/stg-deploy.sh root@${STG_HOST}:/tmp/"
+            echo "  # Then on the VPS as root:"
+            echo "  sudo install -o root -g crm-deploy -m 0750 \\"
+            echo "    /tmp/stg-deploy.sh /opt/crm/stg/bin/deploy.sh"
+            echo "  # Re-run this workflow once the wrapper is in place."
+          } >&2
+          exit 1
+
       # SIN-63332 — migrate-up gate. PR #104 (Fase 5+6) shipped new tables
       # and columns; the tier-2 deploy from fork → pericles-luz/crm does
       # NOT auto-run migrate up against crm-stg-postgres-1, so the new

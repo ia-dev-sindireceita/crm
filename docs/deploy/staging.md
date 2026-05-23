@@ -616,6 +616,19 @@ workstation — the CD pipeline only pushes the application image, not these
 on-host artifacts. Automating that sync is tracked as a follow-up; until
 then it is operator-driven.
 
+> **Wrapper-version preflight (SIN-63348).** Because the wrapper is
+> operator-installed and the application image is auto-deployed, the two
+> can drift. The `cd-stg` workflow runs a preflight between `/health` and
+> `migrate-up` that SSHes the wrapper with empty argv and greps its usage
+> line for the canonical label `migrate-up`. If the label is missing, the
+> deploy fails red with the exact `scp` + `sudo install` remediation from
+> the block above. Keep this section in sync with the usage line in
+> `deploy/scripts/stg-deploy.sh` — the preflight greps for the literal
+> string `migrate-up` on stdout+stderr of an empty-argv invocation, so a
+> rename of the verb requires changing the workflow grep at the same
+> time. The current wrapper emits
+> `stg-deploy: usage: {deploy|migrate-up} <image-ref>`.
+
 Generate the two infra passwords. They land in `DATABASE_URL` and the MinIO
 admin credential, so they MUST be alphanumeric (no `@`, `:`, `/`, `?` —
 those break URL parsing in `postgres://user:pass@host/...`). 256 bits of hex
