@@ -341,6 +341,17 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	if err := EnrollmentRedisRequired(getenv); err != nil {
 		return fmt.Errorf("custom-domain wire-up: %w", err)
 	}
+
+	// SIN-63362: hard-fail boot when APP_ENV={staging,production} and
+	// MASTER_OPS_DATABASE_URL is unset. buildLGPDStack returns a
+	// noopLGPDStack on the missing-DSN path, the chi router then omits
+	// every /admin/lgpd/* route, and operators have no way to tell the
+	// LGPD admin surface is dark until they curl it (the SecurityEngineer
+	// Lens 2 sweep found this on staging). Failing boot here converts
+	// the silent disable into a fail-closed startup error.
+	if err := LGPDMasterOpsRequired(getenv); err != nil {
+		return fmt.Errorf("lgpd wire-up: %w", err)
+	}
 	cdHandler, cdCleanup := buildCustomDomainHandler(ctx, getenv)
 	defer cdCleanup()
 	if cdHandler != nil {
