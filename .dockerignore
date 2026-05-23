@@ -4,6 +4,16 @@ bin
 deploy
 docs
 migrations
+# SIN-63332 — re-include the migrations/ tree in the build context so the
+# crm-server runtime stage can ship the .sql files at /migrations. The
+# `cd-stg` workflow's `migrate-up` step (stg-deploy.sh `migrate-up` verb)
+# extracts /migrations from the just-deployed image with `docker cp` and
+# mounts it into a one-shot `migrate/migrate` sidecar. This lets the
+# pipeline apply DB schema changes between deploy and login smoke without
+# needing a separate scp of migrations to the VPS each release. The bytes
+# are static SQL (~60 KB) and the runtime user (UID 65532 nonroot) only
+# reads them; nothing under `migrations/` is executable at runtime.
+!migrations
 scripts
 !scripts/backup.sh
 !scripts/backup-restore.sh

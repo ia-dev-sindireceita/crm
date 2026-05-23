@@ -239,6 +239,48 @@ jobs:
           echo "Manual rollback required — see docs/deploy/staging.md"
           exit 1
 
+      # SIN-63332 — migrate-up gate. PR #104 (Fase 5+6) shipped new tables
+      # and columns; the tier-2 deploy from fork → pericles-luz/crm does
+      # NOT auto-run migrate up against crm-stg-postgres-1, so the new
+      # schema was missing on staging until an operator SSHed in to apply
+      # it. The SIN-63270 /login smoke caught the resulting 500 *after*
+      # the fact; this step PREVENTS it by applying migrations between
+      # /health pod-ready and the login smoke.
+      #
+      # Implementation: SSHes the `migrate-up <image-ref>` verb on
+      # stg-deploy.sh (deploy/scripts/stg-deploy.sh). That verb extracts
+      # /migrations from the just-deployed image via `docker cp`, runs a
+      # one-shot migrate/migrate:v4.17.1 sidecar pinned by manifest-list
+      # digest inside the staging compose network, and exits 0 on
+      # success. golang-migrate is idempotent — re-running against an
+      # already-migrated DB is a no-op.
+      #
+      # Credentials: POSTGRES_USER/PASSWORD/DB are read from
+      # /opt/crm/stg/.env.stg on the VPS, NOT inlined here. The runner
+      # never sees plaintext DB credentials — the existing
+      # authorized_keys command="…" constraint is the only thing the
+      # runner can invoke over SSH, and the script enforces a strict
+      # ghcr.io/pericles-luz/crm@sha256:<64hex> image-ref regex before
+      # touching the DB.
+      #
+      # Failure mode: a missing migration or a SQL error makes
+      # `migrate ... up` exit non-zero; SSH propagates that exit code;
+      # the workflow turns red and the /login smoke below is skipped.
+      # 60s timeout (AC #4 of SIN-63332) absorbs migrate-image cold pulls
+      # while staying well under the job-level 8 min budget.
+      - name: migrate-up
+        timeout-minutes: 1
+        env:
+          STG_HOST: ${{ secrets.STG_HOST }}
+          STG_USER: ${{ secrets.STG_USER }}
+          APP_IMAGE_REF: ${{ steps.compose-ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              "${STG_USER}@${STG_HOST}" \
+              "migrate-up ${APP_IMAGE_REF}"
+
       # SIN-63270 — login smoke gate. PR #104 shipped a panic-on-valid-creds
       # regression (F10) that /health did not catch because /health never
       # touches IAM. This step drives the same three-case matrix that

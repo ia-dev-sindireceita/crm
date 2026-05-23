@@ -115,6 +115,15 @@ COPY --from=builder /out/server /app/crm
 # leg curls these routes at PR time to keep the regression fenced.
 COPY --from=builder /src/web/static /app/web/static
 
+# SIN-63332 — ship the schema migrations alongside the binary so the
+# cd-stg `migrate-up` step (deploy/scripts/stg-deploy.sh `migrate-up`
+# verb) can extract them from the just-deployed image with `docker cp`
+# and apply them via a one-shot migrate/migrate sidecar before the
+# login smoke runs. Distroless has no shell, so the migrations are
+# read-only data here, not an entrypoint — the server binary never
+# touches /migrations at runtime.
+COPY migrations /migrations
+
 USER 65532:65532
 WORKDIR /app
 EXPOSE 8080
