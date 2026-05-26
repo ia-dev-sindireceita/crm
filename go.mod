@@ -13,7 +13,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/miekg/dns v1.1.72
 	github.com/nats-io/nats-server/v2 v2.14.0
-	github.com/nats-io/nats.go v1.51.0
+	github.com/nats-io/nats.go v1.52.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.66.1
