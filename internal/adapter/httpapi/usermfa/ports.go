@@ -65,6 +65,16 @@ type EnrollmentChecker interface {
 	IsEnrolled(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
+// Reenroller is the write port the verify handler uses to force a
+// re-enrolment when the stored seed ciphertext is unreadable under
+// the current SeedCipher key. Calling MarkReenrollRequired flips the
+// row so the next IsEnrolled check returns false and the password-only
+// login lands the user on /admin/2fa/setup for a fresh enrolment (the
+// same self-heal path the recovery-code flow already uses).
+type Reenroller interface {
+	MarkReenrollRequired(ctx context.Context, userID uuid.UUID) error
+}
+
 // SessionMinter creates the post-verify tenant session row and returns
 // it. The handler writes the session cookie + CSRF cookie from the
 // fields on the returned iam.Session.

@@ -235,7 +235,11 @@ func (s *Service) Verify(ctx context.Context, userID uuid.UUID, code string) err
 	}
 	seed, err := s.cipher.Decrypt(ciphertext)
 	if err != nil {
-		return fmt.Errorf("mfa: Verify: decrypt seed: %w", err)
+		// Wrap with ErrSeedCipherDecode so HTTP adapters can match this
+		// case via errors.Is and force re-enrolment instead of returning
+		// a generic 500. The underlying cipher error message is preserved
+		// via %v for log forensics; %w pins the sentinel for the match.
+		return fmt.Errorf("mfa: Verify: decrypt seed: %w: %v", ErrSeedCipherDecode, err)
 	}
 	// Calls the package-level TOTP function (totp.go), not Service.Verify.
 	if err := totpVerify(seed, code, s.clock(), totpVerifyWindow); err != nil {

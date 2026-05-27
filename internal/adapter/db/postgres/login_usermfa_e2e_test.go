@@ -233,6 +233,7 @@ func TestRouter_Login_E2E_StgSeed_TOTPSetup_RendersQRAndCodes(t *testing.T) {
 		Regenerator:   mfaSvc,
 		Pendings:      usermfa.NewPendingsBridge(pendings),
 		Enrollment:    seeds,
+		Reenroller:    seeds,
 		SessionMinter: sessionMinter,
 		Failures:      usermfa.NewMemoryFailureCounter(0),
 		Audit:         auditLogger,

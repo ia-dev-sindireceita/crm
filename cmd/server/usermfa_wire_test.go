@@ -433,6 +433,31 @@ func TestTenantOrSentinel(t *testing.T) {
 	}
 }
 
+// SIN-63589 wireup coverage. The Reenroller port is the new dependency
+// the verify handler uses when the stored seed ciphertext is unreadable
+// under the current SeedCipher key. tenantReenrollBridge mirrors the
+// existing tenantEnrollmentBridge — these tests cover the same two
+// failure modes the sibling bridge already covers (missing tenant on
+// context, closed pool) so the wireup-coverage profile stays uniform.
+func TestTenantReenrollBridge_NoTenantOnContext_PropagateError(t *testing.T) {
+	t.Parallel()
+	b := &tenantReenrollBridge{pool: &pgxpool.Pool{}}
+	if err := b.MarkReenrollRequired(context.Background(), uuid.New()); err == nil {
+		t.Fatalf("reenroller.MarkReenrollRequired: expected error for missing tenant")
+	}
+}
+
+func TestTenantReenrollBridge_RealPoolButUnreachable_ReturnsExecError(t *testing.T) {
+	t.Parallel()
+	pool := newUnreachablePool(t)
+	tID := uuid.New()
+	ctx := tenancy.WithContext(context.Background(), &tenancy.Tenant{ID: tID, Name: "acme", Host: "h"})
+	b := &tenantReenrollBridge{pool: pool}
+	if err := b.MarkReenrollRequired(ctx, uuid.New()); err == nil {
+		t.Fatalf("reenroller.MarkReenrollRequired: expected exec error on closed-port pool")
+	}
+}
+
 // TestIAMRoutesIncludesUserMFAAdmin pins the stdlib-mux dispatch path:
 // the public mux delegates "/admin/2fa/" (subtree) to the chi router,
 // which then re-matches the three usermfa routes inside the tenanted
