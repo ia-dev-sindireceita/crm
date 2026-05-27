@@ -129,6 +129,20 @@ func (u *UIHandler) contactPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid contact id", http.StatusBadRequest)
 		return
 	}
+	// SIN-63590 — ADR-letter conformance: cross-tenant / nonexistent
+	// contact UUIDs return 404 from the form-render route, matching the
+	// POST action endpoint. Lookup is RLS-bound via Export.GetContact
+	// (postgres.WithTenant), so cross-tenant rows are indistinguishable
+	// from no-rows here.
+	if _, err := u.h.deps.Export.GetContact(r.Context(), tenant.ID, contactID); err != nil {
+		if errors.Is(err, domain.ErrDeletionRequestNotFound) {
+			http.Error(w, "contact not found", http.StatusNotFound)
+			return
+		}
+		u.h.deps.Logger.Error("web/lgpd: contact lookup", "err", err.Error())
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	token := u.deps.CSRFToken(r)
 	if token == "" {
 		http.Error(w, "csrf token missing", http.StatusInternalServerError)
