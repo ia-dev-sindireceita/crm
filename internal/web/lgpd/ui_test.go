@@ -6,6 +6,7 @@ package lgpd_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -191,6 +192,78 @@ func TestUI_ContactPage_NoCSRF(t *testing.T) {
 	ui.ContactPage(w, contactReq(t, contactID, uuid.New(), uuid.New()))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d; want 500", w.Code)
+	}
+}
+
+// TestUI_ContactPage_ContactNotFound_404 — SIN-63590. The RLS-bound
+// ExportRepository.GetContact reports ErrDeletionRequestNotFound for
+// both cross-tenant and nonexistent contact ids; the form-render route
+// must surface that as 404 instead of 200 (ADR-letter conformance with
+// the POST action endpoint).
+func TestUI_ContactPage_ContactNotFound_404(t *testing.T) {
+	tenantID := uuid.New()
+	contactID := uuid.New()
+	userID := uuid.New()
+	parent, err := lgpd.New(lgpd.Deps{
+		Export:    &fakeExport{getErr: domain.ErrDeletionRequestNotFound},
+		Deletions: newFakeDeletions(),
+		Audit:     &fakeAudit{},
+	})
+	if err != nil {
+		t.Fatalf("parent New: %v", err)
+	}
+	ui, err := lgpd.NewUI(parent, lgpd.UIDeps{
+		Deletions: newFakeDeletions(),
+		Lister:    &fakeLister{},
+		Audit:     &fakeAudit{},
+		CSRFToken: func(*http.Request) string { return "csrf-test-token" },
+	})
+	if err != nil {
+		t.Fatalf("NewUI: %v", err)
+	}
+	w := httptest.NewRecorder()
+	ui.ContactPage(w, contactReq(t, contactID, tenantID, userID))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404 (body=%s)", w.Code, w.Body.String())
+	}
+	// AC: no form / CSRF leaks into the 404 body — only the standard
+	// http.Error text.
+	if strings.Contains(w.Body.String(), "csrf-test-token") {
+		t.Errorf("404 body leaked csrf token: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), contactID.String()) {
+		t.Errorf("404 body leaked the requested contact id: %s", w.Body.String())
+	}
+}
+
+// TestUI_ContactPage_ContactLookupError_500 — generic adapter errors
+// (DB down, RLS misconfig) MUST surface as 500, not 404, so the 404
+// stays a precise existence signal and the operator gets an alert.
+func TestUI_ContactPage_ContactLookupError_500(t *testing.T) {
+	tenantID := uuid.New()
+	contactID := uuid.New()
+	userID := uuid.New()
+	parent, err := lgpd.New(lgpd.Deps{
+		Export:    &fakeExport{getErr: errors.New("db down")},
+		Deletions: newFakeDeletions(),
+		Audit:     &fakeAudit{},
+	})
+	if err != nil {
+		t.Fatalf("parent New: %v", err)
+	}
+	ui, err := lgpd.NewUI(parent, lgpd.UIDeps{
+		Deletions: newFakeDeletions(),
+		Lister:    &fakeLister{},
+		Audit:     &fakeAudit{},
+		CSRFToken: func(*http.Request) string { return "csrf-test-token" },
+	})
+	if err != nil {
+		t.Fatalf("NewUI: %v", err)
+	}
+	w := httptest.NewRecorder()
+	ui.ContactPage(w, contactReq(t, contactID, tenantID, userID))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500 (body=%s)", w.Code, w.Body.String())
 	}
 }
 
