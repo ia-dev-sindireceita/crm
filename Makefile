@@ -26,7 +26,7 @@ ITEST_COVER_THRESHOLD ?= 85.0
 .DEFAULT_GOAL := help
 
 .PHONY: help up down logs build test test-integration test-integration-cover \
-        lint lint-aicache lint-customdomainnet lint-imports lint-postgres-adapter-tests \
+        lint lint-adapter-wireup lint-aicache lint-customdomainnet lint-imports lint-postgres-adapter-tests \
         lint-webboundary notenant forbidimport forbidwebboundary \
         migrate-up migrate-down seed-stg smoke-alert verify-vendor \
         widget widget-test
@@ -92,12 +92,15 @@ test-integration-cover: ## Run unit + integration with combined coverage and enf
 			exit 1; \
 		}
 
-lint: notenant lint-imports lint-postgres-adapter-tests lint-webboundary ## Run go vet + the notenant + forbidimport + forbidwebboundary analyzers + adapter-test guard (SIN-62232 / ADR 0071, SIN-62216, SIN-62750, SIN-62735)
+lint: notenant lint-imports lint-postgres-adapter-tests lint-webboundary lint-adapter-wireup ## Run go vet + the notenant + forbidimport + forbidwebboundary analyzers + adapter-test guard + httpapi wireup guard (SIN-62232 / ADR 0071, SIN-62216, SIN-62750, SIN-62735, SIN-63339 / ADR 0106)
 	$(GO) vet ./...
 	$(GO) vet -vettool=$(NOTENANT_BIN) ./internal/...
 
 lint-postgres-adapter-tests: ## Reject *_test.go files under internal/adapter/db/postgres/<subpkg>/ (SIN-62750)
 	./scripts/check-postgres-adapter-tests.sh
+
+lint-adapter-wireup: ## Fail when any internal/adapter/httpapi/<sub> package is unreachable from cmd/server (SIN-63339 / ADR 0106)
+	GO=$(GO) ./scripts/check-adapter-wireup.sh
 
 notenant: ## Build the notenant analyzer binary into bin/ (SIN-62232 / ADR 0071)
 	$(GO) build -o $(NOTENANT_BIN) ./tools/lint/notenant/cmd/notenant
