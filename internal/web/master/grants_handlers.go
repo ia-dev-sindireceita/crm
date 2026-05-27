@@ -92,13 +92,18 @@ func (h *Handler) IssueGrant(w http.ResponseWriter, r *http.Request) {
 	res, err := h.deps.Grants.IssueGrant(r.Context(), in)
 	switch {
 	case errors.Is(err, ErrPerGrantCapExceeded):
+		// SIN-63605: cap-exceeded responses point the operator at the
+		// 4-eyes request endpoint. The grants_panel template renders
+		// a "Solicitar aprovação 4-eyes" submit button when FormError
+		// is non-empty, posting the same form body to
+		// /master/tenants/{id}/grants/requests.
 		h.renderGrantsError(w, r, tenantID, p.UserID,
-			"Valor acima do limite por grant. Requer aprovação 4-eyes (em construção).",
+			"Valor acima do limite por grant. Requer aprovação 4-eyes — use o botão abaixo para abrir uma solicitação que precisa de um segundo master.",
 			kind, http.StatusUnprocessableEntity)
 		return
 	case errors.Is(err, ErrPerTenantWindowCapExceeded):
 		h.renderGrantsError(w, r, tenantID, p.UserID,
-			"Tenant excedeu o limite acumulado de 365 dias. Requer aprovação 4-eyes (em construção).",
+			"Tenant excedeu o limite acumulado de 365 dias. Requer aprovação 4-eyes — use o botão abaixo para abrir uma solicitação que precisa de um segundo master.",
 			kind, http.StatusUnprocessableEntity)
 		return
 	case err != nil:

@@ -540,6 +540,19 @@ type MasterTenantsRoutes struct {
 	GrantsNew    http.Handler
 	GrantsCreate http.Handler
 	GrantsRevoke http.Handler
+	// SIN-63605 C? — 4-eyes approval surface for over-cap grants.
+	// Each slot is the inner handler from internal/web/master; the
+	// router gates each verb behind its own RequireAction action
+	// constant (master.grant.request.create / .approve / .reject).
+	// The four POST verbs are additionally expected to be wrapped
+	// with mastermfa.RequireRecentMFA at the wire layer before being
+	// assigned here; the read-only GET routes ride the existing
+	// master-MFA session bit only.
+	GrantRequestsCreate  http.Handler // POST /master/tenants/{id}/grants/requests
+	GrantRequestsList    http.Handler // GET  /master/grants/requests
+	GrantRequestsShow    http.Handler // GET  /master/grants/requests/{id}
+	GrantRequestsApprove http.Handler // POST /master/grants/requests/{id}/approve
+	GrantRequestsReject  http.Handler // POST /master/grants/requests/{id}/reject
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -1082,6 +1095,42 @@ func NewRouter(deps Deps) http.Handler {
 						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyRevoke, nil)(deps.MasterTenants.GrantsRevoke),
 					)
 					authed.Method(http.MethodPost, "/master/grants/{id}/revoke", gRevoke)
+				}
+				// SIN-63605 — 4-eyes approval surface. Same gating
+				// envelope as the C10 grants routes: RequireAuth →
+				// RequireAction → handler. The wire layer wraps the
+				// POST verbs with mastermfa.RequireRecentMFA before
+				// installing them on the slot, mirroring the
+				// GrantsCreate/GrantsRevoke pattern.
+				if deps.MasterTenants.GrantRequestsCreate != nil {
+					grqCreate := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestCreate, nil)(deps.MasterTenants.GrantRequestsCreate),
+					)
+					authed.Method(http.MethodPost, "/master/tenants/{id}/grants/requests", grqCreate)
+				}
+				if deps.MasterTenants.GrantRequestsList != nil {
+					grqList := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsList),
+					)
+					authed.Method(http.MethodGet, "/master/grants/requests", grqList)
+				}
+				if deps.MasterTenants.GrantRequestsShow != nil {
+					grqShow := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsShow),
+					)
+					authed.Method(http.MethodGet, "/master/grants/requests/{id}", grqShow)
+				}
+				if deps.MasterTenants.GrantRequestsApprove != nil {
+					grqApprove := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsApprove),
+					)
+					authed.Method(http.MethodPost, "/master/grants/requests/{id}/approve", grqApprove)
+				}
+				if deps.MasterTenants.GrantRequestsReject != nil {
+					grqReject := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestReject, nil)(deps.MasterTenants.GrantRequestsReject),
+					)
+					authed.Method(http.MethodPost, "/master/grants/requests/{id}/reject", grqReject)
 				}
 			}
 		})

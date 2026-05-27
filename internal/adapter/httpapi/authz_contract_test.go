@@ -79,6 +79,13 @@ func TestAuthz_Contract_RoleActionMatrix(t *testing.T) {
 		{"gerente-grant-revoke-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantCourtesyRevoke, http.StatusForbidden},
 		{"atendente-grant-extra-tokens-DENY", iam.RoleTenantAtendente, iam.ActionMasterGrantCourtesyExtraTokens, http.StatusForbidden},
 
+		// SIN-63605 — 4-eyes approval flow (master only).
+		{"master-grant-request-create-ALLOW", iam.RoleMaster, iam.ActionMasterGrantRequestCreate, http.StatusOK},
+		{"master-grant-request-approve-ALLOW", iam.RoleMaster, iam.ActionMasterGrantRequestApprove, http.StatusOK},
+		{"master-grant-request-reject-ALLOW", iam.RoleMaster, iam.ActionMasterGrantRequestReject, http.StatusOK},
+		{"gerente-grant-request-approve-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantRequestApprove, http.StatusForbidden},
+		{"atendente-grant-request-reject-DENY", iam.RoleTenantAtendente, iam.ActionMasterGrantRequestReject, http.StatusForbidden},
+
 		// SIN-62880 — tenant billing/wallet reads (gerente only).
 		{"gerente-billing-view-ALLOW", iam.RoleTenantGerente, iam.ActionTenantBillingView, http.StatusOK},
 		{"gerente-wallet-view-ledger-ALLOW", iam.RoleTenantGerente, iam.ActionTenantWalletViewLedger, http.StatusOK},

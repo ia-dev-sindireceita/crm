@@ -183,6 +183,16 @@ var grantsPanelTmpl = template.Must(template.New("grants_panel").Funcs(grantsTem
     </div>
 
     <button type="submit" class="master-grants__create-submit">Conceder cortesia</button>
+    {{if .FormError}}
+    <button type="submit"
+            class="master-grants__create-request"
+            formaction="/master/tenants/{{.TenantID}}/grants/requests"
+            hx-post="/master/tenants/{{.TenantID}}/grants/requests"
+            hx-target="#grants-panel"
+            hx-swap="outerHTML">
+      Solicitar aprovação 4-eyes
+    </button>
+    {{end}}
   </form>
 
   <h2 class="master-grants__history-title">Cortesias anteriores</h2>

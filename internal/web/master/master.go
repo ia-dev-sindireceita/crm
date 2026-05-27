@@ -189,6 +189,13 @@ type Deps struct {
 	// the wallet adapter.
 	Grants GrantPort
 
+	// GrantRequests is the SIN-63605 4-eyes approval surface for
+	// over-cap grants (create / list / approve / reject). Optional:
+	// when nil the five request routes return 503 so the rest of the
+	// master console keeps working in deploys that haven't yet wired
+	// the master_grant_request adapter.
+	GrantRequests GrantRequestPort
+
 	// Billing is the SIN-62885 C11 billing-history view (subscription +
 	// invoices + grants). Optional: when nil, GET /master/tenants/{id}/
 	// billing returns 503 so deploys without the billing adapter wired
@@ -304,6 +311,14 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /master/tenants/{id}/grants/new", h.ShowGrantsForm)
 	mux.HandleFunc("POST /master/tenants/{id}/grants", h.IssueGrant)
 	mux.HandleFunc("POST /master/grants/{id}/revoke", h.RevokeGrant)
+	// SIN-63605 — 4-eyes approval surface for over-cap grants.
+	// Returns 503 when GrantRequests is nil. Routes are registered
+	// regardless so the URL surface is uniform across deploys.
+	mux.HandleFunc("POST /master/tenants/{id}/grants/requests", h.CreateGrantRequest)
+	mux.HandleFunc("GET /master/grants/requests", h.ListGrantRequests)
+	mux.HandleFunc("GET /master/grants/requests/{id}", h.ShowGrantRequest)
+	mux.HandleFunc("POST /master/grants/requests/{id}/approve", h.ApproveGrantRequest)
+	mux.HandleFunc("POST /master/grants/requests/{id}/reject", h.RejectGrantRequest)
 	// SIN-62885 C11 — read-only billing + ledger views. With Billing
 	// or Ledger nil the respective routes 503 so the console keeps
 	// working in deploys that have not wired the read adapters.

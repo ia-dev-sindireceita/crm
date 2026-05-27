@@ -90,6 +90,19 @@ func TestRBACAuthorizer_ContractMatrix(t *testing.T) {
 		{"atendente-grant-extra-tokens-DENY", iam.RoleTenantAtendente, iam.ActionMasterGrantCourtesyExtraTokens, false, iam.ReasonDeniedRBAC},
 		{"common-grant-revoke-DENY", iam.RoleTenantCommon, iam.ActionMasterGrantCourtesyRevoke, false, iam.ReasonDeniedRBAC},
 
+		// SIN-63605 — master.grant.request.* (4-eyes flow) allowed
+		// only for master. Defense-in-depth alongside the schema
+		// CHECK in migration 0097 that forbids requires_second_
+		// approver_id == created_by_user_id.
+		{"master-grant-request-create-ALLOW", iam.RoleMaster, iam.ActionMasterGrantRequestCreate, true, iam.ReasonAllowedMaster},
+		{"master-grant-request-approve-ALLOW", iam.RoleMaster, iam.ActionMasterGrantRequestApprove, true, iam.ReasonAllowedMaster},
+		{"master-grant-request-reject-ALLOW", iam.RoleMaster, iam.ActionMasterGrantRequestReject, true, iam.ReasonAllowedMaster},
+		{"gerente-grant-request-create-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantRequestCreate, false, iam.ReasonDeniedRBAC},
+		{"gerente-grant-request-approve-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantRequestApprove, false, iam.ReasonDeniedRBAC},
+		{"gerente-grant-request-reject-DENY", iam.RoleTenantGerente, iam.ActionMasterGrantRequestReject, false, iam.ReasonDeniedRBAC},
+		{"atendente-grant-request-approve-DENY", iam.RoleTenantAtendente, iam.ActionMasterGrantRequestApprove, false, iam.ReasonDeniedRBAC},
+		{"common-grant-request-reject-DENY", iam.RoleTenantCommon, iam.ActionMasterGrantRequestReject, false, iam.ReasonDeniedRBAC},
+
 		// SIN-62880 — tenant.billing.view + tenant.wallet.view_ledger
 		// allowed only for tenant_gerente; atendente, common, and master
 		// (without impersonation) are denied.

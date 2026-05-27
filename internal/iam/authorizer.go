@@ -46,6 +46,14 @@ const (
 	ActionMasterGrantCourtesyExtraTokens            Action = "master.grant_courtesy.extra_tokens"
 	ActionMasterGrantCourtesyRevoke                 Action = "master.grant_courtesy.revoke"
 
+	// SIN-63605 — 4-eyes approval flow for grants above the
+	// per-grant / per-tenant cap (ADR-0098 §D5). All three are
+	// master-only in the ADR-0090 matrix; the wire layer additionally
+	// gates them behind mastermfa.RequireRecentMFA(15m).
+	ActionMasterGrantRequestCreate  Action = "master.grant.request.create"
+	ActionMasterGrantRequestApprove Action = "master.grant.request.approve"
+	ActionMasterGrantRequestReject  Action = "master.grant.request.reject"
+
 	// Tenant-scope billing/wallet reads. Restricted to gerente — atendente
 	// and common do not see the wallet ledger or invoke history. RLS in
 	// internal/db/postgres scopes the underlying tables by company_id;
@@ -220,6 +228,11 @@ func defaultRolesByAction() map[Action][]Role {
 		ActionMasterGrantCourtesyExtraTokens:            {RoleMaster},
 		ActionMasterGrantCourtesyRevoke:                 {RoleMaster},
 
+		// SIN-63605 — 4-eyes approval flow (over-cap grants).
+		ActionMasterGrantRequestCreate:  {RoleMaster},
+		ActionMasterGrantRequestApprove: {RoleMaster},
+		ActionMasterGrantRequestReject:  {RoleMaster},
+
 		// Fase 2.5 — tenant billing/wallet reads (SIN-62880). Gerente
 		// only: atendente and common do not see the wallet ledger or
 		// invoice history.
@@ -273,6 +286,11 @@ func defaultMasterActions() map[Action]struct{} {
 		ActionMasterGrantCourtesyFreeSubscriptionPeriod: {},
 		ActionMasterGrantCourtesyExtraTokens:            {},
 		ActionMasterGrantCourtesyRevoke:                 {},
+
+		// SIN-63605 — 4-eyes approval flow (over-cap grants).
+		ActionMasterGrantRequestCreate:  {},
+		ActionMasterGrantRequestApprove: {},
+		ActionMasterGrantRequestReject:  {},
 
 		// Fase 3 H1 — master cross-tenant audit reader (SIN-62353).
 		ActionMasterAuditRead: {},
