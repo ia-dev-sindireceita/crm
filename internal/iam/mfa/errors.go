@@ -34,4 +34,15 @@ var (
 	// sentinel so the Service layer compares without importing the
 	// adapter's package (Hexagonal rule from ADR 0074).
 	ErrNotEnrolled = errors.New("mfa: master not enrolled")
+
+	// ErrSeedCipherDecode is returned by Service.Verify when the stored
+	// seed ciphertext cannot be decrypted under the currently-configured
+	// SeedCipher. The most common cause is a rotated key (e.g.
+	// USERMFA_SEED_KEY): rows encrypted under the previous key are
+	// unreadable until the user re-enrolls. HTTP adapters MUST treat
+	// this distinctly from a generic 500 — the recovery path is "mark
+	// the row reenroll_required and redirect to the setup surface", not
+	// "your request failed; try again later". The sentinel also gives
+	// SIEM a separate signal from a real ciphertext tamper attempt.
+	ErrSeedCipherDecode = errors.New("mfa: seed ciphertext unreadable under current key")
 )

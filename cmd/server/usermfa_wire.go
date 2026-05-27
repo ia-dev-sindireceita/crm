@@ -144,6 +144,7 @@ func buildUserMFAStack(_ context.Context, pool *pgxpool.Pool, iamSvc usermfa.Log
 	pendings := &tenantPendingsBridge{pool: pool}
 	requirements := &tenantRequirementsBridge{pool: pool}
 	enrollment := &tenantEnrollmentBridge{pool: pool}
+	reenroller := &tenantReenrollBridge{pool: pool}
 	failures := usermfa.NewMemoryFailureCounter(0)
 	auditBridge := &tenantUserMFAAuditBridge{writer: splitLogger}
 
@@ -169,6 +170,7 @@ func buildUserMFAStack(_ context.Context, pool *pgxpool.Pool, iamSvc usermfa.Log
 		Regenerator:   mfaSvc,
 		Pendings:      pendings,
 		Enrollment:    enrollment,
+		Reenroller:    reenroller,
 		SessionMinter: sessionMinter,
 		Failures:      failures,
 		Audit:         auditBridge,
@@ -336,6 +338,27 @@ func (b *tenantEnrollmentBridge) IsEnrolled(ctx context.Context, userID uuid.UUI
 	return adapter.IsEnrolled(ctx, userID)
 }
 
+// tenantReenrollBridge satisfies usermfa.Reenroller. The verify handler
+// invokes MarkReenrollRequired when the stored seed ciphertext is
+// unreadable under the current USERMFA_SEED_KEY (mfa.ErrSeedCipherDecode);
+// the next IsEnrolled check then returns false and the user is routed
+// to /admin/2fa/setup for a fresh enrolment.
+type tenantReenrollBridge struct {
+	pool *pgxpool.Pool
+}
+
+func (b *tenantReenrollBridge) MarkReenrollRequired(ctx context.Context, userID uuid.UUID) error {
+	tenantID, err := tenantIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	adapter, err := postgresadapter.NewTenantUserMFA(b.pool, tenantID)
+	if err != nil {
+		return fmt.Errorf("usermfa wire: reenroller: %w", err)
+	}
+	return adapter.MarkReenrollRequired(ctx, userID)
+}
+
 // tenantUserMFAAuditBridge satisfies usermfa.AuditEmitter by routing
 // every event into the shared SplitLogger after stamping the row with
 // the request-context tenant id.
@@ -470,6 +493,7 @@ var (
 	_ usermfa.PendingStore        = (*tenantPendingsBridge)(nil)
 	_ usermfa.RequirementReader   = (*tenantRequirementsBridge)(nil)
 	_ usermfa.EnrollmentChecker   = (*tenantEnrollmentBridge)(nil)
+	_ usermfa.Reenroller          = (*tenantReenrollBridge)(nil)
 	_ usermfa.Enroller            = (*tenantMFAServiceBridge)(nil)
 	_ usermfa.Verifier            = (*tenantMFAServiceBridge)(nil)
 	_ usermfa.RecoveryConsumer    = (*tenantMFAServiceBridge)(nil)
