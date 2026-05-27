@@ -36,17 +36,6 @@ type grantRequestDetailData struct {
 	CSPNonce         string
 }
 
-// grantRequestPartialData renders just the in-place panel after an
-// approve/reject swap. ErrorMessage non-empty means the swap is
-// rendering a failure (e.g. 4-eyes violation), Flash non-empty means
-// success.
-type grantRequestPartialData struct {
-	Request      GrantRequest
-	Flash        string
-	ErrorMessage string
-	CSRFInput    template.HTML
-}
-
 var grantRequestsTemplateFuncs = template.FuncMap{
 	"formatGrantTime":   formatGrantTime,
 	"grantKindLabel":    grantKindLabel,

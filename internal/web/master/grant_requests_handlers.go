@@ -48,14 +48,7 @@ func (h *Handler) CreateGrantRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, validationErr, http.StatusUnprocessableEntity)
 		return
 	}
-	in := CreateGrantRequestInput{
-		ActorUserID: issueIn.ActorUserID,
-		TenantID:    issueIn.TenantID,
-		Kind:        issueIn.Kind,
-		PeriodDays:  issueIn.PeriodDays,
-		Amount:      issueIn.Amount,
-		Reason:      issueIn.Reason,
-	}
+	in := CreateGrantRequestInput(issueIn)
 	req, err := h.deps.GrantRequests.CreateGrantRequest(r.Context(), in)
 	if err != nil {
 		h.fail(w, http.StatusInternalServerError, "create grant request", err)
