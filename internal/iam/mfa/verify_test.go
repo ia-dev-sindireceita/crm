@@ -170,6 +170,35 @@ func TestVerify_DecryptErrorPropagates(t *testing.T) {
 	}
 }
 
+// SIN-63589: a cipher decode failure must surface as
+// ErrSeedCipherDecode so HTTP adapters can errors.Is-match it and
+// force a re-enrol instead of returning a generic 500. The most
+// common cause is a rotated USERMFA_SEED_KEY leaving older rows
+// undecryptable.
+func TestVerify_DecryptErrorWrapsErrSeedCipherDecode(t *testing.T) {
+	seeds := &fakeSeedRepoEnrolled{ciphertext: []byte("ENC:xxxxxxxxxxxxxxxxxxxx")}
+	cfg := Config{
+		SeedRepository: seeds,
+		SeedCipher:     realisticCipher{decryptErr: errors.New("aesgcm: open: cipher: message authentication failed")},
+		RecoveryStore:  &fakeRecoveryStore{},
+		CodeHasher:     fakeHasher{},
+		Audit:          &recordingAudit{},
+		Alerter:        &recordingAlerter{},
+		Issuer:         "Sindireceita",
+	}
+	svc, err := NewService(cfg)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	gotErr := svc.Verify(context.Background(), uuid.New(), "287082")
+	if !errors.Is(gotErr, ErrSeedCipherDecode) {
+		t.Fatalf("err: got %v want errors.Is(..., ErrSeedCipherDecode) == true", gotErr)
+	}
+	if errors.Is(gotErr, ErrInvalidCode) {
+		t.Fatalf("err: must NOT collapse to ErrInvalidCode — handler needs to distinguish the rotated-key case from a wrong code")
+	}
+}
+
 func TestVerify_HappyPath_RFC6238Vector(t *testing.T) {
 	// RFC 6238 §Appendix B: secret "12345678901234567890" at unix=59
 	// produces 6-digit code 287082.

@@ -42,6 +42,7 @@ type HandlerConfig struct {
 	Regenerator      RecoveryRegenerator
 	Pendings         PendingStore
 	Enrollment       EnrollmentChecker
+	Reenroller       Reenroller
 	SessionMinter    SessionMinter
 	Failures         FailureCounter
 	Audit            AuditEmitter
@@ -82,6 +83,9 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 	}
 	if cfg.Enrollment == nil {
 		missing = append(missing, "Enrollment")
+	}
+	if cfg.Reenroller == nil {
+		missing = append(missing, "Reenroller")
 	}
 	if cfg.SessionMinter == nil {
 		missing = append(missing, "SessionMinter")
@@ -326,6 +330,32 @@ func (h *Handler) handleVerifyPost(w http.ResponseWriter, r *http.Request, pendi
 	}
 	if errors.Is(verifyErr, mfa.ErrInvalidCode) {
 		h.handleWrongCode(w, r, pending, "invalid_code")
+		return
+	}
+	if errors.Is(verifyErr, mfa.ErrSeedCipherDecode) {
+		// The stored seed ciphertext is unreadable under the current
+		// SeedCipher key — almost always the aftermath of an operator
+		// rotating USERMFA_SEED_KEY. Flip the row into reenroll_required
+		// so IsEnrolled returns false on the next request, then redirect
+		// the user to the setup surface with the pending cookie intact.
+		// Logged at WARN (not ERROR) because this is operator-driven and
+		// self-heals on re-enrol — it should not page on-call, but it
+		// is SIEM-visible as a signal that a recent key rotation is
+		// stranding users.
+		if reErr := h.cfg.Reenroller.MarkReenrollRequired(r.Context(), pending.UserID); reErr != nil {
+			h.cfg.Logger.ErrorContext(r.Context(), "usermfa: mark reenroll-required failed after stale-ciphertext detection",
+				slog.String("user_id", pending.UserID.String()),
+				slog.String("err", reErr.Error()),
+			)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		h.cfg.Logger.WarnContext(r.Context(), "usermfa: stored seed unreadable under current USERMFA_SEED_KEY, forcing re-enrollment",
+			slog.String("user_id", pending.UserID.String()),
+			slog.String("tenant_id", pending.TenantID.String()),
+		)
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+		http.Redirect(w, r, "/admin/2fa/setup", http.StatusSeeOther)
 		return
 	}
 	if verifyErr != nil {

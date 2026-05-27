@@ -286,6 +286,7 @@ func TestRegenerateMintsFreshCodes(t *testing.T) {
 type testDeps struct {
 	pendings    *fakePendings
 	enrollment  *fakeEnrollment
+	reenroller  *fakeReenroller
 	enroller    *fakeEnroller
 	verifier    *fakeVerifier
 	consumer    *fakeConsumer
@@ -302,6 +303,7 @@ func newTestDeps() *testDeps {
 	return &testDeps{
 		pendings:    newFakePendings(),
 		enrollment:  newFakeEnrollment(),
+		reenroller:  &fakeReenroller{},
 		enroller:    &fakeEnroller{},
 		verifier:    &fakeVerifier{},
 		consumer:    &fakeConsumer{},
@@ -322,6 +324,7 @@ func (d *testDeps) config() HandlerConfig {
 		Regenerator:      d.regenerator,
 		Pendings:         d.pendings,
 		Enrollment:       d.enrollment,
+		Reenroller:       d.reenroller,
 		SessionMinter:    d.minter,
 		Failures:         d.failures,
 		Audit:            d.audit,
@@ -390,6 +393,30 @@ func (f *fakeEnrollment) IsEnrolled(_ context.Context, u uuid.UUID) (bool, error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.status[u], nil
+}
+
+type fakeReenroller struct {
+	mu    sync.Mutex
+	calls []uuid.UUID
+	err   error
+}
+
+func (f *fakeReenroller) MarkReenrollRequired(_ context.Context, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, userID)
+	return f.err
+}
+
+func (f *fakeReenroller) called(u uuid.UUID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range f.calls {
+		if id == u {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeEnroller struct {
