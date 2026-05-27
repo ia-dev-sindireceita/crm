@@ -1,0 +1,19 @@
+# scripts/adapter-wireup-allowlist.txt — allowlist for
+# scripts/check-adapter-wireup.sh (SIN-63339 / ADR 0106).
+#
+# Each non-comment line is the FULL Go import path of an
+# internal/adapter/httpapi/<sub> package that is deliberately not reachable
+# from cmd/server (production import graph) at this point in time. Examples
+# of legitimate reasons:
+#
+#   - shared helper exposed for composition only and currently consumed by
+#     a single test-only call-site
+#   - future-dated handler parked behind a feature flag whose seed flag has
+#     not landed yet
+#
+# Each entry MUST have a one-line comment on the previous line explaining
+# why the orphan is acceptable and naming a tracking issue or owner.
+#
+# As of 2026-05-27 (SIN-63339 ship) every sub-package under
+# internal/adapter/httpapi/ is reachable from cmd/server, so the allowlist
+# is intentionally empty.

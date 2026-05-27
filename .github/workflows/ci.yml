@@ -58,6 +58,8 @@ jobs:
         run: go test ./tools/lint/forbidwebboundary/... -count=1
       - name: reject subpackage *_test.go under internal/adapter/db/postgres (SIN-62750)
         run: ./scripts/check-postgres-adapter-tests.sh
+      - name: wireup-lint — every internal/adapter/httpapi/<sub> reachable from cmd/server (SIN-63339 / ADR 0106)
+        run: ./scripts/check-adapter-wireup.sh
 
   test:
     name: test
