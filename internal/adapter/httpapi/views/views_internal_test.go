@@ -121,3 +121,69 @@ func TestCSPNonce_InterfaceWrapper(t *testing.T) {
 		t.Fatalf("interface unwrap failed: %q", got)
 	}
 }
+
+// TestHelloSurfaces_TableDriven covers every branch of the SIN-63774
+// FuncMap helper that reads .Surfaces off the page data. Same shape as
+// the tenantThemeStyle / cspNonce counterparts — the helper is the
+// reflection seam that lets hello.html stay renderable from legacy
+// fixtures whose data structs predate the Surfaces field.
+func TestHelloSurfaces_TableDriven(t *testing.T) {
+	t.Parallel()
+
+	type withField struct {
+		Surfaces []Surface
+	}
+	type noField struct {
+		Other string
+	}
+	type otherType struct {
+		Surfaces int
+	}
+
+	want := []Surface{
+		{Label: "Funil de conversas", Path: "/funnel", Available: true},
+		{Label: "Catálogo de produtos", Path: "/catalog", Available: false},
+	}
+
+	cases := []struct {
+		name string
+		in   any
+		want []Surface
+	}{
+		{"nil", nil, nil},
+		{"struct with []Surface field", withField{Surfaces: want}, want},
+		{"pointer to struct", &withField{Surfaces: want}, want},
+		{"struct without field", noField{Other: "x"}, nil},
+		{"struct with wrong field type", otherType{Surfaces: 42}, nil},
+		{"non-struct", "just a string", nil},
+		{"nil pointer", (*withField)(nil), nil},
+		{"empty slice field", withField{Surfaces: nil}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := helloSurfaces(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len=%d, want %d (got=%+v)", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("idx %d: got %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestHelloSurfaces_InterfaceWrapper covers the reflect.Interface kind
+// branch. Same shape as the cspNonce / tenantThemeStyle counterparts.
+func TestHelloSurfaces_InterfaceWrapper(t *testing.T) {
+	t.Parallel()
+	type d struct{ Surfaces []Surface }
+	src := []Surface{{Label: "X", Path: "/x", Available: true}}
+	var iface any = d{Surfaces: src}
+	got := helloSurfaces(iface)
+	if len(got) != 1 || got[0] != src[0] {
+		t.Fatalf("interface unwrap failed: %+v", got)
+	}
+}
