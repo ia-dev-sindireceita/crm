@@ -60,6 +60,51 @@ func tenantThemeStyle(data any) template.CSS {
 	}
 }
 
+// Surface is one entry of the post-login navigable index rendered by
+// hello.html (SIN-63774). Available controls the rendered shape:
+// true → <a href="{{.Path}}">{{.Label}}</a>, false → an aria-disabled
+// <span> so the gap is visible to the operator instead of dead-linking.
+type Surface struct {
+	Label     string
+	Path      string
+	Available bool
+}
+
+// helloSurfaces is the FuncMap helper that reads .Surfaces from page
+// data via reflection. The reflection path mirrors tenantThemeStyle so
+// hello.html stays renderable from views_test.go fixtures whose data
+// structs predate SIN-63774 and do not carry a Surfaces field.
+//
+// Returns:
+//   - the slice when the field exists and is a []Surface,
+//   - nil otherwise — the {{with}} guard in hello.html then skips the
+//     <nav> block entirely.
+//
+// Pure: no request state, no globals, safe across goroutines.
+func helloSurfaces(data any) []Surface {
+	if data == nil {
+		return nil
+	}
+	v := reflect.ValueOf(data)
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	f := v.FieldByName("Surfaces")
+	if !f.IsValid() {
+		return nil
+	}
+	if s, ok := f.Interface().([]Surface); ok {
+		return s
+	}
+	return nil
+}
+
 // cspNonce is the FuncMap helper that reads .CSPNonce from the page
 // data via reflection. SIN-63275 wired the CSP middleware to ship
 // `style-src 'self' 'nonce-…'` without `'unsafe-inline'`; every
@@ -115,6 +160,7 @@ var csrfFuncs = template.FuncMap{
 	"csrfFormHidden":   csrfhelpers.FormHidden,
 	"tenantThemeStyle": tenantThemeStyle,
 	"cspNonce":         cspNonce,
+	"helloSurfaces":    helloSurfaces,
 }
 
 // Login renders GET /login and the re-rendered POST /login form on

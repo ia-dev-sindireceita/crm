@@ -729,7 +729,23 @@ func NewRouter(deps Deps) http.Handler {
 			// the authz seam), the route mounts unchanged so existing
 			// suites keep their pre-PR behaviour. The header docstring
 			// covers the rationale (action choice, gating condition).
-			helloTenant := http.Handler(http.HandlerFunc(handler.HelloTenant))
+			//
+			// SIN-63774 — the constructor receives the Fase 3–6 surface
+			// presence flags so /hello-tenant renders a navigable index
+			// of every mounted area (and an aria-disabled span for each
+			// absent one). The flags read deps.WebX != nil so router
+			// tests that don't wire the per-feature handlers keep their
+			// pre-PR behaviour (every surface disabled, body still
+			// contains the tenant name).
+			helloTenant := http.Handler(handler.NewHelloTenant(handler.HelloTenantDeps{
+				FunnelEnabled:      deps.WebFunnel != nil,
+				FunnelRulesEnabled: deps.WebFunnelRules != nil,
+				CatalogEnabled:     deps.WebCatalog != nil,
+				CampaignsEnabled:   deps.WebCampaigns != nil,
+				PrivacyEnabled:     deps.WebPrivacy != nil,
+				AIPolicyEnabled:    deps.WebAIPolicy != nil,
+				ConsentEnabled:     deps.WebConsent != nil,
+			}))
 			if deps.Authorizer != nil {
 				helloTenant = middleware.RequireAuth(middleware.RequireAuthDeps{})(
 					middleware.RequireAction(deps.Authorizer, iam.ActionTenantContactRead, nil)(helloTenant),

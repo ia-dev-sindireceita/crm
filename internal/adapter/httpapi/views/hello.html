@@ -4,6 +4,22 @@
   <h1>Hello, {{.TenantName}}</h1>
   <p>Você está autenticado em <strong data-testid="tenant-name">{{.TenantName}}</strong>.</p>
   <p>User ID: <code data-testid="user-id">{{.UserID}}</code></p>
+  {{with helloSurfaces .}}
+  <nav aria-label="Áreas do CRM" data-testid="surfaces-nav">
+    <h2>Áreas disponíveis</h2>
+    <ul data-testid="surfaces">
+      {{- range .}}
+      <li>
+        {{- if .Available}}
+        <a href="{{.Path}}">{{.Label}}</a>
+        {{- else}}
+        <span aria-disabled="true">{{.Label}} (indisponível neste ambiente)</span>
+        {{- end}}
+      </li>
+      {{- end}}
+    </ul>
+  </nav>
+  {{end}}
   <form method="POST" action="/logout">
     {{- if .CSRFToken}}{{csrfFormHidden .CSRFToken}}{{end}}
     <button type="submit">Sair</button>
