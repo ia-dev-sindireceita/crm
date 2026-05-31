@@ -246,11 +246,19 @@ log "stage=view ok — csrf=<redacted>, inbound_baseline=${baseline}"
 # Stage 5 — POST a reply.
 # ---------------------------------------------------------------------
 log "stage=send POST ${STG_BASE}/inbox/conversations/${conversation_id}/messages"
+# Origin + Referer satisfy the ADR-0073 D1 CSRF allowlist layer
+# (internal/adapter/httpapi/csrf.readOriginOrReferer). A real browser
+# POSTing from the inbox view always sends both; curl does not by
+# default, so the server rejects with reason=csrf.origin_missing.
+# Without these the smoke false-fails as a "deploy regression" when
+# really the script just doesn't mimic the browser.
 code=$(curl -sS --max-time 5 -o "${SEND_BODY}" -D "${SEND_HDR}" \
   -w "%{http_code}" -X POST \
   -b "${JAR}" -c "${JAR}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -H "X-CSRF-Token: ${csrf}" \
+  -H "Origin: ${STG_BASE}" \
+  -H "Referer: ${STG_BASE}/inbox/conversations/${conversation_id}" \
   --data-urlencode "body=${REPLY_BODY}" \
   --data-urlencode "_csrf=${csrf}" \
   "${STG_BASE}/inbox/conversations/${conversation_id}/messages")
