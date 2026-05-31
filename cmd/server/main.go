@@ -293,6 +293,14 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webConsentHandler, webConsentCleanup := buildConsentHandler(ctx, getenv)
 	defer webConsentCleanup()
 
+	// SIN-63821 — operator inbox HTMX UI (parent SIN-63793). W1 wires
+	// the route shell with stub use cases so the surface mounts cleanly;
+	// W2/W4/W5 land the real channel adapter + WalletDebitor. Same
+	// fail-soft pattern as the other web/* handlers: a nil handler
+	// leaves /inbox* unmounted on this listener.
+	webInboxHandler, webInboxCleanup := buildInboxHandler(ctx, getenv)
+	defer webInboxCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
@@ -308,6 +316,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		WebBranding:      brandingStack.Handler,
 		WebPublicPrivacy: webPublicPrivacyHandler,
 		WebConsent:       webConsentHandler,
+		WebInbox:         webInboxHandler,
 		Theme:            brandingStack.Theme,
 		Metrics:          metrics,
 	})

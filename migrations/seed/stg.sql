@@ -84,4 +84,14 @@ INSERT INTO users (id, tenant_id, email, password_hash, role, is_master, totp_re
    'tenant_gerente', false, now())
 ON CONFLICT (id) DO NOTHING;
 
+-- SIN-63821: ActionTenantInboxRead authorizer grant is allowed for
+-- {tenant_atendente, tenant_gerente}. The acme tenant_gerente row above
+-- already covers the gerente arm of the gate for staging probes; the
+-- atendente seed row is deferred to a follow-up because the
+-- TestStgSeed_PasswordHashes_VerifyAgainstStgPassword guard pins the
+-- expected hash count at 4 (existing test, read-only under CTO Quality
+-- Rule 3). Adding atendente@acme + atendente@globex needs paired
+-- updates to that count + a fresh hash pair, neither of which is in
+-- scope for the W1 router-mount PR.
+
 COMMIT;

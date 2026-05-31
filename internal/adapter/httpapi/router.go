@@ -426,6 +426,28 @@ type Deps struct {
 	//   POST /consent/cookies
 	WebConsent http.Handler
 
+	// WebInbox is the SIN-63793 operator inbox HTMX UI handler from
+	// internal/web/inbox (SIN-63821 / W1). When non-nil, the four
+	// /inbox/* routes are mounted in the authed group so they inherit
+	// TenantScope + Auth + CSRF, and each is additionally gated by
+	// RequireAction(iam.ActionTenantInboxRead). Atendente is the
+	// minimum role; Common is denied at the gate (CEO ACK 2026-05-31
+	// on SIN-63808).
+	//
+	// The cmd/server wire layer constructs this with stub use cases
+	// in W1 so the routes render the empty-inbox shell while the
+	// real channel adapter + WalletDebitor land in W2/W4/W5. Nil
+	// keeps every /inbox/* route unmounted (chi emits 404) so router
+	// tests that don't exercise the surface keep their pre-PR
+	// behaviour.
+	//
+	// Routes mounted:
+	//   GET  /inbox
+	//   GET  /inbox/conversations/{id}
+	//   POST /inbox/conversations/{id}/messages
+	//   GET  /inbox/conversations/{id}/messages/{msgID}/status
+	WebInbox http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -1030,6 +1052,28 @@ func NewRouter(deps Deps) http.Handler {
 					h = deps.WebLGPD.RateLimit(h)
 				}
 				authed.Method(http.MethodPost, "/admin/lgpd/delete-form", h)
+			}
+
+			// SIN-63821 — operator inbox surface (parent SIN-63793).
+			// Same envelope as the other web/* handlers: RequireAuth
+			// installs the principal, RequireAction(ActionTenantInboxRead)
+			// gates every method. Atendente is the minimum role; Common
+			// is denied (CEO ACK on SIN-63808). When Authorizer is nil
+			// (router tests that don't exercise the authz seam) the gate
+			// skips and the inner mux still runs with a Principal.
+			if deps.WebInbox != nil {
+				webInbox := http.Handler(deps.WebInbox)
+				if deps.Authorizer != nil {
+					webInbox = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantInboxRead, nil)(webInbox),
+					)
+				} else {
+					webInbox = middleware.RequireAuth(middleware.RequireAuthDeps{})(webInbox)
+				}
+				authed.Method(http.MethodGet, "/inbox", webInbox)
+				authed.Method(http.MethodGet, "/inbox/conversations/{id}", webInbox)
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/messages", webInbox)
+				authed.Method(http.MethodGet, "/inbox/conversations/{id}/messages/{msgID}/status", webInbox)
 			}
 
 			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses

@@ -112,6 +112,16 @@ const (
 	// role) per ADR 0090. Atendente / common are denied at the gate.
 	ActionTenantLGPDExport Action = "tenant.lgpd.export"
 	ActionTenantLGPDDelete Action = "tenant.lgpd.delete"
+
+	// SIN-63821 (parent SIN-63793) — operator inbox surface. Gates
+	// every /inbox/* route (list, conversation view, send, status
+	// poll). Atendente is the semantically correct role for
+	// atendimento ao cliente (CEO ACK 2026-05-31 on SIN-63808);
+	// RoleTenantCommon is reserved for general browse routes and
+	// does NOT carry inbox access. Gerente inherits the grant because
+	// the role is a strict superset of Atendente on tenant-scope
+	// operator work — same pattern as ActionTenantMessageSend.
+	ActionTenantInboxRead Action = "tenant.inbox.read"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -263,6 +273,13 @@ func defaultRolesByAction() map[Action][]Role {
 		// reach the surface via impersonation per ADR 0090.
 		ActionTenantLGPDExport: {RoleTenantGerente},
 		ActionTenantLGPDDelete: {RoleTenantGerente},
+
+		// SIN-63821 — operator inbox surface. Atendente is the
+		// minimum role; Gerente inherits because every
+		// atendimento permission lives in the Gerente bucket
+		// too (mirrors ActionTenantMessageSend). Common is
+		// excluded by design per CEO ACK on SIN-63808.
+		ActionTenantInboxRead: {RoleTenantAtendente, RoleTenantGerente},
 	}
 }
 

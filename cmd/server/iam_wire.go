@@ -107,6 +107,14 @@ var iamRoutes = []string{
 	// custom-domain catch-all at "/" does not shadow them.
 	"/privacy",
 	"/consent/",
+	// SIN-63821 — operator inbox surface (parent SIN-63793). The
+	// "/inbox" exact pattern matches GET /inbox; the "/inbox/"
+	// subtree pattern catches the three nested routes
+	// (conversations/{id}, conversations/{id}/messages, conversations/
+	// {id}/messages/{msgID}/status). Without registering both on the
+	// stdlib mux the custom-domain catch-all at "/" would shadow them.
+	"/inbox",
+	"/inbox/",
 	"/m/",
 	"/metrics",
 }
@@ -190,6 +198,14 @@ type iamHandlerOpts struct {
 	// keeps GET /consent/cookies-banner and POST /consent/cookies
 	// unmounted. Built by the wire layer in consent_wire.go.
 	WebConsent http.Handler
+
+	// WebInbox is the SIN-63821 operator inbox HTMX UI handler.
+	// Built by inbox_wire.go with stub use cases in W1 so the
+	// routes render the empty-inbox shell while the real channel
+	// adapter + WalletDebitor land in W2/W4/W5. Nil keeps every
+	// /inbox/* route unmounted; cmd/server tests that don't
+	// exercise the surface keep their pre-PR behaviour.
+	WebInbox http.Handler
 
 	// Theme is the SIN-63085 per-tenant theme middleware, built by
 	// branding_ui_wire.go on top of the same PaletteStore that backs
@@ -397,6 +413,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebLGPD:           lgpdRoutes,
 		WebPublicPrivacy:  opts.WebPublicPrivacy,
 		WebConsent:        opts.WebConsent,
+		WebInbox:          opts.WebInbox,
 		Theme:             opts.Theme,
 		Metrics:           opts.Metrics,
 		UserMFA:           userMFARoutes,
