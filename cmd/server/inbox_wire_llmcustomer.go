@@ -39,6 +39,7 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/channels/llmcustomer"
 	"github.com/pericles-luz/crm/internal/adapter/channels/llmcustomer/canned"
+	openrouterpersona "github.com/pericles-luz/crm/internal/adapter/channels/llmcustomer/openrouter"
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
 	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
@@ -218,7 +219,7 @@ func buildInboxHandlerLLMCustomer(ctx context.Context, getenv func(string) strin
 		log.Printf("crm: inbox handler degraded — provider=llmcustomer pg connect: %v; falling back to disabled stubs", err)
 		return buildInboxHandlerDisabled()
 	}
-	mux, cleanup, err := assembleLLMCustomerFromPool(pool)
+	mux, cleanup, err := assembleLLMCustomerFromPool(pool, getenv)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: inbox handler degraded — provider=llmcustomer assemble: %v; falling back to disabled stubs", err)
@@ -236,7 +237,13 @@ func buildInboxHandlerLLMCustomer(ctx context.Context, getenv func(string) strin
 // into the postgres-backed ports the assembler expects. Split out so
 // the test path that already owns a pool (or a fake) does not pay for
 // the production "wire stores from pool" step.
-func assembleLLMCustomerFromPool(pool *pgxpool.Pool) (http.Handler, func(), error) {
+//
+// The persona LLM is selected via PERSONA_LLM_PROVIDER (canned vs.
+// openrouter — see persona_llm_provider_wire.go). A nil LLM in the
+// assembled deps falls back to the canned default; the openrouter
+// branch supplies a constructed *openrouter.Persona so the operator
+// loop drives a real model.
+func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string) (http.Handler, func(), error) {
 	inboxStore, err := pginbox.New(pool)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pginbox.New: %w", err)
@@ -245,16 +252,54 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool) (http.Handler, func(), erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("pgcontacts.New: %w", err)
 	}
+	personaLLM, err := buildPersonaLLM(getenv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("persona-llm: %w", err)
+	}
 	mux, cleanup, _, err := assembleInboxLLMCustomerHandler(inboxLLMCustomerDeps{
 		Repo:       inboxStore,
 		Contacts:   contactsStore,
+		LLM:        personaLLM,
 		ReplyDelay: llmcustomerReplyDelay,
-		// LLM, Logger left at production defaults.
+		// Logger left at the production default (slog.Default).
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	return mux, cleanup, nil
+}
+
+// buildPersonaLLM resolves PERSONA_LLM_PROVIDER and constructs the
+// matching PersonaLLM impl. The canned default is the safe fallback
+// in dev/CI; openrouter wires the real chat-completion API client.
+//
+// A boot-time gate (PersonaLLMRefusedWithoutKey) already rejected the
+// openrouter-without-key case before the listener bound, so reaching
+// the openrouter branch here implies OPENROUTER_API_KEY is present —
+// but openrouter.New is defensive and still re-checks, so a missing
+// key fails loud at this layer too.
+func buildPersonaLLM(getenv func(string) string) (llmcustomer.PersonaLLM, error) {
+	provider, err := ReadPersonaLLMProvider(getenv)
+	if err != nil {
+		return nil, err
+	}
+	switch provider {
+	case PersonaLLMProviderCanned:
+		return canned.NewDefault(), nil
+	case PersonaLLMProviderOpenRouter:
+		key := ""
+		model := ""
+		if getenv != nil {
+			key = getenv(envOpenRouterAPIKey)
+			model = getenv(envPersonaLLMModel)
+		}
+		return openrouterpersona.New(openrouterpersona.Config{
+			APIKey: key,
+			Model:  model,
+		})
+	default:
+		return nil, fmt.Errorf("unknown PERSONA_LLM_PROVIDER %q", provider)
+	}
 }
 
 // bootstrapOnListConversations is the lazy-bootstrap decorator that
