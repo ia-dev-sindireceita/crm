@@ -47,22 +47,29 @@ INSERT INTO tenants (id, name, host) VALUES
   ('00000000-0000-0000-0000-00000000eb02', 'globex', 'globex.' || :'base_domain')
 ON CONFLICT (id) DO NOTHING;
 
--- SIN-63342: tenant agent rows seed with role='tenant_common' (was
--- 'agent'). The 0114 migration adds a CHECK constraint that rejects
--- the legacy 'agent' value, and tenant Login already mapped 'agent'
--- to RoleTenantCommon at the iam layer. Keeping storage and runtime
--- aligned here means the seed re-applies cleanly on a fresh DB.
+-- SIN-63858: tenant agent rows seed with role='tenant_atendente'. The
+-- SIN-63821 /inbox gate requires {tenant_atendente, tenant_gerente};
+-- the prior SIN-63342 seeding as 'tenant_common' shipped these users
+-- one role below the gate and made every staging operator 403 on
+-- /inbox. Atendente is a strict superset of common on tenant-scope
+-- actions (see authorizer-matrix audit on SIN-63858), so promoting the
+-- seed does not strip access to any existing route — it only adds
+-- ActionTenantInboxRead + ActionTenantMessageSend + ActionTenantContactUpdate.
+-- The 0114 users_role_chk CHECK allowlist includes 'tenant_atendente',
+-- so the new value survives the schema-level guard. Migration 0115
+-- promotes already-seeded staging rows in place; this file is the
+-- source of truth for a fresh DB.
 INSERT INTO users (id, tenant_id, email, password_hash, role, is_master) VALUES
   ('00000000-0000-0000-0000-0000000a0e01',
    '00000000-0000-0000-0000-00000000ac01',
    'agent@acme.'   || :'base_domain',
    '$argon2id$v=19$m=65536,t=3,p=4$xdUl6TonL7/7uBXHOr1l6A$A1WB5t0HT3Du/tzT3o9wlZxcjiknaCozvcS9evnIPiM',
-   'tenant_common', false),
+   'tenant_atendente', false),
   ('00000000-0000-0000-0000-0000000e0e02',
    '00000000-0000-0000-0000-00000000eb02',
    'agent@globex.' || :'base_domain',
    '$argon2id$v=19$m=65536,t=3,p=4$V2UIy0HwezJHHCZ7V6GYzA$g+BY8yIY7FfEsS/87CjEaX7+iXLj18FmOUBQCpELZ8k',
-   'tenant_common', false),
+   'tenant_atendente', false),
   ('00000000-0000-0000-0000-0000000a57e7',
    NULL,
    'master@crm.local',
@@ -84,14 +91,9 @@ INSERT INTO users (id, tenant_id, email, password_hash, role, is_master, totp_re
    'tenant_gerente', false, now())
 ON CONFLICT (id) DO NOTHING;
 
--- SIN-63821: ActionTenantInboxRead authorizer grant is allowed for
--- {tenant_atendente, tenant_gerente}. The acme tenant_gerente row above
--- already covers the gerente arm of the gate for staging probes; the
--- atendente seed row is deferred to a follow-up because the
--- TestStgSeed_PasswordHashes_VerifyAgainstStgPassword guard pins the
--- expected hash count at 4 (existing test, read-only under CTO Quality
--- Rule 3). Adding atendente@acme + atendente@globex needs paired
--- updates to that count + a fresh hash pair, neither of which is in
--- scope for the W1 router-mount PR.
+-- SIN-63858 — agent@* are tenant_atendente; the gerente arm of the
+-- inbox gate is seeded separately via admin@acme above. Common-only
+-- fixtures are not exercised in staging; add them only if a future
+-- test demands the negative case.
 
 COMMIT;
