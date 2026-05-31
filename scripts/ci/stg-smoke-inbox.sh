@@ -134,11 +134,15 @@ if [ "${code}" != "302" ]; then
   cat "${LOGIN_BODY}" >&2
   die "stage=auth: /login expected 302, got ${code} (check seeded credentials and tenant FQDN)"
 fi
-if ! grep -q "Set-Cookie: __Host-sess-tenant" "${LOGIN_HDR}"; then
+# Staging is HTTP/2; curl emits response headers in their on-wire
+# lowercase form (`set-cookie:`), so the grep must be case-insensitive
+# or it false-fails on a successful login. See SIN-63858 cd-stg run
+# 26724483191 — Pericles' first deploy after #130 hit exactly this.
+if ! grep -qi "Set-Cookie: __Host-sess-tenant" "${LOGIN_HDR}"; then
   cat "${LOGIN_HDR}" >&2
   die "stage=auth: missing __Host-sess-tenant cookie (MFA gate may have intercepted — seed user must be tenant_atendente without totp_required_at)"
 fi
-if ! grep -q "Set-Cookie: __Host-csrf" "${LOGIN_HDR}"; then
+if ! grep -qi "Set-Cookie: __Host-csrf" "${LOGIN_HDR}"; then
   cat "${LOGIN_HDR}" >&2
   die "stage=auth: missing __Host-csrf cookie"
 fi
