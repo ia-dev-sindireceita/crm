@@ -359,6 +359,67 @@ func TestSmoke_BootstrapEmpty(t *testing.T) {
 	}
 }
 
+// TestSmoke_Auth_LowercaseSetCookie regression-locks SIN-63858 cd-stg
+// run 26724483191: the staging edge is HTTP/2, so `set-cookie:` arrives
+// lowercase. The script's auth-stage greps must be case-insensitive, or
+// every full-mode deploy false-fails with `missing __Host-sess-tenant`
+// even though login succeeded and the cookies are present. The default
+// httptest server normalizes headers to canonical case, hiding the bug;
+// this test hijacks the connection and writes the response bytes by
+// hand so the failure mode is faithful to staging.
+func TestSmoke_Auth_LowercaseSetCookie(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","inbox_channel_provider":"disabled"}`))
+	})
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("ResponseWriter is not a Hijacker")
+		}
+		conn, bw, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		defer conn.Close()
+		// Write the response with lowercase header names to mimic HTTP/2
+		// on the wire (curl --http2 prints headers in lowercase even on
+		// the -D dump). HTTP/1.1 protocol-level grammar tolerates
+		// case-insensitive header names, so this is a valid response.
+		_, _ = bw.WriteString(strings.Join([]string{
+			"HTTP/1.1 302 Found",
+			"location: /hello-tenant",
+			"set-cookie: __Host-sess-tenant=fake-session; Path=/; HttpOnly",
+			"set-cookie: __Host-csrf=fake-csrf-token-abc123; Path=/",
+			"content-length: 0",
+			"",
+			"",
+		}, "\r\n"))
+		_ = bw.Flush()
+	})
+	mux.HandleFunc("/inbox", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html><body>
+<ul class="conversation-list"><li class="conversation-list__empty">Nenhuma conversa.</li></ul>
+</body></html>`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	out, code := runSmoke(t, srv.URL)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d want 0 (lowercase set-cookie must be tolerated)\n%s", code, out)
+	}
+	if !strings.Contains(out, "stage=auth ok") {
+		t.Fatalf("smoke output missing stage=auth ok on lowercase set-cookie response\n%s", out)
+	}
+}
+
 func TestSmoke_DispatchTimeout(t *testing.T) {
 	t.Parallel()
 	base := newInboxFake(t, inboxFakeOptions{
