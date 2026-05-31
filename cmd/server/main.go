@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -381,10 +382,13 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	// SIN-63825 / W6: expose the resolved provider on /health so the
 	// staging smoke (scripts/ci/stg-smoke-inbox.sh) can pre-check
 	// `inbox_channel_provider == "llmcustomer"` before exercising the
-	// operator loop. Set once, before the listener accepts traffic;
-	// the http.Server's accept-loop happens-after this assignment so
-	// no further synchronisation is needed.
-	inboxChannelProviderForHealth = inboxChannelProvider.String()
+	// operator loop. Stored through sync/atomic so sibling tests that
+	// race runWith against /health probes (cmd/server has both in the
+	// same package) do not trip the race detector — production only
+	// writes once at boot, but the test binary exercises both paths
+	// concurrently.
+	resolvedProvider := inboxChannelProvider.String()
+	inboxChannelProviderForHealth.Store(&resolvedProvider)
 
 	// SIN-63826 / SIN-63793 W3: parse PERSONA_LLM_PROVIDER, hard-fail
 	// boot when the openrouter persona is selected without
@@ -550,14 +554,17 @@ func runInternal(ctx context.Context, addr string, handler http.Handler) error {
 }
 
 // inboxChannelProviderForHealth carries the resolved
-// INBOX_CHANNEL_PROVIDER value that runWith reads at boot. It is read
-// (without a mutex) by healthHandler on every /health request — runWith
-// writes it once before the listener accepts connections, so callers
-// observe a stable value through the http.Server's happens-before
-// barrier. SIN-63825 / SIN-63793 W6: surfacing the provider on /health
-// lets scripts/ci/stg-smoke-inbox.sh refuse to false-pass on a
-// staging deploy where INBOX_CHANNEL_PROVIDER is unset or "disabled".
-var inboxChannelProviderForHealth string
+// INBOX_CHANNEL_PROVIDER value that runWith publishes at boot. It is
+// read by healthHandler on every /health request and written once by
+// runWith before the listener accepts connections. The atomic pointer
+// guarantees a data-race-free read/write across the sibling cmd/server
+// tests that exercise runWith and healthHandler concurrently (the
+// production happens-before via http.Server's accept-loop does not
+// extend across those tests). A nil load — observed by a /health probe
+// issued before runWith publishes — yields the legacy two-field JSON
+// shape via the WithInboxChannelProvider("") omitempty path.
+// SIN-63825 / SIN-63793 W6.
+var inboxChannelProviderForHealth atomic.Pointer[string]
 
 // healthHandler is the public /health closure constructed from
 // handler.Health with the build-time commit SHA and the resolved inbox
@@ -566,15 +573,14 @@ var inboxChannelProviderForHealth string
 // workflow head SHA, and the SIN-63825 inbox smoke gate can read
 // .inbox_channel_provider. See SIN-63165 for the wireup-shadow bug
 // this var fixes.
-//
-// The closure re-evaluates inboxChannelProviderForHealth on every
-// request via the option, so a /health probe issued before runWith
-// finishes its boot sequence simply sees the legacy two-field JSON
-// shape (inbox_channel_provider omitempty) rather than a stale value.
 var healthHandler http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
+	var provider string
+	if p := inboxChannelProviderForHealth.Load(); p != nil {
+		provider = *p
+	}
 	handler.Health(
 		version.CommitSHA(),
-		handler.WithInboxChannelProvider(inboxChannelProviderForHealth),
+		handler.WithInboxChannelProvider(provider),
 	).ServeHTTP(w, r)
 }
 
