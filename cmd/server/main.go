@@ -379,6 +379,22 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	}
 	LogInboxChannelProviderBoot(slog.Default(), inboxChannelProvider)
 
+	// SIN-63826 / SIN-63793 W3: parse PERSONA_LLM_PROVIDER, hard-fail
+	// boot when the openrouter persona is selected without
+	// OPENROUTER_API_KEY (defense-in-depth: the persona impl re-checks
+	// at construction, but the boot gate surfaces the missing-secret
+	// case BEFORE any request hits the inbox), and emit a structured
+	// audit line for the selected value so operators can correlate the
+	// boot log with /inbox behaviour.
+	if err := PersonaLLMRefusedWithoutKey(getenv); err != nil {
+		return fmt.Errorf("persona-llm wire-up: %w", err)
+	}
+	personaLLMProvider, err := ReadPersonaLLMProvider(getenv)
+	if err != nil {
+		return fmt.Errorf("persona-llm wire-up: %w", err)
+	}
+	LogPersonaLLMProviderBoot(slog.Default(), personaLLMProvider)
+
 	cdHandler, cdCleanup := buildCustomDomainHandler(ctx, getenv)
 	defer cdCleanup()
 	if cdHandler != nil {
