@@ -138,12 +138,19 @@ func TestStgSeed_GerenteRowShape(t *testing.T) {
 		t.Fatalf("rows.Err: %v", err)
 	}
 
-	// SIN-63342: seed agent rows migrated from legacy 'agent' to
-	// 'tenant_common' so the 0114_users_role_check CHECK admits them.
+	// SIN-63858: seed agent rows migrated from 'tenant_common' (the
+	// SIN-63342 shape) to 'tenant_atendente' so the SIN-63821 /inbox
+	// gate {tenant_atendente, tenant_gerente} admits them. This test
+	// is a fixture-shape mirror of migrations/seed/stg.sql; its
+	// expected values must move whenever the seed's role strings
+	// move. It is NOT the behavioral-spec guard for the inbox gate —
+	// that contract lives in internal/iam/authorizer_inbox_test.go
+	// (SIN-63821) and internal/iam/authorizer_inbox_seed_test.go
+	// (SIN-63858).
 	want := []entry{
 		{"admin@acme." + baseDomain, "tenant_gerente"},
-		{"agent@acme." + baseDomain, "tenant_common"},
-		{"agent@globex." + baseDomain, "tenant_common"},
+		{"agent@acme." + baseDomain, "tenant_atendente"},
+		{"agent@globex." + baseDomain, "tenant_atendente"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
