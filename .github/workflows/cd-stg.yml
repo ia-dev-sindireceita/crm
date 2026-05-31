@@ -551,3 +551,24 @@ jobs:
           done
           echo "login smoke FAILED — deploy regression (see docs/deploy/staging.md → \"Login smoke gate\")"
           exit 1
+
+      # SIN-63858 — inbox smoke gate. The /login smoke above only proves
+      # the IAM cookie contract; it does not exercise /inbox or the
+      # authorizer for ActionTenantInboxRead, so the SIN-63821 W6 deploy
+      # closed green while staging operators 403'd on /inbox. This step
+      # wires the existing scripts/ci/stg-smoke-inbox.sh into the deploy
+      # gate so a future seed/authorizer drift fails the job red instead
+      # of leaking to production. Reuses the same STG_SEED_AGENT_*
+      # secrets as the /login smoke — no new secrets required.
+      - name: smoke check /inbox
+        timeout-minutes: 1
+        env:
+          STG_BASE: ${{ secrets.STG_SMOKE_URL }}
+          STG_SEED_AGENT_EMAIL: ${{ secrets.STG_SEED_AGENT_EMAIL }}
+          STG_SEED_AGENT_PASSWORD: ${{ secrets.STG_SEED_AGENT_PASSWORD }}
+          POLL_TIMEOUT_SECONDS: "30"
+          POLL_INTERVAL_SECONDS: "2"
+        run: |
+          set -euo pipefail
+          set +x
+          bash scripts/ci/stg-smoke-inbox.sh
