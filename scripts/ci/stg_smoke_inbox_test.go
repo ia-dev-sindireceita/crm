@@ -72,6 +72,11 @@ type inboxFakeOptions struct {
 	// before the fake renders the second msg-in bubble. 0 means the
 	// inbound is visible immediately; a large value forces a timeout.
 	InboundAfterPoll int32
+	// ObservedSend, when non-nil, receives the headers the smoke POSTed
+	// to /inbox/conversations/{id}/messages. Lets a dedicated test
+	// assert the browser-like envelope (Origin, Referer) without
+	// changing the default fake behaviour.
+	ObservedSend *atomic.Pointer[sendObservation]
 }
 
 const fakeConversationID = "11111111-2222-3333-4444-555555555555"
@@ -159,6 +164,12 @@ func newInboxFake(t *testing.T, opts inboxFakeOptions) string {
 			_, _ = w.Write([]byte(body))
 		})
 
+	// Record what the smoke sent on POST messages so dedicated tests
+	// can assert the CSRF allowlist contract (Origin/Referer headers).
+	// The real csrf middleware (internal/adapter/httpapi/csrf) rejects
+	// with reason=csrf.origin_missing when both are absent — mirror
+	// that here so a regression in the smoke (forgetting Origin) is
+	// caught by `go test ./scripts/ci/...` rather than the cd-stg job.
 	mux.HandleFunc(fmt.Sprintf("/inbox/conversations/%s/messages", fakeConversationID),
 		func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
@@ -169,6 +180,16 @@ func newInboxFake(t *testing.T, opts inboxFakeOptions) string {
 				http.Error(w, "missing csrf", http.StatusForbidden)
 				return
 			}
+			if r.Header.Get("Origin") == "" && r.Header.Get("Referer") == "" {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+			if opts.ObservedSend != nil {
+				opts.ObservedSend.Store(&sendObservation{
+					Origin:  r.Header.Get("Origin"),
+					Referer: r.Header.Get("Referer"),
+				})
+			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write([]byte(`<li class="message-bubble msg-out" data-status="pending"><p>ack</p></li>`))
 		})
@@ -176,6 +197,14 @@ func newInboxFake(t *testing.T, opts inboxFakeOptions) string {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// sendObservation captures the headers the smoke POSTed to
+// /inbox/conversations/{id}/messages so a dedicated test can assert the
+// browser-like envelope (Origin, Referer).
+type sendObservation struct {
+	Origin  string
+	Referer string
 }
 
 // runSmoke invokes the smoke script with the env required by its
@@ -432,5 +461,41 @@ func TestSmoke_DispatchTimeout(t *testing.T) {
 	}
 	if !strings.Contains(out, "stage=dispatch") {
 		t.Fatalf("smoke output missing stage=dispatch failure label\n%s", out)
+	}
+}
+
+// TestSmoke_Send_CSRFOriginEnvelope pins the contract that prevented
+// PR #131 from green-deploying: the smoke MUST send Origin and Referer
+// on the POST so the production csrf middleware accepts the request.
+// Without these headers the real handler rejects with
+// reason=csrf.origin_missing (internal/adapter/httpapi/csrf
+// readOriginOrReferer) and the smoke false-fails as "stage=send: 403"
+// even though the operator's authorization is correct.
+//
+// The fake's send handler returns 403 when both headers are absent, so
+// the test would also catch a regression where a future edit drops the
+// headers from the curl invocation.
+func TestSmoke_Send_CSRFOriginEnvelope(t *testing.T) {
+	t.Parallel()
+	var observed atomic.Pointer[sendObservation]
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider:   "llmcustomer",
+		InboundAfterPoll: 1,
+		ObservedSend:     &observed,
+	})
+	out, code := runSmoke(t, base)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d (want 0)\n%s", code, out)
+	}
+	got := observed.Load()
+	if got == nil {
+		t.Fatalf("smoke did not POST to /messages with CSRF-allowlist headers\n%s", out)
+	}
+	if got.Origin != base {
+		t.Fatalf("Origin = %q, want %q (must match STG_BASE so csrf allowlist accepts the request)", got.Origin, base)
+	}
+	wantRefererPrefix := base + "/inbox/conversations/"
+	if !strings.HasPrefix(got.Referer, wantRefererPrefix) {
+		t.Fatalf("Referer = %q, want prefix %q", got.Referer, wantRefererPrefix)
 	}
 }
