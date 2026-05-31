@@ -352,6 +352,24 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	if err := LGPDMasterOpsRequired(getenv); err != nil {
 		return fmt.Errorf("lgpd wire-up: %w", err)
 	}
+
+	// SIN-63823 / SIN-63793 W4: parse INBOX_CHANNEL_PROVIDER, hard-fail
+	// boot when the fake-customer adapter is selected on a production-
+	// tier APP_ENV, and emit a structured audit line for the selected
+	// value. Both checks run BEFORE the public listener binds so a
+	// misconfigured deploy aborts on startup with the offending value
+	// in the log rather than silently degrading to the disabled default
+	// (parse error) or serving synthetic conversations at customer
+	// scale (production refuse).
+	if err := InboxChannelProviderRefusedInProd(getenv); err != nil {
+		return fmt.Errorf("inbox channel provider wire-up: %w", err)
+	}
+	inboxChannelProvider, err := ReadInboxChannelProvider(getenv)
+	if err != nil {
+		return fmt.Errorf("inbox channel provider wire-up: %w", err)
+	}
+	LogInboxChannelProviderBoot(slog.Default(), inboxChannelProvider)
+
 	cdHandler, cdCleanup := buildCustomDomainHandler(ctx, getenv)
 	defer cdCleanup()
 	if cdHandler != nil {

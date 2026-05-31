@@ -14,4 +14,11 @@
 //
 // Real LLM HTTP impl, config selector, router wireup, and the
 // noop wallet adapter ship as separate workstreams (SIN-63793 W3-W5).
+//
+// Activation policy (SIN-63823): cmd/server's INBOX_CHANNEL_PROVIDER
+// gate refuses to start when the fake adapter is selected on a
+// production-tier APP_ENV (see cmd/server/inbox_channel_provider_wire.go),
+// so the adapter never reaches a customer-facing deploy. Combined with
+// the structural absence of a real-carrier client above, a config
+// bypass still cannot send to a real phone number / chat platform.
 package llmcustomer
