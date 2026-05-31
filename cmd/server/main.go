@@ -378,6 +378,13 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		return fmt.Errorf("inbox channel provider wire-up: %w", err)
 	}
 	LogInboxChannelProviderBoot(slog.Default(), inboxChannelProvider)
+	// SIN-63825 / W6: expose the resolved provider on /health so the
+	// staging smoke (scripts/ci/stg-smoke-inbox.sh) can pre-check
+	// `inbox_channel_provider == "llmcustomer"` before exercising the
+	// operator loop. Set once, before the listener accepts traffic;
+	// the http.Server's accept-loop happens-after this assignment so
+	// no further synchronisation is needed.
+	inboxChannelProviderForHealth = inboxChannelProvider.String()
 
 	// SIN-63826 / SIN-63793 W3: parse PERSONA_LLM_PROVIDER, hard-fail
 	// boot when the openrouter persona is selected without
@@ -542,12 +549,34 @@ func runInternal(ctx context.Context, addr string, handler http.Handler) error {
 	return nil
 }
 
+// inboxChannelProviderForHealth carries the resolved
+// INBOX_CHANNEL_PROVIDER value that runWith reads at boot. It is read
+// (without a mutex) by healthHandler on every /health request — runWith
+// writes it once before the listener accepts connections, so callers
+// observe a stable value through the http.Server's happens-before
+// barrier. SIN-63825 / SIN-63793 W6: surfacing the provider on /health
+// lets scripts/ci/stg-smoke-inbox.sh refuse to false-pass on a
+// staging deploy where INBOX_CHANNEL_PROVIDER is unset or "disabled".
+var inboxChannelProviderForHealth string
+
 // healthHandler is the public /health closure constructed from
-// handler.Health with the build-time commit SHA. It is wired here so the
-// cd-stg smoke gate (SIN-63146) can compare the served commit_sha against
-// the GitHub workflow head SHA. See SIN-63165 for the wireup-shadow bug
+// handler.Health with the build-time commit SHA and the resolved inbox
+// channel provider. It is wired here so the cd-stg smoke gate
+// (SIN-63146) can compare the served commit_sha against the GitHub
+// workflow head SHA, and the SIN-63825 inbox smoke gate can read
+// .inbox_channel_provider. See SIN-63165 for the wireup-shadow bug
 // this var fixes.
-var healthHandler = handler.Health(version.CommitSHA())
+//
+// The closure re-evaluates inboxChannelProviderForHealth on every
+// request via the option, so a /health probe issued before runWith
+// finishes its boot sequence simply sees the legacy two-field JSON
+// shape (inbox_channel_provider omitempty) rather than a stale value.
+var healthHandler http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
+	handler.Health(
+		version.CommitSHA(),
+		handler.WithInboxChannelProvider(inboxChannelProviderForHealth),
+	).ServeHTTP(w, r)
+}
 
 // newMux builds the public stdlib mux. /health is mounted here on the
 // stdlib ServeMux — NOT inside the chi router in iam_wire.go's iamRoutes.
