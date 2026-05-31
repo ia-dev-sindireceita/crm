@@ -1,26 +1,39 @@
 #!/usr/bin/env bash
 # scripts/ci/stg-smoke-inbox.sh — SIN-63825 / SIN-63793 W6 staging
-# smoke for the operator inbox loop. Exercises:
+# smoke for the operator inbox loop. The script has two modes, both
+# enforced by the cd-stg.yml deploy gate:
 #
-#   1. /health pre-condition: .inbox_channel_provider == "llmcustomer"
-#      (proves cmd/server resolved INBOX_CHANNEL_PROVIDER correctly,
-#      so a stale env on the VPS cannot false-pass the rest).
-#   2. Login as the seeded tenant_atendente. The same secret pair the
-#      SIN-63270 /login smoke uses is re-used so the deploy gate is
-#      one credential surface, not two.
-#   3. GET /inbox → at least one /inbox/conversations/<uuid> link.
-#      Distinguishes "W1 router not mounted" (404) from "W2 bootstrap
-#      did not seed" (200 + empty list).
-#   4. GET /inbox/conversations/<uuid> → extract the CSRF meta token
-#      and baseline-count `class="message-bubble msg-in"` bubbles.
-#   5. POST /inbox/conversations/<uuid>/messages → 200, then poll the
-#      same conversation-view route every POLL_INTERVAL_SECONDS for up
-#      to POLL_TIMEOUT_SECONDS. Pass when msg-in count > baseline.
+#   FULL mode (provider=llmcustomer): exercises the whole loop.
+#
+#     1. /health pre-condition: .inbox_channel_provider == "llmcustomer"
+#        (proves cmd/server resolved INBOX_CHANNEL_PROVIDER correctly,
+#        so a stale env on the VPS cannot false-pass the rest).
+#     2. Login as the seeded tenant_atendente. The same secret pair the
+#        SIN-63270 /login smoke uses is re-used so the deploy gate is
+#        one credential surface, not two.
+#     3. GET /inbox → at least one /inbox/conversations/<uuid> link.
+#        Distinguishes "W1 router not mounted" (404) from "W2 bootstrap
+#        did not seed" (200 + empty list).
+#     4. GET /inbox/conversations/<uuid> → extract the CSRF meta token
+#        and baseline-count `class="message-bubble msg-in"` bubbles.
+#     5. POST /inbox/conversations/<uuid>/messages → 200, then poll the
+#        same conversation-view route every POLL_INTERVAL_SECONDS for up
+#        to POLL_TIMEOUT_SECONDS. Pass when msg-in count > baseline.
+#
+#   DEGRADED mode (provider=disabled or unset): the VPS has not opted
+#   into the fake-customer adapter yet. Validates only the operator-
+#   facing route contract (auth + /inbox 200 + role gate not 403) and
+#   exits 0. Without llmcustomer there is no bootstrap conversation
+#   and no LLM inbound to dispatch, so stages 4-7 cannot run — but the
+#   SIN-63858 authz gate (the original /inbox 403 incident) is still
+#   exercised. Operators flip INBOX_CHANNEL_PROVIDER=llmcustomer in
+#   /opt/crm/stg/.env.stg + recreate the `app` container to upgrade
+#   the smoke to FULL on the next deploy.
 #
 # Failure modes are surfaced with greppable `stage=` labels so the
 # cd-stg.yml job log can be triaged at a glance:
 #
-#   stage=preflight   — /health unreachable or provider mismatch
+#   stage=preflight   — /health unreachable or unknown provider value
 #   stage=auth        — /login != 302 or session cookies missing
 #   stage=route       — /inbox != 200 (W1 router not deployed)
 #   stage=bootstrap   — /inbox 200 with no conversation link (W2)
@@ -81,11 +94,30 @@ if ! curl -fsS --max-time 5 "${STG_BASE}/health" -o "${HEALTH}"; then
   die "stage=preflight: GET /health failed or returned non-2xx (is the VPS reachable?)"
 fi
 provider=$(jq -r '.inbox_channel_provider // ""' < "${HEALTH}")
-if [ "${provider}" != "llmcustomer" ]; then
-  cat "${HEALTH}" >&2
-  die "stage=preflight: /health reports inbox_channel_provider=\"${provider}\", want \"llmcustomer\" (INBOX_CHANNEL_PROVIDER unset or misconfigured on staging)"
-fi
-log "stage=preflight ok — provider=llmcustomer"
+# SMOKE_MODE drives the stage 4–7 dispatch loop. FULL exercises the
+# whole operator→LLM→inbound loop; DEGRADED stops after the auth +
+# /inbox 200 contract because the VPS has not enabled llmcustomer.
+case "${provider}" in
+  llmcustomer)
+    SMOKE_MODE=full
+    log "stage=preflight ok — provider=llmcustomer (full smoke)"
+    ;;
+  disabled|"")
+    SMOKE_MODE=degraded
+    log "stage=preflight degrade — provider=\"${provider:-unset}\"; running auth + /inbox route check only (dispatch loop skipped, set INBOX_CHANNEL_PROVIDER=llmcustomer on VPS to upgrade)"
+    ;;
+  real)
+    # `real` is the reserved-but-unwired production carrier slot. The
+    # smoke does not yet know how to exercise a live carrier so refuse
+    # rather than false-pass.
+    cat "${HEALTH}" >&2
+    die "stage=preflight: /health reports inbox_channel_provider=\"real\" but the smoke does not yet exercise the production-carrier wire (SIN-63793 W3 follow-up)"
+    ;;
+  *)
+    cat "${HEALTH}" >&2
+    die "stage=preflight: /health reports unknown inbox_channel_provider=\"${provider}\" (expected one of: llmcustomer, disabled, real)"
+    ;;
+esac
 
 # ---------------------------------------------------------------------
 # Stage 2 — Login. Reuse the SIN-63270 cookie contract.
@@ -129,6 +161,19 @@ fi
 if [ "${code}" != "200" ]; then
   cat "${INBOX_HDR}" >&2
   die "stage=route: /inbox expected 200, got ${code}"
+fi
+
+# DEGRADED mode short-circuit: the SIN-63858 authz gate has now been
+# exercised (auth ok + /inbox != 403 + /inbox 200), which is the only
+# contract the operator-side of staging guarantees when llmcustomer is
+# not wired. Stages 4-7 require a bootstrapped conversation that only
+# the llmcustomer adapter creates, so attempting them would fail on
+# stage=bootstrap with an empty list — false-positive for "deploy
+# regression" when really the VPS just has not enabled the feature.
+if [ "${SMOKE_MODE}" = "degraded" ]; then
+  log "stage=route ok — /inbox 200 (degraded mode)"
+  log "stg-smoke-inbox: PASS (degraded — auth + /inbox route validated; dispatch skipped, INBOX_CHANNEL_PROVIDER not llmcustomer on this deploy)"
+  exit 0
 fi
 
 # The list template renders each conversation as
