@@ -16,10 +16,18 @@
 // Test taxonomy:
 //   - happy_path: every stage succeeds, inbound arrives on the second
 //     poll, exit 0.
-//   - preflight_provider_mismatch: /health returns a different provider;
+//   - preflight_provider_disabled: /health reports disabled (SIN-63858
+//     fix-forward); smoke degrades — auth + /inbox 200 + exit 0.
+//   - preflight_provider_missing: /health omits the field (pre-W6
+//     binary); smoke degrades — same as disabled.
+//   - preflight_provider_unknown: /health reports a non-enum value;
 //     stage=preflight, exit 1.
+//   - preflight_provider_real: /health reports the reserved-but-
+//     unwired carrier slot; stage=preflight, exit 1.
+//   - degraded_inbox_empty: degraded mode tolerates the empty-list
+//     template (no llmcustomer bootstrap, no stage=bootstrap fail).
 //   - route_404: /inbox responds 404; stage=route, exit 1.
-//   - bootstrap_empty: /inbox returns 200 with empty list HTML;
+//   - bootstrap_empty: full mode with empty list HTML;
 //     stage=bootstrap, exit 1.
 //   - dispatch_timeout: send succeeds but no inbound ever appears;
 //     stage=dispatch, exit 1.
@@ -225,33 +233,99 @@ func TestSmoke_HappyPath(t *testing.T) {
 	}
 }
 
-func TestSmoke_PreflightProviderMismatch(t *testing.T) {
+func TestSmoke_PreflightProviderDisabled(t *testing.T) {
 	t.Parallel()
+	// SIN-63858 fix-forward: when the VPS has not enabled the fake-
+	// customer adapter, the smoke must validate only auth + /inbox 200
+	// and exit clean instead of false-blocking the deploy gate.
 	base := newInboxFake(t, inboxFakeOptions{
 		HealthProvider: "disabled",
 	})
 	out, code := runSmoke(t, base)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d want 0 (degraded mode should pass)\n%s", code, out)
+	}
+	for _, want := range []string{
+		"stage=preflight degrade",
+		"stage=auth ok",
+		"stage=route ok — /inbox 200 (degraded mode)",
+		"stg-smoke-inbox: PASS (degraded",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("degraded smoke output missing %q\n%s", want, out)
+		}
+	}
+	// Dispatch stages must NOT have run.
+	for _, forbid := range []string{"stage=view", "stage=send", "stage=dispatch"} {
+		if strings.Contains(out, forbid) {
+			t.Fatalf("degraded smoke ran a dispatch stage %q (must be skipped)\n%s", forbid, out)
+		}
+	}
+}
+
+func TestSmoke_PreflightProviderMissing(t *testing.T) {
+	t.Parallel()
+	// Field omitted from /health (pre-W6 binary). Same degrade contract
+	// as `disabled` — empty value reads as not-yet-enabled.
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider: "",
+	})
+	out, code := runSmoke(t, base)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d want 0 (degraded mode should pass for missing field)\n%s", code, out)
+	}
+	if !strings.Contains(out, "stage=preflight degrade") {
+		t.Fatalf("smoke output missing stage=preflight degrade label\n%s", out)
+	}
+}
+
+func TestSmoke_PreflightProviderUnknown(t *testing.T) {
+	t.Parallel()
+	// A typo or future-unknown value must fail-loud, not silently
+	// degrade — otherwise a misconfigured prod could green-smoke.
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider: "bogus-value",
+	})
+	out, code := runSmoke(t, base)
 	if code == 0 {
-		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
+		t.Fatalf("smoke exit=0 want non-zero for unknown provider\n%s", out)
 	}
 	if !strings.Contains(out, "stage=preflight") {
 		t.Fatalf("smoke output missing stage=preflight failure label\n%s", out)
 	}
 }
 
-func TestSmoke_PreflightProviderMissing(t *testing.T) {
+func TestSmoke_PreflightProviderReal(t *testing.T) {
 	t.Parallel()
-	// Field omitted from /health (pre-W6 binary). Smoke must still refuse
-	// to proceed because empty != "llmcustomer".
+	// The reserved-but-unwired carrier slot is rejected because the
+	// smoke does not yet know how to exercise a real carrier loop.
 	base := newInboxFake(t, inboxFakeOptions{
-		HealthProvider: "",
+		HealthProvider: "real",
 	})
 	out, code := runSmoke(t, base)
 	if code == 0 {
-		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
+		t.Fatalf("smoke exit=0 want non-zero for provider=real\n%s", out)
 	}
 	if !strings.Contains(out, "stage=preflight") {
 		t.Fatalf("smoke output missing stage=preflight failure label\n%s", out)
+	}
+}
+
+func TestSmoke_DegradedAcceptsEmptyInbox(t *testing.T) {
+	t.Parallel()
+	// In degraded mode the empty-state template is the expected shape
+	// (no llmcustomer bootstrap to seed a synthetic conversation). The
+	// smoke must NOT trip stage=bootstrap.
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider: "disabled",
+		InboxEmpty:     true,
+	})
+	out, code := runSmoke(t, base)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d want 0 (degraded + empty inbox must pass)\n%s", code, out)
+	}
+	if strings.Contains(out, "stage=bootstrap") {
+		t.Fatalf("degraded smoke tripped stage=bootstrap on empty inbox (must be skipped)\n%s", out)
 	}
 }
 
