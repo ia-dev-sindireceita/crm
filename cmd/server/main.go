@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -293,6 +294,14 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webConsentHandler, webConsentCleanup := buildConsentHandler(ctx, getenv)
 	defer webConsentCleanup()
 
+	// SIN-63821 — operator inbox HTMX UI (parent SIN-63793). W1 wires
+	// the route shell with stub use cases so the surface mounts cleanly;
+	// W2/W4/W5 land the real channel adapter + WalletDebitor. Same
+	// fail-soft pattern as the other web/* handlers: a nil handler
+	// leaves /inbox* unmounted on this listener.
+	webInboxHandler, webInboxCleanup := buildInboxHandler(ctx, getenv)
+	defer webInboxCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
@@ -308,6 +317,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		WebBranding:      brandingStack.Handler,
 		WebPublicPrivacy: webPublicPrivacyHandler,
 		WebConsent:       webConsentHandler,
+		WebInbox:         webInboxHandler,
 		Theme:            brandingStack.Theme,
 		Metrics:          metrics,
 	})
@@ -352,6 +362,50 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	if err := LGPDMasterOpsRequired(getenv); err != nil {
 		return fmt.Errorf("lgpd wire-up: %w", err)
 	}
+
+	// SIN-63823 / SIN-63793 W4: parse INBOX_CHANNEL_PROVIDER, hard-fail
+	// boot when the fake-customer adapter is selected on a production-
+	// tier APP_ENV, and emit a structured audit line for the selected
+	// value. Both checks run BEFORE the public listener binds so a
+	// misconfigured deploy aborts on startup with the offending value
+	// in the log rather than silently degrading to the disabled default
+	// (parse error) or serving synthetic conversations at customer
+	// scale (production refuse).
+	if err := InboxChannelProviderRefusedInProd(getenv); err != nil {
+		return fmt.Errorf("inbox channel provider wire-up: %w", err)
+	}
+	inboxChannelProvider, err := ReadInboxChannelProvider(getenv)
+	if err != nil {
+		return fmt.Errorf("inbox channel provider wire-up: %w", err)
+	}
+	LogInboxChannelProviderBoot(slog.Default(), inboxChannelProvider)
+	// SIN-63825 / W6: expose the resolved provider on /health so the
+	// staging smoke (scripts/ci/stg-smoke-inbox.sh) can pre-check
+	// `inbox_channel_provider == "llmcustomer"` before exercising the
+	// operator loop. Stored through sync/atomic so sibling tests that
+	// race runWith against /health probes (cmd/server has both in the
+	// same package) do not trip the race detector — production only
+	// writes once at boot, but the test binary exercises both paths
+	// concurrently.
+	resolvedProvider := inboxChannelProvider.String()
+	inboxChannelProviderForHealth.Store(&resolvedProvider)
+
+	// SIN-63826 / SIN-63793 W3: parse PERSONA_LLM_PROVIDER, hard-fail
+	// boot when the openrouter persona is selected without
+	// OPENROUTER_API_KEY (defense-in-depth: the persona impl re-checks
+	// at construction, but the boot gate surfaces the missing-secret
+	// case BEFORE any request hits the inbox), and emit a structured
+	// audit line for the selected value so operators can correlate the
+	// boot log with /inbox behaviour.
+	if err := PersonaLLMRefusedWithoutKey(getenv); err != nil {
+		return fmt.Errorf("persona-llm wire-up: %w", err)
+	}
+	personaLLMProvider, err := ReadPersonaLLMProvider(getenv)
+	if err != nil {
+		return fmt.Errorf("persona-llm wire-up: %w", err)
+	}
+	LogPersonaLLMProviderBoot(slog.Default(), personaLLMProvider)
+
 	cdHandler, cdCleanup := buildCustomDomainHandler(ctx, getenv)
 	defer cdCleanup()
 	if cdHandler != nil {
@@ -499,12 +553,36 @@ func runInternal(ctx context.Context, addr string, handler http.Handler) error {
 	return nil
 }
 
+// inboxChannelProviderForHealth carries the resolved
+// INBOX_CHANNEL_PROVIDER value that runWith publishes at boot. It is
+// read by healthHandler on every /health request and written once by
+// runWith before the listener accepts connections. The atomic pointer
+// guarantees a data-race-free read/write across the sibling cmd/server
+// tests that exercise runWith and healthHandler concurrently (the
+// production happens-before via http.Server's accept-loop does not
+// extend across those tests). A nil load — observed by a /health probe
+// issued before runWith publishes — yields the legacy two-field JSON
+// shape via the WithInboxChannelProvider("") omitempty path.
+// SIN-63825 / SIN-63793 W6.
+var inboxChannelProviderForHealth atomic.Pointer[string]
+
 // healthHandler is the public /health closure constructed from
-// handler.Health with the build-time commit SHA. It is wired here so the
-// cd-stg smoke gate (SIN-63146) can compare the served commit_sha against
-// the GitHub workflow head SHA. See SIN-63165 for the wireup-shadow bug
+// handler.Health with the build-time commit SHA and the resolved inbox
+// channel provider. It is wired here so the cd-stg smoke gate
+// (SIN-63146) can compare the served commit_sha against the GitHub
+// workflow head SHA, and the SIN-63825 inbox smoke gate can read
+// .inbox_channel_provider. See SIN-63165 for the wireup-shadow bug
 // this var fixes.
-var healthHandler = handler.Health(version.CommitSHA())
+var healthHandler http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
+	var provider string
+	if p := inboxChannelProviderForHealth.Load(); p != nil {
+		provider = *p
+	}
+	handler.Health(
+		version.CommitSHA(),
+		handler.WithInboxChannelProvider(provider),
+	).ServeHTTP(w, r)
+}
 
 // newMux builds the public stdlib mux. /health is mounted here on the
 // stdlib ServeMux — NOT inside the chi router in iam_wire.go's iamRoutes.

@@ -1,0 +1,301 @@
+// Package ci_test (file: stg_smoke_inbox_test.go) drives
+// scripts/ci/stg-smoke-inbox.sh against an in-process httptest server
+// that mimics the staging operator-inbox surface. The test exists so a
+// future edit to the smoke script does not silently shift the failure-
+// mode taxonomy the cd-stg job relies on, and so the script's exit-code
+// guarantees stay green under `go test ./...`.
+//
+// Why drive bash from Go: scripts/tests/backup_test.sh established the
+// hand-rolled bash runner precedent for scripts/backup.sh, but the inbox
+// smoke's surface is HTTP (cookies + JSON + HTML parsing), which a Go
+// httptest is dramatically simpler to fake than a bash stub PATH. We
+// keep the bash script as the production artifact (matches the existing
+// cd-stg.yml /login smoke pattern) and use this Go test only as a
+// behaviour spec.
+//
+// Test taxonomy:
+//   - happy_path: every stage succeeds, inbound arrives on the second
+//     poll, exit 0.
+//   - preflight_provider_mismatch: /health returns a different provider;
+//     stage=preflight, exit 1.
+//   - route_404: /inbox responds 404; stage=route, exit 1.
+//   - bootstrap_empty: /inbox returns 200 with empty list HTML;
+//     stage=bootstrap, exit 1.
+//   - dispatch_timeout: send succeeds but no inbound ever appears;
+//     stage=dispatch, exit 1.
+
+package ci_test
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+// smokeScriptPath resolves scripts/ci/stg-smoke-inbox.sh relative to the
+// test file. Keeping the resolution local means the test runs identically
+// from `go test ./scripts/ci/...` and from the repo root.
+func smokeScriptPath(t *testing.T) string {
+	t.Helper()
+	abs, err := filepath.Abs("./stg-smoke-inbox.sh")
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	return abs
+}
+
+// inboxFakeOptions tunes the behaviour of the in-process fake.
+type inboxFakeOptions struct {
+	// HealthProvider is the value rendered as inbox_channel_provider.
+	// Empty string → field omitted.
+	HealthProvider string
+	// InboxStatus is the HTTP code returned by GET /inbox. 200 by default.
+	InboxStatus int
+	// InboxEmpty makes /inbox render the empty-state HTML instead of
+	// the one-conversation HTML. Used to drive the bootstrap-empty
+	// failure mode.
+	InboxEmpty bool
+	// InboundAfterPoll is the number of post-send view fetches required
+	// before the fake renders the second msg-in bubble. 0 means the
+	// inbound is visible immediately; a large value forces a timeout.
+	InboundAfterPoll int32
+}
+
+const fakeConversationID = "11111111-2222-3333-4444-555555555555"
+const fakeCSRF = "fake-csrf-token-abc123"
+
+// newInboxFake spins up an httptest.Server that implements the subset
+// of routes the smoke exercises. Returns the server URL (suitable for
+// STG_BASE) and a cleanup.
+func newInboxFake(t *testing.T, opts inboxFakeOptions) string {
+	t.Helper()
+	postSendViewCount := int32(0)
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		body := `{"status":"ok","commit_sha":"unknown"`
+		if opts.HealthProvider != "" {
+			body += fmt.Sprintf(`,"inbox_channel_provider":%q`, opts.HealthProvider)
+		}
+		body += "}"
+		_, _ = w.Write([]byte(body))
+	})
+
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		// Echo the cookie contract of the real handler: a __Host-* pair
+		// the script greps for. Path=/ + Secure=false is acceptable
+		// because httptest.NewServer serves plain HTTP and curl does
+		// not enforce the __Host- name rule.
+		w.Header().Add("Set-Cookie", "__Host-sess-tenant=fake-session; Path=/; HttpOnly")
+		w.Header().Add("Set-Cookie", "__Host-csrf=fake-csrf-token-abc123; Path=/")
+		w.Header().Set("Location", "/hello-tenant")
+		w.WriteHeader(http.StatusFound)
+	})
+
+	mux.HandleFunc("/inbox", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/inbox" {
+			http.NotFound(w, r)
+			return
+		}
+		if opts.InboxStatus != 0 && opts.InboxStatus != http.StatusOK {
+			w.WriteHeader(opts.InboxStatus)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if opts.InboxEmpty {
+			_, _ = w.Write([]byte(`<!doctype html><html><body>
+<meta name="csrf-token" content="` + fakeCSRF + `">
+<ul class="conversation-list"><li class="conversation-list__empty">Nenhuma conversa.</li></ul>
+</body></html>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<!doctype html><html><body>
+<meta name="csrf-token" content="` + fakeCSRF + `">
+<ul class="conversation-list">
+<li class="conversation-list__item"><a class="conversation-list__link"
+   href="/inbox/conversations/` + fakeConversationID + `"
+   hx-get="/inbox/conversations/` + fakeConversationID + `">whatsapp</a></li>
+</ul></body></html>`))
+	})
+
+	// Conversation view. The HTML the smoke parses needs the hidden
+	// _csrf input AND a controllable number of msg-in bubbles. We track
+	// view-fetch attempts via the atomic counter so the dispatch poll
+	// can be driven deterministically.
+	mux.HandleFunc(fmt.Sprintf("/inbox/conversations/%s", fakeConversationID),
+		func(w http.ResponseWriter, _ *http.Request) {
+			n := atomic.AddInt32(&postSendViewCount, 1)
+			// Always start with one inbound bubble (baseline=1). After
+			// InboundAfterPoll additional views, render a second msg-in
+			// bubble so the poll succeeds.
+			inboundBubbles := 1
+			if opts.InboundAfterPoll == 0 || n > 1+opts.InboundAfterPoll {
+				inboundBubbles = 2
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			body := `<article><ol id="conversation-thread">`
+			for i := 0; i < inboundBubbles; i++ {
+				body += "<li class=\"message-bubble msg-in\" data-status=\"read\"><p>inbound</p></li>\n"
+			}
+			body += `</ol><form><input type="hidden" name="_csrf" value="` + fakeCSRF + `"></form></article>`
+			_, _ = w.Write([]byte(body))
+		})
+
+	mux.HandleFunc(fmt.Sprintf("/inbox/conversations/%s/messages", fakeConversationID),
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+				return
+			}
+			if r.Header.Get("X-CSRF-Token") == "" {
+				http.Error(w, "missing csrf", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<li class="message-bubble msg-out" data-status="pending"><p>ack</p></li>`))
+		})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// runSmoke invokes the smoke script with the env required by its
+// preflight checks. Returns combined stdout+stderr and the exit code.
+func runSmoke(t *testing.T, base string, env ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command("bash", smokeScriptPath(t))
+	cmd.Env = append([]string{
+		"PATH=" + envPath(),
+		"STG_BASE=" + base,
+		"STG_SEED_AGENT_EMAIL=agent@acme.test",
+		"STG_SEED_AGENT_PASSWORD=stg-password",
+		"POLL_TIMEOUT_SECONDS=3",
+		"POLL_INTERVAL_SECONDS=1",
+	}, env...)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run smoke: %v\n%s", err, out)
+	}
+	return string(out), code
+}
+
+// envPath returns the minimal PATH the script needs. We inherit the
+// real PATH so curl + jq + grep + sed + date resolve as in CI.
+func envPath() string {
+	// /usr/local/bin first so brew-installed jq on macOS dev wins; then
+	// /usr/bin for the GitHub runner default.
+	return "/usr/local/bin:/usr/bin:/bin"
+}
+
+func TestSmoke_HappyPath(t *testing.T) {
+	t.Parallel()
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider:   "llmcustomer",
+		InboundAfterPoll: 1, // inbound appears on the second post-send view
+	})
+	out, code := runSmoke(t, base)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d (want 0)\n%s", code, out)
+	}
+	for _, want := range []string{
+		"stage=preflight ok",
+		"stage=auth ok",
+		"stage=route ok",
+		"stage=view ok",
+		"stage=send ok",
+		"stage=dispatch ok",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("smoke output missing %q\n%s", want, out)
+		}
+	}
+}
+
+func TestSmoke_PreflightProviderMismatch(t *testing.T) {
+	t.Parallel()
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider: "disabled",
+	})
+	out, code := runSmoke(t, base)
+	if code == 0 {
+		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
+	}
+	if !strings.Contains(out, "stage=preflight") {
+		t.Fatalf("smoke output missing stage=preflight failure label\n%s", out)
+	}
+}
+
+func TestSmoke_PreflightProviderMissing(t *testing.T) {
+	t.Parallel()
+	// Field omitted from /health (pre-W6 binary). Smoke must still refuse
+	// to proceed because empty != "llmcustomer".
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider: "",
+	})
+	out, code := runSmoke(t, base)
+	if code == 0 {
+		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
+	}
+	if !strings.Contains(out, "stage=preflight") {
+		t.Fatalf("smoke output missing stage=preflight failure label\n%s", out)
+	}
+}
+
+func TestSmoke_RouteNotMounted(t *testing.T) {
+	t.Parallel()
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider: "llmcustomer",
+		InboxStatus:    http.StatusNotFound,
+	})
+	out, code := runSmoke(t, base)
+	if code == 0 {
+		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
+	}
+	if !strings.Contains(out, "stage=route") {
+		t.Fatalf("smoke output missing stage=route failure label\n%s", out)
+	}
+}
+
+func TestSmoke_BootstrapEmpty(t *testing.T) {
+	t.Parallel()
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider: "llmcustomer",
+		InboxEmpty:     true,
+	})
+	out, code := runSmoke(t, base)
+	if code == 0 {
+		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
+	}
+	if !strings.Contains(out, "stage=bootstrap") {
+		t.Fatalf("smoke output missing stage=bootstrap failure label\n%s", out)
+	}
+}
+
+func TestSmoke_DispatchTimeout(t *testing.T) {
+	t.Parallel()
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider:   "llmcustomer",
+		InboundAfterPoll: 999, // never grows past baseline within budget
+	})
+	out, code := runSmoke(t, base, "POLL_TIMEOUT_SECONDS=2", "POLL_INTERVAL_SECONDS=1")
+	if code == 0 {
+		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
+	}
+	if !strings.Contains(out, "stage=dispatch") {
+		t.Fatalf("smoke output missing stage=dispatch failure label\n%s", out)
+	}
+}
