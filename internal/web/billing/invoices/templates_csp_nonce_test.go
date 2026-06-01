@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // TestLayouts_StampCSPNonce pins SIN-63275 across every full-page
@@ -44,7 +45,7 @@ func TestLayouts_StampCSPNonce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var buf bytes.Buffer
-			if err := tc.tmpl.Execute(&buf, tc.view); err != nil {
+			if err := shell.Render(&buf, tc.tmpl, tc.view); err != nil {
 				t.Fatalf("Execute: %v", err)
 			}
 			if !strings.Contains(buf.String(), wantTag) {

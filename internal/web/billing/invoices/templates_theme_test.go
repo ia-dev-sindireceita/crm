@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // TestLayouts_RenderTenantThemeStyle pins the SIN-63092 wireup: every
@@ -42,7 +43,7 @@ func TestLayouts_RenderTenantThemeStyle(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var buf bytes.Buffer
-			if err := tc.tmpl.Execute(&buf, tc.view); err != nil {
+			if err := shell.Render(&buf, tc.tmpl, tc.view); err != nil {
 				t.Fatalf("Execute: %v", err)
 			}
 			if !strings.Contains(buf.String(), wantTag) {
@@ -71,7 +72,7 @@ func TestLayouts_OmitTenantThemeStyleWhenEmpty(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var buf bytes.Buffer
-			if err := tc.tmpl.Execute(&buf, tc.view); err != nil {
+			if err := shell.Render(&buf, tc.tmpl, tc.view); err != nil {
 				t.Fatalf("Execute: %v", err)
 			}
 			if strings.Contains(buf.String(), `id="tenant-theme"`) {

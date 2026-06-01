@@ -1,0 +1,241 @@
+/* billing-invoices.css — invoice list + PIX detail surface styles (SIN-63944) */
+
+/* ---- Invoice table ---- */
+.invoices-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.invoices-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.invoices-table th,
+.invoices-table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  vertical-align: middle;
+}
+
+.invoices-table thead th {
+  font-weight: 600;
+  color: var(--color-text-secondary, #64748b);
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.invoices-table .num { text-align: right; }
+
+.invoice-row:hover { background: var(--color-surface-2, #f8fafc); }
+
+/* ---- Invoice status badge ---- */
+.invoice-status {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.invoice-status--pending  { background: var(--color-warning-surface, #fef3c7); color: var(--color-warning-text, #92400e); }
+.invoice-status--paid     { background: var(--color-success-surface, #d1fae5); color: var(--color-success-text, #065f46); }
+.invoice-status--cancelled_by_master { background: var(--color-surface-2, #f1f5f9); color: var(--color-text-secondary, #64748b); }
+
+/* ---- PIX charge section ---- */
+.invoice-pix__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.invoice-pix__qr {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: var(--space-3);
+}
+
+.invoice-pix__qr img {
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #e2e8f0);
+}
+
+.invoice-pix__copy {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-2);
+  align-items: start;
+  margin-bottom: var(--space-3);
+}
+
+.invoice-pix__copy label {
+  grid-column: 1 / -1;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.invoice-pix__copy textarea {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8125rem;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 6px;
+  resize: none;
+  background: var(--color-surface-2, #f8fafc);
+  word-break: break-all;
+}
+
+.invoice-pix__copy-btn {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-brand, #3b82f6);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  min-height: 44px; /* WCAG touch target */
+  white-space: nowrap;
+  align-self: end;
+}
+
+.invoice-pix__copy-btn:hover { background: var(--color-brand-hover, #2563eb); }
+
+/* Copied feedback state */
+.invoice-pix__copy-btn[data-copied="true"] {
+  background: var(--color-success, #10b981);
+}
+
+.invoice-pix__expiry {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #64748b);
+  margin-bottom: var(--space-3);
+}
+
+.invoice-pix__check { margin-top: var(--space-3); }
+
+.invoice-pix__pending {
+  color: var(--color-text-secondary, #64748b);
+  font-style: italic;
+}
+
+/* ---- Invoice meta dl ---- */
+.invoice-meta dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-4);
+  font-size: 0.9375rem;
+  margin-bottom: var(--space-5);
+}
+.invoice-meta dt { color: var(--color-text-secondary, #64748b); font-weight: 500; }
+
+/* ---- PIX status badge ---- */
+.invoice-pix-status { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.8125rem; }
+.invoice-pix-status--pending   { background: var(--color-warning-surface, #fef3c7); color: var(--color-warning-text, #92400e); }
+.invoice-pix-status--paid      { background: var(--color-success-surface, #d1fae5); color: var(--color-success-text, #065f46); }
+.invoice-pix-status--expired   { background: var(--color-surface-2, #f1f5f9); color: var(--color-text-secondary, #64748b); }
+.invoice-pix-status--cancelled { background: var(--color-surface-2, #f1f5f9); color: var(--color-text-secondary, #64748b); }
+
+/* ---- Invoice filter form ---- */
+.invoices-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: flex-end;
+  margin-bottom: var(--space-4);
+}
+
+.invoices-filter__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.invoices-filter__group label {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #64748b);
+  font-weight: 500;
+}
+
+.invoices-filter__group select,
+.invoices-filter__group input[type="month"] {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 6px;
+  font-size: 0.9375rem;
+  min-height: 38px;
+  background: #fff;
+}
+
+/* ---- Empty state ---- */
+.invoices-empty {
+  text-align: center;
+  padding: var(--space-8) var(--space-4);
+  color: var(--color-text-secondary, #64748b);
+}
+
+.invoices-empty__icon {
+  font-size: 2.5rem;
+  margin-bottom: var(--space-3);
+}
+
+.invoices-empty__title {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--color-text, #1e293b);
+  margin-bottom: var(--space-2);
+}
+
+.invoices-empty__hint {
+  font-size: 0.9375rem;
+}
+
+/* ---- Footer ---- */
+.invoices-shell__footer small {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #64748b);
+}
+
+/* ---- Dunning banner (legacy class + alert override) ---- */
+#dunning-banner.dunning-banner--hidden { display: none; }
+
+/* ---- Mobile responsive: PIX layout ≤ 599px ---- */
+@media (max-width: 599px) {
+  .invoice-pix__copy {
+    grid-template-columns: 1fr;
+  }
+
+  .invoice-pix__copy textarea {
+    width: 100%;
+  }
+
+  .invoice-pix__copy-btn {
+    width: 100%;
+    min-height: 48px; /* larger touch target on mobile */
+  }
+
+  .invoice-pix__qr {
+    justify-content: center;
+  }
+
+  /* QR stays 240×240 per spec (scanner legibility) */
+  .invoice-pix__qr img {
+    width: 240px;
+    height: 240px;
+  }
+
+  .invoices-filter {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .invoices-filter__group select,
+  .invoices-filter__group input[type="month"] {
+    width: 100%;
+  }
+}
