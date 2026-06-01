@@ -173,12 +173,21 @@ type SplitLogger interface {
 // login_fail is the user record being attempted (resolved upstream)
 // or — when no user exists — a sentinel actor id documented per
 // caller.
+//
+// CorrelationID is the SIN-63958 / master-impersonation-spec §3.1
+// link to master_impersonation_session.id. The
+// ImpersonationFromSession middleware places the active envelope id on
+// the request context; WriteSecurity falls back to that context value
+// when the event itself does not carry one. Pre-existing call sites
+// stay untouched — a nil CorrelationID with no context fallback emits
+// SQL NULL, matching the column default.
 type SecurityAuditEvent struct {
-	Event       SecurityEvent
-	ActorUserID uuid.UUID
-	TenantID    *uuid.UUID
-	Target      map[string]any
-	OccurredAt  time.Time
+	Event         SecurityEvent
+	ActorUserID   uuid.UUID
+	TenantID      *uuid.UUID
+	CorrelationID *uuid.UUID
+	Target        map[string]any
+	OccurredAt    time.Time
 }
 
 // DataAuditEvent maps 1:1 onto audit_log_data columns.

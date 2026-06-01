@@ -465,6 +465,22 @@ type Deps struct {
 	//   PATCH /master/tenants/{id}/plan  — ActionMasterSubscriptionAssignPlan
 	MasterTenants MasterTenantsRoutes
 
+	// Impersonation bundles the SIN-63958 session-bound impersonation
+	// envelope routes (Start, End, Feed). The bundle is a sibling of
+	// MasterTenants because the impersonation surface has heterogeneous
+	// auth posture (Start = ActionMasterTenantImpersonate; End =
+	// RoleMaster only so the operator can exit a stale envelope; Feed
+	// = RoleMaster + owner check). Conflating with MasterTenants would
+	// force the uniform RequireAction pattern onto handlers that need
+	// looser / stricter gates.
+	//
+	// The optional middleware ImpersonationFromSession (also non-nil
+	// when this bundle is wired) is applied on routes that consume the
+	// active envelope. Nil slots are skipped — router tests and deploys
+	// that don't wire the impersonation adapter keep their pre-PR
+	// behaviour.
+	Impersonation ImpersonationRoutes
+
 	// UserMFA is the SIN-63361 user-side TOTP enforcement surface.
 	// When LoginPost is non-nil the router REPLACES the legacy
 	// handler.LoginPost mount on POST /login with the MFA-aware
@@ -586,6 +602,34 @@ type MasterTenantsRoutes struct {
 	GrantRequestsShow    http.Handler // GET  /master/grants/requests/{id}
 	GrantRequestsApprove http.Handler // POST /master/grants/requests/{id}/approve
 	GrantRequestsReject  http.Handler // POST /master/grants/requests/{id}/reject
+}
+
+// ImpersonationRoutes is the SIN-63958 Scope 3 surface — three master-
+// console handlers that drive the session-bound impersonation envelope:
+//
+//	Start: POST /master/tenants/{id}/impersonate
+//	       RequireAuth → RequireAction(ActionMasterTenantImpersonate) →
+//	       handler.
+//
+//	End:   POST /master/impersonation/end
+//	       RequireAuth → RequireRoleMaster → handler. NOT behind
+//	       ImpersonationFromSession so an expired operator can still
+//	       exit a stale envelope (AC #3 from SIN-63955; spec §2.7).
+//
+//	Feed:  GET  /master/impersonation/feed
+//	       RequireAuth → RequireRoleMaster → handler. Owner check is
+//	       enforced inside the handler.
+//
+// FromSession is the middleware that consumes any active envelope on
+// the master subtree. Mounted by NewRouter as a wrapper on every
+// /master/* route except End; nil means "no impersonation wired" and
+// the wrapper is skipped (the legacy header-based middleware on /master/
+// stays the only path).
+type ImpersonationRoutes struct {
+	Start       http.Handler
+	End         http.Handler
+	Feed        http.Handler
+	FromSession func(http.Handler) http.Handler
 }
 
 // NewRouter wires the chi router with the canonical middleware chain and
@@ -1220,6 +1264,53 @@ func NewRouter(deps Deps) http.Handler {
 						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestReject, nil)(deps.MasterTenants.GrantRequestsReject),
 					)
 					authed.Method(http.MethodPost, "/master/grants/requests/{id}/reject", grqReject)
+				}
+
+				// SIN-63958 / master-impersonation-spec §1.4 — session-
+				// bound impersonation envelope. Three master routes
+				// with heterogeneous gating:
+				//
+				//   POST /master/tenants/{id}/impersonate
+				//     RequireAuth → RequireAction(ActionMasterTenantImpersonate)
+				//     → FromSession → handler. The FromSession wrapper
+				//     before the handler lets Start fire its audit row
+				//     with the freshly-minted envelope id already on
+				//     ctx for any inner authz event.
+				//
+				//   POST /master/impersonation/end
+				//     RequireAuth → RequireRoleMaster → handler. NO
+				//     FromSession wrapper so an expired or already-
+				//     ended envelope can still exit cleanly.
+				//
+				//   GET /master/impersonation/feed
+				//     RequireAuth → RequireRoleMaster → FromSession →
+				//     handler. The handler enforces the owner check
+				//     (master_user_id == principal.UserID).
+				if deps.Impersonation.Start != nil {
+					inner := deps.Impersonation.Start
+					if deps.Impersonation.FromSession != nil {
+						inner = deps.Impersonation.FromSession(inner)
+					}
+					startH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantImpersonate, nil)(inner),
+					)
+					authed.Method(http.MethodPost, "/master/tenants/{id}/impersonate", startH)
+				}
+				if deps.Impersonation.End != nil {
+					endH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireRoleMaster()(deps.Impersonation.End),
+					)
+					authed.Method(http.MethodPost, "/master/impersonation/end", endH)
+				}
+				if deps.Impersonation.Feed != nil {
+					inner := deps.Impersonation.Feed
+					if deps.Impersonation.FromSession != nil {
+						inner = deps.Impersonation.FromSession(inner)
+					}
+					feedH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireRoleMaster()(inner),
+					)
+					authed.Method(http.MethodGet, "/master/impersonation/feed", feedH)
 				}
 			}
 		})

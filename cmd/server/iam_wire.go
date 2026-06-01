@@ -248,6 +248,13 @@ type iamHandlerOpts struct {
 	// because buildIAMHandler runs BEFORE buildCustomDomainHandler in
 	// the boot sequence and cannot inspect the resulting handler.
 	CustomDomainEnabled bool
+
+	// Impersonation carries the SIN-63958 session-bound impersonation
+	// bundle built by buildImpersonationStack. The caller-supplied opts
+	// value wins when Start is non-nil so cmd/server unit tests can
+	// inject stubs. When all slots are nil (default) the router skips
+	// the impersonation routes cleanly.
+	Impersonation httpapi.ImpersonationRoutes
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -387,6 +394,18 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		userMFACleanup = stack.Cleanup
 	}
 
+	// SIN-63958 — session-bound impersonation envelope. Built here so it
+	// reuses the IAM pool + tenant resolver. opts.Impersonation, when Start
+	// is non-nil, wins over the wire-built stack (same pattern as
+	// opts.WebLGPD) so unit tests can inject stubs.
+	impersonationRoutes := opts.Impersonation
+	impersonationCleanup := func() {}
+	if impersonationRoutes.Start == nil {
+		stack := buildImpersonationStack(ctx, pool, tenants, getenv)
+		impersonationRoutes = stack.Routes
+		impersonationCleanup = stack.Cleanup
+	}
+
 	h := httpapi.NewRouter(httpapi.Deps{
 		IAM: iamAdapter{
 			tenants:  tenants,
@@ -429,9 +448,11 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		Metrics:             opts.Metrics,
 		UserMFA:             userMFARoutes,
 		CustomDomainEnabled: opts.CustomDomainEnabled,
+		Impersonation:       impersonationRoutes,
 	})
 
 	fullCleanup := func() {
+		impersonationCleanup()
 		userMFACleanup()
 		lgpdCleanup()
 		pool.Close()

@@ -23,6 +23,11 @@ import (
 	"github.com/pericles-luz/crm/internal/iam/audit"
 )
 
+// SIN-63958: WriteSecurity now also persists correlation_id (FK to
+// master_impersonation_session.id added by migration 0117). Fallback
+// chain: event.CorrelationID → audit.CorrelationIDFromContext(ctx) →
+// SQL NULL. Pre-SIN-63958 call sites match the NULL branch unchanged.
+
 // ErrSplitAuditEventInvalid signals that a SecurityAuditEvent or
 // DataAuditEvent does not satisfy the boundary invariants enforced by
 // SplitAuditLogger. Distinct from a wrapped pgx error so callers can
@@ -57,14 +62,15 @@ func NewSplitAuditLogger(db AuditExecutor) (*SplitAuditLogger, error) {
 }
 
 const splitSecurityInsertSQL = `
-INSERT INTO audit_log_security (id, tenant_id, actor_user_id, event_type, target, occurred_at)
+INSERT INTO audit_log_security (id, tenant_id, actor_user_id, event_type, target, occurred_at, correlation_id)
 VALUES (
   gen_random_uuid(),
   $1,
   $2,
   $3,
   $4::jsonb,
-  COALESCE($5, now())
+  COALESCE($5, now()),
+  $6
 )
 `
 
@@ -115,12 +121,30 @@ func (l *SplitAuditLogger) WriteSecurity(ctx context.Context, event audit.Securi
 		occurredArg = event.OccurredAt
 	}
 
+	// SIN-63958 / spec §3.1: correlation_id resolution order.
+	//
+	//   1. explicit event.CorrelationID (handler set it directly), then
+	//   2. audit.CorrelationIDFromContext(ctx) (middleware tagged the
+	//      request), else
+	//   3. SQL NULL (no envelope active — column DEFAULT applies).
+	//
+	// Pre-existing call sites that never populate the field and run
+	// outside an impersonation envelope match branch (3) and emit
+	// NULL — behaviour identical to pre-SIN-63958.
+	var correlationArg any
+	if event.CorrelationID != nil && *event.CorrelationID != uuid.Nil {
+		correlationArg = *event.CorrelationID
+	} else if id, ok := audit.CorrelationIDFromContext(ctx); ok {
+		correlationArg = id
+	}
+
 	if _, err := l.db.Exec(ctx, splitSecurityInsertSQL,
 		tenantArg,
 		event.ActorUserID,
 		string(event.Event),
 		string(encoded),
 		occurredArg,
+		correlationArg,
 	); err != nil {
 		return fmt.Errorf("postgres: insert audit_log_security: %w", err)
 	}
