@@ -85,8 +85,7 @@ func NewHelloTenant(deps HelloTenantDeps) http.HandlerFunc {
 			http.Error(w, "session missing", http.StatusInternalServerError)
 			return
 		}
-		surfaces := filterSurfacesByRole(buildHelloSurfaces(deps), sess.Role)
-		cards := filterSurfacesByRole(buildHelloCards(deps), sess.Role)
+		rows := helloIndexRows(deps, sess.Role)
 		data := struct {
 			TenantName       string
 			UserID           string
@@ -108,11 +107,11 @@ func NewHelloTenant(deps HelloTenantDeps) http.HandlerFunc {
 			CSRFToken:        sess.CSRFToken,
 			TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 			CSPNonce:         csp.Nonce(r.Context()),
-			Surfaces:         surfaces,
-			Cards:            cards,
-			NavItems:         buildHelloNavItems(surfaces),
-			UserMenuItems:    buildHelloUserMenu(deps),
-			UserDisplayName:  helloUserDisplayName(sess),
+			Surfaces:         buildHelloSurfaces(rows),
+			Cards:            buildHelloCards(rows),
+			NavItems:         buildHelloNavItems(rows),
+			UserMenuItems:    buildHelloUserMenu(),
+			UserDisplayName:  sess.UserID.String(),
 			TenantLogo:       "",
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -145,6 +144,13 @@ func HelloTenant(w http.ResponseWriter, r *http.Request) {
 // Roles is the closed set of role names allowed to see the entry; an
 // empty slice means "every authenticated role" (also the legacy/back-
 // compat path for session fixtures that don't carry a role string).
+//
+// TopNav marks entries that appear in the shell top-bar nav per AC §2.
+// The set is deliberately narrower than the full surfaces index: only
+// the primary operator destinations live in the chrome; configuration
+// and compliance surfaces stay in the body dashboard so the bar stays
+// scannable on narrow viewports. false means "body-only" — the entry
+// still renders as a card / surface link, just not a top-bar anchor.
 type helloSurfaceRow struct {
 	Path         string
 	SurfaceLabel string
@@ -152,24 +158,12 @@ type helloSurfaceRow struct {
 	Available    bool
 	Description  string
 	Roles        []iam.Role
+	TopNav       bool
 }
 
-// buildHelloSurfaces returns the post-login index entries in the order
-// defined by SIN-63774 / SIN-63940. Order is intentionally stable so QA
-// scripts, screenshot diffs, and the existing handler tests stay
-// deterministic — new entries land at the beginning (inbox, the
-// atendente primary) and at the tail (gerente/master configuration), so
-// the original SIN-63774 surfaces keep their relative ordering.
-//
-// Roles per row is the application-layer mirror of the ADR 0090 RBAC
-// matrix in internal/iam: an atendente sees inbox + funnel + privacy +
-// mfa-setup; a gerente sees the configuration surfaces too; master is
-// short-circuited inside filterSurfacesByRole and sees everything.
-// Common (RoleTenantCommon) is the legacy browse role and sees only
-// the non-write surfaces (privacy + mfa-setup) — common cannot read
-// the inbox per the SIN-63808 CEO decision.
-func buildHelloSurfaces(deps HelloTenantDeps) []views.Surface {
-	rows := helloIndexRows(deps)
+// buildHelloSurfaces returns the post-login index entries for the body
+// surfaces nav. Receives pre-filtered rows from helloIndexRows.
+func buildHelloSurfaces(rows []helloSurfaceRow) []views.Surface {
 	out := make([]views.Surface, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, views.Surface{
@@ -183,15 +177,9 @@ func buildHelloSurfaces(deps HelloTenantDeps) []views.Surface {
 
 // buildHelloCards returns the dashboard-cards subset. Only rows whose
 // CardLabel is set land in the cards block — entries without a card
-// label (e.g. funnel-rules, consent banner) stay out of the dashboard
-// to keep the landing focused on the four-or-so "next things to do"
-// rather than a 13-card wall. The cards intentionally use a label
-// distinct from SurfaceLabel so the surfaces-nav order pin in
-// hello_index_test.go (TestNewHelloTenant_PreservesSurfaceOrder)
-// continues to match the surfaces-nav body, not a stray match inside
-// the cards block.
-func buildHelloCards(deps HelloTenantDeps) []views.Surface {
-	rows := helloIndexRows(deps)
+// label (e.g. funnel-rules, consent banner) stay out of the dashboard.
+// Receives pre-filtered rows from helloIndexRows.
+func buildHelloCards(rows []helloSurfaceRow) []views.Surface {
 	out := make([]views.Surface, 0, len(rows))
 	for _, r := range rows {
 		if r.CardLabel == "" {
@@ -212,31 +200,39 @@ func buildHelloCards(deps HelloTenantDeps) []views.Surface {
 // (JTBD subset) derive their output from this slice so a role/path
 // drift between the two views is impossible — the row authoring
 // happens once and stays in sync.
-func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
+//
+// Role filtering is applied inline: an invalid/empty role (legacy
+// test fixtures that predate migration 0011) and RoleMaster both
+// short-circuit to the full unfiltered set. TopNav marks the narrower
+// set that appears in the shell top-bar per AC §2 — primary operator
+// destinations only; configuration and compliance surfaces stay body-
+// only so the bar stays scannable on narrow viewports.
+func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 	atendenteOrAbove := []iam.Role{iam.RoleTenantAtendente, iam.RoleTenantGerente}
 	gerenteOnly := []iam.Role{iam.RoleTenantGerente}
 	everyTenantRole := []iam.Role{iam.RoleTenantCommon, iam.RoleTenantAtendente, iam.RoleTenantGerente}
 
-	rows := make([]helloSurfaceRow, 0, 13)
+	all := make([]helloSurfaceRow, 0, 13)
 
 	// SIN-63940 — Fase 6 inbox card sits at the top of the index when
 	// the extended wire layer has migrated. Atendente's primary surface
 	// MUST be the first card; legacy callers (Extended==nil) stay on
 	// the original 7-entry index.
 	if deps.Extended != nil {
-		rows = append(rows, helloSurfaceRow{
+		all = append(all, helloSurfaceRow{
 			Path:         "/inbox",
 			SurfaceLabel: "Conversas atribuídas a você",
 			CardLabel:    "Suas conversas",
 			Available:    deps.Extended.InboxEnabled,
 			Description:  "Atender clientes vindos de WhatsApp, Instagram, Facebook e widget — com sugestões de resposta da IA.",
 			Roles:        atendenteOrAbove,
+			TopNav:       true, // AC §2 — atendente primary surface
 		})
 	}
 
 	// SIN-63774 legacy 7-entry baseline. Order is intentionally stable
 	// so hello_index_test.go pins keep matching.
-	rows = append(rows,
+	all = append(all,
 		helloSurfaceRow{
 			Path:         "/funnel",
 			SurfaceLabel: "Funil de conversas",
@@ -244,12 +240,14 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 			Available:    deps.FunnelEnabled,
 			Description:  "Acompanhar conversas no pipeline de vendas, com transições e histórico por contato.",
 			Roles:        everyTenantRole,
+			TopNav:       true, // AC §2 — primary nav for every role
 		},
 		helloSurfaceRow{
 			Path:         "/funnel/rules",
 			SurfaceLabel: "Regras do funil",
 			Available:    deps.FunnelRulesEnabled,
 			Roles:        gerenteOnly,
+			// TopNav: false — configuration surface; body-only
 		},
 		helloSurfaceRow{
 			Path:         "/catalog",
@@ -258,6 +256,7 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 			Available:    deps.CatalogEnabled,
 			Description:  "Manter produtos, preços e argumentos de venda para a equipe usar nas conversas.",
 			Roles:        gerenteOnly,
+			TopNav:       true, // AC §2 — gerente nav
 		},
 		helloSurfaceRow{
 			Path:         "/campaigns",
@@ -266,12 +265,14 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 			Available:    deps.CampaignsEnabled,
 			Description:  "Criar links curtos para campanhas e medir cliques por canal.",
 			Roles:        gerenteOnly,
+			TopNav:       true, // AC §2 — gerente nav
 		},
 		helloSurfaceRow{
 			Path:         "/settings/privacy",
 			SurfaceLabel: "Privacidade e DPA",
 			Available:    deps.PrivacyEnabled,
 			Roles:        everyTenantRole,
+			// TopNav: false — compliance; body-only per AC §2
 		},
 		helloSurfaceRow{
 			Path: "/settings/ai-policy",
@@ -284,12 +285,14 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 			Available:    deps.AIPolicyEnabled,
 			Description:  "Configurar opt-in de IA por tenant e auditar mudanças por escopo (LGPD).",
 			Roles:        gerenteOnly,
+			TopNav:       true, // AC §2 — gerente nav
 		},
 		helloSurfaceRow{
 			Path:         "/consent/cookies-banner",
 			SurfaceLabel: "Banner de consentimento",
 			Available:    deps.ConsentEnabled,
 			Roles:        gerenteOnly,
+			// TopNav: false — configuration; body-only per AC §2
 		},
 	)
 
@@ -297,7 +300,7 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 	// layer has opted into the extended index, so the SIN-63774
 	// legacy test fixtures keep their pre-PR rendering.
 	if deps.Extended != nil {
-		rows = append(rows,
+		all = append(all,
 			helloSurfaceRow{
 				Path:         "/branding",
 				SurfaceLabel: "Branding",
@@ -305,6 +308,7 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 				Available:    deps.Extended.BrandingEnabled,
 				Description:  "Ajustar logo e paleta de cores que aparecem para o cliente nas páginas do tenant.",
 				Roles:        gerenteOnly,
+				TopNav:       true, // AC §2 — gerente nav
 			},
 			helloSurfaceRow{
 				Path:         "/billing/invoices",
@@ -313,6 +317,7 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 				Available:    deps.Extended.BillingEnabled,
 				Description:  "Consultar faturas PIX, histórico de cobrança e situação de mensalidade do tenant.",
 				Roles:        gerenteOnly,
+				TopNav:       true, // AC §2 — gerente nav
 			},
 			helloSurfaceRow{
 				Path: "/admin/lgpd/requests",
@@ -324,6 +329,7 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 				Available:    deps.Extended.LGPDEnabled,
 				Description:  "Atender pedidos de exportação e exclusão de dados de titulares (LGPD Art. 18).",
 				Roles:        gerenteOnly,
+				TopNav:       true, // AC §2 — gerente nav
 			},
 			helloSurfaceRow{
 				Path:         "/tenant/custom-domains",
@@ -332,6 +338,7 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 				Available:    deps.Extended.CustomDomainEnabled,
 				Description:  "Configurar um domínio próprio para que clientes acessem o tenant por URL própria.",
 				Roles:        gerenteOnly,
+				TopNav:       true, // AC §2 — gerente nav
 			},
 			helloSurfaceRow{
 				Path:         "/admin/2fa/setup",
@@ -344,46 +351,20 @@ func helloIndexRows(deps HelloTenantDeps) []helloSurfaceRow {
 				// enrol regardless of the bucket they sit in on the
 				// matrix.
 				Roles: nil,
+				// TopNav: false — settings surface; body-only per AC §2
 			},
 		)
 	}
-	return rows
-}
 
-// filterSurfacesByRole removes entries the principal cannot see. Empty
-// Roles on an entry means "all roles" (also the legacy/back-compat
-// path for fixtures that don't carry a role string). RoleMaster is
-// short-circuited at the top because the master operator console
-// surfaces everything tenant-side too. An invalid/empty role on the
-// session likewise short-circuits to "show everything" so the
-// existing handler tests (whose sessions predate migration 0011 and
-// carry an empty Role) keep their pre-PR rendering.
-func filterSurfacesByRole(surfaces []views.Surface, role iam.Role) []views.Surface {
+	// Apply role filter inline. Invalid/empty role and RoleMaster both
+	// short-circuit to the full set (legacy fixtures + master console).
 	if !role.Valid() || role == iam.RoleMaster {
-		return surfaces
+		return all
 	}
-	// Walk the full 13-row index so the role tags cover the Fase 6
-	// extended paths too. Without the non-nil Extended pointer
-	// helloIndexRows returns only the SIN-63774 7-row baseline and
-	// the extended paths would silently fall through the "untagged
-	// → keep" branch below — exactly the leak the F3 audit asked
-	// us to close.
-	rows := helloIndexRows(HelloTenantDeps{Extended: &HelloTenantExtendedDeps{}})
-	roleByPath := make(map[string][]iam.Role, len(rows))
-	for _, r := range rows {
-		roleByPath[r.Path] = r.Roles
-	}
-	out := make([]views.Surface, 0, len(surfaces))
-	for _, s := range surfaces {
-		allowed, known := roleByPath[s.Path]
-		if !known {
-			// Untagged path — fall through. Conservative default,
-			// matches the back-compat intent.
-			out = append(out, s)
-			continue
-		}
-		if len(allowed) == 0 || hasRole(allowed, role) {
-			out = append(out, s)
+	out := make([]helloSurfaceRow, 0, len(all))
+	for _, r := range all {
+		if len(r.Roles) == 0 || hasRole(r.Roles, role) {
+			out = append(out, r)
 		}
 	}
 	return out
@@ -398,24 +379,10 @@ func hasRole(allowed []iam.Role, want iam.Role) bool {
 	return false
 }
 
-// helloUserDisplayName picks the label shown in the greeting + user-
-// menu toggle. Production seed users do not yet carry a display name
-// column (migration 0008 only persists email + role); SIN-63940
-// renders the user id as a stable, copyable identifier until the
-// /me profile lands and adds a real name. Empty session.UserID falls
-// back to the shell default ("Conta") via the reflection helper.
-func helloUserDisplayName(sess iam.Session) string {
-	return sess.UserID.String()
-}
-
 // shortNavLabels maps each surface path onto the compact label rendered
 // in the top-bar nav. The body list still uses the long descriptive
 // labels from buildHelloSurfaces, so the chrome stays scannable on
 // narrow viewports without losing the disabled-state hint copy.
-//
-// New SIN-63940 entries reuse the surface's long label when no short
-// override is set — the chrome falls back automatically through the
-// helper below.
 var shortNavLabels = map[string]string{
 	"/inbox":                  "Inbox",
 	"/funnel":                 "Funil",
@@ -432,46 +399,30 @@ var shortNavLabels = map[string]string{
 	"/admin/2fa/setup":        "2FA",
 }
 
-// buildHelloNavItems projects the live surfaces onto the shell top-bar
-// nav. Disabled surfaces are excluded — the dead-link hint stays in the
-// body via the existing surfaces list, the top-bar carries only what
-// the operator can actually reach. /hello-tenant itself does not
-// appear in the nav; the brand anchor doubles as the home link.
-//
-// Active is false everywhere on this page because hello-tenant is not
-// in the nav set. Other features set Active=true on the entry whose
-// route matches their handler.
-//
-// SIN-63940 — the input slice is already role-filtered by the caller,
-// so the chrome stays in lockstep with the dashboard cards and the
-// body surfaces nav: an atendente sees the same Inbox + Funil + …
-// triad in all three places, never more.
-func buildHelloNavItems(surfaces []views.Surface) []shell.NavItem {
-	items := make([]shell.NavItem, 0, len(surfaces))
-	for _, s := range surfaces {
-		if !s.Available {
+// buildHelloNavItems projects rows onto the shell top-bar nav. Only
+// entries with TopNav=true AND Available=true appear — the TopNav flag
+// enumerates the primary operator destinations per AC §2 (inbox +
+// funnel for atendente; the 9-entry set for gerente), keeping the bar
+// scannable without leaking configuration-only surfaces into the chrome.
+func buildHelloNavItems(rows []helloSurfaceRow) []shell.NavItem {
+	items := make([]shell.NavItem, 0, len(rows))
+	for _, r := range rows {
+		if !r.TopNav || !r.Available {
 			continue
 		}
-		label, ok := shortNavLabels[s.Path]
+		label, ok := shortNavLabels[r.Path]
 		if !ok {
-			label = s.Label
+			label = r.SurfaceLabel
 		}
-		items = append(items, shell.NavItem{Label: label, Path: s.Path})
+		items = append(items, shell.NavItem{Label: label, Path: r.Path})
 	}
 	return items
 }
 
 // buildHelloUserMenu returns the user-menu dropdown entries common to
-// every authenticated surface. "Configurar 2FA" is always emitted; if
-// the underlying handler is unmounted in the current deploy the user
-// sees the same disabled hint via the surfaces nav block below — the
-// chrome stays consistent for screenshot regressions and keyboard
-// users.
-//
-// "Sair" always renders: logout is the universal exit and the shell
-// CSRF wiring handles the hidden input.
-func buildHelloUserMenu(deps HelloTenantDeps) []shell.UserMenuItem {
-	_ = deps
+// every authenticated surface. "Sair" always renders; the shell CSRF
+// wiring handles the hidden input.
+func buildHelloUserMenu() []shell.UserMenuItem {
 	return []shell.UserMenuItem{
 		{Label: "Configurar 2FA", Path: "/admin/2fa/setup"},
 		{Label: "Sair", Path: "/logout", Form: true},

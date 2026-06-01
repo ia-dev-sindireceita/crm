@@ -207,24 +207,24 @@ func TestNewHelloTenant_Role_FiltersSurfacesAndCards(t *testing.T) {
 func TestNewHelloTenant_Role_TopBarNavFiltered(t *testing.T) {
 	t.Parallel()
 	deps := allFlagsTrueDeps()
-	// Atendente: top-bar nav has Inbox + Funil + Privacidade + 2FA;
-	// everything gerente-only is omitted. The chrome stays in lockstep
-	// with the body cards so the operator can't tab into a forbidden
-	// surface.
+	// Atendente: top-bar nav has ONLY Inbox + Funil per AC §2. Privacy
+	// and 2FA setup are body-only surfaces (TopNav=false) so the chrome
+	// stays scannable. Everything gerente-only is omitted by role gate.
 	rec := httptest.NewRecorder()
 	handler.NewHelloTenant(deps)(rec, roleHelloRequest(t, iam.RoleTenantAtendente))
 	body := rec.Body.String()
 	for _, want := range []string{
 		`<a href="/inbox">Inbox</a>`,
 		`<a href="/funnel">Funil</a>`,
-		`<a href="/settings/privacy">Privacidade</a>`,
-		`<a href="/admin/2fa/setup">2FA</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("atendente top-bar missing %q", want)
 		}
 	}
+	// Body-only surfaces must not appear as top-bar anchors.
 	for _, off := range []string{
+		`<a href="/settings/privacy">Privacidade</a>`,
+		`<a href="/admin/2fa/setup">2FA</a>`,
 		`<a href="/catalog">Catálogo</a>`,
 		`<a href="/branding">Branding</a>`,
 		`<a href="/admin/lgpd/requests">LGPD</a>`,
