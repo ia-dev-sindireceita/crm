@@ -9,22 +9,22 @@ package iam
 // request, so do NOT rename them once shipped — add new values instead.
 type Role string
 
-// Role values. ADR 0073 D3 lists exactly these four; future roles need an
-// ADR delta because they require new idle/hard pairs.
+// Role values. ADR 0073 D3 lists these; future roles need an ADR delta
+// because they require new idle/hard pairs in TimeoutsForRole.
 const (
 	RoleMaster          Role = "master"
 	RoleTenantGerente   Role = "tenant_gerente"
+	RoleTenantLider     Role = "tenant_lider" // team lead: scoped stats, funnel rules
 	RoleTenantAtendente Role = "tenant_atendente"
 	RoleTenantCommon    Role = "tenant_common"
 )
 
-// Valid reports whether r is one of the four ADR 0073 D3 roles. Caller
-// MUST gate any role-driven decision on this — an unknown role landing in
-// TimeoutsForRole returns ErrUnknownRole, which is a fail-closed signal
-// the caller should surface as 401.
+// Valid reports whether r is a known role. Caller MUST gate any
+// role-driven decision on this — an unknown role landing in
+// TimeoutsForRole returns ErrUnknownRole, a fail-closed signal.
 func (r Role) Valid() bool {
 	switch r {
-	case RoleMaster, RoleTenantGerente, RoleTenantAtendente, RoleTenantCommon:
+	case RoleMaster, RoleTenantGerente, RoleTenantLider, RoleTenantAtendente, RoleTenantCommon:
 		return true
 	}
 	return false

@@ -39,6 +39,7 @@ import (
 	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	"github.com/pericles-luz/crm/internal/funnel"
+	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/inbox"
 	webfunnel "github.com/pericles-luz/crm/internal/web/funnel"
 )
@@ -70,7 +71,7 @@ func buildWebFunnelHandler(ctx context.Context, getenv func(string) string) (htt
 		log.Printf("crm: web/funnel handler disabled — inbox store: %v", err)
 		return nil, noop
 	}
-	handler, err := assembleWebFunnelHandler(funnelStore, funnelStore, funnelStore, inboxStore, slog.Default())
+	handler, err := assembleWebFunnelHandlerFull(funnelStore, funnelStore, funnelStore, funnelStore, inboxStore, slog.Default())
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/funnel handler disabled — assemble: %v", err)
@@ -80,17 +81,33 @@ func buildWebFunnelHandler(ctx context.Context, getenv func(string) string) (htt
 	return handler, func() { pool.Close() }
 }
 
-// assembleWebFunnelHandler builds the funnel.Service + web/funnel.Handler
-// stack from already-built ports. Splitting the assembly out lets tests
-// drive the wire with in-memory fakes without touching pgx.
-//
-// The three funnel-side ports (stages, transitions, board) are passed as
-// separate parameters so a test can swap any individual port; in
-// production all three are the same *pgfunnel.Store value.
+// assembleWebFunnelHandler is the legacy 5-param entry point kept for
+// backwards compatibility with existing tests. It delegates to
+// assembleWebFunnelHandlerFull with a nil stats repo (no GET /funnel/stats
+// route when stats is nil). Production code calls assembleWebFunnelHandlerFull
+// directly.
 func assembleWebFunnelHandler(
 	stages funnel.StageRepository,
 	transitions funnel.TransitionRepository,
 	board funnel.BoardReader,
+	assignments assignmentHistoryReader,
+	logger *slog.Logger,
+) (http.Handler, error) {
+	return assembleWebFunnelHandlerFull(stages, transitions, board, nil, assignments, logger)
+}
+
+// assembleWebFunnelHandlerFull builds the funnel.Service + StatsService +
+// web/funnel.Handler stack from already-built ports. Splitting the
+// assembly out lets tests drive the wire with in-memory fakes.
+//
+// The funnel-side ports (stages, transitions, board, stats) are passed
+// separately so a test can swap any individual port; in production all
+// four resolve to the same *pgfunnel.Store value.
+func assembleWebFunnelHandlerFull(
+	stages funnel.StageRepository,
+	transitions funnel.TransitionRepository,
+	board funnel.BoardReader,
+	stats funnel.StatsRepository,
 	assignments assignmentHistoryReader,
 	logger *slog.Logger,
 ) (http.Handler, error) {
@@ -117,14 +134,23 @@ func assembleWebFunnelHandler(
 	if err != nil {
 		return nil, fmt.Errorf("funnel_wire: build service: %w", err)
 	}
+	var statsSvc *funnel.StatsService
+	if stats != nil {
+		statsSvc, err = funnel.NewStatsService(funnel.StatsConfig{Repo: stats})
+		if err != nil {
+			return nil, fmt.Errorf("funnel_wire: build stats service: %w", err)
+		}
+	}
 	h, err := webfunnel.New(webfunnel.Deps{
 		Mover:             svc,
 		Board:             board,
 		StageResolver:     stages,
 		FunnelHistory:     transitionsHistoryAdapter{port: transitions},
 		AssignmentHistory: inboxAssignmentHistory{port: assignments},
+		Stats:             statsSvc,
 		CSRFToken:         csrfTokenFromSessionContext,
 		UserID:            userIDFromSessionContext,
+		Role:              roleFromSessionContext,
 		Logger:            logger,
 	})
 	if err != nil {
@@ -210,4 +236,15 @@ func userIDFromSessionContext(r *http.Request) uuid.UUID {
 		return uuid.Nil
 	}
 	return sess.UserID
+}
+
+// roleFromSessionContext returns the session role installed by
+// middleware.Auth. Returns RoleTenantCommon when session is absent
+// (fail-closed: common is denied funnel stats access by the handler gate).
+func roleFromSessionContext(r *http.Request) iam.Role {
+	sess, ok := middleware.SessionFromContext(r.Context())
+	if !ok {
+		return iam.RoleTenantCommon
+	}
+	return sess.Role
 }

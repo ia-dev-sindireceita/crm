@@ -16,6 +16,7 @@ import (
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/funnel"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
+	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
@@ -72,6 +73,18 @@ type CSRFTokenFn func(*http.Request) string
 // because MoveConversation requires a non-nil actor.
 type UserIDFn func(*http.Request) uuid.UUID
 
+// RoleFn returns the viewer's IAM role from the session context.
+type RoleFn func(*http.Request) iam.Role
+
+// TeamIDFn returns the viewer's team id from the session context.
+// Returns uuid.Nil until the teams migration lands (reserved for lider scoping).
+type TeamIDFn func(*http.Request) uuid.UUID
+
+// StatsGetter is the stats use-case port exposed to the handler.
+type StatsGetter interface {
+	GetStats(ctx context.Context, tenantID uuid.UUID, q funnel.StatsQuery) (funnel.Stats, error)
+}
+
 // Deps bundles the collaborators required by the handler.
 type Deps struct {
 	Mover             Mover
@@ -79,8 +92,11 @@ type Deps struct {
 	StageResolver     StageResolver
 	FunnelHistory     FunnelHistoryLister
 	AssignmentHistory AssignmentHistoryLister
+	Stats             StatsGetter // optional; omit to disable GET /funnel/stats
 	CSRFToken         CSRFTokenFn
 	UserID            UserIDFn
+	Role              RoleFn   // required when Stats is non-nil
+	TeamID            TeamIDFn // optional; returns uuid.Nil when unset
 	Logger            *slog.Logger
 }
 
@@ -127,6 +143,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /funnel/transitions", h.transition)
 	mux.HandleFunc("GET /funnel/conversations/{id}/history", h.history)
 	mux.HandleFunc("GET /funnel/modal/close", h.modalClose)
+	if h.deps.Stats != nil {
+		mux.HandleFunc("GET /funnel/stats", h.stats)
+	}
 }
 
 // board renders the full board shell.
@@ -445,4 +464,91 @@ type cardView struct {
 	StageKey       string
 	PrevKey        string
 	NextKey        string
+}
+
+// stats handles GET /funnel/stats. It enforces coarse RBAC at the door
+// (atendente → 403), constructs a StatsQuery from query-string params,
+// calls StatsService.GetStats, and renders the HTMX stats partial.
+func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "stats: tenant required", err)
+		return
+	}
+
+	var viewerRole iam.Role
+	if h.deps.Role != nil {
+		viewerRole = h.deps.Role(r)
+	}
+
+	// Coarse RBAC gate: atendente cannot access stats.
+	if viewerRole == iam.RoleTenantAtendente {
+		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		return
+	}
+
+	viewerID := h.deps.UserID(r)
+
+	var viewerTeamID uuid.UUID
+	if h.deps.TeamID != nil {
+		viewerTeamID = h.deps.TeamID(r)
+	}
+
+	q := buildStatsQuery(r, viewerRole, viewerID, viewerTeamID)
+
+	result, err := h.deps.Stats.GetStats(r.Context(), tenant.ID, q)
+	if err != nil {
+		if errors.Is(err, funnel.ErrForbidden) {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+		h.fail(w, http.StatusInternalServerError, "stats: get", err)
+		return
+	}
+
+	view := statsView{
+		Stats:    result,
+		Period:   q.Period.Kind,
+		CSPNonce: csp.Nonce(r.Context()),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := statsTmpl.Execute(w, view); err != nil {
+		h.deps.Logger.Error("web/funnel: stats: render", "err", err)
+	}
+}
+
+// buildStatsQuery parses GET /funnel/stats query string params.
+// Supported params: period (7d|30d|90d|custom), from/to (RFC3339 for custom).
+func buildStatsQuery(r *http.Request, role iam.Role, viewerID, viewerTeamID uuid.UUID) funnel.StatsQuery {
+	q := funnel.StatsQuery{
+		ViewerRole:   role,
+		ViewerID:     viewerID,
+		ViewerTeamID: viewerTeamID,
+	}
+
+	switch r.URL.Query().Get("period") {
+	case "7d":
+		q.Period = funnel.Period{Kind: funnel.PeriodLast7d}
+	case "90d":
+		q.Period = funnel.Period{Kind: funnel.PeriodLast90d}
+	case "custom":
+		from, errF := time.Parse(time.RFC3339, r.URL.Query().Get("from"))
+		to, errT := time.Parse(time.RFC3339, r.URL.Query().Get("to"))
+		if errF == nil && errT == nil && !from.IsZero() && !to.IsZero() {
+			q.Period = funnel.Period{Kind: funnel.PeriodCustom, From: from, To: to}
+		} else {
+			q.Period = funnel.Period{Kind: funnel.PeriodLast30d}
+		}
+	default: // "30d" or empty
+		q.Period = funnel.Period{Kind: funnel.PeriodLast30d}
+	}
+
+	return q
+}
+
+// statsView is the template view model for the stats partial.
+type statsView struct {
+	Stats    funnel.Stats
+	Period   funnel.PeriodKind
+	CSPNonce string
 }

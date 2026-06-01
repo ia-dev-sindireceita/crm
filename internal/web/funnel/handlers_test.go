@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/funnel"
+	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/tenancy"
 	webfunnel "github.com/pericles-luz/crm/internal/web/funnel"
 )
@@ -581,5 +582,193 @@ func TestBoardSnapshot(t *testing.T) {
 		if !strings.Contains(body, s) {
 			t.Errorf("snapshot missing %q\n--- body ---\n%s", s, body)
 		}
+	}
+}
+
+// --- Stats handler tests ---
+
+type stubStats struct {
+	result funnel.Stats
+	err    error
+}
+
+func (s *stubStats) GetStats(_ context.Context, _ uuid.UUID, _ funnel.StatsQuery) (funnel.Stats, error) {
+	return s.result, s.err
+}
+
+func depsWithStats(role iam.Role) webfunnel.Deps {
+	d := fullDeps()
+	d.Stats = &stubStats{
+		result: funnel.Stats{
+			HeaderKPIs: funnel.HeaderKPIs{TotalActive: 7, WonCount: 3, LostCount: 1, WonRate: 0.75},
+			Stages: []funnel.StageStats{
+				{StageKey: "novo", Label: "Novo", ActiveCount: 4},
+				{StageKey: "ganho", Label: "Ganho", ActiveCount: 0},
+			},
+			PerAttendant: []funnel.AttendantStats{{UserID: uuid.New(), ActiveCount: 3, WonCount: 2}},
+			PerTeam:      []funnel.TeamStats{{TeamID: uuid.New(), ActiveCount: 7}},
+			PerChannel:   []funnel.ChannelStats{{Channel: "whatsapp", ActiveCount: 5}},
+		},
+	}
+	d.Role = func(*http.Request) iam.Role { return role }
+	return d
+}
+
+func TestStats_Atendente_Gets403(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantAtendente)
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel/stats", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("atendente: status = %d, want 403", w.Code)
+	}
+}
+
+func TestStats_Gerente_Gets200WithAllTables(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantGerente)
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel/stats", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("gerente: status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"funnel-stats__stages",
+		"funnel-stats__attendants",
+		"funnel-stats__teams",
+		"funnel-stats__channels",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("gerente: response missing %q", want)
+		}
+	}
+}
+
+func TestStats_Lider_Gets200AndMissingTeamChannel(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantLider)
+	// For lider, service returns nil PerTeam/PerChannel — simulate that.
+	deps.Stats = &stubStats{
+		result: funnel.Stats{
+			HeaderKPIs:   funnel.HeaderKPIs{TotalActive: 2, WonCount: 1},
+			Stages:       []funnel.StageStats{{StageKey: "novo", Label: "Novo", ActiveCount: 2}},
+			PerAttendant: []funnel.AttendantStats{{UserID: uuid.New(), ActiveCount: 2, WonCount: 1}},
+			PerTeam:      nil, // lider sees nil
+			PerChannel:   nil,
+		},
+	}
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel/stats", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("lider: status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "funnel-stats__teams") {
+		t.Error("lider: teams table must not appear")
+	}
+	if strings.Contains(body, "funnel-stats__channels") {
+		t.Error("lider: channels table must not appear")
+	}
+	if !strings.Contains(body, "funnel-stats__attendants") {
+		t.Error("lider: attendants table must appear")
+	}
+}
+
+func TestStats_RepoError_Returns500(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantGerente)
+	deps.Stats = &stubStats{err: errors.New("db gone")}
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel/stats", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestStats_WithPeriod7d(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantGerente)
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel/stats?period=7d", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestStats_WithPeriod90d(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantGerente)
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel/stats?period=90d", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestStats_WithCustomPeriod(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantGerente)
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet,
+		"/funnel/stats?period=custom&from=2026-05-01T00:00:00Z&to=2026-05-31T23:59:59Z",
+		"", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestStats_InvalidCustomPeriod_DefaultsTo30d(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantGerente)
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet,
+		"/funnel/stats?period=custom&from=bad&to=alsobad",
+		"", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	// Bad custom period falls back to 30d — still 200
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestStats_ForbiddenError_Returns403(t *testing.T) {
+	t.Parallel()
+	deps := depsWithStats(iam.RoleTenantGerente)
+	deps.Stats = &stubStats{err: funnel.ErrForbidden}
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel/stats", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ErrForbidden: status = %d, want 403", w.Code)
+	}
+}
+
+func TestStats_NotMountedWhenStatsNil(t *testing.T) {
+	t.Parallel()
+	deps := fullDeps() // Stats is nil
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel/stats", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	// Route not mounted — go's default mux returns 404 or 405.
+	if w.Code == http.StatusOK {
+		t.Error("stats route must not be mounted when Stats dep is nil")
 	}
 }
