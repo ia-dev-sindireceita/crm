@@ -581,11 +581,11 @@ var requestsPanelTmpl = template.Must(template.New("requests_panel").Funcs(templ
         hx-get="/admin/lgpd/requests"
         hx-target="#lgpd-requests-panel"
         hx-swap="outerHTML"
+        hx-trigger="submit, change"
         aria-label="Filtrar por status">
     <label class="lgpd-field lgpd-field--inline">
       <span class="lgpd-field__label">Status</span>
       <select name="status" class="lgpd-field__input"
-              onchange="this.form.requestSubmit()"
               aria-label="Filtrar status">
         {{range .Filters}}
           <option value="{{.Value}}"{{if eq .Value $.Status}} selected{{end}}>{{.Label}}</option>
