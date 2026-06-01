@@ -59,7 +59,7 @@ func (s *Store) GetByID(ctx context.Context, tenantID, productID uuid.UUID) (*ca
 	err := postgresadapter.WithTenant(ctx, s.runtimePool, tenantID, func(tx pgx.Tx) error {
 		got, err := scanProduct(tx.QueryRow(ctx,
 			`SELECT id, tenant_id, name, description, price_cents, tags,
-			        created_at, updated_at
+			        category, created_at, updated_at
 			   FROM product
 			  WHERE id = $1 AND tenant_id = $2`, productID, tenantID))
 		if err != nil {
@@ -86,7 +86,7 @@ func (s *Store) ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]*catalo
 	err := postgresadapter.WithTenant(ctx, s.runtimePool, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
 			`SELECT id, tenant_id, name, description, price_cents, tags,
-			        created_at, updated_at
+			        category, created_at, updated_at
 			   FROM product
 			  WHERE tenant_id = $1
 			  ORDER BY created_at ASC`, tenantID)
@@ -120,16 +120,17 @@ func (s *Store) SaveProduct(ctx context.Context, p *catalog.Product, actorID uui
 		_, err := tx.Exec(ctx, `
 			INSERT INTO product
 			  (id, tenant_id, name, description, price_cents, tags,
-			   created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			   category, created_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 			ON CONFLICT (id) DO UPDATE SET
 			  name        = EXCLUDED.name,
 			  description = EXCLUDED.description,
 			  price_cents = EXCLUDED.price_cents,
 			  tags        = EXCLUDED.tags,
+			  category    = EXCLUDED.category,
 			  updated_at  = EXCLUDED.updated_at`,
 			p.ID(), p.TenantID(), p.Name(), p.Description(), p.PriceCents(),
-			p.Tags(), p.CreatedAt(), p.UpdatedAt(),
+			p.Tags(), p.Category(), p.CreatedAt(), p.UpdatedAt(),
 		)
 		if err != nil {
 			return fmt.Errorf("catalog/postgres: save product: %w", err)
@@ -265,15 +266,16 @@ func scanProduct(row pgx.Row) (*catalog.Product, error) {
 		description string
 		priceCents  int
 		tags        []string
+		category    string
 		createdAt   time.Time
 		updatedAt   time.Time
 	)
 	if err := row.Scan(&id, &tenantID, &name, &description, &priceCents, &tags,
-		&createdAt, &updatedAt); err != nil {
+		&category, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
-	return catalog.HydrateProduct(id, tenantID, name, description, priceCents,
-		tags, createdAt, updatedAt), nil
+	return catalog.HydrateProductFull(id, tenantID, name, description, priceCents,
+		tags, category, createdAt, updatedAt), nil
 }
 
 func scanArgument(row pgx.Row) (*catalog.ProductArgument, error) {
