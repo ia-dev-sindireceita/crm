@@ -8,6 +8,7 @@ package funnel
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,12 +53,12 @@ func (s *Store) Stats(ctx context.Context, tenantID uuid.UUID, q domain.StatsQue
 		from, to := q.Period.ResolveWindow(now)
 
 		// --- current-state query ---
-		if err := queryCurrentState(ctx, tx, tenantID, q, now, &agg); err != nil {
+		if err := queryCurrentState(ctx, tx, q, now, &agg); err != nil {
 			return fmt.Errorf("funnel/stats: current state: %w", err)
 		}
 
 		// --- period-transition query ---
-		if err := queryPeriodTransitions(ctx, tx, tenantID, q, from, to, now, &agg); err != nil {
+		if err := queryPeriodTransitions(ctx, tx, q, from, to, &agg); err != nil {
 			return fmt.Errorf("funnel/stats: period transitions: %w", err)
 		}
 
@@ -91,10 +92,16 @@ func (s *Store) Stats(ctx context.Context, tenantID uuid.UUID, q domain.StatsQue
 
 // queryCurrentState populates HeaderKPIs.TotalActive, StageStats.ActiveCount /
 // AvgTimeInStage, PerAttendant.ActiveCount, and PerChannel.ActiveCount.
+//
+// The SQL groups by (stage, attendant, channel) so each non-terminal stage
+// can yield multiple rows. AvgTimeInStage is the weighted mean across all
+// sub-groups for the stage, computed as
+// SUM(seconds-in-stage across rows) / SUM(active counts across rows).
+// We return SUM (not AVG) from SQL and divide in Go so the weights are
+// correct regardless of how the GROUP BY splits the stage.
 func queryCurrentState(
 	ctx context.Context,
 	tx pgx.Tx,
-	tenantID uuid.UUID,
 	q domain.StatsQuery,
 	now time.Time,
 	agg *domain.StatsAggregates,
@@ -124,7 +131,7 @@ SELECT
     s.label,
     s.position,
     COUNT(*)    AS active_count,
-    EXTRACT(EPOCH FROM AVG($1::timestamptz - lt.transitioned_at))::bigint AS avg_ns,
+    EXTRACT(EPOCH FROM SUM($1::timestamptz - lt.transitioned_at))::bigint AS sum_seconds,
     c.assigned_user_id,
     c.channel
 FROM conversation c
@@ -142,7 +149,13 @@ ORDER BY s.position, s.key
 	}
 	defer rows.Close()
 
-	stageMap := map[string]*domain.StageStats{}
+	// Running per-stage accumulator for the weighted mean.
+	type stageAcc struct {
+		stage      *domain.StageStats
+		sumSeconds int64
+		count      int64
+	}
+	stageMap := map[string]*stageAcc{}
 	attendantMap := map[uuid.UUID]*domain.AttendantStats{}
 	channelMap := map[string]*domain.ChannelStats{}
 	var totalActive int64
@@ -153,26 +166,30 @@ ORDER BY s.position, s.key
 			label       string
 			position    int
 			count       int64
-			avgNs       int64
+			sumSeconds  int64
 			assignedUID *uuid.UUID
 			channel     string
 		)
-		if err := rows.Scan(&stageKey, &label, &position, &count, &avgNs, &assignedUID, &channel); err != nil {
+		if err := rows.Scan(&stageKey, &label, &position, &count, &sumSeconds, &assignedUID, &channel); err != nil {
 			return err
 		}
 		totalActive += count
 
-		// Stage bucket.
+		// Stage bucket — accumulate weighted-avg components.
 		if st, ok := stageMap[stageKey]; ok {
-			st.ActiveCount += count
-			// weighted avg — recompute below after all rows
+			st.stage.ActiveCount += count
+			st.sumSeconds += sumSeconds
+			st.count += count
 		} else {
-			stageMap[stageKey] = &domain.StageStats{
-				StageKey:       stageKey,
-				Label:          label,
-				Position:       position,
-				ActiveCount:    count,
-				AvgTimeInStage: time.Duration(avgNs) * time.Second,
+			stageMap[stageKey] = &stageAcc{
+				stage: &domain.StageStats{
+					StageKey:    stageKey,
+					Label:       label,
+					Position:    position,
+					ActiveCount: count,
+				},
+				sumSeconds: sumSeconds,
+				count:      count,
 			}
 		}
 
@@ -203,8 +220,12 @@ ORDER BY s.position, s.key
 	}
 
 	agg.HeaderKPIs.TotalActive = totalActive
-	for _, st := range stageMap {
-		agg.Stages = append(agg.Stages, *st)
+	for _, acc := range stageMap {
+		if acc.count > 0 {
+			avgSec := acc.sumSeconds / acc.count
+			acc.stage.AvgTimeInStage = time.Duration(avgSec) * time.Second
+		}
+		agg.Stages = append(agg.Stages, *acc.stage)
 	}
 	for _, att := range attendantMap {
 		agg.PerAttendant = append(agg.PerAttendant, *att)
@@ -220,9 +241,8 @@ ORDER BY s.position, s.key
 func queryPeriodTransitions(
 	ctx context.Context,
 	tx pgx.Tx,
-	tenantID uuid.UUID,
 	q domain.StatsQuery,
-	from, to, now time.Time,
+	from, to time.Time,
 	agg *domain.StatsAggregates,
 ) error {
 	var scopeArgs []any
@@ -373,15 +393,10 @@ GROUP BY pt.stage_key, pt.assigned_user_id, pt.channel
 
 // sortAttendants sorts AttendantStats by ActiveCount DESC, WonCount DESC.
 func sortAttendants(a []domain.AttendantStats) {
-	for i := 1; i < len(a); i++ {
-		for j := i; j > 0; j-- {
-			l, r := a[j-1], a[j]
-			if l.ActiveCount < r.ActiveCount ||
-				(l.ActiveCount == r.ActiveCount && l.WonCount < r.WonCount) {
-				a[j-1], a[j] = a[j], a[j-1]
-			} else {
-				break
-			}
+	sort.Slice(a, func(i, j int) bool {
+		if a[i].ActiveCount != a[j].ActiveCount {
+			return a[i].ActiveCount > a[j].ActiveCount
 		}
-	}
+		return a[i].WonCount > a[j].WonCount
+	})
 }

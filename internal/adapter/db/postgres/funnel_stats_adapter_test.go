@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	pgfunnel "github.com/pericles-luz/crm/internal/adapter/db/postgres/funnel"
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
 	"github.com/pericles-luz/crm/internal/funnel"
 )
@@ -223,4 +222,62 @@ func TestFunnelStats_StoreCompilationGuard(t *testing.T) {
 	// binary links and the interface is satisfied.
 	db := freshDBWithFunnelStats(t)
 	var _ funnel.StatsRepository = newFunnelStore(t, db)
+}
+
+// TestFunnelStats_AvgTimeInStageWeightedAcrossSubgroups guards the bug fix
+// flagged in PR #285 review (B2): SQL groups by (stage, attendant, channel),
+// so a single stage produces multiple rows. AvgTimeInStage must be the
+// weighted mean across all sub-groups for the stage, not the first row's
+// value. Setup: three conversations all in "novo" but assigned to three
+// different attendants — older transitions weighted alongside newer ones.
+func TestFunnelStats_AvgTimeInStageWeightedAcrossSubgroups(t *testing.T) {
+	db := freshDBWithFunnelStats(t)
+	store := newFunnelStore(t, db)
+	adminPool := db.AdminPool()
+	now := time.Now().UTC()
+
+	tenantID := seedFunnelTenant(t, adminPool)
+	userA := seedFunnelUser(t, adminPool, tenantID)
+	userB := seedFunnelUser(t, adminPool, tenantID)
+	userC := seedFunnelUser(t, adminPool, tenantID)
+
+	// Three conversations all in "novo" with different transition times
+	// and different attendants → three distinct sub-groups in the SQL.
+	//   conv1 (userA, whatsapp): 2 hours ago
+	//   conv2 (userB, whatsapp): 4 hours ago
+	//   conv3 (userC, instagram): 6 hours ago
+	// Expected weighted average = (2 + 4 + 6) / 3 = 4 hours.
+	conv1 := seedStatsConversation(t, adminPool, tenantID, userA, "whatsapp")
+	moveToStage(t, adminPool, tenantID, conv1, userA, "novo", now.Add(-2*time.Hour))
+	conv2 := seedStatsConversation(t, adminPool, tenantID, userB, "whatsapp")
+	moveToStage(t, adminPool, tenantID, conv2, userB, "novo", now.Add(-4*time.Hour))
+	conv3 := seedStatsConversation(t, adminPool, tenantID, userC, "instagram")
+	moveToStage(t, adminPool, tenantID, conv3, userC, "novo", now.Add(-6*time.Hour))
+
+	q := funnel.StatsQuery{Period: funnel.Period{Kind: funnel.PeriodLast7d}}
+	agg, err := store.Stats(context.Background(), tenantID, q)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+
+	var novo *funnel.StageStats
+	for i := range agg.Stages {
+		if agg.Stages[i].StageKey == "novo" {
+			novo = &agg.Stages[i]
+			break
+		}
+	}
+	if novo == nil {
+		t.Fatalf("expected 'novo' stage in result, got stages=%+v", agg.Stages)
+	}
+	if novo.ActiveCount != 3 {
+		t.Errorf("novo.ActiveCount = %d, want 3", novo.ActiveCount)
+	}
+	// Weighted avg should be ~4 hours; allow ±2 minutes for clock drift
+	// between moveToStage timestamps and now() inside the SQL.
+	want := 4 * time.Hour
+	got := novo.AvgTimeInStage
+	if diff := got - want; diff < -2*time.Minute || diff > 2*time.Minute {
+		t.Errorf("novo.AvgTimeInStage = %v, want ≈ %v (±2m)", got, want)
+	}
 }
