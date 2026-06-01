@@ -116,6 +116,16 @@ var iamRoutes = []string{
 	"/inbox",
 	"/inbox/",
 	"/m/",
+	// SIN-63957 — master tenants + grants surface (Fase 2.5 C9/C10 +
+	// SIN-63605 + SIN-63958 impersonation). The "/master/" subtree
+	// pattern catches every /master/tenants/* and /master/grants/*
+	// path mounted by httpapi.NewRouter via Deps.MasterTenants +
+	// Deps.Impersonation. Without this entry the custom-domain
+	// catch-all at "/" shadows the entire master subtree and every
+	// /master/* request returns 404 even with deps slots populated —
+	// the same wireup gap memory reference_crm_router_nil_dep_silent_
+	// skip warns about, applied at the public-mux dispatch layer.
+	"/master/",
 	"/metrics",
 }
 
@@ -255,6 +265,15 @@ type iamHandlerOpts struct {
 	// inject stubs. When all slots are nil (default) the router skips
 	// the impersonation routes cleanly.
 	Impersonation httpapi.ImpersonationRoutes
+
+	// MasterTenants carries the SIN-63957 master tenants + grants +
+	// grant-requests bundle built by buildMasterTenantsStack. The
+	// caller-supplied opts value wins when List is non-nil so
+	// cmd/server unit tests can inject stubs (matches the WebLGPD /
+	// UserMFA / Impersonation pattern). When all slots are nil the
+	// router skips every /master/tenants/* and /master/grants* route
+	// cleanly per reference_crm_router_nil_dep_silent_skip.
+	MasterTenants httpapi.MasterTenantsRoutes
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -406,6 +425,20 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		impersonationCleanup = stack.Cleanup
 	}
 
+	// SIN-63957 — master /master/tenants + /master/grants surface.
+	// Built here so it reuses the IAM runtime pool + the same
+	// SplitAuditLogger backing logoutAudit (master.grant.issued events
+	// land on the same audit chain). opts.MasterTenants wins when List
+	// is non-nil so cmd/server unit tests can inject stubs without
+	// standing up the master_ops DB.
+	masterTenantsRoutes := opts.MasterTenants
+	masterTenantsCleanup := func() {}
+	if masterTenantsRoutes.List == nil {
+		stack := buildMasterTenantsStack(ctx, pool, logoutAudit, getenv, logger)
+		masterTenantsRoutes = stack.Routes
+		masterTenantsCleanup = stack.Cleanup
+	}
+
 	h := httpapi.NewRouter(httpapi.Deps{
 		IAM: iamAdapter{
 			tenants:  tenants,
@@ -449,9 +482,11 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		UserMFA:             userMFARoutes,
 		CustomDomainEnabled: opts.CustomDomainEnabled,
 		Impersonation:       impersonationRoutes,
+		MasterTenants:       masterTenantsRoutes,
 	})
 
 	fullCleanup := func() {
+		masterTenantsCleanup()
 		impersonationCleanup()
 		userMFACleanup()
 		lgpdCleanup()
