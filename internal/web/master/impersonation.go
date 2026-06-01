@@ -195,7 +195,7 @@ func (h *ImpersonationHandler) Start(w http.ResponseWriter, r *http.Request) {
 		// never proceed without a recorded start row. End under
 		// "audit_failed" so the post-mortem trail still has the
 		// impersonation_session row, just marked ended.
-		_ = h.deps.Sessions.End(r.Context(), sess.ID, "audit_failed", now)
+		_ = h.deps.Sessions.End(r.Context(), sess.ID, p.UserID, "audit_failed", now)
 		h.deps.Logger.ErrorContext(r.Context(), "impersonation start: audit write",
 			slog.String("session_id", sess.ID.String()),
 			slog.String("error", err.Error()),
@@ -236,7 +236,8 @@ func (h *ImpersonationHandler) End(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.clock()
-	if err := h.deps.Sessions.End(r.Context(), active.ID, "manual", now); err != nil {
+	endedRace := false
+	if err := h.deps.Sessions.End(r.Context(), active.ID, p.UserID, "manual", now); err != nil {
 		if !errors.Is(err, impersonation.ErrNoActiveImpersonation) {
 			h.deps.Logger.ErrorContext(r.Context(), "impersonation end: update",
 				slog.String("session_id", active.ID.String()),
@@ -246,21 +247,27 @@ func (h *ImpersonationHandler) End(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Already ended between our lookup and End — treat as
-		// idempotent success.
+		// idempotent success and skip the audit write: whichever
+		// branch ended the envelope (expiry middleware, concurrent
+		// End) already wrote its own impersonation_stop row, so
+		// emitting another one here would double-count.
+		endedRace = true
 	}
-	tenantID := active.TargetTenantID
-	_ = h.deps.Auditor.WriteSecurity(r.Context(), audit.SecurityAuditEvent{
-		Event:         audit.SecurityEventImpersonationStop,
-		ActorUserID:   p.UserID,
-		TenantID:      &tenantID,
-		CorrelationID: &active.ID,
-		Target: map[string]any{
-			"reason":      "manual",
-			"tenant_id":   tenantID.String(),
-			"duration_ms": now.Sub(active.StartedAt).Milliseconds(),
-		},
-		OccurredAt: now,
-	})
+	if !endedRace {
+		tenantID := active.TargetTenantID
+		_ = h.deps.Auditor.WriteSecurity(r.Context(), audit.SecurityAuditEvent{
+			Event:         audit.SecurityEventImpersonationStop,
+			ActorUserID:   p.UserID,
+			TenantID:      &tenantID,
+			CorrelationID: &active.ID,
+			Target: map[string]any{
+				"reason":      "manual",
+				"tenant_id":   tenantID.String(),
+				"duration_ms": now.Sub(active.StartedAt).Milliseconds(),
+			},
+			OccurredAt: now,
+		})
+	}
 	http.Redirect(w, r, "/master/tenants", http.StatusSeeOther)
 }
 

@@ -83,6 +83,12 @@ type StartInput struct {
 // handler both go through End; a second call returns ErrNoActiveImpersonation
 // because the WHERE clause filters on ended_at IS NULL.
 //
+// actor is the master user whose action drove the End — it MUST be the
+// master_user_id, NOT the session id. The postgres adapter threads it
+// into postgres.WithMasterOps so master_ops_audit.actor_user_id records
+// the human user, not the impersonation row. All call sites have the
+// active session in hand (its MasterUserID field) before calling End.
+//
 // ListAuditByCorrelation returns the audit_log_security rows tagged with
 // the given correlation_id, ordered by occurred_at ASC, capped at limit.
 // The Feed SSE handler polls this once per second; the adapter MUST
@@ -91,7 +97,7 @@ type StartInput struct {
 type Repo interface {
 	Start(ctx context.Context, in StartInput) (*Session, error)
 	ActiveForSession(ctx context.Context, masterSessionID uuid.UUID) (*Session, error)
-	End(ctx context.Context, id uuid.UUID, reason string, at time.Time) error
+	End(ctx context.Context, id uuid.UUID, actor uuid.UUID, reason string, at time.Time) error
 	ListAuditByCorrelation(ctx context.Context, id uuid.UUID, limit int) ([]audit.SecurityRow, error)
 }
 

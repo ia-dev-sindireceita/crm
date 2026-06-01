@@ -144,15 +144,23 @@ func (s *ImpersonationStore) ActiveForSession(ctx context.Context, masterSession
 
 // End UPDATEs ended_at + ended_reason on the row. The WHERE clause
 // guards on ended_at IS NULL so a second concurrent End collapses to
-// rowsAffected==0 → ErrNoActiveImpersonation.
-func (s *ImpersonationStore) End(ctx context.Context, id uuid.UUID, reason string, at time.Time) error {
+// rowsAffected==0 → ErrNoActiveImpersonation. actor is the master user
+// driving the End and is threaded into WithMasterOps so the
+// master_ops_audit trigger writes a row attributable to the human —
+// passing the impersonation row id here would silently corrupt the
+// audit trail (the trigger reads app.master_ops_actor_user_id from the
+// GUC).
+func (s *ImpersonationStore) End(ctx context.Context, id uuid.UUID, actor uuid.UUID, reason string, at time.Time) error {
 	if id == uuid.Nil {
 		return impersonation.ErrNoActiveImpersonation
+	}
+	if actor == uuid.Nil {
+		return fmt.Errorf("master/postgres: end impersonation: %w", postgresadapter.ErrZeroActor)
 	}
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
-	return postgresadapter.WithMasterOps(ctx, s.pool, id, func(tx pgx.Tx) error {
+	return postgresadapter.WithMasterOps(ctx, s.pool, actor, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			UPDATE master_impersonation_session
 			   SET ended_at = $2,

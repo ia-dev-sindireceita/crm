@@ -33,7 +33,8 @@ type fakeImpRepo struct {
 	active *impersonation.Session
 	err    error
 
-	endCalls []string // reasons passed to End
+	endCalls  []string    // reasons passed to End
+	endActors []uuid.UUID // actor uuids passed to End (must be master_user_id, not session id)
 }
 
 func (f *fakeImpRepo) Start(_ context.Context, in impersonation.StartInput) (*impersonation.Session, error) {
@@ -50,7 +51,8 @@ func (f *fakeImpRepo) ActiveForSession(_ context.Context, _ uuid.UUID) (*imperso
 	return f.active, nil
 }
 
-func (f *fakeImpRepo) End(_ context.Context, _ uuid.UUID, reason string, _ time.Time) error {
+func (f *fakeImpRepo) End(_ context.Context, _ uuid.UUID, actor uuid.UUID, reason string, _ time.Time) error {
+	f.endActors = append(f.endActors, actor)
 	f.endCalls = append(f.endCalls, reason)
 	return nil
 }
@@ -152,6 +154,17 @@ func TestImpersonationFromSession_ExpiryWritesAuditStop(t *testing.T) {
 	}
 	if repo.endCalls[0] != "expired" {
 		t.Errorf("end reason=%q, want expired", repo.endCalls[0])
+	}
+
+	// Regression for CTO PR #284 finding: End MUST be called with the
+	// master_user_id as actor, NOT the impersonation row id. The
+	// postgres adapter threads `actor` into postgres.WithMasterOps, so
+	// passing the wrong value silently corrupts master_ops_audit.
+	if len(repo.endActors) == 0 {
+		t.Fatal("repo.End actor not recorded")
+	}
+	if repo.endActors[0] != mwMasterUserID {
+		t.Errorf("end actor=%v, want master_user_id=%v (NOT session id)", repo.endActors[0], mwMasterUserID)
 	}
 
 	// audit row for impersonation_stop must exist.

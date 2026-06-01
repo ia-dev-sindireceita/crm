@@ -133,7 +133,7 @@ func ImpersonationFromSession(
 			// than continuing.
 			now := clock()
 			if !now.Before(active.ExpiresAt) {
-				_ = sessions.End(r.Context(), active.ID, "expired", now)
+				_ = sessions.End(r.Context(), active.ID, active.MasterUserID, "expired", now)
 				tenantID := active.TargetTenantID
 				_ = auditor.WriteSecurity(r.Context(), audit.SecurityAuditEvent{
 					Event:         audit.SecurityEventImpersonationStop,
@@ -164,7 +164,7 @@ func ImpersonationFromSession(
 				return
 			}
 			if !isMaster {
-				_ = sessions.End(r.Context(), active.ID, "role_lost", now)
+				_ = sessions.End(r.Context(), active.ID, active.MasterUserID, "role_lost", now)
 				tenantID := active.TargetTenantID
 				_ = auditor.WriteSecurity(r.Context(), audit.SecurityAuditEvent{
 					Event:         audit.SecurityEventImpersonationStop,
@@ -182,11 +182,18 @@ func ImpersonationFromSession(
 				return
 			}
 
-			// Step 6 — tenant resolution.
+			// Step 6 — tenant resolution. Spec §1.3 step 6 covers
+			// the swap on success; the ErrTenantNotFound branch
+			// here is a defensive add-on so a tenant deleted
+			// mid-envelope cannot leave the operator stuck on a
+			// 503 page. We end the envelope with "tenant_missing"
+			// and return 404 so the operator sees a meaningful
+			// error and the audit trail records why the envelope
+			// closed.
 			target, err := resolver.ResolveByID(r.Context(), active.TargetTenantID)
 			if err != nil {
 				if errors.Is(err, tenancy.ErrTenantNotFound) {
-					_ = sessions.End(r.Context(), active.ID, "tenant_missing", now)
+					_ = sessions.End(r.Context(), active.ID, active.MasterUserID, "tenant_missing", now)
 					http.Error(w, "target tenant not found", http.StatusNotFound)
 					return
 				}

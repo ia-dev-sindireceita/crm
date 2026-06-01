@@ -45,6 +45,9 @@ type fakeImpersonationRepo struct {
 
 	startErr error
 	endErr   error
+
+	endActors  []uuid.UUID // actor uuids passed to End (must be master_user_id, NOT session id)
+	endReasons []string    // reasons passed to End, parallel to endActors
 }
 
 func newFakeImpersonationRepo() *fakeImpersonationRepo {
@@ -91,7 +94,7 @@ func (f *fakeImpersonationRepo) ActiveForSession(_ context.Context, masterSessio
 	return s, nil
 }
 
-func (f *fakeImpersonationRepo) End(_ context.Context, id uuid.UUID, reason string, at time.Time) error {
+func (f *fakeImpersonationRepo) End(_ context.Context, id uuid.UUID, actor uuid.UUID, reason string, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.endErr != nil {
@@ -101,6 +104,8 @@ func (f *fakeImpersonationRepo) End(_ context.Context, id uuid.UUID, reason stri
 	if !ok || s.EndedAt != nil {
 		return impersonation.ErrNoActiveImpersonation
 	}
+	f.endActors = append(f.endActors, actor)
+	f.endReasons = append(f.endReasons, reason)
 	s.EndedAt = &at
 	s.EndedReason = reason
 	delete(f.byMSess, s.MasterSessionID)
@@ -278,6 +283,17 @@ func TestImpersonationHandler_End_AuditRowWritten(t *testing.T) {
 	if len(stopEvents) != 1 {
 		t.Fatalf("impersonation_stop events=%d, want 1", len(stopEvents))
 	}
+
+	// Regression for CTO PR #284 finding: End MUST be called with the
+	// master_user_id as actor, NOT the impersonation row id. The
+	// postgres adapter threads actor into postgres.WithMasterOps so
+	// master_ops_audit.actor_user_id records the human, not the row.
+	if len(repo.endActors) == 0 {
+		t.Fatal("repo.End actor not recorded")
+	}
+	if repo.endActors[0] != testMasterUserID {
+		t.Errorf("end actor=%v, want master_user_id=%v (NOT session id)", repo.endActors[0], testMasterUserID)
+	}
 }
 
 // Spec §5.5 #5: audit write failure on Start → 500 + no session row.
@@ -373,5 +389,45 @@ func TestImpersonationHandler_Start_Concurrent409(t *testing.T) {
 	h.Start(rec2, impersonateRequest(t, testTargetTenantID, "second envelope same session"))
 	if rec2.Code != http.StatusConflict {
 		t.Fatalf("second start: status=%d, want 409; body=%q", rec2.Code, rec2.Body.String())
+	}
+}
+
+// Regression for CTO PR #284 nit: End MUST NOT emit a duplicate
+// impersonation_stop audit row when the envelope was ended between our
+// lookup and our End — the racing branch (expiry middleware or a
+// concurrent /end) already wrote its own stop row, so a second one here
+// would double-count.
+func TestImpersonationHandler_End_RaceWithExpire_NoDuplicateAudit(t *testing.T) {
+	t.Parallel()
+	repo := newFakeImpersonationRepo()
+	aud := &fakeAudit{}
+	h := impersonationHandler(t, repo, aud, defaultResolver())
+
+	startRec := httptest.NewRecorder()
+	h.Start(startRec, impersonateRequest(t, testTargetTenantID, "setup for end-race test"))
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("start: status=%d", startRec.Code)
+	}
+
+	// Simulate the race: ActiveForSession will return the envelope
+	// (still in byMSess since startErr/endErr weren't tripped), but
+	// the End call will see ErrNoActiveImpersonation as if a
+	// concurrent expirer beat us to the UPDATE.
+	repo.endErr = impersonation.ErrNoActiveImpersonation
+
+	endRec := httptest.NewRecorder()
+	h.End(endRec, endRequest(t))
+	if endRec.Code != http.StatusSeeOther {
+		t.Fatalf("end: status=%d, want 303 (idempotent); body=%q", endRec.Code, endRec.Body.String())
+	}
+
+	stopCount := 0
+	for _, e := range aud.snapshot() {
+		if e.Event == audit.SecurityEventImpersonationStop {
+			stopCount++
+		}
+	}
+	if stopCount != 0 {
+		t.Errorf("impersonation_stop events=%d, want 0 (race branch must not duplicate)", stopCount)
 	}
 }
