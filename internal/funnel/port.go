@@ -52,3 +52,14 @@ type BoardReader interface {
 type EventPublisher interface {
 	Publish(ctx context.Context, eventName string, payload any) error
 }
+
+// StatsRepository is the read-side port for funnel statistics aggregation
+// (UX-F6 / SIN-63962). The concrete adapter lives in
+// internal/adapter/db/postgres/funnel/stats.go. The repo is role-agnostic:
+// it receives an already-clamped StatsQuery and returns the full
+// StatsAggregates; the StatsService nils out projections by role.
+type StatsRepository interface {
+	// Stats aggregates funnel metrics for tenantID under the clamped query.
+	// It never makes role decisions; OwnerScope is already resolved.
+	Stats(ctx context.Context, tenantID uuid.UUID, q StatsQuery) (StatsAggregates, error)
+}

@@ -22,6 +22,15 @@ var funcs = template.FuncMap{
 	"relativeTime": relativeTime,
 	"truncate":     truncate,
 	"stageGlyph":   stageGlyph,
+	"itoa":         itoa,
+	"mulf":         func(a, b float64) float64 { return a * b },
+	"durFmt":       durFmt,
+	"derefF64": func(p *float64) float64 {
+		if p == nil {
+			return 0
+		}
+		return *p
+	},
 }
 
 // stageGlyph returns a small emoji glyph for the column header. The
@@ -82,6 +91,19 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+// durFmt formats a duration as "Xd Yh" or "Zh" or "—" for zero.
+func durFmt(d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	if days > 0 {
+		return itoa(days) + "d " + itoa(hours) + "h"
+	}
+	return itoa(hours) + "h"
 }
 
 // boardLayoutTmpl is the full-page shell. The board is a horizontal
@@ -209,6 +231,75 @@ var historyModalTmpl = template.Must(template.New("history").Funcs(funcs).Parse(
 </div>
 `))
 
+// statsTmpl is the HTMX partial for GET /funnel/stats. It renders the
+// header KPIs row, per-stage table, per-attendant table, and conditional
+// per-team / per-channel tables (gerente only — lider gets nil slices).
+var statsTmpl = template.Must(template.New("funnel.stats").Funcs(funcs).Parse(`<div class="funnel-stats" id="funnel-stats">
+  <div class="funnel-stats__header">
+    <span>Ativas: <strong>{{.Stats.HeaderKPIs.TotalActive}}</strong></span>
+    <span>Ganhas: <strong>{{.Stats.HeaderKPIs.WonCount}}</strong></span>
+    <span>Perdidas: <strong>{{.Stats.HeaderKPIs.LostCount}}</strong></span>
+    <span>Taxa ganho: <strong>{{printf "%.1f%%" (mulf .Stats.HeaderKPIs.WonRate 100.0)}}</strong></span>
+    <span>Tempo médio p/ ganho: <strong>{{durFmt .Stats.HeaderKPIs.AvgTimeToWin}}</strong></span>
+  </div>
+  {{if .Stats.Stages}}
+  <table class="funnel-stats__stages">
+    <caption>Por estágio</caption>
+    <thead><tr><th>Estágio</th><th>Ativas</th><th>Tempo médio</th><th>Conv. rate</th></tr></thead>
+    <tbody>
+    {{range .Stats.Stages}}<tr>
+      <td>{{.Label}}</td>
+      <td>{{.ActiveCount}}</td>
+      <td>{{durFmt .AvgTimeInStage}}</td>
+      <td>{{if .ConvRate}}{{printf "%.1f%%" (mulf (derefF64 .ConvRate) 100.0)}}{{else}}—{{end}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table>
+  {{end}}
+  {{if .Stats.PerAttendant}}
+  <table class="funnel-stats__attendants">
+    <caption>Por atendente</caption>
+    <thead><tr><th>ID</th><th>Ativas</th><th>Ganhas</th><th>Perdidas</th></tr></thead>
+    <tbody>
+    {{range .Stats.PerAttendant}}<tr>
+      <td>{{.UserID}}</td>
+      <td>{{.ActiveCount}}</td>
+      <td>{{.WonCount}}</td>
+      <td>{{.LostCount}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table>
+  {{end}}
+  {{if .Stats.PerTeam}}
+  <table class="funnel-stats__teams">
+    <caption>Por equipe</caption>
+    <thead><tr><th>ID</th><th>Ativas</th><th>Ganhas</th><th>Perdidas</th></tr></thead>
+    <tbody>
+    {{range .Stats.PerTeam}}<tr>
+      <td>{{.TeamID}}</td>
+      <td>{{.ActiveCount}}</td>
+      <td>{{.WonCount}}</td>
+      <td>{{.LostCount}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table>
+  {{end}}
+  {{if .Stats.PerChannel}}
+  <table class="funnel-stats__channels">
+    <caption>Por canal</caption>
+    <thead><tr><th>Canal</th><th>Ativas</th><th>Ganhas</th><th>Perdidas</th></tr></thead>
+    <tbody>
+    {{range .Stats.PerChannel}}<tr>
+      <td>{{.Channel}}</td>
+      <td>{{.ActiveCount}}</td>
+      <td>{{.WonCount}}</td>
+      <td>{{.LostCount}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>`))
+
 func init() {
 	// Register partials so the layout can reference {{template "board" ...}}
 	// and the board can reference {{template "card" ...}}.
@@ -225,7 +316,7 @@ func init() {
 	// goroutine can race on the first Execute call (same rationale as
 	// web/inbox templates.go init prewarm — html/template AddParseTree
 	// race fixed in bc30fb1).
-	for _, t := range []*template.Template{cardTmpl, boardTmpl, historyModalTmpl, boardLayoutTmpl} {
+	for _, t := range []*template.Template{cardTmpl, boardTmpl, historyModalTmpl, boardLayoutTmpl, statsTmpl} {
 		_ = t.Execute(io.Discard, nil)
 	}
 }

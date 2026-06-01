@@ -40,6 +40,8 @@ func TimeoutsForRole(r Role) (Timeouts, error) {
 		return Timeouts{Idle: 15 * time.Minute, Hard: 4 * time.Hour}, nil
 	case RoleTenantGerente:
 		return Timeouts{Idle: 30 * time.Minute, Hard: 8 * time.Hour}, nil
+	case RoleTenantLider:
+		return Timeouts{Idle: 30 * time.Minute, Hard: 8 * time.Hour}, nil
 	case RoleTenantAtendente:
 		return Timeouts{Idle: 60 * time.Minute, Hard: 12 * time.Hour}, nil
 	case RoleTenantCommon:
