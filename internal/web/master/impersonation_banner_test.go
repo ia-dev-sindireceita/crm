@@ -20,7 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware/middlewaretest"
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/iam/audit"
 	"github.com/pericles-luz/crm/internal/iam/impersonation"
@@ -60,7 +60,7 @@ func bannerCtx(t *testing.T, name, slug string) (context.Context, uuid.UUID) {
 		StartedAt:       time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
 		ExpiresAt:       time.Date(2026, 5, 31, 13, 15, 0, 0, time.UTC),
 	}
-	ctx := middleware.WithActiveImpersonationForTest(context.Background(), sess)
+	ctx := middlewaretest.WithActiveImpersonation(t, context.Background(), sess)
 	return ctx, sess.TargetTenantID
 }
 
