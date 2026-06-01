@@ -1,0 +1,92 @@
+{{define "head_extra"}}
+<link rel="stylesheet" href="/static/css/wallet.css">
+{{end}}
+{{define "title"}}Wallet — saldo de tokens · {{.TenantName}}{{end}}
+{{define "content"}}
+<section class="wallet-shell" aria-label="Saldo de tokens" data-testid="wallet-dashboard">
+  {{with .Banner}}{{if .Visible}}
+  <aside class="wallet-banner wallet-banner--{{.Severity}}" role="alert" data-testid="wallet-banner-{{.Severity}}">
+    <h2 class="wallet-banner__title">{{.Title}}</h2>
+    <p class="wallet-banner__msg">{{.Message}}</p>
+  </aside>
+  {{end}}{{end}}
+
+  <header class="wallet-shell__header">
+    <h1>Saldo de tokens</h1>
+    <p class="wallet-shell__subtitle">Atualizado em <time datetime="{{.GeneratedAt}}">{{.GeneratedAt}}</time>.</p>
+  </header>
+
+  <section class="wallet-card-grid" aria-label="Resumo do saldo">
+    <article class="wallet-card wallet-card--balance wallet-card--{{.Balance.Severity}}"
+             data-testid="wallet-balance-card"
+             data-severity="{{.Balance.Severity}}"
+             aria-labelledby="wallet-balance-title">
+      <h2 id="wallet-balance-title" class="wallet-card__heading">
+        <span class="wallet-card__icon" aria-hidden="true">{{.Balance.Glyph}}</span>
+        {{.Balance.SeverityLabel}}
+      </h2>
+      <p class="wallet-card__metric" data-testid="wallet-balance">
+        <strong>{{.Balance.AvailableLabel}}</strong>
+        <span class="wallet-card__unit">tokens disponíveis</span>
+      </p>
+      <p class="wallet-card__hint" data-testid="wallet-balance-hint">{{.Balance.Hint}}</p>
+      {{if .Balance.ShowReserved}}
+      <dl class="wallet-card__meta">
+        <dt>Saldo bruto</dt><dd data-testid="wallet-balance-gross">{{.Balance.BalanceLabel}}</dd>
+        <dt>Reservado</dt><dd data-testid="wallet-balance-reserved">{{.Balance.ReservedLabel}}</dd>
+      </dl>
+      {{end}}
+    </article>
+
+    <article class="wallet-card wallet-card--projection"
+             data-testid="wallet-projection-card"
+             aria-labelledby="wallet-projection-title">
+      <h2 id="wallet-projection-title" class="wallet-card__heading">Consumo</h2>
+      <p class="wallet-card__metric" data-testid="wallet-avg-consume">
+        <strong>{{.Projection.AvgLabel}}</strong>
+        <span class="wallet-card__unit">tokens/dia (média últimos 14 dias)</span>
+      </p>
+      <p class="wallet-card__hint" data-testid="wallet-days-remaining">{{.Projection.RemainingLabel}}</p>
+    </article>
+
+    <article class="wallet-card wallet-card--action" aria-labelledby="wallet-action-title">
+      <h2 id="wallet-action-title" class="wallet-card__heading">Adicionar tokens</h2>
+      <p class="wallet-card__hint">Recarregue o saldo com um pacote PIX para evitar bloqueio.</p>
+      <a class="wallet-button wallet-button--primary" href="/wallet/topup" data-testid="wallet-topup-link">Comprar tokens</a>
+    </article>
+  </section>
+
+  <section class="wallet-preview" aria-labelledby="wallet-preview-title" data-testid="wallet-ledger-preview">
+    <header class="wallet-preview__header">
+      <h2 id="wallet-preview-title">Últimos lançamentos</h2>
+      <a class="wallet-button wallet-button--ghost" href="/wallet/ledger" data-testid="wallet-ledger-link">Ver tudo</a>
+    </header>
+    {{if .Preview}}
+    <table class="wallet-table" role="grid" aria-label="Últimos cinco lançamentos">
+      <thead>
+        <tr>
+          <th scope="col">Data</th>
+          <th scope="col">Evento</th>
+          <th scope="col">Origem</th>
+          <th scope="col" class="num">Variação</th>
+          <th scope="col" class="num">Saldo após</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Preview}}
+        <tr data-testid="wallet-preview-row" data-kind="{{.Kind}}">
+          <td><time datetime="{{.OccurredAtISO}}">{{.OccurredAtLabel}}</time></td>
+          <td>{{.KindLabel}}</td>
+          <td>{{.SourceLabel}}</td>
+          <td class="num wallet-amount wallet-amount--{{.Direction}}" data-testid="wallet-preview-amount">{{.AmountLabel}}</td>
+          <td class="num">{{.BalanceAfterLabel}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="wallet-empty">Nenhum lançamento ainda neste tenant.</p>
+    {{end}}
+  </section>
+</section>
+{{end}}

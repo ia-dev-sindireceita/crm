@@ -302,6 +302,13 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webInboxHandler, webInboxCleanup := buildInboxHandler(ctx, getenv)
 	defer webInboxCleanup()
 
+	// SIN-63942 / UX-F5 — gerente wallet UI. The wire owns its own
+	// pgxpool and returns nil when DATABASE_URL is unset, leaving the
+	// /wallet* routes unmounted. Same fail-soft pattern as the rest of
+	// the web/* surfaces.
+	webWalletHandler, webWalletCleanup := buildWalletUIHandler(ctx, getenv)
+	defer webWalletCleanup()
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
@@ -318,6 +325,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		WebPublicPrivacy: webPublicPrivacyHandler,
 		WebConsent:       webConsentHandler,
 		WebInbox:         webInboxHandler,
+		WebWallet:        webWalletHandler,
 		Theme:            brandingStack.Theme,
 		Metrics:          metrics,
 		// SIN-63940 / UX-F3 — surface the custom-domain UI gate to

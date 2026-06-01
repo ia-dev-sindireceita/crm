@@ -448,6 +448,26 @@ type Deps struct {
 	//   GET  /inbox/conversations/{id}/messages/{msgID}/status
 	WebInbox http.Handler
 
+	// WebWallet is the SIN-63942 / UX-F5 gerente wallet UI handler
+	// from internal/web/walletui. When non-nil, the four /wallet*
+	// routes are mounted in the authed group so they inherit
+	// TenantScope + Auth + CSRF, and each is additionally gated by
+	// RequireAction(iam.ActionTenantWalletViewLedger). Gerente is
+	// the only role on the matrix that may access the wallet — the
+	// gate denies atendente / common with a 403 and an audit row.
+	//
+	// Routes mounted:
+	//   GET /wallet
+	//   GET /wallet/topup
+	//   GET /wallet/ledger
+	//   GET /wallet/ledger.csv
+	//
+	// Nil keeps every /wallet* route unmounted (chi emits 404) so
+	// router tests that don't exercise the surface keep their pre-PR
+	// behaviour. The wire layer in cmd/server/walletui_wire.go
+	// returns nil when DATABASE_URL is unset.
+	WebWallet http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -852,6 +872,8 @@ func NewRouter(deps Deps) http.Handler {
 					LGPDEnabled:         deps.WebLGPD.RequestsPage != nil,
 					MFAEnabled:          deps.UserMFA.Setup != nil,
 					CustomDomainEnabled: deps.CustomDomainEnabled,
+					// SIN-63942 / UX-F5 — wallet UI presence flag.
+					WalletEnabled: deps.WebWallet != nil,
 				},
 			}))
 			if deps.Authorizer != nil {
@@ -1147,6 +1169,27 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/inbox/conversations/{id}", webInbox)
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/messages", webInbox)
 				authed.Method(http.MethodGet, "/inbox/conversations/{id}/messages/{msgID}/status", webInbox)
+			}
+
+			// SIN-63942 / UX-F5 — gerente wallet UI. Four routes share
+			// the RequireAuth + RequireAction envelope: the action is
+			// ActionTenantWalletViewLedger (gerente-only on the ADR-0090
+			// matrix; atendente / common are denied at the gate). When
+			// Authorizer is nil (router tests) the gate skips and the
+			// inner mux still runs with a Principal in context.
+			if deps.WebWallet != nil {
+				webWallet := http.Handler(deps.WebWallet)
+				if deps.Authorizer != nil {
+					webWallet = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantWalletViewLedger, nil)(webWallet),
+					)
+				} else {
+					webWallet = middleware.RequireAuth(middleware.RequireAuthDeps{})(webWallet)
+				}
+				authed.Method(http.MethodGet, "/wallet", webWallet)
+				authed.Method(http.MethodGet, "/wallet/topup", webWallet)
+				authed.Method(http.MethodGet, "/wallet/ledger", webWallet)
+				authed.Method(http.MethodGet, "/wallet/ledger.csv", webWallet)
 			}
 
 			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses

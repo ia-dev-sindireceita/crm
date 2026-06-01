@@ -56,6 +56,11 @@ type HelloTenantExtendedDeps struct {
 	LGPDEnabled         bool
 	MFAEnabled          bool
 	CustomDomainEnabled bool
+	// WalletEnabled mirrors deps.WebWallet != nil in router.go
+	// (SIN-63942 / UX-F5). True renders the wallet card / surface link
+	// live; false renders the standard "Indisponível neste ambiente"
+	// disabled state so the gap is visible to the gerente.
+	WalletEnabled bool
 }
 
 // NewHelloTenant returns the post-login landing handler with a typed
@@ -212,7 +217,7 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 	gerenteOnly := []iam.Role{iam.RoleTenantGerente}
 	everyTenantRole := []iam.Role{iam.RoleTenantCommon, iam.RoleTenantAtendente, iam.RoleTenantGerente}
 
-	all := make([]helloSurfaceRow, 0, 13)
+	all := make([]helloSurfaceRow, 0, 14)
 
 	// SIN-63940 — Fase 6 inbox card sits at the top of the index when
 	// the extended wire layer has migrated. Atendente's primary surface
@@ -320,6 +325,15 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 				TopNav:       true, // AC §2 — gerente nav
 			},
 			helloSurfaceRow{
+				Path:         "/wallet",
+				SurfaceLabel: "Saldo de tokens",
+				CardLabel:    "Wallet",
+				Available:    deps.Extended.WalletEnabled,
+				Description:  "Acompanhar saldo de tokens, projeção de esgotamento e ledger LGPD-seguro do consumo de IA.",
+				Roles:        gerenteOnly,
+				TopNav:       true, // AC §2 — gerente nav
+			},
+			helloSurfaceRow{
 				Path: "/admin/lgpd/requests",
 				// Card label intentionally avoids "Solicitações LGPD"
 				// as a substring conflict with the surface label so
@@ -394,6 +408,7 @@ var shortNavLabels = map[string]string{
 	"/consent/cookies-banner": "Consentimento",
 	"/branding":               "Branding",
 	"/billing/invoices":       "Faturas",
+	"/wallet":                 "Wallet",
 	"/admin/lgpd/requests":    "LGPD",
 	"/tenant/custom-domains":  "Domínio",
 	"/admin/2fa/setup":        "2FA",

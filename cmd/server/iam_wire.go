@@ -207,6 +207,13 @@ type iamHandlerOpts struct {
 	// exercise the surface keep their pre-PR behaviour.
 	WebInbox http.Handler
 
+	// WebWallet is the SIN-63942 / UX-F5 gerente wallet UI handler
+	// built by walletui_wire.go on top of the SIN-63954 read-side
+	// ports + postgres adapter. Nil keeps every /wallet* route
+	// unmounted (chi emits 404); cmd/server tests that don't
+	// exercise the surface keep their pre-PR behaviour.
+	WebWallet http.Handler
+
 	// Theme is the SIN-63085 per-tenant theme middleware, built by
 	// branding_ui_wire.go on top of the same PaletteStore that backs
 	// the WebBranding handler. Mounted by httpapi.NewRouter inside
@@ -444,6 +451,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebPublicPrivacy:    opts.WebPublicPrivacy,
 		WebConsent:          opts.WebConsent,
 		WebInbox:            opts.WebInbox,
+		WebWallet:           opts.WebWallet,
 		Theme:               opts.Theme,
 		Metrics:             opts.Metrics,
 		UserMFA:             userMFARoutes,

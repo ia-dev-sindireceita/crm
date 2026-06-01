@@ -1,0 +1,41 @@
+{{define "head_extra"}}
+<link rel="stylesheet" href="/static/css/wallet.css">
+<script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+{{end}}
+{{define "title"}}Ledger de tokens · {{.TenantName}}{{end}}
+{{define "content"}}
+<section class="wallet-shell" aria-label="Histórico de tokens" data-testid="wallet-ledger">
+  <header class="wallet-shell__header">
+    <nav class="wallet-breadcrumbs" aria-label="Você está em">
+      <a href="/wallet" data-testid="wallet-back">← Saldo</a>
+    </nav>
+    <h1>Histórico de tokens</h1>
+    <p class="wallet-shell__subtitle">Cada lançamento mostra a variação no saldo, a origem e — quando aplicável — o hash da conversa para rastrear sem expor conteúdo.</p>
+  </header>
+
+  <form class="wallet-filter" method="get" action="/wallet/ledger" aria-label="Filtros do ledger" data-testid="wallet-ledger-filter">
+    <label class="wallet-filter__field">
+      <span>De</span>
+      <input type="date" name="from" value="{{.Filter.From}}" data-testid="wallet-filter-from">
+    </label>
+    <label class="wallet-filter__field">
+      <span>Até</span>
+      <input type="date" name="to" value="{{.Filter.To}}" data-testid="wallet-filter-to">
+    </label>
+    <label class="wallet-filter__field">
+      <span>Tipo</span>
+      <select name="kind" data-testid="wallet-filter-kind">
+        {{range .Filter.KindOptions}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    <button type="submit" class="wallet-button wallet-button--primary">Aplicar</button>
+    <a class="wallet-button wallet-button--ghost" href="{{.CSVURL}}" data-testid="wallet-csv-link">Exportar CSV</a>
+  </form>
+
+  <section aria-live="polite">
+    {{template "wallet_ledger_rows" .Rows}}
+  </section>
+</section>
+{{end}}

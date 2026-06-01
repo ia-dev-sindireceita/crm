@@ -1,0 +1,48 @@
+{{define "wallet_ledger_rows"}}
+<div id="wallet-ledger-rows" data-testid="wallet-ledger-rows">
+  {{if .Entries}}
+  <table class="wallet-table wallet-table--full" role="grid" aria-label="Lançamentos do ledger">
+    <thead>
+      <tr>
+        <th scope="col">Data</th>
+        <th scope="col">Evento</th>
+        <th scope="col">Origem</th>
+        <th scope="col">Escopo</th>
+        <th scope="col">Modelo</th>
+        <th scope="col" class="num">Variação</th>
+        <th scope="col" class="num">Saldo após</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Entries}}
+      <tr data-testid="wallet-ledger-row" data-kind="{{.Kind}}">
+        <td><time datetime="{{.OccurredAtISO}}">{{.OccurredAtLabel}}</time></td>
+        <td>{{.KindLabel}}</td>
+        <td>{{.SourceLabel}}</td>
+        <td class="wallet-table__scope" data-testid="wallet-ledger-scope">
+          {{if .ConversationIDHash}}<span class="wallet-chip" title="Hash da conversa (LGPD)">conv {{.ConversationIDHash}}</span>{{end}}
+          {{if .PolicyID}}<span class="wallet-chip" title="Política de IA">policy {{.PolicyIDShort}}</span>{{end}}
+          {{if and (not .ConversationIDHash) (not .PolicyID)}}—{{end}}
+        </td>
+        <td>{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
+        <td class="num wallet-amount wallet-amount--{{.Direction}}" data-testid="wallet-ledger-amount">{{.AmountLabel}}</td>
+        <td class="num">{{.BalanceAfterLabel}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{if .HasMore}}
+  <div class="wallet-ledger-more"
+       hx-get="{{.NextURL}}"
+       hx-trigger="click"
+       hx-target="#wallet-ledger-rows"
+       hx-swap="outerHTML"
+       data-testid="wallet-ledger-more">
+    <button type="button" class="wallet-button wallet-button--ghost" data-testid="wallet-ledger-more-button">Carregar mais</button>
+  </div>
+  {{end}}
+  {{else}}
+  <p class="wallet-empty" data-testid="wallet-ledger-empty">Nenhum lançamento dentro do filtro atual.</p>
+  {{end}}
+</div>
+{{end}}
