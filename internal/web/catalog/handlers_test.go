@@ -1347,6 +1347,15 @@ func TestSafeText_ArgumentTextEscapesHTML(t *testing.T) {
 // TestNoInlineScriptTags asserts none of the templates ship an inline
 // <script> tag. This is part of the CSP envelope (per doc.go) — adding
 // any inline JS would silently break the strict CSP nonce policy.
+//
+// Same-origin external scripts (<script src="/static/..."></script>) are
+// allowed because csp.Middleware sets script-src 'self', which already
+// covers them without a nonce. This carve-out exists so shell.Layout
+// chrome (which renders <script src="/static/js/app-shell.js" defer>)
+// does not false-positive once catalog views migrate to it
+// ([SIN-63993]). The regression case in
+// TestNoInlineScriptTags_DetectsInline pins that inline scripts still
+// bite.
 func TestNoInlineScriptTags(t *testing.T) {
 	t.Parallel()
 	store := newMemStore()
@@ -1364,9 +1373,76 @@ func TestNoInlineScriptTags(t *testing.T) {
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, newRequest(t, http.MethodGet, target, nil))
 		body := rr.Body.String()
-		if strings.Contains(body, "<script") {
-			t.Fatalf("%s: body has inline <script>\nbody=%s", target, body)
+		if tag := findInlineScriptOpen(body); tag != "" {
+			t.Fatalf("%s: body has inline <script>: %q\nbody=%s", target, tag, body)
 		}
+	}
+}
+
+// findInlineScriptOpen scans body for `<script>` opening tags that
+// lack a `src=` attribute and returns the offending opening tag for
+// failure messaging, or "" when none are present. Mirrors the regex +
+// attr-scan pattern used by assertEveryInlineTagCarriesNonce in
+// handlers_csp_nonce_e2e_test.go so the same intent (skip same-origin
+// external scripts, fail closed on inline ones) holds for both guards.
+func findInlineScriptOpen(body string) string {
+	for _, m := range inlineTagOpenPattern.FindAllStringSubmatchIndex(body, -1) {
+		if body[m[2]:m[3]] != "script" {
+			continue
+		}
+		if srcAttrPattern.MatchString(body[m[4]:m[5]]) {
+			continue
+		}
+		return body[m[0]:m[1]]
+	}
+	return ""
+}
+
+// TestNoInlineScriptTags_DetectsInline pins the regression case for
+// the [SIN-63993] relaxation: the assertion still bites inline
+// <script> tags even though same-origin <script src="..."> is now
+// allowed. Without this guard, weakening the regex to skip src= tags
+// could drift into accepting truly inline scripts and silently break
+// the CSP script-src 'self' nonce policy.
+func TestNoInlineScriptTags_DetectsInline(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		body      string
+		wantBites bool
+	}{
+		{
+			name:      "inline_script_without_src_bites",
+			body:      `<!doctype html><html><body><script>alert(1)</script></body></html>`,
+			wantBites: true,
+		},
+		{
+			name:      "shell_layout_external_script_skipped",
+			body:      `<!doctype html><html><head><script src="/static/js/app-shell.js" defer></script></head><body></body></html>`,
+			wantBites: false,
+		},
+		{
+			name:      "no_script_tag",
+			body:      `<!doctype html><html><body><p>hi</p></body></html>`,
+			wantBites: false,
+		},
+		{
+			name:      "mixed_external_and_inline_bites_on_inline",
+			body:      `<head><script src="/static/js/app-shell.js"></script></head><body><script>alert(2)</script></body>`,
+			wantBites: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := findInlineScriptOpen(tc.body)
+			if tc.wantBites && got == "" {
+				t.Fatalf("expected detection to bite; body=%s", tc.body)
+			}
+			if !tc.wantBites && got != "" {
+				t.Fatalf("expected detection to skip; got tag=%q body=%s", got, tc.body)
+			}
+		})
 	}
 }
 
