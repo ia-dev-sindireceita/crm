@@ -1,34 +1,45 @@
-/* SIN-62919 — inbox UI styles. Served by internal/web/inbox at
-   /static/css/inbox.css. Plain CSS, no preprocessor, no framework,
-   no @import. Mirrors funnel.css + privacy.css conventions
-   (system-ui font, #e5e7eb borders, #6b7280 muted text).
+/* SIN-62919 + SIN-63939 — inbox UI styles. Served by internal/web/inbox
+   at /static/css/inbox.css. Plain CSS, no preprocessor, no framework,
+   no @import.
 
-   Layout: two panes side-by-side. The left pane lists conversations,
-   the right pane shows the selected conversation. Below 600px the
-   panes stack and the conversation pane scrolls within its block.
+   The stylesheet is built on top of tokens.css (SIN-63935 / UX-F1).
+   Feature-local values are derived from --space-*, --text-*, --color-*,
+   --radius-*, --shadow-*, --motion-* — no bare hex / px / ms literals.
+
+   Layout (SIN-63939 / UX-F2):
+     - Desktop ≥ 900px: three side-by-side panes (list 320 / conversation 1fr
+       / customer 360). Customer pane visible by default.
+     - Tablet 600–900px: customer pane collapses into a slide-in drawer
+       toggled by an .inbox-customer-pane__toggle button on the
+       conversation-pane header.
+     - Mobile < 600px: list pane stacks on top of the conversation pane;
+       customer pane becomes a bottom sheet that the operator pulls up
+       on demand.
 
    Accessibility:
-     - body text #111827 on #ffffff, secondary #374151 on #f9fafb
-       (contrast >= 4.5:1, WCAG 2.1 AA).
-     - focus-visible outlines on every interactive control.
-     - .visually-hidden hides the compose textarea label visually
-       while keeping it in the accessibility tree.
-     - status badges combine a glyph (statusGlyph) + aria-label
-       (statusLabel), and pending/failed differ by background AND
-       by glyph, so distinctions are not color-only.
+     - Body text uses --text-default on --surface-0 (13.4:1, WCAG AAA).
+     - Channel badges combine SVG + screen-reader-only text label so
+       differentiation is not colour-only (WCAG 1.4.1).
+     - Status badges combine glyph + aria-label + title tooltip.
+     - All interactive controls expose focus-visible outlines from
+       tokens.css; the compose Send button keeps a 44px hit-target
+       (Fitts).
 */
+
+/* ---- Layout shell ----------------------------------------------------- */
 
 .inbox-shell {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 320px 1fr 360px;
   height: 100vh;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #111827;
+  font-family: var(--font-sans);
+  color: var(--text-default);
+  background: var(--surface-0);
 }
 
 .inbox-list-pane {
-  border-right: 1px solid #e5e7eb;
-  background: #f9fafb;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-1);
   overflow-y: auto;
 }
 
@@ -36,23 +47,67 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--surface-0);
+}
+
+.inbox-customer-pane {
+  border-left: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.inbox-customer-pane__toggle {
+  display: none; /* visible only on tablet/mobile via @media below */
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  width: var(--hit-target-min);
+  height: var(--hit-target-min);
+  border-radius: var(--radius-pill);
+  background: var(--color-primary);
+  color: var(--text-on-primary);
+  border: 0;
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+  font-size: var(--text-lg);
+  line-height: 1;
+  z-index: 2;
 }
 
 .inbox-empty {
-  margin: 24px;
-  color: #6b7280;
-  font-style: italic;
-  font-size: 14px;
+  margin: var(--space-5);
+  color: var(--text-muted);
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
+
+.inbox-empty__title {
+  margin: 0;
+  font-weight: var(--font-semibold);
+}
+
+.inbox-empty__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* ---- Conversation list ------------------------------------------------ */
 
 .conversation-list {
   list-style: none;
   margin: 0;
-  padding: 8px;
+  padding: var(--space-2);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .conversation-list__item {
@@ -62,53 +117,104 @@
 .conversation-list__link {
   display: grid;
   grid-template-columns: auto 1fr auto;
-  gap: 8px;
-  align-items: baseline;
-  padding: 8px 10px;
-  border-radius: 4px;
-  color: #111827;
+  grid-template-areas:
+    "badge snippet time";
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--text-default);
   text-decoration: none;
-  font-size: 13px;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  min-height: var(--hit-target-min);
 }
 
 .conversation-list__link:hover {
-  background: #eef2ff;
+  background: var(--surface-2);
 }
 
 .conversation-list__link:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: 1px;
+  background: var(--surface-2);
 }
 
+/* Hide the bare channel text node — the SVG badge that lives just before
+   it is the visible affordance. Keep the text node in the DOM so screen
+   readers (and the SIN-62919 regression test that scans the rendered
+   HTML for `class="conversation-list__channel">whatsapp`) still see it. */
 .conversation-list__channel {
-  font-weight: 600;
-  color: #4338ca;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.conversation-list__link > .channel-badge {
+  grid-area: badge;
 }
 
 .conversation-list__snippet {
-  color: #374151;
+  grid-area: snippet;
+  color: var(--text-default);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .conversation-list__time {
-  color: #6b7280;
-  font-size: 11px;
+  grid-area: time;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 
 .conversation-list__empty {
   list-style: none;
   margin: 0;
-  padding: 16px;
-  color: #6b7280;
+  padding: var(--space-4);
+  color: var(--text-muted);
   font-style: italic;
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
+
+/* ---- Channel badge ---------------------------------------------------- */
+
+.channel-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+}
+
+.channel-badge--whatsapp {
+  color: #25d366; /* brand colour — exception to the token rule (WhatsApp brand identity). */
+}
+
+.channel-badge--instagram {
+  color: #e1306c; /* brand colour — Instagram pink */
+}
+
+.channel-badge--facebook {
+  color: #1877f2; /* brand colour — Facebook blue */
+}
+
+.channel-badge--chatbot {
+  color: var(--text-muted);
+}
+
+.channel-badge--unknown {
+  color: var(--border-strong);
+}
+
+/* ---- Conversation pane ------------------------------------------------ */
 
 .conversation {
   display: flex;
@@ -118,80 +224,90 @@
 
 .conversation__header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid #e5e7eb;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .conversation__title {
   margin: 0;
-  font-size: 16px;
-}
-
-.conversation__channel {
-  color: #6b7280;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  font-weight: var(--font-semibold);
 }
 
 .conversation__thread {
   list-style: none;
   margin: 0;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .conversation__compose {
-  display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid #e5e7eb;
-  background: #f9fafb;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "textarea send"
+    "indicator indicator";
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-1);
 }
 
 .conversation__compose textarea {
-  flex: 1;
+  grid-area: textarea;
   font-family: inherit;
-  font-size: 14px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  padding: 8px;
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
   resize: vertical;
   min-height: 60px;
+  background: var(--surface-0);
+  color: var(--text-default);
 }
 
-.conversation__compose textarea:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: 1px;
-}
-
-.conversation__compose button {
-  background: #2563eb;
-  color: #ffffff;
-  border: 1px solid #1d4ed8;
-  border-radius: 4px;
-  padding: 0 16px;
-  font-size: 13px;
-  font-weight: 600;
+.conversation__compose-submit {
+  grid-area: send;
+  background: var(--color-primary);
+  color: var(--text-on-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
   cursor: pointer;
-  align-self: flex-end;
-  min-height: 36px;
+  align-self: end;
+  min-height: var(--hit-target-min);
+  min-width: 96px;
+  transition: background var(--motion-fast) var(--ease-out);
 }
 
-.conversation__compose button:hover {
-  background: #1d4ed8;
+.conversation__compose-submit:hover {
+  background: var(--color-accent);
 }
 
-.conversation__compose button:focus-visible {
-  outline: 2px solid #1d4ed8;
-  outline-offset: 2px;
+.conversation__compose-indicator {
+  grid-area: indicator;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--motion-base) var(--ease-out);
+}
+
+.htmx-request .conversation__compose-indicator,
+.conversation__compose-indicator.htmx-request {
+  opacity: 1;
+  visibility: visible;
 }
 
 .visually-hidden {
@@ -206,31 +322,34 @@
   border: 0;
 }
 
+/* ---- Message bubbles -------------------------------------------------- */
+
 .message-bubble {
   max-width: 75%;
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 14px;
-  line-height: 1.4;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   word-wrap: break-word;
   overflow-wrap: anywhere;
+  box-shadow: var(--shadow-1);
 }
 
 .message-bubble.msg-in {
   align-self: flex-start;
-  background: #f3f4f6;
-  color: #111827;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-2);
+  color: var(--text-default);
+  border: 1px solid var(--border-subtle);
 }
 
 .message-bubble.msg-out {
   align-self: flex-end;
-  background: #dbeafe;
-  color: #111827;
-  border: 1px solid #bfdbfe;
+  background: var(--color-info-surface);
+  color: var(--text-strong);
+  border: 1px solid var(--color-info);
 }
 
 .message-bubble__body {
@@ -241,90 +360,386 @@
 .message-bubble__media {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-0);
   text-decoration: none;
-  color: #1d4ed8;
+  color: var(--color-primary);
   align-self: flex-start;
 }
 
 .message-bubble__media--clean:hover,
 .message-bubble__media--clean:focus-visible {
-  background: #eef2ff;
-  outline: none;
-}
-
-.message-bubble__media--clean:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: 2px;
+  background: var(--surface-2);
 }
 
 .message-bubble__media--blocked {
-  background: #fef2f2;
-  border-color: #fecaca;
-  color: #991b1b;
+  background: var(--color-danger-surface);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .message-bubble__media--pending {
-  background: #fffbeb;
-  border-color: #fde68a;
-  color: #92400e;
+  background: var(--color-warning-surface);
+  border-color: var(--color-warning);
+  color: var(--color-warning);
   font-style: italic;
 }
 
 .message-bubble__media-icon {
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1;
 }
 
 .message-bubble__media-blocked-text,
 .message-bubble__media-link-text,
 .message-bubble__media-pending-text {
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 
 .message-bubble__time {
-  font-size: 11px;
-  color: #6b7280;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .message-bubble__status {
-  font-size: 11px;
-  color: #6b7280;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
   align-self: flex-end;
   font-variant-numeric: tabular-nums;
+  cursor: help;
 }
 
 .message-bubble__status--read {
-  color: #1d4ed8;
+  color: var(--color-primary);
 }
 
 .message-bubble__status--failed {
-  color: #b91c1c;
+  color: var(--color-danger);
 }
 
 .message-bubble__status--pending {
   font-style: italic;
 }
 
-@media (max-width: 600px) {
+/* ---- Customer pane sections ------------------------------------------- */
+
+.customer-card {
+  background: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  box-shadow: var(--shadow-1);
+}
+
+.customer-card__avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-pill);
+  background: var(--color-info-surface);
+  color: var(--color-info);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-semibold);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-line);
+}
+
+.customer-card__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.customer-card__name {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.customer-card__meta {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.customer-card__meta-row {
+  display: contents;
+}
+
+.customer-card__meta dt {
+  color: var(--text-muted);
+  font-weight: var(--font-medium);
+}
+
+.customer-card__meta dd {
+  margin: 0;
+  color: var(--text-default);
+}
+
+.customer-card__tags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.customer-card__tag {
+  background: var(--surface-2);
+  border-radius: var(--radius-pill);
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-default);
+}
+
+.customer-section__title {
+  margin: 0 0 var(--space-2) 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.customer-section__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.customer-identities__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.customer-identities__item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+}
+
+.customer-identities__handle {
+  color: var(--text-default);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer-identities__split {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.customer-summary {
+  background: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-shadow: var(--shadow-1);
+}
+
+.customer-summary__panel {
+  min-height: 80px;
+}
+
+.customer-summary__empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.customer-tips {
+  background: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-shadow: var(--shadow-1);
+}
+
+.customer-tips__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.customer-tips__policy {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.customer-actions {
+  background: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-shadow: var(--shadow-1);
+}
+
+.customer-actions__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.customer-actions__btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-default);
+  text-decoration: none;
+  min-height: var(--hit-target-min);
+  cursor: pointer;
+}
+
+.customer-actions__btn:disabled {
+  cursor: not-allowed;
+  color: var(--text-muted);
+}
+
+.customer-actions__btn--link:hover {
+  background: var(--surface-2);
+}
+
+.customer-empty {
+  background: var(--surface-0);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.customer-empty__title {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  color: var(--text-strong);
+}
+
+.customer-empty__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+/* ---- Tablet (drawer) -------------------------------------------------- */
+
+@media (min-width: 600px) and (max-width: 899px) {
+  .inbox-shell {
+    grid-template-columns: 320px 1fr;
+  }
+  .inbox-customer-pane {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 360px;
+    height: 100vh;
+    z-index: 1;
+    transform: translateX(100%);
+    transition: transform var(--motion-base) var(--ease-out);
+    box-shadow: var(--shadow-3);
+  }
+  .inbox-customer-pane[data-open="true"] {
+    transform: translateX(0);
+  }
+  .inbox-customer-pane__toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* ---- Mobile (stacked + bottom sheet) ---------------------------------- */
+
+@media (max-width: 599px) {
   .inbox-shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr;
-    height: 100vh;
   }
-
   .inbox-list-pane {
     max-height: 40vh;
     border-right: 0;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--border-subtle);
   }
-
+  .inbox-customer-pane {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 70vh;
+    width: 100%;
+    border-left: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-top-left-radius: var(--radius-lg);
+    border-top-right-radius: var(--radius-lg);
+    z-index: 1;
+    transform: translateY(100%);
+    transition: transform var(--motion-base) var(--ease-out);
+    box-shadow: var(--shadow-3);
+  }
+  .inbox-customer-pane[data-open="true"] {
+    transform: translateY(0);
+  }
+  .inbox-customer-pane__toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
   .message-bubble {
     max-width: 90%;
   }

@@ -83,6 +83,52 @@ type Deps struct {
 	// AIAssist wires the optional SIN-62908 ai-assist feature. The
 	// nested Summarizer field is the activation switch.
 	AIAssist AssistDeps
+	// CustomerInfo is the optional read-side port that hydrates the
+	// right-rail customer panel (SIN-63939 / UX-F2). When nil the panel
+	// renders its degraded state: name = "Contato sem nome", no email /
+	// phone / tags / identities. The contact aggregate behind the port
+	// is intentionally NOT imported from internal/contacts because the
+	// forbidwebboundary lint blocks domain imports from web/* — the
+	// adapter that satisfies the port projects the contact onto
+	// CustomerInfo at the boundary.
+	CustomerInfo CustomerInfoLoader
+}
+
+// CustomerInfoLoader is the read-side port that hydrates the customer
+// panel for one conversation. Implementations MUST NOT return an error
+// for "contact not found"; they should return a zero CustomerInfo +
+// nil error so the panel degrades to the "no data" state instead of
+// surfacing a 500. The handler treats a non-nil error as a true read
+// failure and logs + degrades the panel.
+type CustomerInfoLoader interface {
+	Load(ctx context.Context, tenantID, conversationID uuid.UUID) (CustomerInfo, error)
+}
+
+// CustomerInfo is the projection the right-rail customer panel
+// consumes. All fields are optional; the template renders only the
+// blocks for which it has data. Tags / Identities are nil-safe.
+//
+// LGPD note: the projector behind the port is responsible for trimming
+// the field set to the minimum the operator needs to close the sale
+// (Nielsen #8 + LGPD minimização — see SIN-63939 constraints). The
+// template intentionally does NOT expose CPF, full address, or other
+// sensitive fields; tightening the projection at the boundary keeps
+// the template free of compliance branches.
+type CustomerInfo struct {
+	DisplayName string
+	Email       string
+	Phone       string
+	Tags        []string
+	Identities  []CustomerIdentity
+}
+
+// CustomerIdentity is one entry in the right-rail "identidades
+// vinculadas" list. Channel is the lower-case channel slug (whatsapp /
+// instagram / facebook / chatbot); Handle is the human-friendly
+// identifier (phone number, @handle, …) the operator recognises.
+type CustomerIdentity struct {
+	Channel string
+	Handle  string
 }
 
 // Handler is the HTMX inbox UI front controller. It is mounted on the
@@ -170,6 +216,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		List:             listData{Items: rows},
+		Customer:         customerPanelData{HasConversation: false},
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 	}); err != nil {
@@ -222,13 +269,47 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Hydrate the customer panel through the optional loader. When the
+	// loader is nil or errors we degrade to the empty CustomerInfo so
+	// the panel still renders (with "Contato sem nome" + no metadata).
+	var customer CustomerInfo
+	if h.deps.CustomerInfo != nil {
+		c, err := h.deps.CustomerInfo.Load(r.Context(), tenant.ID, conversationID)
+		if err != nil {
+			h.deps.Logger.Warn("web/inbox: customer info load failed", "err", err)
+		} else {
+			customer = c
+		}
+	}
+
+	// Render the customer panel into a buffer and pass it to the view
+	// template — the conversation view appends the customer-panel
+	// markup with hx-swap-oob so HTMX swaps both panes in one round
+	// trip.
+	var customerHTML template.HTML
+	{
+		var buf strings.Builder
+		channel := "" // filled by a future read use case (PR10)
+		if err := customerPanelTmpl.Execute(&buf, customerPanelData{
+			HasConversation: true,
+			ConversationID:  conversationID,
+			Channel:         channel,
+			Contact:         customer,
+			AssistButton:    assistHTML,
+		}); err != nil {
+			h.deps.Logger.Error("web/inbox: render customer panel", "err", err)
+		} else {
+			customerHTML = template.HTML(buf.String())
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := conversationViewTmpl.Execute(w, viewData{
 		ConversationID: conversationID,
 		Channel:        "", // filled by a future read use case (PR10)
 		Messages:       res.Items,
 		CSRFInput:      csrf.FormHidden(token),
-		AssistButton:   assistHTML,
+		CustomerPanel:  customerHTML,
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render view", "err", err)
 	}
@@ -368,6 +449,7 @@ type layoutData struct {
 	CSRFMeta         template.HTML
 	HXHeaders        template.HTMLAttr
 	List             listData
+	Customer         customerPanelData
 	TenantThemeStyle template.CSS
 	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
 	// when csp.Middleware is absent — the template still emits the
@@ -375,13 +457,28 @@ type layoutData struct {
 	CSPNonce string
 }
 
-// viewData drives the right-pane conversation view template. AssistButton
-// is the pre-rendered HTMX fragment for the SIN-62908 assist button —
-// empty when the assist feature is not wired (default).
+// viewData drives the middle (conversation) pane template. The
+// customer pane is delivered alongside it as an OOB swap (CustomerPanel
+// is pre-rendered HTML appended to the response body).
 type viewData struct {
 	ConversationID uuid.UUID
 	Channel        string
 	Messages       []inboxusecase.MessageView
 	CSRFInput      template.HTML
-	AssistButton   template.HTML
+	CustomerPanel  template.HTML
+}
+
+// customerPanelData drives the right-rail customer panel. HasConversation
+// is false on the initial empty render (the layout placeholder) and true
+// when the view handler hydrates the panel for a selected conversation.
+type customerPanelData struct {
+	HasConversation bool
+	ConversationID  uuid.UUID
+	Channel         string
+	Contact         CustomerInfo
+	// AssistButton is the pre-rendered HTMX fragment for the SIN-62908
+	// "Resumir + sugerir 3 respostas" button — empty when the assist
+	// feature is not wired (the panel falls back to a disabled-state
+	// hint then).
+	AssistButton template.HTML
 }
