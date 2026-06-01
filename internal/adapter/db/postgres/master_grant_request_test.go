@@ -567,3 +567,53 @@ func TestGrantRequestStore_WithClock_PinsCreatedAt(t *testing.T) {
 		t.Errorf("CreatedAt = %v, want %v", req.CreatedAt, frozen)
 	}
 }
+
+func TestGrantRequestStore_ApproveGrantRequest_ZeroActor_ReturnsErrZeroActor(t *testing.T) {
+	db := freshDBWithGrantRequests(t)
+	actor := uuid.New()
+	store, err := masterpg.NewGrantRequestStore(db.MasterOpsPool(), actor)
+	if err != nil {
+		t.Fatalf("NewGrantRequestStore: %v", err)
+	}
+
+	_, err = store.ApproveGrantRequest(context.Background(), masterweb.DecideGrantRequestInput{
+		ActorUserID: uuid.Nil, RequestID: uuid.New(), Reason: "zero actor",
+	})
+	if err == nil {
+		t.Error("nil ActorUserID: want error, got nil")
+	}
+}
+
+func TestGrantRequestStore_RejectGrantRequest_ZeroActor_ReturnsErrZeroActor(t *testing.T) {
+	db := freshDBWithGrantRequests(t)
+	actor := uuid.New()
+	store, err := masterpg.NewGrantRequestStore(db.MasterOpsPool(), actor)
+	if err != nil {
+		t.Fatalf("NewGrantRequestStore: %v", err)
+	}
+
+	err = store.RejectGrantRequest(context.Background(), masterweb.DecideGrantRequestInput{
+		ActorUserID: uuid.Nil, RequestID: uuid.New(), Reason: "zero actor",
+	})
+	if err == nil {
+		t.Error("nil ActorUserID: want error, got nil")
+	}
+}
+
+func TestGrantRequestStore_CreateGrantRequest_ZeroActor_ReturnsError(t *testing.T) {
+	db := freshDBWithGrantRequests(t)
+	store, err := masterpg.NewGrantRequestStore(db.MasterOpsPool(), uuid.New())
+	if err != nil {
+		t.Fatalf("NewGrantRequestStore: %v", err)
+	}
+	_, err = store.CreateGrantRequest(context.Background(), masterweb.CreateGrantRequestInput{
+		ActorUserID: uuid.Nil,
+		TenantID:    uuid.New(),
+		Kind:        masterweb.GrantKindExtraTokens,
+		Amount:      1000,
+		Reason:      "zero actor test reason at least 10 chars",
+	})
+	if err == nil {
+		t.Error("nil ActorUserID: want error, got nil")
+	}
+}
