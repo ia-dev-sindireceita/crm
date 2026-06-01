@@ -195,7 +195,18 @@ func (h *ImpersonationHandler) Start(w http.ResponseWriter, r *http.Request) {
 		// never proceed without a recorded start row. End under
 		// "audit_failed" so the post-mortem trail still has the
 		// impersonation_session row, just marked ended.
-		_ = h.deps.Sessions.End(r.Context(), sess.ID, p.UserID, "audit_failed", now)
+		if endErr := h.deps.Sessions.End(r.Context(), sess.ID, p.UserID, "audit_failed", now); endErr != nil {
+			// Rollback also failed: envelope row stays open until
+			// the 15-min expiry middleware reaps it. Emit a
+			// searchable line so oncall can correlate the silent
+			// double-failure with the user-facing 500.
+			h.deps.Logger.ErrorContext(r.Context(), "impersonation start: audit_failed rollback also failed",
+				slog.String("session_id", sess.ID.String()),
+				slog.String("master_user_id", p.UserID.String()),
+				slog.String("end_error", endErr.Error()),
+				slog.String("audit_error", err.Error()),
+			)
+		}
 		h.deps.Logger.ErrorContext(r.Context(), "impersonation start: audit write",
 			slog.String("session_id", sess.ID.String()),
 			slog.String("error", err.Error()),
