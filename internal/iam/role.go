@@ -14,7 +14,7 @@ type Role string
 const (
 	RoleMaster          Role = "master"
 	RoleTenantGerente   Role = "tenant_gerente"
-	RoleTenantLider     Role = "tenant_lider"   // team lead: scoped stats, funnel rules
+	RoleTenantLider     Role = "tenant_lider" // team lead: scoped stats, funnel rules
 	RoleTenantAtendente Role = "tenant_atendente"
 	RoleTenantCommon    Role = "tenant_common"
 )

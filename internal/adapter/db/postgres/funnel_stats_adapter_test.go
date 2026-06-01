@@ -224,4 +224,3 @@ func TestFunnelStats_StoreCompilationGuard(t *testing.T) {
 	db := freshDBWithFunnelStats(t)
 	var _ funnel.StatsRepository = newFunnelStore(t, db)
 }
-
