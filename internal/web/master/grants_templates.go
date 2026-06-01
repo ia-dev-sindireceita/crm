@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // grantsPageData drives both the full layout and the panel partial
@@ -33,14 +35,20 @@ type grantsPageData struct {
 	// when csp.Middleware is absent — the template still emits the
 	// attribute so the browser blocks the inline tag (fail-closed).
 	CSPNonce string
+
+	// ActiveImpersonation — SIN-63956 banner view-model. See pageData.
+	ActiveImpersonation *shell.ImpersonationContext
 }
 
 var grantsTemplateFuncs = template.FuncMap{
-	"formatGrantTime": formatGrantTime,
-	"grantKindLabel":  grantKindLabel,
-	"isFreePeriod":    isFreePeriod,
-	"isExtraTokens":   isExtraTokens,
-	"int64ToStr":      int64ToStr,
+	"formatGrantTime":             formatGrantTime,
+	"grantKindLabel":              grantKindLabel,
+	"isFreePeriod":                isFreePeriod,
+	"isExtraTokens":               isExtraTokens,
+	"int64ToStr":                  int64ToStr,
+	"formatImpersonationISO":      formatImpersonationISO,
+	"truncateImpersonationReason": truncateImpersonationReason,
+	"csrfHiddenForToken":          csrfHiddenForToken,
 }
 
 func formatGrantTime(t time.Time) string {
@@ -104,7 +112,9 @@ var grantsLayoutTmpl = template.Must(template.New("grants.layout").Funcs(grantsT
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
-<body {{.HXHeaders}}>
+<body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
+  {{template "shell_impersonation_banner" .}}
+  {{template "shell_audit_feed_chip" .}}
   <main class="master-shell" role="main" aria-labelledby="master-grants-title">
     <header class="master-shell__header">
       <h1 id="master-grants-title">Conceder cortesia</h1>
@@ -263,6 +273,7 @@ func init() {
 	if _, err := grantsLayoutTmpl.AddParseTree(grantsPanelTmpl.Name(), grantsPanelTmpl.Tree); err != nil {
 		panic("web/master: register grants_panel in grants.layout: " + err.Error())
 	}
+	registerImpersonationBanner(grantsLayoutTmpl)
 	// Prime html/template's lazy escaper on every grants template
 	// before any concurrent Execute can race on the first call
 	// (SIN-62774 regression repro — see html_template_race memory).

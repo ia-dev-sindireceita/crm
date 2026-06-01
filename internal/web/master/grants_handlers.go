@@ -239,17 +239,18 @@ func (h *Handler) renderGrantsError(w http.ResponseWriter, r *http.Request, tena
 // partial swap is byte-identical to a full page re-render.
 func (h *Handler) buildGrantsPageData(r *http.Request, tenantID, actor uuid.UUID, grants []GrantRow, flash, formError, kind, token string) grantsPageData {
 	return grantsPageData{
-		TenantID:         tenantID,
-		ActorID:          actor,
-		Grants:           grants,
-		Flash:            flash,
-		FormError:        formError,
-		Kind:             kind,
-		CSRFInput:        csrf.FormHidden(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
-		CSRFMeta:         csrf.MetaTag(token),
-		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
-		CSPNonce:         csp.Nonce(r.Context()),
+		TenantID:            tenantID,
+		ActorID:             actor,
+		Grants:              grants,
+		Flash:               flash,
+		FormError:           formError,
+		Kind:                kind,
+		CSRFInput:           csrf.FormHidden(token),
+		HXHeaders:           csrf.HXHeadersAttr(token),
+		CSRFMeta:            csrf.MetaTag(token),
+		TenantThemeStyle:    branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:            csp.Nonce(r.Context()),
+		ActiveImpersonation: h.activeImpersonationFor(r, token),
 	}
 }
 

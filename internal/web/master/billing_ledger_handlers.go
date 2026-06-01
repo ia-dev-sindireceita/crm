@@ -58,6 +58,7 @@ func (h *Handler) ShowBilling(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := newBillingPageData(r.Context(), view, token)
+	data.ActiveImpersonation = h.activeImpersonationFor(r, token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
 	tmpl := billingLayoutTmpl
@@ -110,6 +111,7 @@ func (h *Handler) ShowLedger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := newLedgerPageData(r.Context(), tenantID, page, opts.PageSize, token)
+	data.ActiveImpersonation = h.activeImpersonationFor(r, token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
 	tmpl := ledgerLayoutTmpl

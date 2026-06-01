@@ -254,6 +254,16 @@ func withActiveImpersonation(ctx context.Context, s *impersonation.Session) cont
 	return context.WithValue(ctx, activeImpersonationCtxKey{}, s)
 }
 
+// WithActiveImpersonationForTest installs an envelope on the context
+// for tests in external packages. Production callers MUST NOT use this
+// — the middleware is the only path that installs an envelope on the
+// request context. The function is exported so the master package's
+// banner tests can synthesise a request context without standing up
+// the full middleware chain.
+func WithActiveImpersonationForTest(ctx context.Context, s *impersonation.Session) context.Context {
+	return withActiveImpersonation(ctx, s)
+}
+
 // RequireRoleMaster gates a route on the principal carrying RoleMaster.
 // Returned 403 on miss; the caller is expected to compose this after
 // RequireAuth (which installs the Principal). Used for End + Feed

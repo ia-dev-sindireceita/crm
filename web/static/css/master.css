@@ -1,0 +1,439 @@
+/*
+ * SIN-63956 / master-impersonation-spec rev 2 — master console stylesheet.
+ *
+ * Scope:
+ *   - `.shell__impersonation-banner`  the sticky red banner rendered by
+ *                                     internal/web/shell/layout.html when
+ *                                     `shell.Data.ActiveImpersonation` is
+ *                                     non-nil (spec §2).
+ *   - `.master-impersonation-trigger` the destructive button on the tenant
+ *                                     detail page that opens the reason
+ *                                     modal (spec §9.5).
+ *   - `.master-impersonation-modal`   the reason-collection dialog before
+ *                                     POSTing /master/tenants/{id}/impersonate.
+ *   - `.master-audit-feed-chip`       collapsed chip + expanded panel for
+ *                                     the per-envelope audit feed (spec §3.3).
+ *   - `.master-grant-request-detail__confirm-modal`
+ *                                     the confirm-twice approve dialog
+ *                                     (spec §4.4 + §10.4 #19).
+ *
+ * Design-system invariants (spec §10.1 + memory `reference_crm_make_lint_gofmt_gap`):
+ *   - Every value comes from a design token in tokens.css OR a banner-
+ *     scoped impersonation token defined inline below.
+ *   - The banner pins `--color-impersonation-bg/fg/rim` to AAA hexes
+ *     (resolved §6.2 of the spec) so a hostile tenant theme cannot
+ *     mutate `--color-danger` and hide the security signal (spec §2.4).
+ *   - No `!important` outside the banner selector.
+ *   - No mutation of global `--color-danger`.
+ */
+
+/* ─── Banner ────────────────────────────────────────────────────────── */
+
+.shell__impersonation-banner {
+  /* AAA-pinned tokens (spec §6.2 / §10.1.2): 8.31:1 vs white. */
+  --color-impersonation-bg: #991b1b;
+  --color-impersonation-fg: #ffffff;
+  --color-impersonation-rim: #7f1d1d;
+
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  min-height: 48px;
+  background: var(--color-impersonation-bg);
+  color: var(--color-impersonation-fg);
+  border-bottom: 2px solid var(--color-impersonation-rim);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+}
+
+/* Push every page below the banner. The body[data-impersonating="true"]
+ * marker is stamped by the layout when the banner is rendered. */
+body[data-impersonating="true"] {
+  padding-top: 48px;
+}
+
+@media (max-width: 899px) {
+  body[data-impersonating="true"] {
+    padding-top: 80px;
+  }
+}
+
+.shell__impersonation-pill {
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.02em;
+}
+
+.shell__impersonation-pill-icon {
+  margin-right: var(--space-1);
+}
+
+.shell__impersonation-tenant {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell__impersonation-tenant code {
+  background: var(--color-impersonation-rim);
+  color: var(--color-impersonation-fg);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.shell__impersonation-countdown {
+  font-family: var(--font-mono);
+  font-weight: var(--font-semibold);
+  min-width: 7ch;
+  text-align: right;
+}
+
+.shell__impersonation-reason {
+  flex: 0 1 36ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 899px) {
+  .shell__impersonation-reason {
+    display: none;
+  }
+}
+
+.shell__impersonation-end {
+  /* The form is invisible — its <button form="…"> child is the visible
+   * affordance. The form merely binds the SAIR submit to a POST. */
+  display: contents;
+}
+
+.shell__impersonation-end-btn {
+  appearance: none;
+  background: var(--color-impersonation-fg);
+  color: var(--color-impersonation-bg);
+  border: 2px solid var(--color-impersonation-fg);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-weight: var(--font-semibold);
+  min-width: 200px;
+  min-height: 36px;
+  cursor: pointer;
+  order: 99;
+  margin-left: auto;
+}
+
+.shell__impersonation-end-btn:hover,
+.shell__impersonation-end-btn:focus-visible {
+  background: var(--color-impersonation-rim);
+  color: var(--color-impersonation-fg);
+  outline: 2px solid var(--color-impersonation-fg);
+  outline-offset: 2px;
+}
+
+/* Countdown low-window emphasis is applied by a tiny JS hook stamping
+ * `data-window` on the banner. The visual change is server-cosmetic per
+ * spec §5.2; server middleware remains authoritative. */
+.shell__impersonation-banner[data-window="amber"] {
+  box-shadow: inset 0 0 0 2px #d97706;
+}
+
+.shell__impersonation-banner[data-window="red"] {
+  animation: shell-impersonation-pulse 1s infinite alternate;
+}
+
+@keyframes shell-impersonation-pulse {
+  from { background: var(--color-impersonation-bg); }
+  to   { background: var(--color-impersonation-rim); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell__impersonation-banner[data-window="red"] {
+    animation: none;
+    background: var(--color-impersonation-rim);
+  }
+}
+
+@media print {
+  .shell__impersonation-banner {
+    position: static;
+    color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  body[data-impersonating="true"] { padding-top: 0; }
+}
+
+/* ─── Tenant-detail impersonate trigger ─────────────────────────────── */
+
+.master-impersonation-trigger {
+  appearance: none;
+  background: var(--color-danger-surface);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.master-impersonation-trigger:hover,
+.master-impersonation-trigger:focus-visible {
+  background: var(--color-danger);
+  color: var(--color-danger-text);
+  outline: 2px solid var(--color-danger);
+  outline-offset: 2px;
+}
+
+.master-impersonation-modal {
+  display: block;
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.master-impersonation-modal__title {
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  margin: 0 0 var(--space-2) 0;
+}
+
+.master-impersonation-modal__field textarea {
+  width: 100%;
+  min-height: 96px;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+}
+
+.master-impersonation-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.master-impersonation-modal__submit {
+  appearance: none;
+  background: var(--color-danger);
+  color: var(--color-danger-text);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.master-impersonation-modal__cancel {
+  appearance: none;
+  background: var(--surface-2);
+  color: var(--text-default);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+}
+
+/* ─── Audit feed chip + panel ───────────────────────────────────────── */
+
+.master-audit-feed {
+  position: fixed;
+  right: var(--space-4);
+  top: 64px;
+  z-index: 9000;
+}
+
+.master-audit-feed__chip {
+  appearance: none;
+  background: var(--surface-2);
+  color: var(--text-default);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-4);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  min-width: 160px;
+}
+
+.master-audit-feed__chip[aria-expanded="true"] + .master-audit-feed__panel {
+  display: block;
+}
+
+.master-audit-feed__panel {
+  display: none;
+  margin-top: var(--space-2);
+  width: 360px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--surface-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  padding: var(--space-3);
+}
+
+@media (max-width: 899px) {
+  .master-audit-feed {
+    right: 0;
+    left: 0;
+    top: auto;
+    bottom: 0;
+  }
+  .master-audit-feed__panel {
+    width: auto;
+    border-radius: 0;
+    max-height: 60vh;
+  }
+}
+
+.master-audit-feed__row {
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--space-2) 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.master-audit-feed__row:first-child {
+  border-top: 0;
+}
+
+.master-audit-feed__row time {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* ─── Approve confirm-twice modal ───────────────────────────────────── */
+
+.master-grant-request-detail__confirm-modal {
+  display: block;
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 2px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-surface);
+}
+
+.master-grant-request-detail__confirm-title {
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  margin: 0 0 var(--space-2) 0;
+}
+
+.master-grant-request-detail__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.master-grant-request-detail__confirm-final {
+  appearance: none;
+  background: #991b1b;
+  color: #ffffff;
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.master-grant-request-detail__confirm-cancel {
+  appearance: none;
+  background: var(--surface-2);
+  color: var(--text-default);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+}
+
+/* ─── 4-eyes diff layout (spec §9.8) ────────────────────────────────── */
+
+.master-grant-request-detail__columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 899px) {
+  .master-grant-request-detail__columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.master-grant-request-detail__column {
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.master-grant-request-detail__column--requester {
+  background: var(--surface-1);
+}
+
+.master-grant-request-detail__column--reviewer {
+  background: var(--color-info-surface);
+}
+
+.master-grant-request-detail__sigil {
+  display: inline-block;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.master-grant-request-detail__column--reviewer .master-grant-request-detail__sigil {
+  background: var(--color-info);
+  color: var(--color-info-text);
+}
+
+.master-grant-request-detail__self-guard {
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--color-warning);
+  background: var(--color-warning-surface);
+  color: var(--text-strong);
+  border-radius: var(--radius-md);
+}
+
+/* ─── Tenant list / wizard utility classes ──────────────────────────── */
+
+.master-tenants__action-link {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.master-tenants__action-link:hover,
+.master-tenants__action-link:focus-visible {
+  text-decoration: underline;
+}
+
+.master-tenants__crumb a {
+  color: var(--color-primary);
+  text-decoration: none;
+}

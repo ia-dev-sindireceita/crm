@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pericles-luz/crm/internal/billing"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // pageData drives the full layout AND the table-only partial. The
@@ -38,6 +39,12 @@ type pageData struct {
 	// when csp.Middleware is absent — the template still emits the
 	// attribute so the browser blocks the inline tag (fail-closed).
 	CSPNonce string
+
+	// ActiveImpersonation is the SIN-63956 banner view-model. Non-nil
+	// → master shell renders the sticky red banner (spec §2). Nil →
+	// banner subtemplate evaluates to empty output. Populated from
+	// middleware.ActiveImpersonation by the handler before rendering.
+	ActiveImpersonation *shell.ImpersonationContext
 }
 
 // rowData drives the per-row partial returned by PATCH /master/
@@ -56,14 +63,17 @@ type rowData struct {
 // to recognise the name during Parse — adding it post-parse via Funcs
 // is too late in html/template.
 var templateFuncs = template.FuncMap{
-	"formatTime":      formatTime,
-	"formatBRL":       formatBRL,
-	"subStatusLabel":  subscriptionStatusLabel,
-	"invoiceLabel":    invoiceStateLabel,
-	"prevPage":        prevPage,
-	"nextPage":        nextPage,
-	"safeFilterParam": safeFilterParam,
-	"rowContext":      rowContext,
+	"formatTime":                  formatTime,
+	"formatBRL":                   formatBRL,
+	"subStatusLabel":              subscriptionStatusLabel,
+	"invoiceLabel":                invoiceStateLabel,
+	"prevPage":                    prevPage,
+	"nextPage":                    nextPage,
+	"safeFilterParam":             safeFilterParam,
+	"rowContext":                  rowContext,
+	"formatImpersonationISO":      formatImpersonationISO,
+	"truncateImpersonationReason": truncateImpersonationReason,
+	"csrfHiddenForToken":          csrfHiddenForToken,
 }
 
 func formatTime(t time.Time) string {
@@ -185,7 +195,9 @@ var masterLayoutTmpl = template.Must(template.New("master.layout").Funcs(templat
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
-<body {{.HXHeaders}}>
+<body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
+  {{template "shell_impersonation_banner" .}}
+  {{template "shell_audit_feed_chip" .}}
   <main class="master-shell" role="main" aria-labelledby="master-tenants-title">
     <header class="master-shell__header">
       <h1 id="master-tenants-title">Tenants</h1>
@@ -306,6 +318,124 @@ var tenantsTableTmpl = template.Must(template.New("tenants_table").Funcs(templat
 </section>
 `))
 
+// tenantDetailData drives GET /master/tenants/{id} (spec §9.5). The
+// page hosts the impersonate trigger; ShowReasonModal switches between
+// the static page and the inline reason-modal view (no JS required so
+// the noscript pass works — spec §8.2).
+type tenantDetailData struct {
+	Tenant TenantRow
+
+	CSRFInput template.HTML
+	CSRFMeta  template.HTML
+	HXHeaders template.HTMLAttr
+
+	TenantThemeStyle template.CSS
+	CSPNonce         string
+
+	ActiveImpersonation *shell.ImpersonationContext
+
+	// ShowReasonModal flips the page from the static "Impersonar
+	// tenant" CTA to the inline reason-collection form. Toggled by
+	// the `?impersonate=ask` query param; clicking Cancel returns to
+	// the static page without a JS handler.
+	ShowReasonModal bool
+}
+
+// tenantDetailLayoutTmpl is the full-page shell for GET /master/tenants/
+// {id}. The page is server-rendered + noscript-safe so a JS-disabled
+// operator can still trigger impersonation (spec §10.2 + §10.7).
+var tenantDetailLayoutTmpl = template.Must(template.New("tenant_detail.layout").Funcs(templateFuncs).Parse(`<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Master · Tenant {{.Tenant.Name}}</title>
+  {{.CSRFMeta}}
+  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/master.css">
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+</head>
+<body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
+  {{template "shell_impersonation_banner" .}}
+  {{template "shell_audit_feed_chip" .}}
+  <main class="master-shell" role="main" aria-labelledby="master-tenant-detail-title">
+    <header class="master-shell__header">
+      <p class="master-shell__crumb">
+        <a class="master-tenants__crumb" href="/master/tenants">← Tenants</a>
+      </p>
+      <h1 id="master-tenant-detail-title">{{.Tenant.Name}}</h1>
+      <p class="master-shell__hint">
+        <code>{{.Tenant.Host}}</code> · plano
+        {{if .Tenant.PlanSlug}}<strong>{{.Tenant.PlanName}}</strong>{{else}}—{{end}} ·
+        assinatura {{subStatusLabel .Tenant.SubscriptionStatus}}
+      </p>
+    </header>
+
+    <section class="master-tenant-detail" aria-label="Ações do tenant">
+      <ul class="master-tenant-detail__links">
+        <li><a class="master-tenants__action-link" href="/master/tenants/{{.Tenant.ID}}/billing">Histórico de cobrança</a></li>
+        <li><a class="master-tenants__action-link" href="/master/tenants/{{.Tenant.ID}}/ledger">Ledger de tokens</a></li>
+        <li><a class="master-tenants__action-link" href="/master/tenants/{{.Tenant.ID}}/grants/new">Conceder cortesia</a></li>
+        <li><a class="master-tenants__action-link" href="/master/grants/requests">Solicitações 4-eyes</a></li>
+      </ul>
+
+      {{if .ShowReasonModal}}
+      <section class="master-impersonation-modal"
+               role="dialog"
+               aria-modal="false"
+               aria-labelledby="impersonate-modal-title"
+               data-impersonate-modal="true">
+        <h2 id="impersonate-modal-title" class="master-impersonation-modal__title">
+          Impersonar tenant {{.Tenant.Name}}
+        </h2>
+        <p>
+          Esta ação inicia uma janela de impersonação de 15 minutos.
+          O motivo é registrado no <code>audit_log_security</code> e
+          permanece visível em todas as rotas até você sair.
+        </p>
+        <form method="post"
+              action="/master/tenants/{{.Tenant.ID}}/impersonate"
+              data-impersonate-form="true">
+          {{.CSRFInput}}
+          <div class="master-impersonation-modal__field">
+            <label for="impersonate-reason">
+              Motivo da impersonação (registrado no audit log)
+            </label>
+            <textarea id="impersonate-reason"
+                      name="reason"
+                      minlength="8"
+                      maxlength="500"
+                      required
+                      autofocus
+                      placeholder="Ex.: ticket #11324 — investigar erro 500 em /campaigns"></textarea>
+          </div>
+          <div class="master-impersonation-modal__actions">
+            <a class="master-impersonation-modal__cancel"
+               href="/master/tenants/{{.Tenant.ID}}"
+               data-impersonate-cancel="true"
+               tabindex="0">Cancelar</a>
+            <button type="submit"
+                    class="master-impersonation-modal__submit"
+                    data-impersonate-confirm="true">
+              Iniciar impersonação
+            </button>
+          </div>
+        </form>
+      </section>
+      {{else}}
+      <p class="master-tenant-detail__impersonate-cta">
+        <a class="master-impersonation-trigger"
+           href="/master/tenants/{{.Tenant.ID}}?impersonate=ask"
+           data-impersonate-trigger="true">
+          Impersonar tenant ▶
+        </a>
+      </p>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>
+`))
+
 // tenantRowTmpl is the row partial returned by PATCH /master/tenants/
 // {id}/plan. hx-swap=outerHTML on the parent <tr> swaps the whole row
 // without disturbing the table chrome.
@@ -364,11 +494,31 @@ func init() {
 	if _, err := tenantsTableTmpl.AddParseTree(tenantRowTmpl.Name(), tenantRowTmpl.Tree); err != nil {
 		panic("web/master: register tenant_row in tenants_table: " + err.Error())
 	}
+	registerImpersonationBanner(masterLayoutTmpl, tenantDetailLayoutTmpl)
 	// Prime html/template's lazy escaper on every template before any
 	// concurrent Execute can race on the first call (SIN-62774
 	// regression repro).
-	for _, t := range []*template.Template{tenantRowTmpl, tenantsTableTmpl, masterLayoutTmpl} {
+	for _, t := range []*template.Template{tenantRowTmpl, tenantsTableTmpl, masterLayoutTmpl, tenantDetailLayoutTmpl} {
 		_ = t.Execute(io.Discard, primingData(t))
+	}
+}
+
+// registerImpersonationBanner cross-installs the
+// "shell_impersonation_banner" + "shell_audit_feed_chip" partials onto
+// every master layout so the {{template "shell_impersonation_banner" .}}
+// invocation resolves at render time. Centralised so adding a new
+// master layout in the future does not silently lose the banner.
+func registerImpersonationBanner(layouts ...*template.Template) {
+	for _, layout := range layouts {
+		for _, name := range []string{"shell_impersonation_banner", "shell_audit_feed_chip"} {
+			tmpl := impersonationBannerTmpl.Lookup(name)
+			if tmpl == nil {
+				panic("web/master: impersonation banner subtemplate missing: " + name)
+			}
+			if _, err := layout.AddParseTree(name, tmpl.Tree); err != nil {
+				panic("web/master: register " + name + " in " + layout.Name() + ": " + err.Error())
+			}
+		}
 	}
 }
 
@@ -379,6 +529,8 @@ func primingData(t *template.Template) interface{} {
 	switch t {
 	case tenantRowTmpl:
 		return rowData{Row: TenantRow{}, Plans: nil, CSRFInput: ""}
+	case tenantDetailLayoutTmpl:
+		return tenantDetailData{}
 	default:
 		return pageData{}
 	}

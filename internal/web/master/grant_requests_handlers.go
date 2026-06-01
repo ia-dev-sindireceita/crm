@@ -10,6 +10,7 @@ package master
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -84,13 +85,16 @@ func (h *Handler) ListGrantRequests(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
+	p, _ := iam.PrincipalFromContext(r.Context())
 	data := grantRequestsListData{
-		Requests:         requests,
-		CSRFInput:        csrf.FormHidden(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
-		CSRFMeta:         csrf.MetaTag(token),
-		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
-		CSPNonce:         csp.Nonce(r.Context()),
+		Requests:            requests,
+		CSRFInput:           csrf.FormHidden(token),
+		HXHeaders:           csrf.HXHeadersAttr(token),
+		CSRFMeta:            csrf.MetaTag(token),
+		TenantThemeStyle:    branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:            csp.Nonce(r.Context()),
+		ActiveImpersonation: h.activeImpersonationFor(r, token),
+		CurrentUserID:       p.UserID,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
@@ -169,6 +173,15 @@ func (h *Handler) decideGrantRequest(w http.ResponseWriter, r *http.Request, ver
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
+	// Confirm-twice (spec §4.4 / §10.4 #19) is a UX-layer affordance,
+	// not a backend gate. The detail page renders an "Aprovar…" GET
+	// link to `?stage=confirm`; that GET returns the confirm modal;
+	// the modal's CONFIRMAR submit is the only POST that lands here.
+	// Per spec §5.2 ("Modal open/close on Approve button — Server
+	// still requires a fresh POST; closing the modal does nothing")
+	// the POST does NOT require an extra `confirm=yes` field — the
+	// 4-eyes invariant + RequireAction + recent-MFA wrappers are the
+	// authoritative controls.
 	in := DecideGrantRequestInput{
 		ActorUserID: p.UserID,
 		RequestID:   requestID,
@@ -223,15 +236,26 @@ func (h *Handler) renderGrantRequestDetail(w http.ResponseWriter, r *http.Reques
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
+	p, _ := iam.PrincipalFromContext(r.Context())
+	// Confirm-twice (spec §4.4 / §10.4 #19): on the FIRST approve
+	// submit we render the modal instead of mutating; on the SECOND
+	// (carrying `confirm=yes` form field) we proceed with the
+	// approval. The router-level handler only invokes
+	// renderGrantRequestDetail on the GET path; the POST handler
+	// invokes the modal path explicitly via ?stage=confirm.
+	stage := strings.TrimSpace(r.URL.Query().Get("stage"))
 	data := grantRequestDetailData{
-		Request:          req,
-		Flash:            flash,
-		FormError:        formError,
-		CSRFInput:        csrf.FormHidden(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
-		CSRFMeta:         csrf.MetaTag(token),
-		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
-		CSPNonce:         csp.Nonce(r.Context()),
+		Request:             req,
+		Flash:               flash,
+		FormError:           formError,
+		CSRFInput:           csrf.FormHidden(token),
+		HXHeaders:           csrf.HXHeadersAttr(token),
+		CSRFMeta:            csrf.MetaTag(token),
+		TenantThemeStyle:    branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:            csp.Nonce(r.Context()),
+		ActiveImpersonation: h.activeImpersonationFor(r, token),
+		CurrentUserID:       p.UserID,
+		ConfirmStage:        stage,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")

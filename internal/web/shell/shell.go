@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"reflect"
+	"time"
 
 	csrfhelpers "github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 )
@@ -70,6 +71,56 @@ type Data struct {
 	// branding.ThemeStyleFromContext. Empty falls back to the neutral
 	// tokens in tokens.css.
 	TenantThemeStyle template.CSS
+
+	// ActiveImpersonation is the SIN-63956 (master-impersonation-spec
+	// §2) banner context. Non-nil means "operator is currently
+	// impersonating a tenant"; the shell layout renders the sticky
+	// red banner with countdown + SAIR button. Nil omits the banner
+	// entirely. Pages are expected to populate this from the
+	// middleware-attached envelope (see internal/adapter/httpapi/
+	// middleware.ActiveImpersonation).
+	ActiveImpersonation *ImpersonationContext
+}
+
+// ImpersonationContext is the page-data view-model for the impersonation
+// banner. The handler builds one of these from the active envelope
+// returned by middleware.ActiveImpersonation and the target tenant
+// resolved by tenancy.ByIDResolver. All fields are server-rendered;
+// the client never participates in setting them (spec §0.1).
+type ImpersonationContext struct {
+	// TenantName is the impersonated tenant's display name. The shell
+	// renders it HTML-escaped (spec §5.4); callers MUST NOT mark it as
+	// template.HTML.
+	TenantName string
+
+	// TenantSlug is the short identifier shown in parentheses next to
+	// the name. Validated as [a-z0-9-]+ at tenant write time but the
+	// banner escapes it defensively anyway.
+	TenantSlug string
+
+	// Reason is the operator's free-form justification entered at
+	// envelope start. Truncated to 80 chars in the banner with the
+	// full text in a hover title (spec §5.4).
+	Reason string
+
+	// ExpiresAt is the server-computed envelope deadline in UTC. The
+	// banner renders it as `data-expires-at="<RFC3339Nano>"`; client
+	// JS ticks the countdown against it (server-authoritative — the
+	// middleware enforces expiry independently on every request, spec
+	// §2.6).
+	ExpiresAt time.Time
+
+	// ServerNow is the request-time clock the server saw when building
+	// the page. The banner renders it as `data-server-now="..."`; the
+	// client computes a one-shot offset against Date.now() to protect
+	// against device clock skew (spec §2.6).
+	ServerNow time.Time
+
+	// EndCSRFToken is the CSRF token used by the SAIR <form> submit to
+	// POST /master/impersonation/end. Empty disables the SAIR button
+	// (fail-closed) — without a token the operator cannot exit, which
+	// is a programmer error the test suite is expected to catch.
+	EndCSRFToken string
 }
 
 // BaseFuncs returns the FuncMap the shell layout relies on. Callers
@@ -77,17 +128,20 @@ type Data struct {
 // shell helpers are merged first, so caller funcs override on conflict.
 func BaseFuncs() template.FuncMap {
 	return template.FuncMap{
-		"csrfMeta":              csrfhelpers.MetaTag,
-		"csrfHXHeaders":         csrfhelpers.HXHeadersAttr,
-		"csrfFormHidden":        csrfhelpers.FormHidden,
-		"shellTenantName":       shellTenantName,
-		"shellTenantLogo":       shellTenantLogo,
-		"shellUserDisplayName":  shellUserDisplayName,
-		"shellNavItems":         shellNavItems,
-		"shellUserMenuItems":    shellUserMenuItems,
-		"shellCSRFToken":        shellCSRFToken,
-		"shellCSPNonce":         shellCSPNonce,
-		"shellTenantThemeStyle": shellTenantThemeStyle,
+		"csrfMeta":                 csrfhelpers.MetaTag,
+		"csrfHXHeaders":            csrfhelpers.HXHeadersAttr,
+		"csrfFormHidden":           csrfhelpers.FormHidden,
+		"shellTenantName":          shellTenantName,
+		"shellTenantLogo":          shellTenantLogo,
+		"shellUserDisplayName":     shellUserDisplayName,
+		"shellNavItems":            shellNavItems,
+		"shellUserMenuItems":       shellUserMenuItems,
+		"shellCSRFToken":           shellCSRFToken,
+		"shellCSPNonce":            shellCSPNonce,
+		"shellTenantThemeStyle":    shellTenantThemeStyle,
+		"shellActiveImpersonation": shellActiveImpersonation,
+		"shellImpersonationISO":    shellImpersonationISO,
+		"shellImpersonationReason": shellImpersonationReason,
 	}
 }
 
@@ -210,6 +264,47 @@ func shellNavItems(data any) []NavItem {
 		return s
 	}
 	return nil
+}
+
+// shellActiveImpersonation returns the impersonation context from the
+// page data (or nil), so the layout can conditionally render the red
+// banner. The returned pointer is the same one the caller embedded —
+// the layout reads TenantName/TenantSlug/ExpiresAt/ServerNow off it.
+func shellActiveImpersonation(data any) *ImpersonationContext {
+	v, ok := unwrap(data)
+	if !ok {
+		return nil
+	}
+	f := v.FieldByName("ActiveImpersonation")
+	if !f.IsValid() {
+		return nil
+	}
+	if ctx, ok := f.Interface().(*ImpersonationContext); ok {
+		return ctx
+	}
+	return nil
+}
+
+// shellImpersonationISO formats a time as RFC3339Nano UTC for the
+// `data-expires-at` / `data-server-now` attributes. Empty time returns
+// the empty string so the attribute can be omitted by the template
+// `{{with}}` guard.
+func shellImpersonationISO(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// shellImpersonationReason truncates the operator's reason to ≤80 chars
+// for inline rendering inside the banner. The hover title carries the
+// full reason — both are HTML-escaped at template render time (§5.4).
+func shellImpersonationReason(reason string) string {
+	const limit = 80
+	if len(reason) <= limit {
+		return reason
+	}
+	return reason[:limit] + "…"
 }
 
 func shellUserMenuItems(data any) []UserMenuItem {

@@ -579,6 +579,13 @@ type MasterTenantsRoutes struct {
 	List       http.Handler
 	Create     http.Handler
 	AssignPlan http.Handler
+	// Detail backs GET /master/tenants/{id} (SIN-63956 / spec §9.5).
+	// Hosts the "Impersonar tenant" trigger + reason modal. Gated on
+	// ActionMasterTenantRead — same as List — because the page does
+	// not reveal anything the list view doesn't already, and the
+	// impersonation handler enforces its own ActionMasterTenantImpersonate
+	// gate on the actual envelope POST.
+	Detail http.Handler
 	// SIN-62884 C10 — grants surface. Each handler is conditionally
 	// mounted; nil slots are skipped so deploys that haven't wired
 	// the wallet adapter behave the same as the pre-C10 router. The
@@ -1198,6 +1205,14 @@ func NewRouter(deps Deps) http.Handler {
 						middleware.RequireAction(deps.Authorizer, iam.ActionMasterSubscriptionAssignPlan, nil)(deps.MasterTenants.AssignPlan),
 					)
 					authed.Method(http.MethodPatch, "/master/tenants/{id}/plan", assignH)
+				}
+				// SIN-63956 — tenant detail page (spec §9.5). Same
+				// gating as the list page (ActionMasterTenantRead).
+				if deps.MasterTenants.Detail != nil {
+					detailH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantRead, nil)(deps.MasterTenants.Detail),
+					)
+					authed.Method(http.MethodGet, "/master/tenants/{id}", detailH)
 				}
 				// SIN-62884 — HTMX master/grants UI (Fase 2.5 C10).
 				// Same gating envelope as the tenants surface. The

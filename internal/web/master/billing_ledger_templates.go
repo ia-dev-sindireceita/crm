@@ -11,6 +11,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // billingPageData drives the layout + panel partial for GET /master/
@@ -34,6 +35,9 @@ type billingPageData struct {
 	// when csp.Middleware is absent — the template still emits the
 	// attribute so the browser blocks the inline tag (fail-closed).
 	CSPNonce string
+
+	// ActiveImpersonation — SIN-63956 banner view-model. See pageData.
+	ActiveImpersonation *shell.ImpersonationContext
 }
 
 // ledgerPageData drives the layout + panel partial + rows-only
@@ -62,6 +66,9 @@ type ledgerPageData struct {
 	// when csp.Middleware is absent — the template still emits the
 	// attribute so the browser blocks the inline tag (fail-closed).
 	CSPNonce string
+
+	// ActiveImpersonation — SIN-63956 banner view-model. See pageData.
+	ActiveImpersonation *shell.ImpersonationContext
 }
 
 // newBillingPageData converts the BillingView aggregate into the
@@ -189,7 +196,9 @@ var billingLayoutTmpl = template.Must(template.New("billing.layout").Funcs(billi
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
-<body {{.HXHeaders}}>
+<body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
+  {{template "shell_impersonation_banner" .}}
+  {{template "shell_audit_feed_chip" .}}
   <main class="master-shell" role="main" aria-labelledby="master-billing-title">
     <header class="master-shell__header">
       <h1 id="master-billing-title">Histórico de cobrança</h1>
@@ -334,7 +343,9 @@ var ledgerLayoutTmpl = template.Must(template.New("ledger.layout").Funcs(billing
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
-<body {{.HXHeaders}}>
+<body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
+  {{template "shell_impersonation_banner" .}}
+  {{template "shell_audit_feed_chip" .}}
   <main class="master-shell" role="main" aria-labelledby="master-ledger-title">
     <header class="master-shell__header">
       <h1 id="master-ledger-title">Ledger de tokens</h1>
@@ -445,6 +456,7 @@ func init() {
 	if _, err := ledgerLayoutTmpl.AddParseTree(ledgerRowsTmpl.Name(), ledgerRowsTmpl.Tree); err != nil {
 		panic("web/master: register ledger_rows in ledger.layout: " + err.Error())
 	}
+	registerImpersonationBanner(billingLayoutTmpl, ledgerLayoutTmpl)
 	// Prime html/template's lazy escaper before any concurrent Execute
 	// can race on the first call (SIN-62774 regression repro).
 	for _, t := range []*template.Template{billingPanelTmpl, billingLayoutTmpl, ledgerRowsTmpl, ledgerPanelTmpl, ledgerLayoutTmpl} {

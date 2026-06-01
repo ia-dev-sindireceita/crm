@@ -8,17 +8,62 @@
     <link rel="stylesheet" href="/static/css/tokens.css">
     <link rel="stylesheet" href="/static/css/components.css">
     <link rel="stylesheet" href="/static/css/app-shell.css">
+    {{- with shellActiveImpersonation .}}<link rel="stylesheet" href="/static/css/master.css">{{end}}
     <script src="/static/js/app-shell.js" defer></script>
     {{block "head_extra" .}}{{end}}
     <title>{{block "title" .}}CRM{{end}}</title>
   </head>
-  <body{{with shellCSRFToken .}} {{csrfHXHeaders .}}{{end}}>
+  <body{{with shellCSRFToken .}} {{csrfHXHeaders .}}{{end}}{{with shellActiveImpersonation .}} data-impersonating="true"{{end}}>
+    {{template "shell_impersonation_banner" .}}
     {{template "app_shell_topbar" .}}
     <main class="app-shell__main" role="main">
       {{block "content" .}}{{end}}
     </main>
   </body>
 </html>
+{{end}}
+
+{{define "shell_impersonation_banner"}}
+{{- with shellActiveImpersonation .}}
+<aside class="shell__impersonation-banner"
+       role="alert"
+       aria-label="Modo impersonação ativo"
+       data-impersonation-banner="true"
+       data-expires-at="{{shellImpersonationISO .ExpiresAt}}"
+       data-server-now="{{shellImpersonationISO .ServerNow}}">
+  <form method="POST"
+        action="/master/impersonation/end"
+        id="impersonation-end-form"
+        class="shell__impersonation-end">
+    {{- with .EndCSRFToken}}{{csrfFormHidden .}}{{end}}
+  </form>
+  <button type="submit"
+          form="impersonation-end-form"
+          class="shell__impersonation-end-btn"
+          aria-label="Sair da impersonação"
+          tabindex="0"
+          autofocus>SAIR DA IMPERSONAÇÃO</button>
+  <span class="shell__impersonation-pill" aria-hidden="false">
+    <span aria-hidden="true" class="shell__impersonation-pill-icon">🛑</span>
+    IMPERSONANDO
+  </span>
+  <span class="shell__impersonation-tenant">
+    Tenant: <strong>{{.TenantName}}</strong>
+    {{- with .TenantSlug}} (<code>{{.}}</code>){{end}}
+  </span>
+  <span class="shell__impersonation-countdown"
+        aria-live="polite"
+        aria-atomic="true"
+        data-impersonation-countdown="true"
+        tabindex="0">
+    <noscript>ativa até {{shellImpersonationISO .ExpiresAt}}</noscript>
+  </span>
+  <span class="shell__impersonation-reason"
+        title="{{.Reason}}">
+    Motivo: {{shellImpersonationReason .Reason}}
+  </span>
+</aside>
+{{- end}}
 {{end}}
 
 {{define "app_shell_topbar"}}

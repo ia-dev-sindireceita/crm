@@ -434,7 +434,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	masterTenantsRoutes := opts.MasterTenants
 	masterTenantsCleanup := func() {}
 	if masterTenantsRoutes.List == nil {
-		stack := buildMasterTenantsStack(ctx, pool, logoutAudit, getenv, logger)
+		stack := buildMasterTenantsStack(ctx, pool, logoutAudit, getenv, logger, tenants)
 		masterTenantsRoutes = stack.Routes
 		masterTenantsCleanup = stack.Cleanup
 	}

@@ -5,6 +5,8 @@ import (
 	"io"
 
 	"github.com/google/uuid"
+
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // grantRequestsListData drives both the list layout and the partial
@@ -12,13 +14,20 @@ import (
 // means a partial swap renders byte-identical output to a full page
 // re-render.
 type grantRequestsListData struct {
-	Requests         []GrantRequest
-	Flash            string
-	CSRFInput        template.HTML
-	HXHeaders        template.HTMLAttr
-	CSRFMeta         template.HTML
-	TenantThemeStyle template.CSS
-	CSPNonce         string
+	Requests            []GrantRequest
+	Flash               string
+	CSRFInput           template.HTML
+	HXHeaders           template.HTMLAttr
+	CSRFMeta            template.HTML
+	TenantThemeStyle    template.CSS
+	CSPNonce            string
+	ActiveImpersonation *shell.ImpersonationContext
+
+	// CurrentUserID is the master user viewing the inbox. Each row
+	// renders the "Revisar →" link as disabled when CreatedByID
+	// matches (defense in depth on top of the 422 backend response
+	// per spec §4.3 / §10.4 #20).
+	CurrentUserID uuid.UUID
 }
 
 // grantRequestDetailData drives the request-detail page (GET
@@ -26,25 +35,48 @@ type grantRequestsListData struct {
 // approve/reject. FormError, when non-empty, renders an inline error
 // banner above the form.
 type grantRequestDetailData struct {
-	Request          GrantRequest
-	Flash            string
-	FormError        string
-	CSRFInput        template.HTML
-	HXHeaders        template.HTMLAttr
-	CSRFMeta         template.HTML
-	TenantThemeStyle template.CSS
-	CSPNonce         string
+	Request             GrantRequest
+	Flash               string
+	FormError           string
+	CSRFInput           template.HTML
+	HXHeaders           template.HTMLAttr
+	CSRFMeta            template.HTML
+	TenantThemeStyle    template.CSS
+	CSPNonce            string
+	ActiveImpersonation *shell.ImpersonationContext
+
+	// CurrentUserID is the master user reviewing the request. When
+	// it equals Request.CreatedByID the detail template renders the
+	// self-approval guard (spec §4.3 + §10.4 #20) and suppresses the
+	// approve/reject forms entirely.
+	CurrentUserID uuid.UUID
+
+	// ConfirmStage carries the "first-confirm received" cookie set by
+	// POST /master/grants/requests/{id}/approve when the operator
+	// clicks "Aprovar…". Empty → render the diff page; "confirm" →
+	// render the confirm-twice modal pinned to the same request id.
+	// This is what implements spec §4.4 / §10.4 #19 (confirm-twice)
+	// without JS dependency — a pure server-rendered two-step dance.
+	ConfirmStage string
 }
 
 var grantRequestsTemplateFuncs = template.FuncMap{
-	"formatGrantTime":   formatGrantTime,
-	"grantKindLabel":    grantKindLabel,
-	"isFreePeriod":      isFreePeriod,
-	"isExtraTokens":     isExtraTokens,
-	"int64ToStr":        int64ToStr,
-	"grantRequestState": grantRequestStateLabel,
-	"isAwaiting":        isAwaiting,
+	"formatGrantTime":             formatGrantTime,
+	"grantKindLabel":              grantKindLabel,
+	"isFreePeriod":                isFreePeriod,
+	"isExtraTokens":               isExtraTokens,
+	"int64ToStr":                  int64ToStr,
+	"grantRequestState":           grantRequestStateLabel,
+	"isAwaiting":                  isAwaiting,
+	"formatImpersonationISO":      formatImpersonationISO,
+	"truncateImpersonationReason": truncateImpersonationReason,
+	"csrfHiddenForToken":          csrfHiddenForToken,
+	"eqUUID":                      eqUUID,
 }
+
+// eqUUID returns true when two uuids are equal. Used by templates to
+// branch on self-approval guards without resorting to printf-eq dance.
+func eqUUID(a, b uuid.UUID) bool { return a == b }
 
 func grantRequestStateLabel(s GrantRequestState) string {
 	switch s {
@@ -76,7 +108,9 @@ var grantRequestsLayoutTmpl = template.Must(template.New("grant_requests.layout"
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
-<body {{.HXHeaders}}>
+<body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
+  {{template "shell_impersonation_banner" .}}
+  {{template "shell_audit_feed_chip" .}}
   <main class="master-shell" role="main" aria-labelledby="grant-requests-title">
     <header class="master-shell__header">
       <h1 id="grant-requests-title">Solicitações 4-eyes</h1>
@@ -131,7 +165,17 @@ var grantRequestsPanelTmpl = template.Must(template.New("grant_requests_panel").
           <td>{{int64ToStr .CapEquivalence}} tokens</td>
           <td>{{.CreatedByID}}</td>
           <td><span class="master-grant-requests__reason">{{.Reason}}</span></td>
-          <td><a class="master-grant-requests__review" href="/master/grants/requests/{{.ID}}">Revisar</a></td>
+          <td>
+            <a class="master-grant-requests__review{{if eqUUID .CreatedByID $.CurrentUserID}} master-grant-requests__review--self{{end}}"
+               href="/master/grants/requests/{{.ID}}"
+               {{if eqUUID .CreatedByID $.CurrentUserID}}
+                 aria-disabled="true"
+                 data-self-row="true"
+                 title="Você é o solicitante — aguarde outro master revisar (regra 4-eyes)."
+               {{else}}
+                 data-review-link="true"
+               {{end}}>Revisar →</a>
+          </td>
         </tr>
         {{end}}
       {{else}}
@@ -143,6 +187,8 @@ var grantRequestsPanelTmpl = template.Must(template.New("grant_requests_panel").
   </table>
 </section>
 `))
+
+// (banner partial registered by registerImpersonationBanner at init)
 
 // grantRequestDetailLayoutTmpl is the full page shell for GET
 // /master/grants/requests/{id}.
@@ -170,8 +216,9 @@ var grantRequestDetailLayoutTmpl = template.Must(template.New("grant_request_det
 </html>
 `))
 
-// grantRequestDetailPanelTmpl renders the review card + approve/reject
-// forms.
+// grantRequestDetailPanelTmpl renders the two-column diff (spec §9.8)
+// with the confirm-twice approval modal (spec §4.4) and the self-
+// approval guard (spec §4.3 + §10.4 #20).
 var grantRequestDetailPanelTmpl = template.Must(template.New("grant_request_detail_panel").Funcs(grantRequestsTemplateFuncs).Parse(`<section id="grant-request-detail" class="master-grant-request-detail" aria-label="Detalhe da solicitação">
   {{if .Flash}}
   <div class="master-grant-request-detail__flash" role="status">{{.Flash}}</div>
@@ -180,53 +227,160 @@ var grantRequestDetailPanelTmpl = template.Must(template.New("grant_request_deta
   <div class="master-grant-request-detail__error" role="alert">{{.FormError}}</div>
   {{end}}
 
-  <dl class="master-grant-request-detail__fields">
-    <dt>ID externa</dt><dd>{{.Request.ExternalID}}</dd>
-    <dt>Estado</dt><dd>{{grantRequestState .Request.State}}</dd>
-    <dt>Tenant</dt><dd>{{.Request.TenantID}}</dd>
-    <dt>Solicitante</dt><dd>{{.Request.CreatedByID}}</dd>
-    <dt>Tipo</dt><dd>{{grantKindLabel .Request.Kind}}</dd>
-    <dt>Valor</dt>
-    <dd>
-      {{if isFreePeriod (printf "%s" .Request.Kind)}}{{.Request.PeriodDays}} dias
-      {{else if isExtraTokens (printf "%s" .Request.Kind)}}{{int64ToStr .Request.Amount}} tokens
-      {{else}}—{{end}}
-    </dd>
-    <dt>Equivalência</dt><dd>{{int64ToStr .Request.CapEquivalence}} tokens</dd>
-    <dt>Motivo</dt><dd>{{.Request.Reason}}</dd>
-    <dt>Solicitada em</dt><dd><time datetime="{{.Request.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{formatGrantTime .Request.CreatedAt}}</time></dd>
-    {{if not (isAwaiting .Request.State)}}
-    <dt>Decidida em</dt><dd><time datetime="{{.Request.DecidedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{formatGrantTime .Request.DecidedAt}}</time></dd>
-    <dt>Aprovador / Rejeitador</dt><dd>{{.Request.SecondApproverID}}</dd>
-    {{end}}
-  </dl>
+  <div class="master-grant-request-detail__columns">
+    <article class="master-grant-request-detail__column master-grant-request-detail__column--requester"
+             aria-labelledby="grant-request-requester-title">
+      <span class="master-grant-request-detail__sigil">🔒 SOLICITANTE</span>
+      <h2 id="grant-request-requester-title">Quem pediu</h2>
+      <dl>
+        <dt>Solicitante</dt><dd>{{.Request.CreatedByID}}</dd>
+        <dt>Tenant</dt><dd>{{.Request.TenantID}}</dd>
+        <dt>Tipo</dt><dd>{{grantKindLabel .Request.Kind}}</dd>
+        <dt>Valor solicitado</dt>
+        <dd>
+          {{if isFreePeriod (printf "%s" .Request.Kind)}}{{.Request.PeriodDays}} dias
+          {{else if isExtraTokens (printf "%s" .Request.Kind)}}{{int64ToStr .Request.Amount}} tokens
+          {{else}}—{{end}}
+        </dd>
+        <dt>Solicitada em</dt>
+        <dd><time datetime="{{.Request.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{formatGrantTime .Request.CreatedAt}}</time></dd>
+        <dt>Motivo</dt><dd><blockquote>{{.Request.Reason}}</blockquote></dd>
+      </dl>
+    </article>
 
-  {{if isAwaiting .Request.State}}
-  <div class="master-grant-request-detail__actions">
-    <form class="master-grant-request-detail__approve"
-          method="post"
-          action="/master/grants/requests/{{.Request.ID}}/approve"
-          hx-post="/master/grants/requests/{{.Request.ID}}/approve"
-          hx-target="#grant-request-detail"
-          hx-swap="outerHTML"
-          aria-label="Aprovar solicitação">
-      {{.CSRFInput}}
-      <button type="submit" class="master-grant-request-detail__approve-submit">Aprovar</button>
-    </form>
-    <form class="master-grant-request-detail__reject"
-          method="post"
-          action="/master/grants/requests/{{.Request.ID}}/reject"
-          hx-post="/master/grants/requests/{{.Request.ID}}/reject"
-          hx-target="#grant-request-detail"
-          hx-swap="outerHTML"
-          aria-label="Rejeitar solicitação">
-      {{.CSRFInput}}
-      <button type="submit" class="master-grant-request-detail__reject-submit">Rejeitar</button>
-    </form>
+    <article class="master-grant-request-detail__column master-grant-request-detail__column--reviewer"
+             aria-labelledby="grant-request-reviewer-title">
+      <span class="master-grant-request-detail__sigil">✔ REVISOR (você)</span>
+      <h2 id="grant-request-reviewer-title">O que acontece se aprovar</h2>
+      <dl>
+        <dt>Equivalência em tokens</dt>
+        <dd>{{int64ToStr .Request.CapEquivalence}} tokens</dd>
+        <dt>Estado atual</dt>
+        <dd>{{grantRequestState .Request.State}}</dd>
+        {{if not (isAwaiting .Request.State)}}
+        <dt>Decidida em</dt>
+        <dd><time datetime="{{.Request.DecidedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{formatGrantTime .Request.DecidedAt}}</time></dd>
+        <dt>Aprovador/Rejeitador</dt>
+        <dd>{{.Request.SecondApproverID}}</dd>
+        {{end}}
+      </dl>
+
+      {{if isAwaiting .Request.State}}
+        {{if eqUUID .Request.CreatedByID $.CurrentUserID}}
+          <p class="master-grant-request-detail__self-guard"
+             role="alert"
+             data-self-approve-guard="true">
+            ⚠ Você é o solicitante — não pode aprovar nem rejeitar a
+            própria solicitação. Aguarde a revisão por outro master.
+            (Regra 4-eyes — defendida em UI e backend.)
+          </p>
+          <!-- Defense in depth: the form actions remain in the DOM so
+               a curl call against the same operator's session still
+               receives the backend 422 (ErrGrantRequestApproverIsCreator).
+               Hidden visually via the data-self-approve-guard banner. -->
+          <div class="master-grant-request-detail__actions" hidden>
+            <form class="master-grant-request-detail__approve"
+                  method="post"
+                  action="/master/grants/requests/{{.Request.ID}}/approve"
+                  aria-label="Aprovar solicitação (bloqueada por 4-eyes)">
+              {{.CSRFInput}}
+              <button type="submit" disabled>Aprovar</button>
+            </form>
+            <form class="master-grant-request-detail__reject"
+                  method="post"
+                  action="/master/grants/requests/{{.Request.ID}}/reject"
+                  aria-label="Rejeitar solicitação (bloqueada por 4-eyes)">
+              {{.CSRFInput}}
+              <button type="submit" disabled>Rejeitar</button>
+            </form>
+          </div>
+        {{else if eq .ConfirmStage "confirm"}}
+          <section class="master-grant-request-detail__confirm-modal"
+                   role="dialog"
+                   aria-modal="false"
+                   aria-labelledby="confirm-modal-title"
+                   data-confirm-modal="true">
+            <h3 id="confirm-modal-title"
+                class="master-grant-request-detail__confirm-title">
+              Confirmar aprovação
+            </h3>
+            <p>
+              Você está aprovando um grant <strong>acima do cap</strong>.
+              Esta ação é registrada e auditada.
+            </p>
+            <dl>
+              <dt>Tenant</dt><dd>{{.Request.TenantID}}</dd>
+              <dt>Tipo</dt><dd>{{grantKindLabel .Request.Kind}}</dd>
+              <dt>Valor</dt>
+              <dd>
+                {{if isFreePeriod (printf "%s" .Request.Kind)}}{{.Request.PeriodDays}} dias
+                {{else if isExtraTokens (printf "%s" .Request.Kind)}}{{int64ToStr .Request.Amount}} tokens
+                {{else}}—{{end}}
+              </dd>
+              <dt>Equivalência</dt>
+              <dd>{{int64ToStr .Request.CapEquivalence}} tokens</dd>
+              <dt>Solicitante</dt>
+              <dd>{{.Request.CreatedByID}}</dd>
+            </dl>
+            <div class="master-grant-request-detail__confirm-actions">
+              <form method="get"
+                    action="/master/grants/requests/{{.Request.ID}}"
+                    aria-label="Cancelar aprovação">
+                <button type="submit"
+                        class="master-grant-request-detail__confirm-cancel"
+                        autofocus>Cancelar</button>
+              </form>
+              <form method="post"
+                    action="/master/grants/requests/{{.Request.ID}}/approve"
+                    hx-post="/master/grants/requests/{{.Request.ID}}/approve"
+                    hx-target="#grant-request-detail"
+                    hx-swap="outerHTML"
+                    aria-label="Confirmar aprovação">
+                {{.CSRFInput}}
+                <input type="hidden" name="confirm" value="yes">
+                <button type="submit"
+                        class="master-grant-request-detail__confirm-final"
+                        data-confirm-final="true">
+                  CONFIRMAR APROVAÇÃO
+                </button>
+              </form>
+            </div>
+          </section>
+        {{else}}
+          <div class="master-grant-request-detail__actions">
+            <form class="master-grant-request-detail__approve"
+                  method="post"
+                  action="/master/grants/requests/{{.Request.ID}}/approve"
+                  hx-post="/master/grants/requests/{{.Request.ID}}/approve"
+                  hx-target="#grant-request-detail"
+                  hx-swap="outerHTML"
+                  aria-label="Aprovar solicitação">
+              {{.CSRFInput}}
+              <button type="submit"
+                      class="master-grant-request-detail__approve-submit"
+                      data-approve-trigger="true">Aprovar…</button>
+            </form>
+            <form class="master-grant-request-detail__reject"
+                  method="post"
+                  action="/master/grants/requests/{{.Request.ID}}/reject"
+                  hx-post="/master/grants/requests/{{.Request.ID}}/reject"
+                  hx-target="#grant-request-detail"
+                  hx-swap="outerHTML"
+                  aria-label="Rejeitar solicitação"
+                  onsubmit="return confirm('Confirmar rejeição da solicitação?');">
+              {{.CSRFInput}}
+              <button type="submit"
+                      class="master-grant-request-detail__reject-submit">Rejeitar</button>
+            </form>
+          </div>
+        {{end}}
+      {{else}}
+        <p class="master-grant-request-detail__decided">
+          Esta solicitação já foi {{grantRequestState .Request.State}}.
+        </p>
+      {{end}}
+    </article>
   </div>
-  {{else}}
-  <p class="master-grant-request-detail__decided">Esta solicitação já foi {{grantRequestState .Request.State}}.</p>
-  {{end}}
 </section>
 `))
 
@@ -248,6 +402,7 @@ func init() {
 			panic("web/master: register " + child.Name() + " in " + parent.Name() + ": " + err.Error())
 		}
 	}
+	registerImpersonationBanner(grantRequestsLayoutTmpl, grantRequestDetailLayoutTmpl)
 	// Prime html/template's lazy escaper on every grant-request
 	// template before any concurrent Execute can race on the first
 	// call (SIN-62774 regression repro — see html_template_race

@@ -47,6 +47,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
 	"github.com/pericles-luz/crm/internal/iam/audit"
+	"github.com/pericles-luz/crm/internal/tenancy"
 	"github.com/pericles-luz/crm/internal/wallet"
 	masterweb "github.com/pericles-luz/crm/internal/web/master"
 )
@@ -85,6 +86,7 @@ func buildMasterTenantsStack(
 	auditWriter audit.SplitLogger,
 	getenv func(string) string,
 	logger *slog.Logger,
+	tenantsResolver tenancy.ByIDResolver,
 ) masterTenantsStack {
 	if runtimePool == nil || auditWriter == nil || logger == nil {
 		return noopMasterTenantsStack()
@@ -174,13 +176,14 @@ func buildMasterTenantsStack(
 	// slots come from `h` and the 5 grant-request slots come from the
 	// helper. See master_grant_requests_wire.go:95.
 	webDeps := masterweb.Deps{
-		Tenants:   tenantStore,
-		Creator:   tenantStore,
-		Plans:     planLister,
-		Assigner:  tenantStore,
-		CSRFToken: csrfTokenFromSessionContext,
-		Logger:    logger,
-		Grants:    grantPort,
+		Tenants:         tenantStore,
+		Creator:         tenantStore,
+		Plans:           planLister,
+		Assigner:        tenantStore,
+		CSRFToken:       csrfTokenFromSessionContext,
+		Logger:          logger,
+		Grants:          grantPort,
+		TenantsResolver: tenantsResolver,
 	}
 	h, err := masterweb.New(webDeps)
 	if err != nil {
@@ -204,6 +207,7 @@ func buildMasterTenantsStack(
 		List:         http.HandlerFunc(h.ListTenants),
 		Create:       http.HandlerFunc(h.CreateTenant),
 		AssignPlan:   http.HandlerFunc(h.AssignPlan),
+		Detail:       http.HandlerFunc(h.ShowTenantDetail),
 		GrantsNew:    http.HandlerFunc(h.ShowGrantsForm),
 		GrantsCreate: recentMW(http.HandlerFunc(h.IssueGrant)),
 		GrantsRevoke: recentMW(http.HandlerFunc(h.RevokeGrant)),

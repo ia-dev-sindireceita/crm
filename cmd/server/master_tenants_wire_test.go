@@ -318,12 +318,18 @@ func TestBuildMasterTenantsStack_NoopEarlyReturns(t *testing.T) {
 			// the test doesn't need a real pgx connection — the guard
 			// fires on the audit/logger condition first when those
 			// are nil, and on the pool condition otherwise.
+			// SIN-63956 — the optional 6th arg is the
+			// tenancy.ByIDResolver used by the impersonation
+			// banner. Passing nil here exercises the noop-branch
+			// guards without requiring a real resolver; the new
+			// banner code is dormant when the resolver is unwired.
 			stack := buildMasterTenantsStack(
 				context.Background(),
 				runtimePool,
 				tc.audit,
 				envReturning(tc.env),
 				tc.logger,
+				nil,
 			)
 			if stack.Cleanup == nil {
 				t.Fatalf("Cleanup must be non-nil on every noop branch (defer chain depends on it)")

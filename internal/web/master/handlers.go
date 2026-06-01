@@ -127,6 +127,89 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ShowTenantDetail renders the GET /master/tenants/{id} page (spec
+// §9.5). The view hosts the "Impersonar tenant" trigger + the reason
+// modal that POSTs /master/tenants/{id}/impersonate, plus the standard
+// crumbs into grants / billing / ledger sub-pages.
+//
+// When the optional TenantDetail port is wired the handler reads from
+// it; otherwise it falls back to the list adapter so deploys without a
+// dedicated detail projection still serve the page (the impersonate
+// CTA is the security-critical affordance and MUST not be conditional
+// on adapter availability — spec §2 + §10.2 #9 implicit).
+func (h *Handler) ShowTenantDetail(w http.ResponseWriter, r *http.Request) {
+	if _, ok := iam.PrincipalFromContext(r.Context()); !ok {
+		h.fail(w, http.StatusUnauthorized, "principal missing", errors.New("no principal in context"))
+		return
+	}
+	tenantID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid tenant id", http.StatusBadRequest)
+		return
+	}
+	detail, err := h.loadTenantDetail(r, tenantID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		return
+	case err != nil:
+		h.fail(w, http.StatusInternalServerError, "tenant detail", err)
+		return
+	}
+	token := h.deps.CSRFToken(r)
+	if token == "" {
+		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
+		return
+	}
+	data := tenantDetailData{
+		Tenant:              detail.Tenant,
+		CSRFInput:           csrf.FormHidden(token),
+		CSRFMeta:            csrf.MetaTag(token),
+		HXHeaders:           csrf.HXHeadersAttr(token),
+		TenantThemeStyle:    branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:            csp.Nonce(r.Context()),
+		ActiveImpersonation: h.activeImpersonationFor(r, token),
+		ShowReasonModal:     strings.TrimSpace(r.URL.Query().Get("impersonate")) == "ask",
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	if err := tenantDetailLayoutTmpl.Execute(w, data); err != nil {
+		h.deps.Logger.Error("web/master: render tenant detail", "err", err)
+	}
+}
+
+// loadTenantDetail returns the detail row, preferring the
+// TenantDetailReader port when wired; falls back to scanning the list
+// adapter for the matching id. The fallback keeps the page usable on
+// deploys that haven't shipped a dedicated detail adapter; security-
+// wise nothing on this page is sensitive that the list page does not
+// already expose.
+func (h *Handler) loadTenantDetail(r *http.Request, id uuid.UUID) (TenantDetail, error) {
+	if h.deps.TenantDetail != nil {
+		detail, err := h.deps.TenantDetail.GetDetail(r.Context(), id)
+		if err == nil {
+			return detail, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return TenantDetail{}, err
+		}
+	}
+	// Fallback: scan the first page of the list adapter for the row.
+	res, err := h.deps.Tenants.List(r.Context(), ListOptions{
+		Page:     1,
+		PageSize: h.maxPageSize,
+	})
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return TenantDetail{}, err
+	}
+	for _, row := range res.Tenants {
+		if row.ID == id {
+			return TenantDetail{Tenant: row}, nil
+		}
+	}
+	return TenantDetail{}, ErrNotFound
+}
+
 // AssignPlan handles PATCH /master/tenants/{id}/plan. Form body carries
 // plan slug. On success it renders the updated row partial so the
 // existing <tr> swaps in place via hx-swap=outerHTML.
@@ -225,19 +308,20 @@ func (h *Handler) buildPageData(r *http.Request, res ListResult, plans []billing
 		totalPages = (res.TotalCount + res.PageSize - 1) / res.PageSize
 	}
 	return pageData{
-		Tenants:          res.Tenants,
-		Page:             res.Page,
-		PageSize:         res.PageSize,
-		TotalCount:       res.TotalCount,
-		TotalPages:       totalPages,
-		Plans:            plans,
-		Flash:            flash,
-		FormError:        formError,
-		CSRFMeta:         csrf.MetaTag(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
-		CSRFInput:        csrf.FormHidden(token),
-		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
-		CSPNonce:         csp.Nonce(r.Context()),
+		Tenants:             res.Tenants,
+		Page:                res.Page,
+		PageSize:            res.PageSize,
+		TotalCount:          res.TotalCount,
+		TotalPages:          totalPages,
+		Plans:               plans,
+		Flash:               flash,
+		FormError:           formError,
+		CSRFMeta:            csrf.MetaTag(token),
+		HXHeaders:           csrf.HXHeadersAttr(token),
+		CSRFInput:           csrf.FormHidden(token),
+		TenantThemeStyle:    branding.ThemeStyleFromContext(r.Context()),
+		CSPNonce:            csp.Nonce(r.Context()),
+		ActiveImpersonation: h.activeImpersonationFor(r, token),
 	}
 }
 
