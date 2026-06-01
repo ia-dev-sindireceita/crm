@@ -114,6 +114,49 @@ func TestSubscription_Cancel(t *testing.T) {
 	})
 }
 
+func TestSubscription_ExtendPeriod(t *testing.T) {
+	t.Run("active subscription advances current_period_end", func(t *testing.T) {
+		sub, _ := billing.NewSubscription(uuid.New(), uuid.New(), periodStart, periodEnd, now)
+		originalEnd := sub.CurrentPeriodEnd()
+		later := now.Add(time.Hour)
+		if err := sub.ExtendPeriod(30*24*time.Hour, later); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if sub.Status() != billing.SubscriptionStatusActive {
+			t.Errorf("status changed: got %s, want active", sub.Status())
+		}
+		want := originalEnd.Add(30 * 24 * time.Hour)
+		if !sub.CurrentPeriodEnd().Equal(want) {
+			t.Errorf("current_period_end = %s, want %s", sub.CurrentPeriodEnd(), want)
+		}
+		if !sub.UpdatedAt().Equal(later) {
+			t.Errorf("updated_at = %s, want %s", sub.UpdatedAt(), later)
+		}
+	})
+
+	t.Run("zero duration is invalid", func(t *testing.T) {
+		sub, _ := billing.NewSubscription(uuid.New(), uuid.New(), periodStart, periodEnd, now)
+		if err := sub.ExtendPeriod(0, now); !errors.Is(err, billing.ErrInvalidTransition) {
+			t.Errorf("ExtendPeriod(0): got %v, want ErrInvalidTransition", err)
+		}
+	})
+
+	t.Run("negative duration is invalid", func(t *testing.T) {
+		sub, _ := billing.NewSubscription(uuid.New(), uuid.New(), periodStart, periodEnd, now)
+		if err := sub.ExtendPeriod(-time.Hour, now); !errors.Is(err, billing.ErrInvalidTransition) {
+			t.Errorf("ExtendPeriod(-1h): got %v, want ErrInvalidTransition", err)
+		}
+	})
+
+	t.Run("cancelled subscription cannot be extended", func(t *testing.T) {
+		sub, _ := billing.NewSubscription(uuid.New(), uuid.New(), periodStart, periodEnd, now)
+		_ = sub.Cancel(now)
+		if err := sub.ExtendPeriod(24*time.Hour, now); !errors.Is(err, billing.ErrInvalidTransition) {
+			t.Errorf("ExtendPeriod on cancelled: got %v, want ErrInvalidTransition", err)
+		}
+	})
+}
+
 func TestHydrateSubscription(t *testing.T) {
 	id := uuid.New()
 	tenantID := uuid.New()

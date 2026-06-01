@@ -17,15 +17,19 @@ import (
 )
 
 type fakeMasterGrantRepo struct {
-	createErr      error
-	createCalls    int
-	lastGrantID    uuid.UUID
-	getByIDStub    map[uuid.UUID]*wallet.MasterGrant
-	listByTenant   func(uuid.UUID) []*wallet.MasterGrant
-	revokeErr      error
-	lastRevokedID  uuid.UUID
-	lastRevokedBy  uuid.UUID
-	lastRevokeWhen time.Time
+	createErr       error
+	createCalls     int
+	lastGrantID     uuid.UUID
+	getByIDStub     map[uuid.UUID]*wallet.MasterGrant
+	listByTenant    func(uuid.UUID) []*wallet.MasterGrant
+	revokeErr       error
+	lastRevokedID   uuid.UUID
+	lastRevokedBy   uuid.UUID
+	lastRevokeWhen  time.Time
+	consumeErr      error
+	lastConsumedID  uuid.UUID
+	lastConsumedRef string
+	lastConsumeWhen time.Time
 }
 
 func (f *fakeMasterGrantRepo) Create(_ context.Context, g *wallet.MasterGrant) error {
@@ -53,6 +57,13 @@ func (f *fakeMasterGrantRepo) Revoke(_ context.Context, id, by uuid.UUID, _ stri
 	f.lastRevokedBy = by
 	f.lastRevokeWhen = when
 	return f.revokeErr
+}
+
+func (f *fakeMasterGrantRepo) Consume(_ context.Context, id uuid.UUID, ref string, when time.Time) error {
+	f.lastConsumedID = id
+	f.lastConsumedRef = ref
+	f.lastConsumeWhen = when
+	return f.consumeErr
 }
 
 type recordingSplitLogger struct {

@@ -136,6 +136,21 @@ func (f *fakeWalletRepo) Revoke(_ context.Context, id, _ uuid.UUID, _ string, _ 
 	return wallet.ErrNotFound
 }
 
+func (f *fakeWalletRepo) Consume(_ context.Context, id uuid.UUID, _ string, _ time.Time) error {
+	for _, g := range f.rows {
+		if g.ID() == id {
+			if g.IsRevoked() {
+				return wallet.ErrGrantAlreadyRevoked
+			}
+			if g.IsConsumed() {
+				return wallet.ErrGrantAlreadyConsumed
+			}
+			return nil
+		}
+	}
+	return wallet.ErrNotFound
+}
+
 var _ wallet.MasterGrantRepository = (*fakeWalletRepo)(nil)
 
 // ----- WalletGrantPort tests --------------------------------------------

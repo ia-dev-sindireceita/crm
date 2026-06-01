@@ -36,6 +36,16 @@ type MasterGrantRepository interface {
 	// already consumed it returns ErrGrantAlreadyConsumed; if already
 	// revoked it returns ErrGrantAlreadyRevoked.
 	Revoke(ctx context.Context, id, revokedByUserID uuid.UUID, revokeReason string, now time.Time) error
+
+	// Consume persists the consumption fields (consumed_at,
+	// consumed_ref) for the grant identified by id. The implementation
+	// MUST only update a row that currently has both revoked_at IS NULL
+	// and consumed_at IS NULL; if the row is already consumed it
+	// returns ErrGrantAlreadyConsumed; if already revoked it returns
+	// ErrGrantAlreadyRevoked. consumedRef is the id of the downstream
+	// artefact (subscription id for free_subscription_period, ledger
+	// entry id for extra_tokens) recorded for audit traceability.
+	Consume(ctx context.Context, id uuid.UUID, consumedRef string, now time.Time) error
 }
 
 // MonthlyAllocator is the port for the monthly token-quota crediting

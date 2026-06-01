@@ -109,10 +109,36 @@ func (r *Repository) ApplyWithLock(ctx context.Context, w *wallet.TokenWallet, e
 			return wallet.ErrVersionConflict
 		}
 		for _, e := range entries {
-			if _, err := tx.Exec(ctx, insertLedger,
-				e.ID, e.WalletID, e.TenantID, string(e.Kind), e.Amount,
-				e.IdempotencyKey, nullIfEmpty(e.ExternalRef), e.OccurredAt, e.CreatedAt,
-			); err != nil {
+			var (
+				query string
+				args  []any
+			)
+			if e.Source == "" {
+				// Legacy callers (every reserve/commit/release/grant
+				// on the pre-SIN-62936 path) leave Source unset; the
+				// 9-column INSERT lets the table default fill in
+				// source='consumption' + master_grant_id NULL, which
+				// keeps the adapter compatible with deploys and test
+				// fixtures that have not yet applied 0097.
+				query = insertLedger
+				args = []any{
+					e.ID, e.WalletID, e.TenantID, string(e.Kind), e.Amount,
+					e.IdempotencyKey, nullIfEmpty(e.ExternalRef),
+					e.OccurredAt, e.CreatedAt,
+				}
+			} else {
+				// Callers that supply a non-default Source (master
+				// grant applier, future paid top-ups) get the 11-
+				// column INSERT and implicitly require migration 0097.
+				query = insertLedgerWithSource
+				args = []any{
+					e.ID, e.WalletID, e.TenantID, string(e.Kind), e.Amount,
+					e.IdempotencyKey, nullIfEmpty(e.ExternalRef),
+					string(e.Source), e.MasterGrantID,
+					e.OccurredAt, e.CreatedAt,
+				}
+			}
+			if _, err := tx.Exec(ctx, query, args...); err != nil {
 				var pgErr *pgconn.PgError
 				if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 					return wallet.ErrIdempotencyConflict

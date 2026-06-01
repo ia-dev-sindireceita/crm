@@ -20,10 +20,30 @@ const (
 		 WHERE tenant_id = $1
 	`
 
+	// insertLedger is the pre-SIN-62936 INSERT used by every
+	// reserve/commit/release/non-master-grant flow. It omits the
+	// migration-0097 `source` + `master_grant_id` columns so this
+	// adapter remains backwards-compatible with deploys (and test
+	// fixtures) that have not yet applied 0097. Those columns get
+	// the table's DEFAULT (source='consumption', master_grant_id NULL).
 	insertLedger = `
 		INSERT INTO token_ledger
 		  (id, wallet_id, tenant_id, kind, amount, idempotency_key, external_ref, occurred_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`
+
+	// insertLedgerWithSource is the post-SIN-62936 INSERT used when
+	// the caller supplies a non-default Source on the ledger entry
+	// (currently: only the master-grant applier, with source =
+	// 'master_grant' + master_grant_id set). Callers that hit this
+	// path implicitly require migration 0097's `source` +
+	// `master_grant_id` columns; the same UNIQUE (wallet_id,
+	// idempotency_key) → ErrIdempotencyConflict translation applies.
+	insertLedgerWithSource = `
+		INSERT INTO token_ledger
+		  (id, wallet_id, tenant_id, kind, amount, idempotency_key, external_ref,
+		   source, master_grant_id, occurred_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 
 	selectLedgerByIdem = `
@@ -106,6 +126,11 @@ func scanLedgerRow(rows pgx.Rows) (wallet.LedgerEntry, error) {
 
 // decodeLedger is the shared scan logic; both row and rows callers
 // hand it a Scan closure to keep the column order in one place.
+// Source + MasterGrantID on the returned LedgerEntry are left at the
+// zero value — callers that need those columns read the underlying
+// token_ledger row directly (none in the existing read paths). When
+// the SELECT shape evolves to include them, scan order needs to be
+// updated together with insertLedgerWithSource.
 func decodeLedger(scan func(dest ...any) error) (wallet.LedgerEntry, error) {
 	var (
 		id, walletID, tenantID uuid.UUID

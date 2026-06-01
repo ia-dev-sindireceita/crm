@@ -110,6 +110,43 @@ func (s *MasterGrantStore) ListByTenant(ctx context.Context, tenantID uuid.UUID)
 	return out, nil
 }
 
+// Consume persists the consumption pair (consumed_at, consumed_ref)
+// for the grant, subject to the consumed/revoked guard (ADR-0098 §D4).
+// Used by the SIN-62936 ApplyMasterGrant usecase after the downstream
+// side-effect (subscription extension or ledger insert) has landed.
+func (s *MasterGrantStore) Consume(ctx context.Context, id uuid.UUID, consumedRef string, now time.Time) error {
+	return postgresadapter.WithMasterOps(ctx, s.pool, s.actorID, func(tx pgx.Tx) error {
+		// Read current state so we can surface domain-level errors
+		// before the UPDATE; mirrors Revoke's pattern.
+		g, err := scanMasterGrant(tx.QueryRow(ctx, selectMasterGrantByID, id))
+		if err != nil {
+			return err
+		}
+		if err := g.Consume(consumedRef, now); err != nil {
+			return err
+		}
+		ct, err := tx.Exec(ctx, `
+			UPDATE master_grant
+			   SET consumed_at = $1, consumed_ref = $2
+			 WHERE id = $3
+			   AND consumed_at IS NULL
+			   AND revoked_at IS NULL`,
+			now, consumedRef, id,
+		)
+		if err != nil {
+			return fmt.Errorf("wallet/postgres: update master_grant consume: %w", err)
+		}
+		if ct.RowsAffected() == 0 {
+			// Row was consumed or revoked between our read and the
+			// update. ADR-0098 §D4 treats both as terminal; we surface
+			// the revoked path because a concurrent consume on the same
+			// grant would have failed the domain check above.
+			return wallet.ErrGrantAlreadyRevoked
+		}
+		return nil
+	})
+}
+
 // Revoke persists the revocation triple for the grant, subject to the
 // consumed/revoked guard (ADR-0098 §D4).
 func (s *MasterGrantStore) Revoke(ctx context.Context, id, revokedByUserID uuid.UUID, revokeReason string, now time.Time) error {

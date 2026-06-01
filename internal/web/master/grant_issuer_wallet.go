@@ -32,10 +32,25 @@ import (
 	"github.com/pericles-luz/crm/internal/wallet"
 )
 
+// ApplyGrantFunc is the synchronous applier hook for IssueGrant
+// (SIN-62936). When non-nil the adapter invokes it AFTER the grant
+// row is persisted so the downstream side-effect (subscription
+// extension or ledger insert) lands inside the same HTTP request.
+// A nil hook leaves IssueGrant behaving as the pre-SIN-62936 row-
+// creation-only contract, which keeps the existing per-package
+// adapter tests valid.
+//
+// The returned bool reports whether the apply actually transitioned
+// the grant; the adapter currently ignores it (the handler re-fetches
+// via ListGrants for the row's authoritative state) but it is part of
+// the contract so future wiring can react to no-op vs. fresh apply.
+type ApplyGrantFunc func(ctx context.Context, grantID uuid.UUID) (bool, error)
+
 // WalletGrantPort is the wallet-backed adapter for GrantPort.
 type WalletGrantPort struct {
-	repo wallet.MasterGrantRepository
-	now  func() time.Time
+	repo  wallet.MasterGrantRepository
+	now   func() time.Time
+	apply ApplyGrantFunc
 }
 
 // NewWalletGrantPort wires the adapter. repo MUST be the audited
@@ -49,6 +64,15 @@ func NewWalletGrantPort(repo wallet.MasterGrantRepository, now func() time.Time)
 		now = time.Now
 	}
 	return &WalletGrantPort{repo: repo, now: now}, nil
+}
+
+// SetApplier installs the synchronous applier hook used by IssueGrant
+// to apply the grant downstream after it is persisted. cmd/server
+// constructs the wallet.usecase.ApplyMasterGrantService and wires its
+// Apply method here. A nil hook clears the applier; this is
+// idempotent.
+func (a *WalletGrantPort) SetApplier(apply ApplyGrantFunc) {
+	a.apply = apply
 }
 
 // IssueGrant enforces the C10 cap policy, builds the wallet entity,
@@ -78,6 +102,17 @@ func (a *WalletGrantPort) IssueGrant(ctx context.Context, in IssueGrantInput) (I
 	}
 	if err := a.repo.Create(ctx, g); err != nil {
 		return IssueGrantResult{}, fmt.Errorf("web/master: persist master grant: %w", err)
+	}
+	// SIN-62936 — run the synchronous applier inside the same request
+	// when one was wired. A failure here leaves consumed_at NULL so
+	// the master operator can revoke the grant via the panel; the
+	// error is surfaced to the handler (500 + inline error). The hook
+	// is optional so the existing in-package tests for cap policy and
+	// row creation behaviour keep passing without an applier wired.
+	if a.apply != nil {
+		if _, err := a.apply(ctx, g.ID()); err != nil {
+			return IssueGrantResult{}, fmt.Errorf("web/master: apply master grant: %w", err)
+		}
 	}
 	return IssueGrantResult{Grant: hydrateGrantRow(g)}, nil
 }

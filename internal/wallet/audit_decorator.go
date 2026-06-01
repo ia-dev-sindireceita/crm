@@ -114,6 +114,14 @@ func (r *AuditedMasterGrantRepository) Revoke(ctx context.Context, id, revokedBy
 	return r.inner.Revoke(ctx, id, revokedByUserID, revokeReason, now)
 }
 
+// Consume delegates to inner. The master_ops_audit trigger captures
+// the consume UPDATE at the DB layer; a dedicated
+// master.grant.consumed audit_log_security event is out of scope for
+// SIN-62936 (the applier).
+func (r *AuditedMasterGrantRepository) Consume(ctx context.Context, id uuid.UUID, consumedRef string, now time.Time) error {
+	return r.inner.Consume(ctx, id, consumedRef, now)
+}
+
 var _ MasterGrantRepository = (*AuditedMasterGrantRepository)(nil)
 
 // amountFromPayload pulls the "amount" int64 out of the grant payload

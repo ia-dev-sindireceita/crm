@@ -101,3 +101,20 @@ func (s *Subscription) Cancel(now time.Time) error {
 	s.updatedAt = now
 	return nil
 }
+
+// ExtendPeriod advances currentPeriodEnd by `by` without changing
+// status or emitting an invoice. Used by the master-grant applier
+// (SIN-62936) when a free_subscription_period grant lands. `by` must
+// be strictly positive and the subscription must be Active; both
+// rules return ErrInvalidTransition.
+func (s *Subscription) ExtendPeriod(by time.Duration, now time.Time) error {
+	if by <= 0 {
+		return ErrInvalidTransition
+	}
+	if s.status != SubscriptionStatusActive {
+		return ErrInvalidTransition
+	}
+	s.currentPeriodEnd = s.currentPeriodEnd.Add(by)
+	s.updatedAt = now
+	return nil
+}
