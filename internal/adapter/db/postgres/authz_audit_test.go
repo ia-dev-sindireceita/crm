@@ -42,7 +42,10 @@ func freshDBWithAuthzAudit(t *testing.T) (db *testpg.DB, auditPool *pgxpool.Pool
 		{"0083_split_audit_log.up.sql", false},
 		{"0084_tenant_audit_data_retention.up.sql", false},
 		{"0085_app_audit_role_split.up.sql", false},
+		{"0087_master_session.up.sql", false},
 		{"0091_audit_log_security_authz_allow.up.sql", false},
+		{"0116_master_impersonation_session.up.sql", false},
+		{"0117_audit_log_security_correlation_id.up.sql", false},
 	} {
 		path := filepath.Join(harness.MigrationsDir(), mig.file)
 		body, err := os.ReadFile(path)

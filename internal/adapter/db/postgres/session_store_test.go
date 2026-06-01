@@ -43,8 +43,11 @@ func freshDBWithIAM(t *testing.T) *testpg.DB {
 		"0006_create_sessions.up.sql",
 		"0077_session_activity.up.sql",
 		"0083_split_audit_log.up.sql",
+		"0087_master_session.up.sql",
 		"0111_sessions_csrf_token.up.sql",
 		"0112_user_mfa.up.sql",
+		"0116_master_impersonation_session.up.sql",
+		"0117_audit_log_security_correlation_id.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
