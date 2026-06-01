@@ -347,6 +347,101 @@ func TestApplyMasterGrant_Integration_RerunIsNoOp(t *testing.T) {
 	}
 }
 
+// SIN-63901 — free_period analog of RerunIsNoOp. Two consecutive
+// Apply calls on the same free_subscription_period grant must extend
+// current_period_end exactly once. The first call lands the
+// extension and marks consumed_at; the second observes
+// consumed_at != nil (top-of-Apply IsConsumed check fires first;
+// applyFreePeriod's pre-check would catch the same state if the
+// initial check raced past it) and returns (false, nil) without
+// touching the subscription.
+func TestApplyMasterGrant_Integration_FreePeriod_RerunIsNoOp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test — skipped in short mode")
+	}
+	db := freshDBWithBillingAndTrigger(t)
+	ctx := context.Background()
+	tenantID, masterID := seedTenantAndUser(t, ctx, db)
+
+	planID := seedPlan(t, ctx, db, "pro-apply-free-rerun", 1_000_000)
+	billingStore := newBillingStore(t, db)
+	subID := seedActiveSubForApply(t, ctx, billingStore, tenantID, planID, masterID)
+
+	var originalEnd time.Time
+	if err := db.AdminPool().QueryRow(ctx,
+		`SELECT current_period_end FROM subscription WHERE id = $1`, subID,
+	).Scan(&originalEnd); err != nil {
+		t.Fatalf("read original period end: %v", err)
+	}
+
+	grants, err := walletadapter.NewMasterGrantStore(db.MasterOpsPool(), masterID)
+	if err != nil {
+		t.Fatalf("NewMasterGrantStore: %v", err)
+	}
+	walletRepo, err := walletadapter.NewRepository(db.RuntimePool())
+	if err != nil {
+		t.Fatalf("NewRepository(wallet): %v", err)
+	}
+	now := time.Date(2026, 5, 14, 21, 0, 0, 0, time.UTC).UTC()
+	applier, err := walletusecase.NewApplyMasterGrantService(grants, walletRepo, billingStore, func() time.Time { return now }, masterID)
+	if err != nil {
+		t.Fatalf("NewApplyMasterGrantService: %v", err)
+	}
+
+	const periodDays = 30
+	g := createMasterGrant(t, ctx, grants, tenantID, masterID,
+		wallet.KindFreeSubscriptionPeriod,
+		map[string]any{"period_days": periodDays},
+		"SIN-63901 idempotency integration test",
+		now.Add(-time.Minute),
+	)
+
+	if _, err := applier.Apply(ctx, g.ID()); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	applied2, err := applier.Apply(ctx, g.ID())
+	if err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+	if applied2 {
+		t.Error("second Apply on consumed grant returned applied=true; want false (no-op)")
+	}
+
+	var newEnd time.Time
+	if err := db.AdminPool().QueryRow(ctx,
+		`SELECT current_period_end FROM subscription WHERE id = $1`, subID,
+	).Scan(&newEnd); err != nil {
+		t.Fatalf("read period end after rerun: %v", err)
+	}
+	wantEnd := originalEnd.Add(periodDays * 24 * time.Hour)
+	if !newEnd.Equal(wantEnd) {
+		t.Errorf("current_period_end after re-apply = %s, want %s (single extension)", newEnd, wantEnd)
+	}
+
+	// Subscription must remain active, and NO invoice should have been
+	// emitted by either pass.
+	var (
+		status   string
+		invoices int
+	)
+	if err := db.AdminPool().QueryRow(ctx,
+		`SELECT status FROM subscription WHERE id = $1`, subID,
+	).Scan(&status); err != nil {
+		t.Fatalf("read subscription status: %v", err)
+	}
+	if status != string(billing.SubscriptionStatusActive) {
+		t.Errorf("subscription.status = %q, want active", status)
+	}
+	if err := db.AdminPool().QueryRow(ctx,
+		`SELECT count(*) FROM invoice WHERE tenant_id = $1`, tenantID,
+	).Scan(&invoices); err != nil {
+		t.Fatalf("count invoices: %v", err)
+	}
+	if invoices != 0 {
+		t.Errorf("free period rerun created %d invoice(s); want 0", invoices)
+	}
+}
+
 // ---------- adapter Consume direct tests ----------------------------
 
 // Exercises the postgres MasterGrantStore.Consume path directly,

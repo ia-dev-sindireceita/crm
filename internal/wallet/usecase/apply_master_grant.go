@@ -114,12 +114,24 @@ var ErrInvalidGrantPayload = errors.New("wallet/usecase: master grant payload in
 // Failure semantics: every error path returns BEFORE
 // grants.Consume(...) lands. If the downstream write (subscription
 // extend or ledger insert) succeeds but Consume itself fails, the
-// caller MUST surface the error — a retry will re-execute the
-// downstream write (subscription extension is non-idempotent without
-// the consume guard; ledger insert IS idempotent by
-// (wallet_id, idempotency_key)). The ledger idempotency key is
-// derived from the grant's ExternalID so a retry collapses to a
-// no-op via wallet.ErrIdempotencyConflict, which the applier surfaces.
+// caller MUST surface the error. Retry idempotency is anchored
+// per-kind:
+//
+//   - extra_tokens: the ledger row carries a deterministic
+//     IdempotencyKey ("master_grant:" + ExternalID); a retry's
+//     ApplyWithLock collapses to wallet.ErrIdempotencyConflict via
+//     the (wallet_id, idempotency_key) UNIQUE.
+//   - free_subscription_period: applyFreePeriod re-reads the grant
+//     immediately before mutating the subscription and surfaces
+//     wallet.ErrGrantAlreadyConsumed if consumed_at landed between
+//     Apply's initial GetByID and the pre-check (concurrent claim or
+//     transient post-commit Consume failure on a prior pass).
+//
+// One narrow window still requires operator recovery: if Consume's
+// SQL UPDATE failed BEFORE commit on the prior pass, consumed_at
+// remains NULL and the free-period pre-check cannot detect the prior
+// extend. ADR-0098 §D4 directs the operator to revoke and reissue
+// in that case.
 func (a *ApplyMasterGrantService) Apply(ctx context.Context, grantID uuid.UUID) (bool, error) {
 	if grantID == uuid.Nil {
 		return false, wallet.ErrNotFound
@@ -154,10 +166,29 @@ func (a *ApplyMasterGrantService) Apply(ctx context.Context, grantID uuid.UUID) 
 // applyFreePeriod handles KindFreeSubscriptionPeriod. Returns the
 // active subscription's id as consumed_ref so the audit trail points
 // back at the row that was mutated.
+//
+// Idempotency anchor: applyFreePeriod re-reads the grant from the
+// repository immediately before sub.ExtendPeriod. If consumed_at
+// landed between the top-of-Apply GetByID and now (concurrent claim
+// or transient post-commit Consume failure on a prior pass), the
+// pre-check surfaces wallet.ErrGrantAlreadyConsumed without touching
+// the subscription. The check is single-statement so the standard
+// no-double-extend rerun model in TestApply_AlreadyConsumedIsNoOp
+// keeps holding even when two appliers race past the top check.
 func (a *ApplyMasterGrantService) applyFreePeriod(ctx context.Context, g *wallet.MasterGrant, now time.Time) (string, error) {
 	days := readInt64Payload(g.Payload(), "period_days")
 	if days <= 0 {
 		return "", fmt.Errorf("%w: period_days must be a positive integer", ErrInvalidGrantPayload)
+	}
+	fresh, err := a.grants.GetByID(ctx, g.ID())
+	if err != nil {
+		return "", fmt.Errorf("wallet/usecase: refresh master grant: %w", err)
+	}
+	if fresh.IsConsumed() {
+		return "", wallet.ErrGrantAlreadyConsumed
+	}
+	if fresh.IsRevoked() {
+		return "", wallet.ErrGrantAlreadyRevoked
 	}
 	sub, err := a.subscriptions.GetByTenant(ctx, g.TenantID())
 	if err != nil {

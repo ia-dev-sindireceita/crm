@@ -32,6 +32,16 @@ type fakeApplyGrantRepo struct {
 		when time.Time
 		err  error
 	}
+	// getByIDHook runs UNDER the lock right before each GetByID returns.
+	// Tests use it to mutate the grant between the top-of-Apply GetByID
+	// and the applyFreePeriod pre-check GetByID — i.e. to simulate a
+	// concurrent applier that consumed the grant in that exact window.
+	getByIDHook  func(g *wallet.MasterGrant)
+	getByIDCalls int
+	// getByIDErr is injected on the Nth call (1-indexed) named by
+	// getByIDErrOn. Used by the pre-check error-wrap test.
+	getByIDErr   error
+	getByIDErrOn int
 }
 
 func newFakeApplyGrantRepo() *fakeApplyGrantRepo {
@@ -54,9 +64,16 @@ func (f *fakeApplyGrantRepo) Create(_ context.Context, g *wallet.MasterGrant) er
 func (f *fakeApplyGrantRepo) GetByID(_ context.Context, id uuid.UUID) (*wallet.MasterGrant, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getByIDCalls++
+	if f.getByIDErr != nil && f.getByIDCalls == f.getByIDErrOn {
+		return nil, f.getByIDErr
+	}
 	g, ok := f.rows[id]
 	if !ok {
 		return nil, wallet.ErrNotFound
+	}
+	if f.getByIDHook != nil {
+		f.getByIDHook(g)
 	}
 	return g, nil
 }
@@ -571,5 +588,219 @@ func TestApply_ExtraTokens_ConsumeFailureRetryIsIdempotent(t *testing.T) {
 	bal, _, _ := wrepo.snapshotBalance(wid)
 	if bal != 500_000 {
 		t.Errorf("balance after retry = %d, want 500_000 (no double-credit)", bal)
+	}
+}
+
+// ---------- second-pass retry safety on free_period path -------------
+
+// SIN-63901 — analogous to the extra_tokens consume-failure retry case,
+// for the free_subscription_period side-effect. The idempotency anchor
+// differs: extra_tokens collapses via the wallet ledger's
+// (wallet_id, idempotency_key) UNIQUE, while free_period anchors on
+// the grant's consumed_at. This test exercises the realistic
+// production failure mode the new pre-check (plus the existing
+// top-of-Apply IsConsumed check) closes: grants.Consume's SQL UPDATE
+// committed, but the caller saw a transient error before the ACK
+// landed, so the row's consumed_at is set even though Apply returned
+// (false, err). We model that by manually consuming the grant
+// in-test after the first pass's injected Consume error.
+//
+// The retry MUST NOT call SaveSubscription a second time — the AC
+// assertion is `saved` (subs.saved length) is 1 across both passes.
+func TestApply_FreePeriod_ConsumeFailureRetryIsIdempotent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 5, 14, 21, 0, 0, 0, time.UTC)
+
+	tenant := uuid.New()
+	actor := uuid.New()
+	periodStart := now.Add(-15 * 24 * time.Hour)
+	periodEnd := now.Add(15 * 24 * time.Hour)
+
+	grants := newFakeApplyGrantRepo()
+	subs := newFakeSubscriptionRepo()
+	sub := subs.seedActive(tenant, uuid.New(), periodStart, periodEnd, now.Add(-time.Hour))
+
+	g := newFreePeriodGrant(t, tenant, actor, 30, now.Add(-time.Minute))
+	grants.seed(g)
+
+	svc := newApplyService(t, grants, newFakeRepo(), subs, now)
+
+	// First pass: SaveSubscription lands; grants.Consume returns a
+	// transient error. The applier surfaces the error and the operator
+	// would normally either revoke (consumed_at IS NULL path) or rely
+	// on the consumed_at write that actually committed (this test).
+	grants.consume.err = errors.New("transient consume failure")
+	if _, err := svc.Apply(ctx, g.ID()); err == nil {
+		t.Fatal("expected error from failed Consume on first pass")
+	}
+	if len(subs.saved) != 1 {
+		t.Fatalf("first pass SaveSubscription calls = %d, want 1", len(subs.saved))
+	}
+	onceExtended := sub.CurrentPeriodEnd()
+
+	// Model the production failure mode this fix closes: the SQL UPDATE
+	// landed before the client lost the response, so consumed_at is
+	// set in the database even though the caller saw a transient error.
+	// The retry's GetByID at the top of Apply (and applyFreePeriod's
+	// pre-check) both observe consumed_at != nil.
+	if err := g.Consume(sub.ID().String(), now); err != nil {
+		t.Fatalf("model post-commit consumed grant: %v", err)
+	}
+
+	// Second pass: Consume injection cleared. Apply MUST NOT touch
+	// SaveSubscription a second time.
+	grants.consume.err = nil
+	applied2, err := svc.Apply(ctx, g.ID())
+	if err != nil {
+		t.Fatalf("retry: unexpected error %v", err)
+	}
+	if applied2 {
+		t.Error("retry returned applied=true; want false (grant already consumed)")
+	}
+	if len(subs.saved) != 1 {
+		t.Errorf("SaveSubscription calls after retry = %d, want 1 (idempotency)", len(subs.saved))
+	}
+	if !sub.CurrentPeriodEnd().Equal(onceExtended) {
+		t.Errorf("current_period_end = %s, want once-extended %s", sub.CurrentPeriodEnd(), onceExtended)
+	}
+}
+
+// TestApply_FreePeriod_PreCheckCatchesRaceConsume covers the narrower
+// concurrency window option (1) closes directly: between Apply's
+// top-of-call GetByID and applyFreePeriod's pre-check GetByID, a
+// concurrent applier (e.g. a second master-console operator that
+// raced past the Create-side UNIQUE on external_id) consumed the
+// grant. The pre-check MUST detect consumed_at != nil and return
+// wallet.ErrGrantAlreadyConsumed before mutating the subscription.
+func TestApply_FreePeriod_PreCheckCatchesRaceConsume(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 5, 14, 21, 0, 0, 0, time.UTC)
+
+	tenant := uuid.New()
+	actor := uuid.New()
+	periodStart := now.Add(-15 * 24 * time.Hour)
+	periodEnd := now.Add(15 * 24 * time.Hour)
+
+	grants := newFakeApplyGrantRepo()
+	subs := newFakeSubscriptionRepo()
+	subs.seedActive(tenant, uuid.New(), periodStart, periodEnd, now.Add(-time.Hour))
+
+	g := newFreePeriodGrant(t, tenant, actor, 30, now.Add(-time.Minute))
+	grants.seed(g)
+
+	svc := newApplyService(t, grants, newFakeRepo(), subs, now)
+
+	// Stage the race: between Apply's top GetByID (call #1) and
+	// applyFreePeriod's pre-check GetByID (call #2), a concurrent
+	// applier consumed the grant. The hook fires under the fake's
+	// lock right before GetByID #2 returns.
+	grants.getByIDHook = func(target *wallet.MasterGrant) {
+		if grants.getByIDCalls != 2 {
+			return
+		}
+		if err := target.Consume("racing-applier-ref", now); err != nil {
+			t.Errorf("model racing consume: %v", err)
+		}
+	}
+
+	applied, err := svc.Apply(ctx, g.ID())
+	if applied {
+		t.Error("Apply returned applied=true after racing consume; want false")
+	}
+	if !errors.Is(err, wallet.ErrGrantAlreadyConsumed) {
+		t.Errorf("Apply: got %v, want wallet.ErrGrantAlreadyConsumed", err)
+	}
+	if len(subs.saved) != 0 {
+		t.Errorf("SaveSubscription calls = %d, want 0 (pre-check aborted)", len(subs.saved))
+	}
+}
+
+// TestApply_FreePeriod_PreCheckCatchesRaceRevoke is the revoked-state
+// counterpart to the consume race: between Apply's top GetByID and
+// applyFreePeriod's pre-check, the operator revoked the grant
+// (consumed_at IS NULL, revoked_at != nil). The pre-check surfaces
+// wallet.ErrGrantAlreadyRevoked without touching the subscription.
+func TestApply_FreePeriod_PreCheckCatchesRaceRevoke(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 5, 14, 21, 0, 0, 0, time.UTC)
+
+	tenant := uuid.New()
+	actor := uuid.New()
+	periodStart := now.Add(-15 * 24 * time.Hour)
+	periodEnd := now.Add(15 * 24 * time.Hour)
+
+	grants := newFakeApplyGrantRepo()
+	subs := newFakeSubscriptionRepo()
+	subs.seedActive(tenant, uuid.New(), periodStart, periodEnd, now.Add(-time.Hour))
+
+	g := newFreePeriodGrant(t, tenant, actor, 30, now.Add(-time.Minute))
+	grants.seed(g)
+
+	svc := newApplyService(t, grants, newFakeRepo(), subs, now)
+
+	grants.getByIDHook = func(target *wallet.MasterGrant) {
+		if grants.getByIDCalls != 2 {
+			return
+		}
+		if err := target.Revoke(actor, "race-revoke between top check and pre-check", now); err != nil {
+			t.Errorf("model racing revoke: %v", err)
+		}
+	}
+
+	applied, err := svc.Apply(ctx, g.ID())
+	if applied {
+		t.Error("Apply returned applied=true after racing revoke; want false")
+	}
+	if !errors.Is(err, wallet.ErrGrantAlreadyRevoked) {
+		t.Errorf("Apply: got %v, want wallet.ErrGrantAlreadyRevoked", err)
+	}
+	if len(subs.saved) != 0 {
+		t.Errorf("SaveSubscription calls = %d, want 0 (pre-check aborted)", len(subs.saved))
+	}
+}
+
+// TestApply_FreePeriod_PreCheckSurfacesGetByIDErrors guards the
+// pre-check's error wrapping when the repository fails to refresh the
+// grant (e.g. transient connection drop). The applier must surface
+// the error wrapped, NOT silently fall through to SaveSubscription.
+func TestApply_FreePeriod_PreCheckSurfacesGetByIDErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 5, 14, 21, 0, 0, 0, time.UTC)
+
+	tenant := uuid.New()
+	actor := uuid.New()
+	periodStart := now.Add(-15 * 24 * time.Hour)
+	periodEnd := now.Add(15 * 24 * time.Hour)
+
+	grants := newFakeApplyGrantRepo()
+	subs := newFakeSubscriptionRepo()
+	subs.seedActive(tenant, uuid.New(), periodStart, periodEnd, now.Add(-time.Hour))
+
+	g := newFreePeriodGrant(t, tenant, actor, 30, now.Add(-time.Minute))
+	grants.seed(g)
+
+	svc := newApplyService(t, grants, newFakeRepo(), subs, now)
+
+	// Force the SECOND GetByID call (the pre-check inside
+	// applyFreePeriod) to return a transient error. The first GetByID
+	// (Apply's top check) succeeds, then applyFreePeriod's refresh
+	// call surfaces the error wrapped.
+	injectedErr := errors.New("transient pre-check GetByID failure")
+	grants.getByIDErr = injectedErr
+	grants.getByIDErrOn = 2
+
+	applied, err := svc.Apply(ctx, g.ID())
+	if applied {
+		t.Error("Apply returned applied=true after pre-check error; want false")
+	}
+	if !errors.Is(err, injectedErr) {
+		t.Errorf("Apply: got %v, want wrapped injected error", err)
+	}
+	if len(subs.saved) != 0 {
+		t.Errorf("SaveSubscription calls = %d, want 0 (pre-check aborted)", len(subs.saved))
 	}
 }
