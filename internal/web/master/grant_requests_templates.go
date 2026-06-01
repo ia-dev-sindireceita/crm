@@ -274,26 +274,6 @@ var grantRequestDetailPanelTmpl = template.Must(template.New("grant_request_deta
             própria solicitação. Aguarde a revisão por outro master.
             (Regra 4-eyes — defendida em UI e backend.)
           </p>
-          <!-- Defense in depth: the form actions remain in the DOM so
-               a curl call against the same operator's session still
-               receives the backend 422 (ErrGrantRequestApproverIsCreator).
-               Hidden visually via the data-self-approve-guard banner. -->
-          <div class="master-grant-request-detail__actions" hidden>
-            <form class="master-grant-request-detail__approve"
-                  method="post"
-                  action="/master/grants/requests/{{.Request.ID}}/approve"
-                  aria-label="Aprovar solicitação (bloqueada por 4-eyes)">
-              {{.CSRFInput}}
-              <button type="submit" disabled>Aprovar</button>
-            </form>
-            <form class="master-grant-request-detail__reject"
-                  method="post"
-                  action="/master/grants/requests/{{.Request.ID}}/reject"
-                  aria-label="Rejeitar solicitação (bloqueada por 4-eyes)">
-              {{.CSRFInput}}
-              <button type="submit" disabled>Rejeitar</button>
-            </form>
-          </div>
         {{else if eq .ConfirmStage "confirm"}}
           <section class="master-grant-request-detail__confirm-modal"
                    role="dialog"
