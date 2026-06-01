@@ -61,6 +61,8 @@ func TestNewHelloTenant_ShellChromeLoadsStylesheets(t *testing.T) {
 		`<link rel="stylesheet" href="/static/css/tokens.css">`,
 		`<link rel="stylesheet" href="/static/css/components.css">`,
 		`<link rel="stylesheet" href="/static/css/app-shell.css">`,
+		// SIN-63935 B-1 — app-shell.js wires hamburger + user-menu toggles.
+		`<script src="/static/js/app-shell.js" defer></script>`,
 		// SIN-63294 — auth.css must survive via the new head_extra slot.
 		`<link rel="stylesheet" href="/static/css/auth.css" />`,
 	} {

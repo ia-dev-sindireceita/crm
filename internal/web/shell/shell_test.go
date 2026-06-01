@@ -95,6 +95,51 @@ func TestRender_NavItemsFilteredByRole_Gerente(t *testing.T) {
 	mustContain(t, body, `<a href="/branding" aria-current="page">Branding</a>`)
 }
 
+func TestRender_NavItemsFilteredByRole_Lider(t *testing.T) {
+	// Líder = atendente surfaces + funnel rules (team lead can edit
+	// stage transitions). Still no manager-only surfaces (catalog,
+	// campaigns, branding).
+	t.Parallel()
+	body := renderShell(t, pageData{shell.Data{
+		NavItems: []shell.NavItem{
+			{Label: "Inbox", Path: "/inbox"},
+			{Label: "Funil", Path: "/funnel"},
+			{Label: "Regras", Path: "/funnel/rules", Active: true},
+		},
+	}})
+
+	mustContain(t, body, `<a href="/inbox">Inbox</a>`)
+	mustContain(t, body, `<a href="/funnel">Funil</a>`)
+	mustContain(t, body, `<a href="/funnel/rules" aria-current="page">Regras</a>`)
+	mustNotContain(t, body, "/catalog")
+	mustNotContain(t, body, "/campaigns")
+	mustNotContain(t, body, "/branding")
+}
+
+func TestRender_NavItemsFilteredByRole_Master(t *testing.T) {
+	// Master = full visibility PLUS the cross-tenant master surface.
+	// Pin that an extra entry beyond the gerente set renders without
+	// the shell rejecting unknown labels.
+	t.Parallel()
+	body := renderShell(t, pageData{shell.Data{
+		NavItems: []shell.NavItem{
+			{Label: "Inbox", Path: "/inbox"},
+			{Label: "Funil", Path: "/funnel"},
+			{Label: "Catálogo", Path: "/catalog"},
+			{Label: "Campanhas", Path: "/campaigns"},
+			{Label: "Branding", Path: "/branding"},
+			{Label: "Tenants", Path: "/master/tenants", Active: true},
+		},
+	}})
+
+	mustContain(t, body, `<a href="/inbox">Inbox</a>`)
+	mustContain(t, body, `<a href="/funnel">Funil</a>`)
+	mustContain(t, body, `<a href="/catalog">Catálogo</a>`)
+	mustContain(t, body, `<a href="/campaigns">Campanhas</a>`)
+	mustContain(t, body, `<a href="/branding">Branding</a>`)
+	mustContain(t, body, `<a href="/master/tenants" aria-current="page">Tenants</a>`)
+}
+
 func TestRender_NavItemsEmpty_NavBlockOmitted(t *testing.T) {
 	// Tests the empty-slice branch: with no NavItems the <nav> block
 	// is skipped entirely so screen readers don't announce an empty
@@ -197,6 +242,19 @@ func TestRender_StaticCSSAssetsLoadedInOrder(t *testing.T) {
 	if !(tokensAt < componentsAt && componentsAt < appShellAt) {
 		t.Fatalf("css order wrong: tokens=%d components=%d app-shell=%d", tokensAt, componentsAt, appShellAt)
 	}
+}
+
+func TestRender_AppShellToggleScriptIsLinked(t *testing.T) {
+	// SIN-63935 B-1 regression guard. The hamburger and user-menu
+	// toggles only function when /static/js/app-shell.js is loaded; a
+	// future cascade refactor that drops the <script> tag here would
+	// silently break AC #4 (keyboard-only toggle works) at runtime
+	// without breaking a single existing test. Pin the link so any
+	// such regression fails CI.
+	t.Parallel()
+	body := renderShell(t, pageData{shell.Data{}})
+
+	mustContain(t, body, `<script src="/static/js/app-shell.js" defer></script>`)
 }
 
 func TestRender_HamburgerHasMinHitTargetAttributes(t *testing.T) {
