@@ -103,44 +103,42 @@ func TestNewHelloTenant_ShellTopBarRendersTenantBrand(t *testing.T) {
 }
 
 func TestNewHelloTenant_ShellNavLiveSurfacesOnly(t *testing.T) {
-	// Mix of enabled + disabled surfaces: the top-bar nav lists ONLY
-	// the enabled ones with short labels; disabled paths must not
-	// appear as anchors anywhere in the chrome.
+	// Mix of enabled + disabled surfaces. Only TopNav=true AND
+	// Available=true entries appear in the shell top-bar. Privacy and
+	// 2FA are body-only surfaces (TopNav=false) and never appear in the
+	// chrome regardless of their Available flag.
 	t.Parallel()
 	deps := handler.HelloTenantDeps{
 		FunnelEnabled:    true,
 		CatalogEnabled:   true,
 		CampaignsEnabled: false, // disabled — must not be in top-bar
-		PrivacyEnabled:   true,
+		PrivacyEnabled:   true,  // enabled but TopNav=false — body-only
 		AIPolicyEnabled:  false, // disabled
 	}
 	rec := httptest.NewRecorder()
 	handler.NewHelloTenant(deps)(rec, shellHelloRequest(t))
 	body := rec.Body.String()
 
-	// Live: top-bar nav has the short labels as anchors.
+	// TopNav=true, Available=true → must appear as nav anchors.
 	for _, want := range []string{
 		`<a href="/funnel">Funil</a>`,
 		`<a href="/catalog">Catálogo</a>`,
-		`<a href="/settings/privacy">Privacidade</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing short-label nav link %q", want)
 		}
 	}
 
-	// Disabled: top-bar must NOT carry an anchor for the disabled
-	// path. The body list still shows them as aria-disabled spans,
-	// pinned by hello_index_test.go — here we only assert the chrome
-	// is clean.
-	// Top-bar would render anchors with short labels (e.g. "Campanhas",
-	// "IA"); the body has long labels. Asserting no `<a href="/campaigns">Campanhas</a>`
-	// proves the top-bar entry is absent.
-	if strings.Contains(body, `<a href="/campaigns">Campanhas</a>`) {
-		t.Errorf("disabled campaign path leaked into top-bar nav: %q", body)
-	}
-	if strings.Contains(body, `<a href="/settings/ai-policy">IA</a>`) {
-		t.Errorf("disabled ai-policy path leaked into top-bar nav: %q", body)
+	// Disabled or body-only: must NOT appear as top-bar anchors.
+	for _, off := range []string{
+		`<a href="/campaigns">Campanhas</a>`,
+		`<a href="/settings/ai-policy">IA</a>`,
+		// Privacy is Available=true but TopNav=false — body-only per AC §2.
+		`<a href="/settings/privacy">Privacidade</a>`,
+	} {
+		if strings.Contains(body, off) {
+			t.Errorf("surface should not appear in top-bar nav: %q", off)
+		}
 	}
 }
 

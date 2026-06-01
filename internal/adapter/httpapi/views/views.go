@@ -65,10 +65,18 @@ func tenantThemeStyle(data any) template.CSS {
 // hello.html (SIN-63774). Available controls the rendered shape:
 // true → <a href="{{.Path}}">{{.Label}}</a>, false → an aria-disabled
 // <span> so the gap is visible to the operator instead of dead-linking.
+//
+// SIN-63940 / UX-F3 — Description carries the JTBD copy rendered on
+// the dashboard-cards block ("Atender clientes vindos de WhatsApp…").
+// Empty Description means "no card body line" — the card heading
+// stands alone and the surfaces nav <li> still works. Role-filtering
+// happens upstream in the handler so the template stays agnostic to
+// iam: the slice the template receives is the post-role-filter view.
 type Surface struct {
-	Label     string
-	Path      string
-	Available bool
+	Label       string
+	Path        string
+	Available   bool
+	Description string
 }
 
 // helloSurfaces is the FuncMap helper that reads .Surfaces from page
@@ -83,6 +91,29 @@ type Surface struct {
 //
 // Pure: no request state, no globals, safe across goroutines.
 func helloSurfaces(data any) []Surface {
+	return surfaceSlice(data, "Surfaces")
+}
+
+// helloCards is the FuncMap helper that reads .Cards from page data via
+// reflection. SIN-63940 / UX-F3 introduced a separate dashboard-cards
+// block above the surfaces nav: the cards are the role-filtered subset
+// with JTBD copy ("Atender clientes vindos de WhatsApp…"), while the
+// surfaces nav keeps the full navigable index. Reflecting on a separate
+// field lets the legacy views_test.go fixtures (no Cards field) keep
+// rendering against the same template without forcing a data-shape
+// migration.
+//
+// Returns:
+//   - the slice when the field exists and is a []Surface,
+//   - nil otherwise — the {{with}} guard in hello.html then skips the
+//     dashboard-cards section entirely.
+//
+// Pure: no request state, no globals, safe across goroutines.
+func helloCards(data any) []Surface {
+	return surfaceSlice(data, "Cards")
+}
+
+func surfaceSlice(data any, field string) []Surface {
 	if data == nil {
 		return nil
 	}
@@ -96,7 +127,7 @@ func helloSurfaces(data any) []Surface {
 	if v.Kind() != reflect.Struct {
 		return nil
 	}
-	f := v.FieldByName("Surfaces")
+	f := v.FieldByName(field)
 	if !f.IsValid() {
 		return nil
 	}
@@ -254,6 +285,7 @@ var csrfFuncs = template.FuncMap{
 	"tenantThemeStyle": tenantThemeStyle,
 	"cspNonce":         cspNonce,
 	"helloSurfaces":    helloSurfaces,
+	"helloCards":       helloCards,
 	"loginTenantName":  loginTenantName,
 	"loginTenantLogo":  loginTenantLogo,
 	"loginWhiteLabel":  loginWhiteLabel,
