@@ -1,0 +1,66 @@
+{{define "funnel_stats_drawer"}}
+<aside class="funnel-drawer__panel" role="dialog" aria-modal="false" aria-labelledby="funnel-drawer-title" data-testid="funnel-drawer">
+  <header class="funnel-drawer__header">
+    <h2 id="funnel-drawer-title">Estatísticas detalhadas</h2>
+    <button type="button" class="funnel-drawer__close"
+            hx-get="/funnel/stats/drawer/close"
+            hx-target="#funnel-stats-drawer"
+            hx-swap="innerHTML"
+            aria-label="Fechar drawer">×</button>
+  </header>
+  {{- if .Stats.PerAttendant}}
+  <section class="funnel-drawer__section" aria-labelledby="funnel-drawer-attendants">
+    <h3 id="funnel-drawer-attendants">Por atendente</h3>
+    <table class="funnel-drawer__table funnel-drawer__table--attendants">
+      <thead><tr><th>ID</th><th>Ativas</th><th>Ganhas</th><th>Perdidas</th></tr></thead>
+      <tbody>
+      {{- range .Stats.PerAttendant}}
+        <tr>
+          <td>{{.UserID}}</td>
+          <td>{{.ActiveCount}}</td>
+          <td>{{.WonCount}}</td>
+          <td>{{.LostCount}}</td>
+        </tr>
+      {{- end}}
+      </tbody>
+    </table>
+  </section>
+  {{- end}}
+  {{- if .Stats.PerTeam}}
+  <section class="funnel-drawer__section" aria-labelledby="funnel-drawer-teams">
+    <h3 id="funnel-drawer-teams">Por equipe</h3>
+    <table class="funnel-drawer__table funnel-drawer__table--teams">
+      <thead><tr><th>ID</th><th>Ativas</th><th>Ganhas</th><th>Perdidas</th></tr></thead>
+      <tbody>
+      {{- range .Stats.PerTeam}}
+        <tr>
+          <td>{{.TeamID}}</td>
+          <td>{{.ActiveCount}}</td>
+          <td>{{.WonCount}}</td>
+          <td>{{.LostCount}}</td>
+        </tr>
+      {{- end}}
+      </tbody>
+    </table>
+  </section>
+  {{- end}}
+  {{- if .Stats.PerChannel}}
+  <section class="funnel-drawer__section" aria-labelledby="funnel-drawer-channels">
+    <h3 id="funnel-drawer-channels">Por canal</h3>
+    <table class="funnel-drawer__table funnel-drawer__table--channels">
+      <thead><tr><th>Canal</th><th>Ativas</th><th>Ganhas</th><th>Perdidas</th></tr></thead>
+      <tbody>
+      {{- range .Stats.PerChannel}}
+        <tr>
+          <td>{{.Channel}}</td>
+          <td>{{.ActiveCount}}</td>
+          <td>{{.WonCount}}</td>
+          <td>{{.LostCount}}</td>
+        </tr>
+      {{- end}}
+      </tbody>
+    </table>
+  </section>
+  {{- end}}
+</aside>
+{{end}}

@@ -152,4 +152,67 @@
   document.addEventListener('htmx:afterSwap', function (event) {
     applyDraggable(event.target);
   });
+
+  // SIN-63943 / AC #4 — keyboard navigation. Each .funnel-card is
+  // focusable via tabindex=0; ArrowRight / ArrowLeft trigger the
+  // server-rendered next/prev hx-* buttons, Enter focuses the next
+  // available action so screen readers announce the available
+  // transitions explicitly. Aria-live announcements go through
+  // #funnel-aria-live so AT users hear the destination stage on every
+  // move.
+  function announce(text) {
+    var live = document.getElementById('funnel-aria-live');
+    if (!live) {
+      return;
+    }
+    // Empty + write the new text to force the polite live region to
+    // re-announce even when the same text fires twice in a row.
+    live.textContent = '';
+    live.textContent = text;
+  }
+
+  function clickAction(card, suffix) {
+    if (!card) {
+      return false;
+    }
+    var btn = card.querySelector('.funnel-card__action--' + suffix);
+    if (!btn || btn.disabled) {
+      return false;
+    }
+    btn.click();
+    return true;
+  }
+
+  document.addEventListener('keydown', function (event) {
+    var card = event.target;
+    if (!isFunnelCard(card)) {
+      return;
+    }
+    var stageKey = card.getAttribute('data-stage-key') || '';
+    switch (event.key) {
+      case 'ArrowRight':
+        if (clickAction(card, 'next')) {
+          event.preventDefault();
+          announce('Movendo para ' + (card.getAttribute('data-next-key') || 'próximo estágio'));
+        }
+        break;
+      case 'ArrowLeft':
+        if (clickAction(card, 'prev')) {
+          event.preventDefault();
+          announce('Movendo para ' + (card.getAttribute('data-prev-key') || 'estágio anterior'));
+        }
+        break;
+      case 'Enter':
+        // Enter confirms the focused card by triggering the history
+        // affordance so screen-reader users can review where the card
+        // sits in the funnel before deciding to move it.
+        if (clickAction(card, 'history')) {
+          event.preventDefault();
+          announce('Abrindo histórico para conversa em ' + stageKey);
+        }
+        break;
+      default:
+        return;
+    }
+  });
 })();

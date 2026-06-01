@@ -1,0 +1,43 @@
+{{define "title"}}Funil{{end}}
+{{define "head_extra"}}
+<link rel="stylesheet" href="/static/css/funnel.css">
+<script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+<script src="/static/js/funnel-board.js" defer></script>
+{{end}}
+{{define "content"}}
+<section class="funnel-shell" aria-label="Funil de vendas" data-testid="funnel-page">
+  <div id="funnel-board-area" class="funnel-board" data-csrf="{{funnelCSRFToken .}}">
+    {{template "funnel_stats_header" .}}
+    <section class="funnel-columns" role="region" aria-label="Estágios do funil">
+      {{- range funnelColumns .}}
+      <article class="funnel-column" aria-labelledby="col-{{.Stage.Key}}-title">
+        <header class="funnel-column__header">
+          <h2 id="col-{{.Stage.Key}}-title" class="funnel-column__title">
+            <span class="funnel-column__glyph" aria-hidden="true">{{stageGlyph .Stage.Key}}</span>
+            {{.Stage.Label}}
+          </h2>
+          <span class="funnel-column__count" aria-label="{{len .Cards}} conversas">({{len .Cards}})</span>
+          {{- if .Stats.HasStats}}
+          <span class="funnel-column__avg" aria-label="Tempo médio em estágio">[tempo médio: {{durFmt .Stats.AvgTimeInStage}}]</span>
+          {{- end}}
+          {{- if .Stats.ConvRate}}
+          <span class="funnel-column__conv" aria-label="Taxa de conversão">[conv. rate: {{printf "%.1f%%" (mulf (derefF64 .Stats.ConvRate) 100.0)}}]</span>
+          {{- end}}
+        </header>
+        <ol class="funnel-column__list"
+            role="list"
+            data-stage-key="{{.Stage.Key}}"
+            data-stage-id="{{.Stage.ID}}">
+          {{- range .Cards}}
+            {{template "card" .}}
+          {{- end}}
+        </ol>
+      </article>
+      {{- end}}
+    </section>
+  </div>
+  <div id="funnel-modal" class="funnel-modal" aria-live="polite"></div>
+  <div id="funnel-stats-drawer" class="funnel-drawer" aria-live="polite"></div>
+  <div id="funnel-aria-live" role="status" aria-live="polite" class="funnel-sr-only"></div>
+</section>
+{{end}}
