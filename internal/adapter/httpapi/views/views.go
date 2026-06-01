@@ -17,6 +17,7 @@ import (
 	"reflect"
 
 	csrfhelpers "github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // tenantThemeStyle is the FuncMap helper that reads .TenantThemeStyle
@@ -169,12 +170,19 @@ var Login = template.Must(
 	template.New("login").Funcs(csrfFuncs).ParseFS(assets, "layout.html", "login.html"),
 )
 
-// Hello renders GET /hello-tenant. Data shape: struct { TenantName,
-// UserID, CSRFToken string }. CSRFToken is the per-session CSPRNG
-// token from iam.Session.CSRFToken; it feeds the layout meta tag and
-// the logout form hidden input. Empty-string is allowed (legacy
-// session pre-dating migration 0011) — the helpers still render
-// safely, and the CSRF middleware will reject the next write attempt.
-var Hello = template.Must(
-	template.New("hello").Funcs(csrfFuncs).ParseFS(assets, "layout.html", "hello.html"),
-)
+// Hello renders GET /hello-tenant. SIN-63935 / UX-F1 migrated this
+// page to the shell.Layout app-shell so the post-login chrome (top-bar,
+// branded nav, user-menu) is shared with every other authenticated
+// surface. The page content (welcome string, surfaces nav, logout
+// form) still lives in hello.html via the layout's "content" block;
+// hello.html also re-emits the SIN-63294 /static/css/auth.css link
+// through the new shell {{block "head_extra" .}} slot so the bare
+// form/button baseline survives the migration.
+//
+// Data shape: struct { TenantName, UserID, CSRFToken,
+// TenantThemeStyle, CSPNonce, Surfaces …, plus optional shell.Data
+// fields (NavItems, UserMenuItems, UserDisplayName, TenantLogo) }.
+// Legacy callers without the shell fields still render: every
+// reflection helper in internal/web/shell falls back safely when the
+// field is absent.
+var Hello = shell.MustParse(csrfFuncs, assets, "hello.html")

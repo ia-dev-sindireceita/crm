@@ -1,0 +1,67 @@
+{{define "layout"}}<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {{- with shellCSRFToken .}}{{csrfMeta .}}{{end}}
+    {{- with shellTenantThemeStyle .}}<style id="tenant-theme" nonce="{{shellCSPNonce $}}">{{.}}</style>{{end}}
+    <link rel="stylesheet" href="/static/css/tokens.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+    <link rel="stylesheet" href="/static/css/app-shell.css">
+    {{block "head_extra" .}}{{end}}
+    <title>{{block "title" .}}CRM{{end}}</title>
+  </head>
+  <body{{with shellCSRFToken .}} {{csrfHXHeaders .}}{{end}}>
+    {{template "app_shell_topbar" .}}
+    <main class="app-shell__main" role="main">
+      {{block "content" .}}{{end}}
+    </main>
+  </body>
+</html>
+{{end}}
+
+{{define "app_shell_topbar"}}
+<header class="app-shell__topbar" role="banner">
+  <a class="app-shell__brand" href="/hello-tenant" aria-label="{{shellTenantName .}}">
+    {{- with shellTenantLogo .}}<img src="{{.}}" alt="{{shellTenantName $}}">{{end}}
+    <span class="app-shell__brand-text">{{shellTenantName .}}</span>
+  </a>
+  <button type="button"
+          class="app-shell__hamburger"
+          aria-controls="app-shell-nav"
+          aria-expanded="false"
+          aria-label="Abrir menu">
+    <span class="app-shell__hamburger-icon"><span></span></span>
+  </button>
+  {{- with shellNavItems .}}
+  <nav id="app-shell-nav"
+       class="app-shell__nav"
+       aria-label="Áreas"
+       data-collapsed="true">
+    {{- range .}}
+    <a href="{{.Path}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
+    {{- end}}
+  </nav>
+  {{- end}}
+  <div class="app-shell__user-menu">
+    <button type="button"
+            class="app-shell__user-menu-toggle"
+            aria-haspopup="menu"
+            aria-expanded="false">{{shellUserDisplayName .}}</button>
+    {{- with shellUserMenuItems .}}
+    <div class="app-shell__user-menu-panel" role="menu" hidden>
+      {{- range .}}
+      {{- if .Form}}
+      <form method="POST" action="{{.Path}}">
+        {{- with shellCSRFToken $}}{{csrfFormHidden .}}{{end}}
+        <button type="submit" role="menuitem">{{.Label}}</button>
+      </form>
+      {{- else}}
+      <a href="{{.Path}}" role="menuitem">{{.Label}}</a>
+      {{- end}}
+      {{- end}}
+    </div>
+    {{- end}}
+  </div>
+</header>
+{{end}}

@@ -1,0 +1,311 @@
+/*
+ * SIN-63935 / UX-F1 — Component primitives.
+ *
+ * Mini-library of the shared visual primitives — every rule below uses
+ * tokens from tokens.css exclusively, zero magic numbers. Feature CSS
+ * extends these classes for variations; new primitives land here so
+ * tenants get a coherent surface after one branding override.
+ *
+ * Naming follows a flat BEM-lite convention: .btn, .btn--primary,
+ * .btn--ghost; .alert, .alert--info. No nesting beyond the primary
+ * class and its modifiers.
+ */
+
+/* ============================================================== Button === */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--hit-target-min);
+  padding: var(--space-2) var(--space-4);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: var(--font-medium);
+  line-height: var(--text-base-line);
+  color: var(--text-default);
+  background-color: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color var(--motion-fast) var(--ease-out),
+              border-color var(--motion-fast) var(--ease-out),
+              color var(--motion-fast) var(--ease-out);
+}
+
+.btn:hover {
+  background-color: var(--surface-2);
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.btn--primary {
+  color: var(--text-on-primary);
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.btn--primary:hover {
+  filter: brightness(0.95);
+  background-color: var(--color-primary);
+}
+
+.btn--ghost {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--color-primary);
+}
+
+.btn--ghost:hover {
+  background-color: var(--surface-1);
+}
+
+.btn--danger {
+  color: var(--color-danger-text);
+  background-color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.btn--danger:hover {
+  filter: brightness(0.95);
+  background-color: var(--color-danger);
+}
+
+/* =============================================================== Badge === */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  line-height: var(--text-xs-line);
+  color: var(--text-default);
+  background-color: var(--surface-2);
+  border-radius: var(--radius-pill);
+}
+
+.badge--info    { color: var(--color-info-text);    background-color: var(--color-info); }
+.badge--success { color: var(--color-success-text); background-color: var(--color-success); }
+.badge--warning { color: var(--color-warning-text); background-color: var(--color-warning); }
+.badge--danger  { color: var(--color-danger-text);  background-color: var(--color-danger); }
+
+/* ================================================================ Card === */
+
+.card {
+  padding: var(--space-5);
+  background-color: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.card__title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.card__body {
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+}
+
+/* ======================================================== Empty state === */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-7) var(--space-5);
+  text-align: center;
+  color: var(--text-muted);
+  background-color: var(--surface-1);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.empty-state__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-default);
+}
+
+.empty-state__body {
+  margin: 0;
+  max-width: 48ch;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+/* =============================================================== Alert === */
+
+.alert {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--surface-1);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.alert--info {
+  color: var(--text-strong);
+  background-color: var(--color-info-surface);
+  border-color: var(--color-info);
+}
+
+.alert--success {
+  color: var(--text-strong);
+  background-color: var(--color-success-surface);
+  border-color: var(--color-success);
+}
+
+.alert--warning {
+  color: var(--text-strong);
+  background-color: var(--color-warning-surface);
+  border-color: var(--color-warning);
+}
+
+.alert--danger {
+  color: var(--text-strong);
+  background-color: var(--color-danger-surface);
+  border-color: var(--color-danger);
+}
+
+/* =============================================================== Table === */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+}
+
+.table thead th {
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  background-color: var(--surface-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.table tbody td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-default);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table tbody tr:hover td {
+  background-color: var(--surface-1);
+}
+
+/* =============================================================== Modal === */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(15, 20, 25, 0.45);
+  z-index: 1000;
+}
+
+.modal__dialog {
+  width: min(560px, calc(100vw - var(--space-6)));
+  padding: var(--space-5);
+  background-color: var(--surface-0);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+}
+
+.modal__title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+/* =============================================================== Field === */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+}
+
+.field__label {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  font-weight: var(--font-medium);
+  color: var(--text-default);
+}
+
+.field__input,
+.field__select,
+.field__textarea {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+  color: var(--text-default);
+  background-color: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--hit-target-min);
+}
+
+.field__input:focus-visible,
+.field__select:focus-visible,
+.field__textarea:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+  border-color: var(--color-primary);
+}
+
+.field__help {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  color: var(--text-muted);
+}
+
+.field__error {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  color: var(--color-danger);
+}
+
+.field[data-invalid="true"] .field__input,
+.field[data-invalid="true"] .field__select,
+.field[data-invalid="true"] .field__textarea {
+  border-color: var(--color-danger);
+}

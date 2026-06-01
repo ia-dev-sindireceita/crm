@@ -1,6 +1,9 @@
+{{define "head_extra"}}
+<link rel="stylesheet" href="/static/css/auth.css" />
+{{end}}
 {{define "title"}}{{.TenantName}} — CRM{{end}}
 {{define "content"}}
-<main>
+<section class="hello-tenant">
   <h1>Hello, {{.TenantName}}</h1>
   <p>Você está autenticado em <strong data-testid="tenant-name">{{.TenantName}}</strong>.</p>
   <p>User ID: <code data-testid="user-id">{{.UserID}}</code></p>
@@ -24,5 +27,5 @@
     {{- if .CSRFToken}}{{csrfFormHidden .CSRFToken}}{{end}}
     <button type="submit">Sair</button>
   </form>
-</main>
+</section>
 {{end}}

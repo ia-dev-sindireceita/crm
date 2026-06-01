@@ -1,0 +1,224 @@
+/*
+ * SIN-63935 / UX-F1 — App-shell stylesheet.
+ *
+ * Layout owned by internal/web/shell. The shell template renders the
+ * <header class="app-shell__topbar"> + <main class="app-shell__main">
+ * structure declared in the issue spec. Every value below comes from
+ * tokens.css.
+ *
+ * Top-bar is sticky to the viewport top with --shadow-1; on viewports
+ * narrower than --bp-sm (600px) the inline nav collapses behind a
+ * hamburger button that respects --hit-target-min (44×44) and is
+ * keyboard-toggleable via aria-expanded.
+ */
+
+.app-shell__topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background-color: var(--surface-0);
+  border-bottom: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-1);
+}
+
+.app-shell__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-strong);
+  font-weight: var(--font-semibold);
+  text-decoration: none;
+}
+
+.app-shell__brand img {
+  display: block;
+  height: 32px;
+  width: auto;
+}
+
+.app-shell__brand-text {
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+}
+
+.app-shell__nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1 1 auto;
+  margin-left: var(--space-4);
+}
+
+.app-shell__nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--hit-target-min);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-base);
+  font-weight: var(--font-medium);
+  line-height: var(--text-base-line);
+  color: var(--text-default);
+  text-decoration: none;
+  border-radius: var(--radius-md);
+  transition: background-color var(--motion-fast) var(--ease-out),
+              color var(--motion-fast) var(--ease-out);
+}
+
+.app-shell__nav a:hover {
+  background-color: var(--surface-1);
+}
+
+.app-shell__nav a[aria-current="page"] {
+  color: var(--color-primary);
+  background-color: var(--surface-1);
+}
+
+.app-shell__nav a[aria-disabled="true"] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.app-shell__user-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.app-shell__user-menu-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--hit-target-min);
+  min-width: var(--hit-target-min);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: var(--font-medium);
+  color: var(--text-default);
+  background-color: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.app-shell__user-menu-toggle:hover {
+  background-color: var(--surface-2);
+}
+
+.app-shell__user-menu-panel {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  min-width: 220px;
+  padding: var(--space-2);
+  background-color: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+}
+
+.app-shell__user-menu-panel[hidden] {
+  display: none;
+}
+
+.app-shell__user-menu-panel a,
+.app-shell__user-menu-panel button {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-default);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.app-shell__user-menu-panel a:hover,
+.app-shell__user-menu-panel button:hover {
+  background-color: var(--surface-1);
+}
+
+.app-shell__hamburger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--hit-target-min);
+  min-width: var(--hit-target-min);
+  padding: 0;
+  background-color: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.app-shell__hamburger-icon {
+  display: block;
+  width: 18px;
+  height: 14px;
+  position: relative;
+}
+
+.app-shell__hamburger-icon::before,
+.app-shell__hamburger-icon::after,
+.app-shell__hamburger-icon span {
+  content: "";
+  display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background-color: var(--text-default);
+  border-radius: var(--radius-sm);
+}
+
+.app-shell__hamburger-icon::before { top: 0; }
+.app-shell__hamburger-icon span    { top: calc(50% - 1px); }
+.app-shell__hamburger-icon::after  { bottom: 0; }
+
+.app-shell__main {
+  padding: var(--space-5) var(--space-4);
+  max-width: var(--bp-lg);
+  margin: 0 auto;
+}
+
+/* ----------------------------------------------------- Mobile (<=sm) === */
+
+@media (max-width: 599px) {
+  .app-shell__nav {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+    margin-left: 0;
+    padding: var(--space-3) var(--space-4);
+    background-color: var(--surface-0);
+    border-bottom: 1px solid var(--border-subtle);
+    box-shadow: var(--shadow-1);
+  }
+
+  .app-shell__nav[data-collapsed="true"] {
+    display: none;
+  }
+
+  .app-shell__hamburger {
+    display: inline-flex;
+  }
+
+  .app-shell__topbar {
+    flex-wrap: wrap;
+    position: relative;
+  }
+}

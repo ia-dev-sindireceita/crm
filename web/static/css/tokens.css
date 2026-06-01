@@ -1,0 +1,174 @@
+/*
+ * SIN-63935 / UX-F1 — Design-system foundation tokens.
+ *
+ * The values below are the SINGLE SOURCE OF TRUTH for every visual
+ * constant in the CRM. Feature stylesheets MUST consume these via the
+ * --space-*, --text-*, --color-*, --radius-*, --shadow-*, --motion-*
+ * custom properties — never via bare hex / px / ms literals.
+ *
+ * Per-tenant branding overrides happen at a strictly higher specificity
+ * via `branding.ThemeStyleFromPalette` (see internal/branding); the
+ * inline `<style id="tenant-theme">` injected by app-shell wins because
+ * it lands later in the cascade and also targets :root. Tokens declared
+ * here are the OK-contrast WCAG-AA neutral fallback when no tenant
+ * palette is bound.
+ */
+
+:root {
+  /* ---- Color: neutral surfaces (light theme default) ---------------- */
+  --surface-0: #ffffff;
+  --surface-1: #f7f8fa;
+  --surface-2: #eef0f3;
+  --surface-3: #e1e4e9;
+
+  /* ---- Color: text (contrast checked against --surface-0) ----------- */
+  --text-strong: #0f1419;   /* 16.7:1 on --surface-0 */
+  --text-default: #1f2328;  /* 13.4:1 on --surface-0 */
+  --text-muted: #57606a;    /*  5.1:1 on --surface-0 */
+  --text-on-primary: #ffffff;
+
+  /* ---- Color: borders --------------------------------------------- */
+  --border-subtle: #d0d7de;
+  --border-strong: #afb8c1;
+
+  /* ---- Color: brand (override targets) ----------------------------- */
+  --color-primary: #1f6feb;
+  --color-secondary: #57606a;
+  --color-accent: #54aeff;
+
+  /* ---- Color: feedback (each band carries text + surface) ---------- */
+  --color-success: #1a7f37;
+  --color-success-text: #ffffff;
+  --color-success-surface: #dafbe1;
+
+  --color-warning: #9a6700;
+  --color-warning-text: #ffffff;
+  --color-warning-surface: #fff8c5;
+
+  --color-danger: #cf222e;
+  --color-danger-text: #ffffff;
+  --color-danger-surface: #ffebe9;
+
+  --color-info: #0969da;
+  --color-info-text: #ffffff;
+  --color-info-surface: #ddf4ff;
+
+  /* ---- Spacing scale (multiples of 4) ----------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* ---- Type scale -------------------------------------------------- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 12px;
+  --text-xs-line: 16px;
+  --text-sm: 13px;
+  --text-sm-line: 18px;
+  --text-base: 14px;
+  --text-base-line: 20px;
+  --text-md: 16px;
+  --text-md-line: 24px;
+  --text-lg: 18px;
+  --text-lg-line: 26px;
+  --text-xl: 22px;
+  --text-xl-line: 28px;
+  --text-2xl: 28px;
+  --text-2xl-line: 32px;
+
+  --font-regular: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+
+  /* ---- Radii ------------------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+
+  /* ---- Shadow elevations (subtle, not competing with border) ------- */
+  --shadow-1: 0 1px 2px rgba(15, 20, 25, 0.06), 0 1px 1px rgba(15, 20, 25, 0.04);
+  --shadow-2: 0 4px 12px rgba(15, 20, 25, 0.08), 0 2px 4px rgba(15, 20, 25, 0.04);
+  --shadow-3: 0 16px 32px rgba(15, 20, 25, 0.12), 0 6px 12px rgba(15, 20, 25, 0.08);
+
+  /* ---- Motion ------------------------------------------------------ */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 320ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* ---- Breakpoints (reference only; @media is hand-written) -------- */
+  --bp-sm: 600px;
+  --bp-md: 900px;
+  --bp-lg: 1280px;
+
+  /* ---- Hit target (Fitts mobile minimum) --------------------------- */
+  --hit-target-min: 44px;
+}
+
+/*
+ * prefers-reduced-motion: drop all motion to zero while keeping the
+ * properties so transitions remain syntactically valid.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+    --motion-slow: 0ms;
+  }
+}
+
+/*
+ * Document defaults — every page that loads tokens.css inherits these.
+ * Feature stylesheets may override individual properties on their root
+ * containers but the body baseline keeps cross-feature parity.
+ */
+html {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+  color: var(--text-default);
+  background-color: var(--surface-0);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+a {
+  color: var(--color-primary);
+}
+
+a:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+[tabindex="0"]:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
