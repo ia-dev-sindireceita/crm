@@ -382,7 +382,7 @@ func TestShowGrantRequest_RendersDetailWithForms(t *testing.T) {
 	mux := grantRequestsMux(t, h)
 
 	req, _ := fp.CreateGrantRequest(t.Context(), master.CreateGrantRequestInput{
-		ActorUserID: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+		ActorUserID: uuid.New(),
 		TenantID:    uuid.MustParse(fakeTenantID),
 		Kind:        master.GrantKindFreeSubscriptionPeriod,
 		PeriodDays:  365,

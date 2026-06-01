@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -219,6 +220,15 @@ func TestGrantRequestDetail_RendersSelfApproveGuard(t *testing.T) {
 	}
 	if strings.Contains(rendered, `data-approve-trigger="true"`) {
 		t.Fatal("approve button must not render for own request (defense in depth on top of 422)")
+	}
+	// SIN-63980 — spec §4.3 requires hiding both forms entirely; no
+	// approve/reject <form action="…"> markup may leak into the DOM
+	// for the self-creator branch.
+	if regexp.MustCompile(`action="/master/grants/requests/[^"]+/approve"`).MatchString(rendered) {
+		t.Fatal("approve form markup must not render for self-creator (spec §4.3 — hide both forms entirely)")
+	}
+	if regexp.MustCompile(`action="/master/grants/requests/[^"]+/reject"`).MatchString(rendered) {
+		t.Fatal("reject form markup must not render for self-creator (spec §4.3 — hide both forms entirely)")
 	}
 }
 
