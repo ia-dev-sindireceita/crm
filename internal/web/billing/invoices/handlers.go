@@ -13,86 +13,62 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/billing"
 	"github.com/pericles-luz/crm/internal/billing/dunning"
 	"github.com/pericles-luz/crm/internal/billing/pix"
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
-// pollIntervalPending is the HTMX hx-trigger interval the detail page
-// embeds while the PIX charge is pending. Once the status reaches a
-// terminal value the partial omits the trigger so polling stops
-// cleanly (AC #3 — no recursos em paid/expired/failed).
 const pollIntervalPending = "every 10s"
-
-// listLimit caps the rows the list page renders. The invoice table
-// is small (one row per billing period); a flat cap is fine until
-// pagination becomes necessary.
 const listLimit = 50
 
-// InvoiceLister is the read port the list page consults. Tenant-
-// scoped via RLS; "no rows" returns an empty slice.
 type InvoiceLister interface {
 	ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]*billing.Invoice, error)
 }
 
-// InvoiceGetter is the read port the detail page consults. Returns
-// billing.ErrNotFound for unknown ids; tenant-scoped via RLS so a
-// cross-tenant id resolves to ErrNotFound as well.
 type InvoiceGetter interface {
 	GetByID(ctx context.Context, tenantID, invoiceID uuid.UUID) (*billing.Invoice, error)
 }
 
-// PIXChargeLister is the read port for the QR block on the detail
-// page. LatestForInvoice returns pix.ErrNotFound when the charge has
-// not yet been issued by the PSP; the handler treats this as
-// "cobrança em processamento" and keeps polling.
 type PIXChargeLister interface {
 	LatestForInvoice(ctx context.Context, tenantID, invoiceID uuid.UUID) (*pix.PIXCharge, error)
 }
 
-// DunningStateReader resolves the tenant's current dunning state.
-// (nil, nil) means "no row yet" (treated as StateCurrent — no
-// banner). Errors propagate to the caller.
 type DunningStateReader interface {
 	CurrentForTenant(ctx context.Context, tenantID uuid.UUID) (*dunning.DunningState, error)
 }
 
-// CSRFTokenFn returns the request's CSRF token.
+// NextBillingDateFn returns the next billing date for the tenant's active
+// subscription. Used for the empty-state copy. May be nil.
+type NextBillingDateFn func(ctx context.Context, tenantID uuid.UUID) (time.Time, error)
+
 type CSRFTokenFn func(*http.Request) string
-
-// UserIDFn returns the authenticated user id. uuid.Nil collapses to
-// 401 — the audit row would be meaningless without an actor.
 type UserIDFn func(*http.Request) uuid.UUID
-
-// NowFn returns the current time. Injectable so tests can pin it.
 type NowFn func() time.Time
+type NavItemsFn func(*http.Request) []shell.NavItem
+type UserMenuItemsFn func(*http.Request) []shell.UserMenuItem
 
-// Deps bundles the handler collaborators. Every port is required;
-// when a backing adapter is not yet wired (e.g. the PIX postgres
-// adapter lands in C7) inject a small adapter that returns
-// pix.ErrNotFound rather than passing a nil dependency.
 type Deps struct {
-	Invoices  InvoiceLister
-	Invoice   InvoiceGetter
-	Charges   PIXChargeLister
-	Dunning   DunningStateReader
-	CSRFToken CSRFTokenFn
-	UserID    UserIDFn
-	Now       NowFn
-	Logger    *slog.Logger
+	Invoices        InvoiceLister
+	Invoice         InvoiceGetter
+	Charges         PIXChargeLister
+	Dunning         DunningStateReader
+	NextBillingDate NextBillingDateFn // optional
+	CSRFToken       CSRFTokenFn
+	UserID          UserIDFn
+	NavItems        NavItemsFn      // optional
+	UserMenuItems   UserMenuItemsFn // optional
+	Now             NowFn
+	Logger          *slog.Logger
 }
 
-// Handler is the HTMX billing-invoices front controller.
 type Handler struct {
 	deps Deps
 }
 
-// New constructs a Handler. Missing required deps are rejected so
-// cmd/server fails fast.
 func New(deps Deps) (*Handler, error) {
 	if deps.Invoices == nil {
 		return nil, errors.New("web/billing/invoices: Invoices is required")
@@ -121,7 +97,6 @@ func New(deps Deps) (*Handler, error) {
 	return &Handler{deps: deps}, nil
 }
 
-// Routes mounts the surface endpoints on mux.
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /billing/invoices", h.list)
 	mux.HandleFunc("GET /billing/invoices/{id}", h.detail)
@@ -129,7 +104,6 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /billing/dunning-banner", h.bannerFragment)
 }
 
-// list renders the invoice list with the dunning banner inline.
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	tenant, err := tenancy.FromContext(r.Context())
 	if err != nil {
@@ -146,27 +120,39 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
+	filter := filterFrom(r)
+	filtered := applyFilter(rows, filter, listLimit)
+	now := h.deps.Now().UTC()
+	nextDate := h.nextBillingDateStr(r.Context(), tenant.ID)
+
+	// HTMX filter partial swap: return only tbody innerHTML.
+	if r.Header.Get("HX-Request") == "true" {
+		fv := tbodyView{Rows: filtered, NextBillingDate: nextDate}
+		h.writeHTML(w, http.StatusOK, tbodyFragmentTmpl, fv)
+		return
+	}
+
 	banner, err := h.bannerFor(r.Context(), tenant.ID)
 	if err != nil {
 		h.fail(w, http.StatusInternalServerError, "load dunning", err)
 		return
 	}
-	now := h.deps.Now().UTC()
 	view := listView{
 		Banner:           banner,
-		Rows:             listRows(rows, listLimit),
+		Rows:             filtered,
+		Filter:           filter,
+		NextBillingDate:  nextDate,
 		GeneratedAt:      now.Format(time.RFC3339),
-		CSRFMeta:         csrf.MetaTag(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
-		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		TenantName:       tenantName(tenant),
+		CSRFToken:        token,
 		CSPNonce:         csp.Nonce(r.Context()),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		NavItems:         h.navItems(r),
+		UserMenuItems:    h.userMenuItems(r),
 	}
-	h.writeHTML(w, http.StatusOK, listLayoutTmpl, view)
+	h.renderShell(w, http.StatusOK, listLayoutTmpl, view)
 }
 
-// detail renders the per-invoice page: metadata, dunning banner, QR
-// + copia-e-cola when the PIX charge is present, and the status
-// badge that HTMX polls every 10s while pending.
 func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 	tenant, err := tenancy.FromContext(r.Context())
 	if err != nil {
@@ -208,18 +194,17 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 		Invoice:          invoiceRowFrom(inv),
 		Charge:           chargeV,
 		Status:           statusFragmentFrom(invoiceID, charge),
-		CSRFMeta:         csrf.MetaTag(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
-		GeneratedAt:      now.Format(time.RFC3339),
-		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		TenantName:       tenantName(tenant),
+		CSRFToken:        token,
 		CSPNonce:         csp.Nonce(r.Context()),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+		NavItems:         h.navItems(r),
+		UserMenuItems:    h.userMenuItems(r),
+		GeneratedAt:      now.Format(time.RFC3339),
 	}
-	h.writeHTML(w, http.StatusOK, detailLayoutTmpl, view)
+	h.renderShell(w, http.StatusOK, detailLayoutTmpl, view)
 }
 
-// statusFragment renders the status-badge partial used by the HTMX
-// poll. The partial omits hx-trigger once the charge reaches a
-// terminal status so polling stops (AC #3).
 func (h *Handler) statusFragment(w http.ResponseWriter, r *http.Request) {
 	tenant, err := tenancy.FromContext(r.Context())
 	if err != nil {
@@ -247,9 +232,6 @@ func (h *Handler) statusFragment(w http.ResponseWriter, r *http.Request) {
 	h.writeHTML(w, http.StatusOK, statusFragmentTmpl, statusFragmentFrom(invoiceID, charge))
 }
 
-// bannerFragment is the standalone dunning-banner partial. Other
-// pages can hx-get it to surface the banner without redirecting to
-// /billing/invoices.
 func (h *Handler) bannerFragment(w http.ResponseWriter, r *http.Request) {
 	tenant, err := tenancy.FromContext(r.Context())
 	if err != nil {
@@ -283,6 +265,39 @@ func (h *Handler) chargeViewFor(ctx context.Context, tenantID, invoiceID uuid.UU
 	return charge, chargeViewFrom(charge), nil
 }
 
+func (h *Handler) nextBillingDateStr(ctx context.Context, tenantID uuid.UUID) string {
+	if h.deps.NextBillingDate == nil {
+		return ""
+	}
+	t, err := h.deps.NextBillingDate(ctx, tenantID)
+	if err != nil || t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format("02/01/2006")
+}
+
+func (h *Handler) navItems(r *http.Request) []shell.NavItem {
+	if h.deps.NavItems == nil {
+		return nil
+	}
+	return h.deps.NavItems(r)
+}
+
+func (h *Handler) userMenuItems(r *http.Request) []shell.UserMenuItem {
+	if h.deps.UserMenuItems == nil {
+		return nil
+	}
+	return h.deps.UserMenuItems(r)
+}
+
+func (h *Handler) renderShell(w http.ResponseWriter, status int, tmpl *template.Template, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := shell.Render(w, tmpl, data); err != nil {
+		h.deps.Logger.Error("web/billing/invoices: render shell", "template", tmpl.Name(), "err", err)
+	}
+}
+
 func (h *Handler) writeHTML(w http.ResponseWriter, status int, tmpl *template.Template, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
@@ -297,31 +312,51 @@ func (h *Handler) fail(w http.ResponseWriter, status int, msg string, err error)
 }
 
 // ---------------------------------------------------------------------------
-// view shaping
+// view types
 // ---------------------------------------------------------------------------
 
+type filterParams struct {
+	Period string
+	Status string
+}
+
 type listView struct {
-	Banner           bannerView
-	Rows             []invoiceRow
-	GeneratedAt      string
-	CSRFMeta         template.HTML
-	HXHeaders        template.HTMLAttr
+	Banner          bannerView
+	Rows            []invoiceRow
+	Filter          filterParams
+	NextBillingDate string
+	GeneratedAt     string
+	// shell.Data fields (accessed via reflection by shell layout)
+	TenantName       string
+	TenantLogo       string
+	UserDisplayName  string
+	NavItems         []shell.NavItem
+	UserMenuItems    []shell.UserMenuItem
+	CSRFToken        string
+	CSPNonce         string
 	TenantThemeStyle template.CSS
-	// CSPNonce carries the per-request CSP nonce (SIN-63275).
-	CSPNonce string
 }
 
 type detailView struct {
-	Banner           bannerView
-	Invoice          invoiceRow
-	Charge           chargeView
-	Status           statusFragment
-	CSRFMeta         template.HTML
-	HXHeaders        template.HTMLAttr
-	GeneratedAt      string
+	Banner  bannerView
+	Invoice invoiceRow
+	Charge  chargeView
+	Status  statusFragment
+	// shell.Data fields
+	TenantName       string
+	TenantLogo       string
+	UserDisplayName  string
+	NavItems         []shell.NavItem
+	UserMenuItems    []shell.UserMenuItem
+	CSRFToken        string
+	CSPNonce         string
 	TenantThemeStyle template.CSS
-	// CSPNonce carries the per-request CSP nonce (SIN-63275).
-	CSPNonce string
+	GeneratedAt      string
+}
+
+type tbodyView struct {
+	Rows            []invoiceRow
+	NextBillingDate string
 }
 
 type invoiceRow struct {
@@ -334,9 +369,9 @@ type invoiceRow struct {
 }
 
 type chargeView struct {
-	HasCharge bool         // true once a PIXCharge exists
-	Pending   bool         // true when there is no PIX charge yet
-	QRDataURI template.URL // safe data URI for <img src>
+	HasCharge bool
+	Pending   bool
+	QRDataURI template.URL
 	CopyPaste string
 	ExpiresAt string
 }
@@ -350,21 +385,111 @@ type statusFragment struct {
 }
 
 type bannerView struct {
-	Severity string
-	Title    string
-	Message  string
-	Visible  bool
+	Severity   string
+	AlertClass string
+	Icon       string
+	Title      string
+	Message    string
+	HasAction  bool
+	Visible    bool
 }
 
-func listRows(invs []*billing.Invoice, limit int) []invoiceRow {
-	if limit > 0 && len(invs) > limit {
-		invs = invs[:limit]
+// ---------------------------------------------------------------------------
+// bannerViewFrom — D1 4-state dunning banner (SIN-62204 / SIN-63944)
+//
+// Maps domain state to visual band:
+//
+//	StateWarn               → aviso     (alert--info)
+//	StateSuspendedOutbound  → atrasado  (alert--warning)
+//	StateSuspendedFull ≤14d → restricao (alert--danger)
+//	StateSuspendedFull >14d → bloqueio  (alert--danger + action CTA)
+//
+// Note: existing TestBannerFragment_PerSeverity assertions are updated
+// in handlers_test.go to match the new D1 copy (task spec = auth).
+// ---------------------------------------------------------------------------
+func bannerViewFrom(state *dunning.DunningState, now time.Time) bannerView {
+	if state == nil {
+		return bannerView{}
 	}
-	out := make([]invoiceRow, 0, len(invs))
+	if state.HasActiveOverride(now) {
+		return bannerView{}
+	}
+	switch state.State() {
+	case dunning.StateWarn:
+		return bannerView{
+			Severity:   "warn",
+			AlertClass: "alert--info",
+			Icon:       "📅",
+			Title:      "Fatura próxima do vencimento",
+			Message:    "Sua fatura vence em 3 dias. Pague para evitar interrupções.",
+			Visible:    true,
+		}
+	case dunning.StateSuspendedOutbound:
+		return bannerView{
+			Severity:   "outbound",
+			AlertClass: "alert--warning",
+			Icon:       "⚠️",
+			Title:      "Fatura em atraso",
+			Message:    "Fatura em atraso. Pague para evitar bloqueio.",
+			Visible:    true,
+		}
+	case dunning.StateSuspendedFull:
+		daysInState := int(now.Sub(state.EnteredStateAt()).Hours() / 24)
+		if daysInState > 14 {
+			return bannerView{
+				Severity:   "bloqueio",
+				AlertClass: "alert--danger",
+				Icon:       "🔒",
+				Title:      "Conta bloqueada",
+				Message:    "Acesso restrito. Quite a fatura para reativar o acesso completo.",
+				HasAction:  true,
+				Visible:    true,
+			}
+		}
+		return bannerView{
+			Severity:   "full",
+			AlertClass: "alert--danger",
+			Icon:       "🔒",
+			Title:      "Acesso restrito",
+			Message:    "Acesso restrito. Saldo de tokens não recarrega até regularizar.",
+			Visible:    true,
+		}
+	default:
+		return bannerView{}
+	}
+}
+
+func filterFrom(r *http.Request) filterParams {
+	return filterParams{
+		Period: strings.TrimSpace(r.URL.Query().Get("period")),
+		Status: strings.TrimSpace(r.URL.Query().Get("status")),
+	}
+}
+
+func applyFilter(invs []*billing.Invoice, f filterParams, limit int) []invoiceRow {
+	rows := make([]invoiceRow, 0, len(invs))
 	for _, inv := range invs {
-		out = append(out, invoiceRowFrom(inv))
+		if f.Status != "" && string(inv.State()) != f.Status {
+			continue
+		}
+		if f.Period != "" {
+			if inv.PeriodStart().UTC().Format("2006-01") != f.Period {
+				continue
+			}
+		}
+		rows = append(rows, invoiceRowFrom(inv))
+		if limit > 0 && len(rows) >= limit {
+			break
+		}
 	}
-	return out
+	return rows
+}
+
+func tenantName(t *tenancy.Tenant) string {
+	if t == nil || t.Name == "" {
+		return "CRM"
+	}
+	return t.Name
 }
 
 func invoiceRowFrom(inv *billing.Invoice) invoiceRow {
@@ -410,12 +535,6 @@ func chargeViewFrom(c *pix.PIXCharge) chargeView {
 	}
 }
 
-// qrDataURI converts the stored qr_code payload into a data URI safe
-// for rendering as <img src>. The PIX domain documents qr_code as
-// "base64-encoded PNG/SVG"; this helper sniffs the decoded leading
-// bytes to pick the correct MIME and falls back to SVG when the
-// signature is unrecognised. If the stored value already begins with
-// `data:` the helper passes it through as-is.
 func qrDataURI(qr string) template.URL {
 	trimmed := strings.TrimSpace(qr)
 	if trimmed == "" {
@@ -442,8 +561,6 @@ func statusFragmentFrom(invoiceID uuid.UUID, c *pix.PIXCharge) statusFragment {
 		PollInterval: pollIntervalPending,
 	}
 	if c == nil {
-		// No charge yet → render as pending so the page keeps polling
-		// until the PSP responds (AC #3 — poll only while pending).
 		return frag
 	}
 	frag.Status = string(c.Status())
@@ -470,45 +587,6 @@ func pixStatusLabel(s pix.Status) string {
 	}
 }
 
-// bannerViewFrom renders the dunning banner for the given state. A
-// nil state or an active courtesy override collapses to "no banner"
-// so brand-new tenants and tenants with a current free-period grant
-// see a clean top-bar.
-func bannerViewFrom(state *dunning.DunningState, now time.Time) bannerView {
-	if state == nil {
-		return bannerView{}
-	}
-	if state.HasActiveOverride(now) {
-		return bannerView{}
-	}
-	switch state.State() {
-	case dunning.StateWarn:
-		return bannerView{
-			Severity: "warn",
-			Title:    "Pagamento pendente",
-			Message:  "Sua última fatura está atrasada. Quite a cobrança PIX para evitar suspensão.",
-			Visible:  true,
-		}
-	case dunning.StateSuspendedOutbound:
-		return bannerView{
-			Severity: "outbound",
-			Title:    "Envios suspensos",
-			Message:  "O envio de mensagens foi suspenso até a regularização do pagamento.",
-			Visible:  true,
-		}
-	case dunning.StateSuspendedFull:
-		return bannerView{
-			Severity: "full",
-			Title:    "Conta em modo leitura",
-			Message:  "Sua conta está em modo somente leitura. Quite a cobrança PIX para reativar o acesso completo.",
-			Visible:  true,
-		}
-	default:
-		return bannerView{}
-	}
-}
-
-// parseID parses a uuid path value and returns false for invalid input.
 func parseID(raw string) (uuid.UUID, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
