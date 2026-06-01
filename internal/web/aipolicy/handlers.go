@@ -81,10 +81,16 @@ func New(deps Deps) (*Handler, error) {
 
 // Routes mounts every endpoint on mux. Go 1.22 method+pattern syntax
 // gives r.PathValue resolution for the scope-keyed routes.
+//
+// SIN-63945 / UX-F8 adds /settings/ai-policy/precedence — the live
+// preview endpoint the form's HTMX hx-trigger="keyup changed
+// delay:300ms" hooks into. The endpoint is side-effect-free
+// (R3 regression test).
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /settings/ai-policy", h.list)
 	mux.HandleFunc("GET /settings/ai-policy/new", h.newForm)
 	mux.HandleFunc("GET /settings/ai-policy/preview", h.preview)
+	mux.HandleFunc("GET /settings/ai-policy/precedence", h.precedence)
 	mux.HandleFunc("GET /settings/ai-policy/{scope_type}/{scope_id}/edit", h.editForm)
 	mux.HandleFunc("POST /settings/ai-policy", h.create)
 	mux.HandleFunc("PATCH /settings/ai-policy/{scope_type}/{scope_id}", h.update)
@@ -110,6 +116,10 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt: h.deps.Now().Format(time.RFC3339),
 		Rows:        rowsFromPolicies(policies),
 		Preview:     previewData{Policy: preview, Source: string(source)},
+		Precedence: precedencePanelData{
+			Empty:        true,
+			EmptyMessage: emptyPrecedenceMessage,
+		},
 		FormDefaults: formDefaults{
 			AllowedModels:    AllowedModels,
 			AllowedTones:     AllowedTones,
@@ -141,6 +151,9 @@ func (h *Handler) newForm(w http.ResponseWriter, r *http.Request) {
 		AllowedModels:    AllowedModels,
 		AllowedTones:     AllowedTones,
 		AllowedLanguages: AllowedLanguages,
+		Fields:           buildFieldRows(nil),
+		ShowBanner:       false,
+		BannerFirstSeen:  true,
 	}
 	h.writeHTML(w, http.StatusOK, formTmpl, form)
 }
@@ -181,6 +194,9 @@ func (h *Handler) editForm(w http.ResponseWriter, r *http.Request) {
 		AllowedModels:    AllowedModels,
 		AllowedTones:     AllowedTones,
 		AllowedLanguages: AllowedLanguages,
+		Fields:           buildFieldRows(got.StructuredFields),
+		ShowBanner:       aipolicy.AnyYellowEnabled(got.StructuredFields),
+		BannerFirstSeen:  true,
 	}
 	h.writeHTML(w, http.StatusOK, formTmpl, form)
 }
@@ -344,6 +360,11 @@ func parseScopeURL(r *http.Request) (aipolicy.ScopeType, string, bool) {
 	return st, sid, true
 }
 
+// emptyPrecedenceMessage is the inline instructional copy the
+// precedence panel renders when the operator has not yet typed a
+// conversation id and is not on "média de todas" mode.
+const emptyPrecedenceMessage = "Informe um id de conversa ou selecione \"Média de todas\" para ver a política efetiva."
+
 // parsePolicyForm validates and shapes the form body into a Policy
 // ready for Upsert. The returned error is a *FormError carrying the
 // field-level message the form re-render uses.
@@ -376,18 +397,191 @@ func parsePolicyForm(r *http.Request, tenantID uuid.UUID) (aipolicy.Policy, erro
 	if promptVersion == "" {
 		promptVersion = aipolicy.DefaultPolicy().PromptVersion
 	}
+	rawFields := r.Form["structured_fields"]
+	fields, ferr := aipolicy.ValidateStructuredFields(rawFields)
+	if ferr != nil {
+		var blocked *aipolicy.ErrLGPDBlockedField
+		if errors.As(ferr, &blocked) {
+			return aipolicy.Policy{}, formError("structured_fields", fmt.Sprintf("campo %q bloqueado por LGPD", blocked.Field))
+		}
+		var unknown *aipolicy.ErrUnknownStructuredField
+		if errors.As(ferr, &unknown) {
+			return aipolicy.Policy{}, formError("structured_fields", fmt.Sprintf("campo %q fora da allowlist", unknown.Field))
+		}
+		return aipolicy.Policy{}, formError("structured_fields", ferr.Error())
+	}
 	return aipolicy.Policy{
-		TenantID:      tenantID,
-		ScopeType:     scope,
-		ScopeID:       scopeID,
-		Model:         model,
-		PromptVersion: promptVersion,
-		Tone:          tone,
-		Language:      language,
-		AIEnabled:     formBool(r, "ai_enabled"),
-		Anonymize:     formBoolDefault(r, "anonymize", true),
-		OptIn:         formBool(r, "opt_in"),
+		TenantID:         tenantID,
+		ScopeType:        scope,
+		ScopeID:          scopeID,
+		Model:            model,
+		PromptVersion:    promptVersion,
+		Tone:             tone,
+		Language:         language,
+		AIEnabled:        formBool(r, "ai_enabled"),
+		Anonymize:        formBoolDefault(r, "anonymize", true),
+		OptIn:            formBool(r, "opt_in"),
+		StructuredFields: fields,
 	}, nil
+}
+
+// precedence handles GET /settings/ai-policy/precedence. It is the
+// Doherty (<400ms) live-preview endpoint the form fires via
+// hx-trigger="keyup changed delay:300ms". The endpoint is
+// SIDE-EFFECT-FREE — it never writes to ai_policy_audit or upserts
+// anything. SE residual risk R3 (and the regression test it requires).
+//
+// Query parameters:
+//   - mode={conversation|average}
+//   - conversation_id={string}
+//
+// When mode=conversation and conversation_id is blank, the panel
+// renders the instructional empty state.
+func (h *Handler) precedence(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+	if mode == "" {
+		mode = "conversation"
+	}
+	convID := strings.TrimSpace(r.URL.Query().Get("conversation_id"))
+	if mode == "conversation" && convID == "" {
+		h.writeHTML(w, http.StatusOK, precedencePanelTmpl, precedencePanelData{
+			Mode:         mode,
+			Empty:        true,
+			EmptyMessage: emptyPrecedenceMessage,
+		})
+		return
+	}
+	channelID := convID
+	if mode == "average" {
+		channelID = ""
+	}
+	policy, source := h.resolveForPreview(r.Context(), tenant.ID, channelID, "")
+	data := buildPrecedencePanel(policy, source, mode, convID, h.deps.Now())
+	h.writeHTML(w, http.StatusOK, precedencePanelTmpl, data)
+}
+
+// buildPrecedencePanel turns the resolver output into the right-rail
+// view-model: per-field precedence rows, tokenised "Próximo prompt
+// incluirá" preview lines, and the Doherty timestamp.
+func buildPrecedencePanel(p aipolicy.Policy, source aipolicy.ResolveSource, mode, convID string, now time.Time) precedencePanelData {
+	srcLabel := sourceLabelFor(source)
+	rows := []precedenceFieldRow{
+		{Name: "ai_enabled", Value: yesNoLabel(p.AIEnabled), SourceLabel: srcLabel},
+		{Name: "model", Value: p.Model, SourceLabel: srcLabel},
+		{Name: "tone", Value: p.Tone, SourceLabel: srcLabel},
+		{Name: "language", Value: p.Language, SourceLabel: srcLabel},
+		{Name: "anonymize", Value: yesNoLabel(p.Anonymize), SourceLabel: srcLabel},
+		{Name: "opt_in (legado)", Value: yesNoLabel(p.OptIn), SourceLabel: srcLabel},
+	}
+	for _, f := range aipolicy.LGPDFieldCatalog() {
+		switch f.Tier {
+		case aipolicy.TierGreen:
+			rows = append(rows, precedenceFieldRow{
+				Name:        "fields." + f.Name,
+				Value:       "🟢 sempre enviado",
+				SourceLabel: srcLabel,
+			})
+		case aipolicy.TierYellow:
+			on := aipolicy.ContainsField(p.StructuredFields, f.Name)
+			value := "🟡 OFF"
+			if on {
+				value = "🟡 ON (tokenizado)"
+			}
+			rows = append(rows, precedenceFieldRow{
+				Name:        "fields." + f.Name,
+				Value:       value,
+				SourceLabel: srcLabel,
+			})
+		case aipolicy.TierRed:
+			rows = append(rows, precedenceFieldRow{
+				Name:        "fields." + f.Name,
+				Value:       "🔴 bloqueado por LGPD",
+				SourceLabel: "LGPD Art. 5 II / Art. 11",
+			})
+		}
+	}
+	return precedencePanelData{
+		Mode:           mode,
+		ConversationID: convID,
+		Policy:         p,
+		Source:         string(source),
+		PerField:       rows,
+		PromptLines:    buildTokenizedPreview(p),
+		ResolvedAt:     now.UTC().Format(time.RFC3339),
+	}
+}
+
+// buildTokenizedPreview renders the "Próximo prompt incluirá" lines:
+// Green fields cleartext, Yellow fields as their tokenised form,
+// Red fields omitted entirely. Output is deterministic order
+// (Green first, then opted-in Yellow, sorted by field name).
+func buildTokenizedPreview(p aipolicy.Policy) []string {
+	out := []string{}
+	for _, f := range aipolicy.LGPDFieldCatalog() {
+		if f.Tier != aipolicy.TierGreen {
+			continue
+		}
+		out = append(out, f.PromptForm)
+	}
+	for _, f := range aipolicy.LGPDFieldCatalog() {
+		if f.Tier != aipolicy.TierYellow {
+			continue
+		}
+		if !aipolicy.ContainsField(p.StructuredFields, f.Name) {
+			continue
+		}
+		out = append(out, f.PromptForm)
+	}
+	return out
+}
+
+// buildFieldRows enriches the LGPDFieldCatalog with the current
+// per-policy enabled state so the field-tier template renders the
+// correct checkbox state for each Yellow row.
+func buildFieldRows(structuredFields []string) []fieldRowView {
+	out := make([]fieldRowView, 0, 16)
+	for _, f := range aipolicy.LGPDFieldCatalog() {
+		out = append(out, fieldRowView{
+			Name:        f.Name,
+			Tier:        string(f.Tier),
+			LabelPT:     f.LabelPT,
+			LegalAnchor: f.LegalAnchor,
+			PromptForm:  f.PromptForm,
+			Enabled:     f.Tier == aipolicy.TierYellow && aipolicy.ContainsField(structuredFields, f.Name),
+		})
+	}
+	return out
+}
+
+// sourceLabelFor mirrors the template helper so the handler can pre-
+// render the per-row source label without re-evaluating the switch in
+// the template (the template helper is still used for partials whose
+// data does not pass through the handler).
+func sourceLabelFor(src aipolicy.ResolveSource) string {
+	switch src {
+	case aipolicy.SourceChannel:
+		return "Canal"
+	case aipolicy.SourceTeam:
+		return "Equipe"
+	case aipolicy.SourceTenant:
+		return "Tenant"
+	case aipolicy.SourceDefault:
+		return "Padrão do sistema"
+	default:
+		return string(src)
+	}
+}
+
+func yesNoLabel(b bool) string {
+	if b {
+		return "sim"
+	}
+	return "não"
 }
 
 // FormError is the typed validation error the handler returns to the
@@ -441,16 +635,18 @@ func contains(haystack []string, needle string) bool {
 func rowsFromPolicies(in []aipolicy.Policy) []rowData {
 	out := make([]rowData, 0, len(in))
 	for _, p := range in {
+		fields := append([]string(nil), p.StructuredFields...)
 		out = append(out, rowData{
-			ScopeType: string(p.ScopeType),
-			ScopeID:   p.ScopeID,
-			Model:     p.Model,
-			Tone:      p.Tone,
-			Language:  p.Language,
-			AIEnabled: p.AIEnabled,
-			Anonymize: p.Anonymize,
-			OptIn:     p.OptIn,
-			UpdatedAt: p.UpdatedAt.UTC().Format(time.RFC3339),
+			ScopeType:        string(p.ScopeType),
+			ScopeID:          p.ScopeID,
+			Model:            p.Model,
+			Tone:             p.Tone,
+			Language:         p.Language,
+			AIEnabled:        p.AIEnabled,
+			Anonymize:        p.Anonymize,
+			OptIn:            p.OptIn,
+			StructuredFields: fields,
+			UpdatedAt:        p.UpdatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {

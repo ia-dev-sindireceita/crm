@@ -1,0 +1,71 @@
+{{define "title"}}Configuração de IA{{end}}
+
+{{define "head_extra"}}
+<link rel="stylesheet" href="/static/css/aipolicy.css">
+<script src="/static/vendor/htmx.min.js" defer></script>
+{{end}}
+
+{{define "content"}}
+<section class="aipolicy-shell" aria-label="Configuração de IA" data-testid="aipolicy-page">
+  <header class="aipolicy-header">
+    <h1>Configuração de IA — {{aipolicyTenantName .}}</h1>
+    <p class="aipolicy-lede">
+      Esta tela controla quando o CRM aciona a IA, qual modelo é usado,
+      com qual tom e em qual idioma. As mudanças seguem a cascata
+      <strong>canal &gt; equipe &gt; tenant</strong>: a configuração
+      mais específica vence. A flag <code>ai_enabled</code> é a chave
+      mestra para desligar o uso de IA em um escopo.
+    </p>
+    <p class="aipolicy-meta"><small>Gerado em {{aipolicyGeneratedAt .}}.</small></p>
+  </header>
+
+  <div class="aipolicy-shell-inner">
+    <div class="aipolicy-shell-main">
+      <section id="aipolicy-list" class="aipolicy-list" aria-labelledby="list-title">
+        <h2 id="list-title">Policies configuradas</h2>
+        {{template "aipolicy.listPartial" .}}
+      </section>
+
+      <section class="aipolicy-new" aria-labelledby="new-title">
+        <h2 id="new-title">Criar nova policy</h2>
+        <button type="button"
+                hx-get="/settings/ai-policy/new"
+                hx-target="#aipolicy-form"
+                hx-swap="innerHTML">Abrir formulário</button>
+        <div id="aipolicy-form" aria-live="polite"></div>
+      </section>
+    </div>
+
+    <aside class="aipolicy-shell-rail" aria-labelledby="precedence-title">
+      <h2 id="precedence-title">Política efetiva</h2>
+      <form id="aipolicy-precedence-input"
+            class="aipolicy-precedence-input"
+            hx-get="/settings/ai-policy/precedence"
+            hx-trigger="keyup changed delay:300ms from:input[name=conversation_id], change"
+            hx-target="#aipolicy-precedence"
+            hx-swap="innerHTML">
+        <fieldset>
+          <legend class="visually-hidden">Conversa de teste</legend>
+          <label class="aipolicy-precedence-input__mode">
+            <input type="radio" name="mode" value="conversation" checked>
+            Conversa específica
+          </label>
+          <label class="aipolicy-precedence-input__mode">
+            <input type="radio" name="mode" value="average">
+            Média de todas
+          </label>
+          <label class="aipolicy-precedence-input__id">
+            <span class="visually-hidden">ID da conversa</span>
+            <input type="text" name="conversation_id"
+                   placeholder="ex. whatsapp ou uuid"
+                   maxlength="128">
+          </label>
+        </fieldset>
+      </form>
+      <div id="aipolicy-precedence" aria-live="polite">
+        {{template "aipolicy.precedencePanel" .Precedence}}
+      </div>
+    </aside>
+  </div>
+</section>
+{{end}}
