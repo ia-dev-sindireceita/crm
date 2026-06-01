@@ -4,19 +4,35 @@
 // (SIN-62792), and serves a per-conversation history modal that
 // merges funnel transitions with the inbox assignment_history ledger.
 //
+// SIN-63943 / UX-F6 — board page now composes via shell.Layout (F1)
+// for the post-login chrome (top-bar, branded nav, user-menu) and
+// renders the analytical stats header (4 KPIs), per-stage column
+// stats, and the RBAC-gated drawer. The legacy boardLayoutTmpl
+// remains pointed at the shell-composed "layout" subtree so the
+// templates_csp_nonce_test / templates_theme_test pinned assertions
+// (which Execute the variable directly) still match.
+//
 // The package follows the same pattern as internal/web/inbox
 // (SIN-62735): html/template, no JS framework, partial swaps via
-// hx-* attributes. The minimal drag-and-drop bit lives in
-// /static/js/funnel-board.js — vanilla pointer events + HTMX trigger,
-// CSP-safe (no inline JS).
+// hx-* attributes. The minimal drag-and-drop + keyboard handler bit
+// lives in /static/js/funnel-board.js — vanilla pointer events +
+// HTMX trigger, CSP-safe (no inline JS).
 package funnel
 
 import (
+	"embed"
 	"html/template"
 	"io"
+	"reflect"
 	"strings"
 	"time"
+
+	"github.com/pericles-luz/crm/internal/funnel"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
+
+//go:embed board_page.html stats_header.html stats_drawer.html
+var contentFS embed.FS
 
 var funcs = template.FuncMap{
 	"relativeTime": relativeTime,
@@ -31,6 +47,19 @@ var funcs = template.FuncMap{
 		}
 		return *p
 	},
+	// Reflection-based accessors so the migrated board page template
+	// stays renderable from the templates_csp_nonce_test +
+	// templates_theme_test fixtures whose view struct predates the
+	// SIN-63943 fields (Stats, CanSeeStats, CanSeeTeams, Filters,
+	// Columns). Each helper returns the zero value when the field is
+	// absent, so the {{range}} / {{if}} guards in the templates produce
+	// no output rather than panicking.
+	"funnelColumns":     funnelViewColumns,
+	"funnelStats":       funnelViewStats,
+	"funnelCanSeeStats": funnelViewBool("CanSeeStats"),
+	"funnelCanSeeTeams": funnelViewBool("CanSeeTeams"),
+	"funnelFilterValue": funnelViewFilterValue,
+	"funnelCSRFToken":   funnelViewString("CSRFToken"),
 }
 
 // stageGlyph returns a small emoji glyph for the column header. The
@@ -93,6 +122,130 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
+// funnelViewUnwrap unwraps a data value down to a struct value (or
+// returns ok=false). Mirrors the shell package's pattern so missing
+// fields never panic at template render.
+func funnelViewUnwrap(data any) (reflect.Value, bool) {
+	if data == nil {
+		return reflect.Value{}, false
+	}
+	v := reflect.ValueOf(data)
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return reflect.Value{}, false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return reflect.Value{}, false
+	}
+	return v, true
+}
+
+// funnelViewBool builds a reflection-based bool getter for the given
+// field name on the top-level view struct.
+func funnelViewBool(field string) func(any) bool {
+	return func(data any) bool {
+		v, ok := funnelViewUnwrap(data)
+		if !ok {
+			return false
+		}
+		f := v.FieldByName(field)
+		if !f.IsValid() {
+			return false
+		}
+		if b, ok := f.Interface().(bool); ok {
+			return b
+		}
+		return false
+	}
+}
+
+// funnelViewString builds a reflection-based string getter for the
+// given field name on the top-level view struct.
+func funnelViewString(field string) func(any) string {
+	return func(data any) string {
+		v, ok := funnelViewUnwrap(data)
+		if !ok {
+			return ""
+		}
+		f := v.FieldByName(field)
+		if !f.IsValid() {
+			return ""
+		}
+		if s, ok := f.Interface().(string); ok {
+			return s
+		}
+		return ""
+	}
+}
+
+// funnelViewColumns returns the column slice off the view, or nil when
+// the field is absent. Templates use {{range funnelColumns .}} to
+// avoid html/template's strict "field not found" error.
+func funnelViewColumns(data any) []columnView {
+	v, ok := funnelViewUnwrap(data)
+	if !ok {
+		return nil
+	}
+	f := v.FieldByName("Columns")
+	if !f.IsValid() {
+		return nil
+	}
+	if s, ok := f.Interface().([]columnView); ok {
+		return s
+	}
+	return nil
+}
+
+// funnelViewStats returns *funnel.Stats off the view, or nil when the
+// field is absent or has the wrong type.
+func funnelViewStats(data any) *funnel.Stats {
+	v, ok := funnelViewUnwrap(data)
+	if !ok {
+		return nil
+	}
+	f := v.FieldByName("Stats")
+	if !f.IsValid() {
+		return nil
+	}
+	if s, ok := f.Interface().(*funnel.Stats); ok {
+		return s
+	}
+	return nil
+}
+
+// funnelViewFilterValue returns one of the filter form's two string
+// fields ("period", "owner") off the view's nested Filters struct.
+// Returns "" when either layer is absent.
+func funnelViewFilterValue(data any, field string) string {
+	v, ok := funnelViewUnwrap(data)
+	if !ok {
+		return ""
+	}
+	f := v.FieldByName("Filters")
+	if !f.IsValid() || f.Kind() != reflect.Struct {
+		return ""
+	}
+	switch field {
+	case "Period":
+		ff := f.FieldByName("Period")
+		if ff.IsValid() {
+			if s, ok := ff.Interface().(string); ok {
+				return s
+			}
+		}
+	case "Owner":
+		ff := f.FieldByName("Owner")
+		if ff.IsValid() {
+			if s, ok := ff.Interface().(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
 // durFmt formats a duration as "Xd Yh" or "Zh" or "—" for zero.
 func durFmt(d time.Duration) string {
 	if d <= 0 {
@@ -106,58 +259,6 @@ func durFmt(d time.Duration) string {
 	return itoa(hours) + "h"
 }
 
-// boardLayoutTmpl is the full-page shell. The board is a horizontal
-// flex row of columns; the modal mount point is a sibling overlay
-// HTMX swaps into on the history button click.
-var boardLayoutTmpl = template.Must(template.New("funnel.layout").Funcs(funcs).Parse(`<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <title>Funil</title>
-  {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
-  <link rel="stylesheet" href="/static/css/funnel.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
-  <script src="/static/js/funnel-board.js" defer></script>
-</head>
-<body {{.HXHeaders}}>
-  <main class="funnel-shell" role="main" aria-label="Funil de vendas">
-    <header class="funnel-shell__header"><h1>Funil</h1></header>
-    <div id="funnel-board" class="funnel-board" data-csrf="{{.CSRFToken}}">
-      {{template "board" .Board}}
-    </div>
-    <div id="funnel-modal" class="funnel-modal" aria-live="polite"></div>
-  </main>
-</body>
-</html>
-`))
-
-// boardTmpl renders the five columns. Each column carries data-stage-key
-// so funnel-board.js can resolve the drop destination, and each card
-// inside it carries its own data-stage-key starting point.
-var boardTmpl = template.Must(template.New("board").Funcs(funcs).Parse(`<section class="funnel-columns" role="region" aria-label="Estágios do funil">
-{{- range .Columns}}
-  <article class="funnel-column" aria-labelledby="col-{{.Stage.Key}}-title">
-    <header class="funnel-column__header">
-      <h2 id="col-{{.Stage.Key}}-title" class="funnel-column__title">
-        <span class="funnel-column__glyph" aria-hidden="true">{{stageGlyph .Stage.Key}}</span>
-        {{.Stage.Label}}
-      </h2>
-      <span class="funnel-column__count" aria-label="{{len .Cards}} conversas">{{len .Cards}}</span>
-    </header>
-    <ol class="funnel-column__list"
-        role="list"
-        data-stage-key="{{.Stage.Key}}"
-        data-stage-id="{{.Stage.ID}}">
-      {{- range .Cards}}
-        {{template "card" .}}
-      {{- end}}
-    </ol>
-  </article>
-{{- end}}
-</section>
-`))
-
 // cardTmpl is the smallest swap unit: a single conversation card.
 // POST /funnel/transitions targets the card via hx-target=outerHTML and
 // re-renders this template with the new StageKey / PrevKey / NextKey so
@@ -167,6 +268,8 @@ var cardTmpl = template.Must(template.New("card").Funcs(funcs).Parse(`<li id="ca
        role="listitem"
        data-conversation-id="{{.ConversationID}}"
        data-stage-key="{{.StageKey}}"
+       data-prev-key="{{.PrevKey}}"
+       data-next-key="{{.NextKey}}"
        tabindex="0"
        aria-label="Conversa com {{.DisplayName}} ({{.Channel}}) em {{.StageKey}}">
     <header class="funnel-card__header">
@@ -231,9 +334,12 @@ var historyModalTmpl = template.Must(template.New("history").Funcs(funcs).Parse(
 </div>
 `))
 
-// statsTmpl is the HTMX partial for GET /funnel/stats. It renders the
-// header KPIs row, per-stage table, per-attendant table, and conditional
-// per-team / per-channel tables (gerente only — lider gets nil slices).
+// statsTmpl is the legacy HTMX partial for GET /funnel/stats (default
+// view). Renders the header KPIs row, per-stage table, per-attendant
+// table, and conditional per-team / per-channel tables. SIN-63962 / UX-F6
+// shipped this; SIN-63943 keeps it intact for backwards compatibility with
+// the existing handler-test pins and uses the new statsHeaderTmpl +
+// statsDrawerTmpl partials for the F6 board-page integration.
 var statsTmpl = template.Must(template.New("funnel.stats").Funcs(funcs).Parse(`<div class="funnel-stats" id="funnel-stats">
   <div class="funnel-stats__header">
     <span>Ativas: <strong>{{.Stats.HeaderKPIs.TotalActive}}</strong></span>
@@ -300,23 +406,55 @@ var statsTmpl = template.Must(template.New("funnel.stats").Funcs(funcs).Parse(`<
   {{end}}
 </div>`))
 
+// boardPageTmpl is the shell.Layout-composed full-page template used by
+// the GET /funnel handler (SIN-63943 / UX-F6 / AC #8). It parses the
+// content blocks ("title", "head_extra", "content") from board_page.html
+// + the stats partials (funnel_stats_header, funnel_stats_drawer); the
+// "card" sub-tree is grafted in by init() below.
+var boardPageTmpl = shell.MustParse(funcs, contentFS,
+	"board_page.html",
+	"stats_header.html",
+	"stats_drawer.html",
+)
+
+// boardLayoutTmpl is the entry point used by templates_csp_nonce_test
+// and templates_theme_test, which call .Execute directly. We point it at
+// the shell.Layout "layout" sub-tree so the existing assertions
+// (`<style id="tenant-theme" nonce="…">…</style>` etc.) match against the
+// migrated chrome. Both tests pass view structs that already expose
+// CSPNonce + TenantThemeStyle, so shell.Layout's reflection-based
+// helpers find the fields and render the tag.
+var boardLayoutTmpl = boardPageTmpl.Lookup("layout")
+
+// statsHeaderTmpl is the standalone partial for the page-header KPIs +
+// filter form (SIN-63943 AC #1). The /funnel handler renders this
+// inline; the filter form posts back to /funnel with hx-select on
+// #funnel-board-area for the <400ms HTMX swap target.
+var statsHeaderTmpl = boardPageTmpl.Lookup("funnel_stats_header")
+
+// statsDrawerTmpl is the standalone partial for the drawer pane (AC #3).
+// Returned by GET /funnel/stats?view=drawer; rendered into
+// #funnel-stats-drawer by the "Estatísticas detalhadas" button.
+var statsDrawerTmpl = boardPageTmpl.Lookup("funnel_stats_drawer")
+
 func init() {
-	// Register partials so the layout can reference {{template "board" ...}}
-	// and the board can reference {{template "card" ...}}.
-	for _, child := range []*template.Template{boardTmpl, cardTmpl, historyModalTmpl} {
-		if _, err := boardLayoutTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
+	// Graft cardTmpl + historyModalTmpl onto boardPageTmpl so the
+	// content block can {{template "card" .}} / {{template "history" .}}.
+	// The funnel_stats_header / funnel_stats_drawer partials are already
+	// parsed via shell.MustParse above.
+	for _, child := range []*template.Template{cardTmpl, historyModalTmpl} {
+		if _, err := boardPageTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("web/funnel: register " + child.Name() + ": " + err.Error())
 		}
-	}
-	if _, err := boardTmpl.AddParseTree(cardTmpl.Name(), cardTmpl.Tree); err != nil {
-		panic("web/funnel: register card under board: " + err.Error())
 	}
 
 	// Prime html/template's lazy escaper now, before any concurrent
 	// goroutine can race on the first Execute call (same rationale as
 	// web/inbox templates.go init prewarm — html/template AddParseTree
 	// race fixed in bc30fb1).
-	for _, t := range []*template.Template{cardTmpl, boardTmpl, historyModalTmpl, boardLayoutTmpl, statsTmpl} {
-		_ = t.Execute(io.Discard, nil)
+	for _, t := range []*template.Template{cardTmpl, historyModalTmpl, boardPageTmpl, boardLayoutTmpl, statsTmpl, statsHeaderTmpl, statsDrawerTmpl} {
+		if t != nil {
+			_ = t.Execute(io.Discard, nil)
+		}
 	}
 }

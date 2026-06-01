@@ -569,9 +569,17 @@ func TestBoardSnapshot(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux(h).ServeHTTP(w, r)
 	body := w.Body.String()
+	// SIN-63943 / AC #8 — board page now composes via shell.Layout,
+	// which owns the page-level <main class="app-shell__main"> chrome
+	// (CTO ACK comment 87f0e262). The legacy <main class="funnel-shell">
+	// wrapper was nested inside the new shell-owned main and demoted to
+	// a <section>; the added topbar pin asserts the shell chrome is
+	// actually wired so future careless refactors that drop the
+	// shell.MustParse composition still light up the snapshot.
 	wantStable := []string{
 		`<title>Funil</title>`,
-		`<main class="funnel-shell"`,
+		`<main class="app-shell__main"`,
+		`<header class="app-shell__topbar"`,
 		`<section class="funnel-columns"`,
 		`aria-label="Estágios do funil"`,
 		`hx-target="#funnel-modal"`,

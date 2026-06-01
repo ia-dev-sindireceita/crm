@@ -207,3 +207,160 @@
   color: #6b7280;
   font-style: italic;
 }
+
+/* SIN-63943 / UX-F6 — analytical header + drawer + filters. */
+
+.funnel-stats-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.funnel-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.funnel-filters__label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: #4b5563;
+  gap: 4px;
+}
+
+.funnel-filters__label select {
+  font-size: 13px;
+  padding: 4px 6px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.funnel-filters__submit,
+.funnel-filters__drawer {
+  font-size: 13px;
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.funnel-filters__submit {
+  background: #4338ca;
+  color: #ffffff;
+  border-color: #4338ca;
+}
+
+.funnel-filters__drawer:hover,
+.funnel-filters__submit:hover {
+  filter: brightness(0.95);
+}
+
+.funnel-stats-header__kpis {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  color: #1f2937;
+}
+
+.funnel-stats-header__kpis strong {
+  color: #047857;
+  font-weight: 600;
+}
+
+.funnel-column__avg,
+.funnel-column__conv {
+  font-size: 11px;
+  color: #6b7280;
+  margin-left: 6px;
+}
+
+.funnel-column__conv {
+  color: #047857;
+}
+
+.funnel-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.funnel-drawer__panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 100vw);
+  background: #ffffff;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.12);
+  overflow-y: auto;
+  pointer-events: auto;
+  padding: 16px 20px;
+}
+
+.funnel-drawer__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+}
+
+.funnel-drawer__close {
+  background: transparent;
+  border: 0;
+  font-size: 22px;
+  cursor: pointer;
+  color: #6b7280;
+}
+
+.funnel-drawer__section {
+  margin-bottom: 18px;
+}
+
+.funnel-drawer__section h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: #1f2937;
+}
+
+.funnel-drawer__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.funnel-drawer__table th,
+.funnel-drawer__table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.funnel-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

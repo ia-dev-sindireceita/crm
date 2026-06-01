@@ -1,0 +1,58 @@
+{{define "funnel_stats_header"}}
+<section id="funnel-stats-header" class="funnel-stats-header" aria-label="Estatísticas do funil">
+  {{- if funnelCanSeeStats .}}
+  <form class="funnel-filters"
+        id="funnel-filters"
+        hx-get="/funnel"
+        hx-target="#funnel-board-area"
+        hx-select="#funnel-board-area"
+        hx-swap="outerHTML"
+        hx-trigger="change from:select,submit"
+        aria-label="Filtros do funil">
+    <label class="funnel-filters__label">
+      Período
+      {{- $period := funnelFilterValue . "Period"}}
+      <select name="period">
+        <option value="7d"{{if eq $period "7d"}} selected{{end}}>Últimos 7 dias</option>
+        <option value="30d"{{if or (eq $period "") (eq $period "30d")}} selected{{end}}>Últimos 30 dias</option>
+        <option value="90d"{{if eq $period "90d"}} selected{{end}}>Últimos 90 dias</option>
+      </select>
+    </label>
+    <label class="funnel-filters__label">
+      Atendente
+      {{- $owner := funnelFilterValue . "Owner"}}
+      <select name="owner">
+        <option value=""{{if eq $owner ""}} selected{{end}}>Todos</option>
+        <option value="me"{{if eq $owner "me"}} selected{{end}}>Apenas meus</option>
+      </select>
+    </label>
+    <button type="submit" class="funnel-filters__submit">Atualizar</button>
+    {{- if funnelCanSeeTeams .}}
+    <button type="button"
+            class="funnel-filters__drawer"
+            hx-get="/funnel/stats?view=drawer"
+            hx-include="#funnel-filters"
+            hx-target="#funnel-stats-drawer"
+            hx-swap="innerHTML"
+            aria-label="Abrir drawer de estatísticas">Estatísticas detalhadas</button>
+    {{- else}}
+    <button type="button"
+            class="funnel-filters__drawer"
+            hx-get="/funnel/stats?view=drawer"
+            hx-include="#funnel-filters"
+            hx-target="#funnel-stats-drawer"
+            hx-swap="innerHTML"
+            aria-label="Abrir drawer de estatísticas">Estatísticas por atendente</button>
+    {{- end}}
+  </form>
+  {{- end}}
+  {{- with funnelStats .}}
+  <ul class="funnel-stats-header__kpis" data-testid="funnel-kpis">
+    <li>Conversas no funil: <strong>{{.HeaderKPIs.TotalActive}}</strong></li>
+    <li>Ganhas: <strong>{{.HeaderKPIs.WonCount}} ({{printf "%.1f%%" (mulf .HeaderKPIs.WonRate 100.0)}})</strong></li>
+    <li>Perdidas: <strong>{{.HeaderKPIs.LostCount}}</strong></li>
+    <li>Tempo médio até ganho: <strong>{{durFmt .HeaderKPIs.AvgTimeToWin}}</strong></li>
+  </ul>
+  {{- end}}
+</section>
+{{end}}
