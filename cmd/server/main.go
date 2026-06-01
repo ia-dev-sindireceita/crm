@@ -320,6 +320,14 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		WebInbox:         webInboxHandler,
 		Theme:            brandingStack.Theme,
 		Metrics:          metrics,
+		// SIN-63940 / UX-F3 — surface the custom-domain UI gate to
+		// /hello-tenant. The handler itself is built below by
+		// buildCustomDomainHandler; we cannot reuse its `cdHandler !=
+		// nil` because the IAM handler is wired first in the boot
+		// sequence. CUSTOM_DOMAIN_UI_ENABLED is the operator-facing
+		// switch, same env var buildCustomDomainHandler short-circuits
+		// on (see customdomain_wire.go).
+		CustomDomainEnabled: getenv(envCustomDomainUI) == "1",
 	})
 	defer iamCleanup()
 	if iamHandler != nil {

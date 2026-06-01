@@ -4,9 +4,28 @@
 {{define "title"}}{{.TenantName}} — CRM{{end}}
 {{define "content"}}
 <section class="hello-tenant">
-  <h1>Hello, {{.TenantName}}</h1>
-  <p>Você está autenticado em <strong data-testid="tenant-name">{{.TenantName}}</strong>.</p>
-  <p>User ID: <code data-testid="user-id">{{.UserID}}</code></p>
+  <header class="hello-tenant__greeting">
+    <h1>Olá, <strong>{{shellUserDisplayName .}}</strong></h1>
+    <p>Você está em <strong data-testid="tenant-name">{{.TenantName}}</strong>.</p>
+    <span hidden data-testid="user-id">{{.UserID}}</span>
+  </header>
+  {{with helloCards .}}
+  <section class="hello-tenant__cards" aria-label="Atalhos para o seu trabalho" data-testid="dashboard-cards">
+    {{- range .}}
+    <article class="hello-tenant__card" data-testid="card-{{.Path}}">
+      <h2>{{.Label}}</h2>
+      {{- if .Description}}
+      <p>{{.Description}}</p>
+      {{- end}}
+      {{- if .Available}}
+      <a class="hello-tenant__card-link" href="{{.Path}}">Abrir</a>
+      {{- else}}
+      <p class="hello-tenant__card-disabled" aria-disabled="true">Indisponível neste ambiente — verifique configuração do servidor.</p>
+      {{- end}}
+    </article>
+    {{- end}}
+  </section>
+  {{end}}
   {{with helloSurfaces .}}
   <nav aria-label="Áreas do CRM" data-testid="surfaces-nav">
     <h2>Áreas disponíveis</h2>

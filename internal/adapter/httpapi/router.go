@@ -480,6 +480,17 @@ type Deps struct {
 	// exercise the MFA surface keep their pre-PR behaviour and the
 	// legacy single-step handler.LoginPost stays mounted.
 	UserMFA UserMFARoutes
+
+	// CustomDomainEnabled reports whether the public-mux custom-domain
+	// handler is mounted in the current process (SIN-62259). The actual
+	// route subtree (`/tenant/custom-domains*`) lives on the public mux,
+	// not in this chi router, so there is no http.Handler slot here —
+	// only the boolean presence signal. SIN-63940 / UX-F3 surfaces the
+	// flag on /hello-tenant so an operator who has CUSTOM_DOMAIN_UI_
+	// ENABLED=1 in their env sees the link go live; when the env flag
+	// is unset the card renders disabled with the standard "Indisponível
+	// neste ambiente" hint.
+	CustomDomainEnabled bool
 }
 
 // LGPDRoutes bundles the two inner handlers and the shared rate-limit
@@ -780,6 +791,24 @@ func NewRouter(deps Deps) http.Handler {
 				PrivacyEnabled:     deps.WebPrivacy != nil,
 				AIPolicyEnabled:    deps.WebAIPolicy != nil,
 				ConsentEnabled:     deps.WebConsent != nil,
+				// SIN-63940 / UX-F3 — Fase 6 surfaces. Each flag reads
+				// the matching dep slot the wire layer fills in
+				// cmd/server; an empty/nil dep falls back to a disabled
+				// card on the dashboard ("Indisponível neste ambiente —
+				// verifique configuração do servidor.") rather than a
+				// dead link, so the gap is visible to the operator.
+				// The non-nil Extended pointer is the explicit opt-in
+				// to the 13-entry index — legacy router_test.go fixtures
+				// that build HelloTenantDeps{} keep the 7-entry SIN-
+				// 63774 baseline.
+				Extended: &handler.HelloTenantExtendedDeps{
+					InboxEnabled:        deps.WebInbox != nil,
+					BillingEnabled:      deps.WebBillingInvoices != nil,
+					BrandingEnabled:     deps.WebBranding != nil,
+					LGPDEnabled:         deps.WebLGPD.RequestsPage != nil,
+					MFAEnabled:          deps.UserMFA.Setup != nil,
+					CustomDomainEnabled: deps.CustomDomainEnabled,
+				},
 			}))
 			if deps.Authorizer != nil {
 				helloTenant = middleware.RequireAuth(middleware.RequireAuthDeps{})(

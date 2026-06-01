@@ -237,6 +237,17 @@ type iamHandlerOpts struct {
 	// as it did pre-SIN-63105 — /metrics returns 404 and the counters
 	// stay silent.
 	Metrics *obs.Metrics
+
+	// CustomDomainEnabled mirrors the SIN-62259 boot-time decision in
+	// buildCustomDomainHandler. The actual `/tenant/custom-domains*`
+	// route subtree lives on the public mux (mounted in main.go via
+	// mux.Handle("/", cdHandler)), but the SIN-63940 /hello-tenant
+	// landing surfaces the link too; this flag is the only signal the
+	// IAM router needs to flip the card from disabled to live. main.go
+	// derives the value from `getenv("CUSTOM_DOMAIN_UI_ENABLED") == "1"`
+	// because buildIAMHandler runs BEFORE buildCustomDomainHandler in
+	// the boot sequence and cannot inspect the resulting handler.
+	CustomDomainEnabled bool
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -401,22 +412,23 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		// SessionToucher is nil — Activity middleware deferred to batch
 		// that lands the session role/last_activity DB columns (0077).
 		// Master MFA deps deferred to batch 17 (SIN-62526).
-		WebContacts:       opts.WebContacts,
-		WebFunnel:         opts.WebFunnel,
-		WebPrivacy:        opts.WebPrivacy,
-		WebAIPolicy:       opts.WebAIPolicy,
-		WebCatalog:        opts.WebCatalog,
-		WebCampaigns:      opts.WebCampaigns,
-		WebFunnelRules:    opts.WebFunnelRules,
-		WebCampaignPublic: webCampaignPublic,
-		WebBranding:       opts.WebBranding,
-		WebLGPD:           lgpdRoutes,
-		WebPublicPrivacy:  opts.WebPublicPrivacy,
-		WebConsent:        opts.WebConsent,
-		WebInbox:          opts.WebInbox,
-		Theme:             opts.Theme,
-		Metrics:           opts.Metrics,
-		UserMFA:           userMFARoutes,
+		WebContacts:         opts.WebContacts,
+		WebFunnel:           opts.WebFunnel,
+		WebPrivacy:          opts.WebPrivacy,
+		WebAIPolicy:         opts.WebAIPolicy,
+		WebCatalog:          opts.WebCatalog,
+		WebCampaigns:        opts.WebCampaigns,
+		WebFunnelRules:      opts.WebFunnelRules,
+		WebCampaignPublic:   webCampaignPublic,
+		WebBranding:         opts.WebBranding,
+		WebLGPD:             lgpdRoutes,
+		WebPublicPrivacy:    opts.WebPublicPrivacy,
+		WebConsent:          opts.WebConsent,
+		WebInbox:            opts.WebInbox,
+		Theme:               opts.Theme,
+		Metrics:             opts.Metrics,
+		UserMFA:             userMFARoutes,
+		CustomDomainEnabled: opts.CustomDomainEnabled,
 	})
 
 	fullCleanup := func() {
