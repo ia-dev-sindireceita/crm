@@ -41,12 +41,14 @@ func seedAIPolicyTenant(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 }
 
 // freshDBWithAIPolicyAdapter applies the migration chain needed by
-// ai_policy. Reuses the same prerequisites as the W1A migration
-// acceptance test so any drift between the two is caught the next
-// time the chain changes.
+// ai_policy. Reuses the W1A prerequisites and then chains the
+// SIN-63945 / UX-F8 0118_ai_policy_structured_fields migration so the
+// adapter test runs against the production-shaped schema (the adapter
+// now SELECT/INSERTs structured_fields as part of the F8 feature).
 func freshDBWithAIPolicyAdapter(t *testing.T) *testpg.DB {
 	t.Helper()
-	db, _ := freshDBWithAIW1A(t)
+	db, ctx := freshDBWithAIW1A(t)
+	applyChain(t, ctx, db, "0118_ai_policy_structured_fields.up.sql")
 	return db
 }
 

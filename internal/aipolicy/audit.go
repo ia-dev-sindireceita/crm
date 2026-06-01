@@ -2,6 +2,7 @@ package aipolicy
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,7 +61,20 @@ type AuditEvent struct {
 const (
 	FieldCreated = "__created__"
 	FieldDeleted = "__deleted__"
+
+	// FieldOptInPrefix is the audit-row prefix for per-structured-field
+	// opt-in toggles (SIN-63945 / UX-F8, lgpd-field-spec §"Opt-in
+	// semantics"). One row is emitted per field that flipped during an
+	// Upsert; Field column reads e.g. "field_opt_in.email" so the audit
+	// reader can group by event family. OldValue / NewValue are bools.
+	FieldOptInPrefix = "field_opt_in."
 )
+
+// FieldOptInName returns the audit-row Field column value for a
+// per-structured-field opt-in toggle. The prefix keeps the event family
+// query-able (LIKE 'field_opt_in.%') without polluting the existing
+// per-column ("model", "tone", …) namespace.
+func FieldOptInName(field string) string { return FieldOptInPrefix + field }
 
 // AuditLogger is the storage port for ai_policy_audit rows. The
 // decorator (RecordingRepository) is the only caller in production;
@@ -367,7 +381,64 @@ func DiffPolicies(prev, next Policy, hadPrev bool) []AuditEvent {
 	if prev.OptIn != next.OptIn {
 		events = append(events, AuditEvent{Field: "opt_in", OldValue: prev.OptIn, NewValue: next.OptIn})
 	}
+	// Per-structured-field opt-in deltas: one event per name that flipped
+	// either ON (added to next.StructuredFields) or OFF (removed). The
+	// audit row carries Field = "field_opt_in.<name>" and bool old/new
+	// values, matching the SE spec's regression-test contract (test #4).
+	events = append(events, diffStructuredFields(prev.StructuredFields, next.StructuredFields)...)
 	return events
+}
+
+// diffStructuredFields builds the per-field opt-in AuditEvent slice for
+// the (prev → next) transition. Order is deterministic (sorted by field
+// name) so audit-table queries and snapshot assertions stay stable.
+func diffStructuredFields(prev, next []string) []AuditEvent {
+	prevSet := map[string]struct{}{}
+	for _, f := range prev {
+		prevSet[f] = struct{}{}
+	}
+	nextSet := map[string]struct{}{}
+	for _, f := range next {
+		nextSet[f] = struct{}{}
+	}
+	changed := map[string]struct {
+		old bool
+		new bool
+	}{}
+	for f := range prevSet {
+		if _, in := nextSet[f]; !in {
+			changed[f] = struct {
+				old bool
+				new bool
+			}{old: true, new: false}
+		}
+	}
+	for f := range nextSet {
+		if _, in := prevSet[f]; !in {
+			changed[f] = struct {
+				old bool
+				new bool
+			}{old: false, new: true}
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(changed))
+	for f := range changed {
+		names = append(names, f)
+	}
+	sort.Strings(names)
+	out := make([]AuditEvent, 0, len(names))
+	for _, name := range names {
+		c := changed[name]
+		out = append(out, AuditEvent{
+			Field:    FieldOptInName(name),
+			OldValue: c.old,
+			NewValue: c.new,
+		})
+	}
+	return out
 }
 
 // policySnapshot renders a Policy as a map suitable for the
@@ -375,13 +446,18 @@ func DiffPolicies(prev, next Policy, hadPrev bool) []AuditEvent {
 // columns are included; identity columns (TenantID, ScopeType,
 // ScopeID) live on the parent AuditEvent.
 func policySnapshot(p Policy) map[string]any {
+	fields := append([]string(nil), p.StructuredFields...)
+	if fields == nil {
+		fields = []string{}
+	}
 	return map[string]any{
-		"model":          p.Model,
-		"prompt_version": p.PromptVersion,
-		"tone":           p.Tone,
-		"language":       p.Language,
-		"ai_enabled":     p.AIEnabled,
-		"anonymize":      p.Anonymize,
-		"opt_in":         p.OptIn,
+		"model":             p.Model,
+		"prompt_version":    p.PromptVersion,
+		"tone":              p.Tone,
+		"language":          p.Language,
+		"ai_enabled":        p.AIEnabled,
+		"anonymize":         p.Anonymize,
+		"opt_in":            p.OptIn,
+		"structured_fields": fields,
 	}
 }
