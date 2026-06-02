@@ -48,6 +48,17 @@ var ErrEmptyPrompt = errors.New("aiassist: prompt must not be empty")
 // error is preserved via errors.Unwrap.
 var ErrLLMUnavailable = errors.New("aiassist: LLM unavailable")
 
+// ErrLGPDBlocked is returned by the Summarize use case when the
+// resolved Policy.StructuredFields slice carries an entry that the
+// aipolicy.LGPDFieldCatalog classifies as TierRed (or names a field the
+// catalog does not know). The resolver and the form-side validator
+// (aipolicy.ValidateStructuredFields) already strip Red names; this
+// sentinel is defence in depth at the use-case boundary so a future
+// schema change, a hand-crafted database row, or a malicious migration
+// cannot funnel a sensitive name into the prompt assembly path. SIN-63995
+// (UX-F8 part-2) — paired with ADR-0041 D2.
+var ErrLGPDBlocked = errors.New("aiassist: LGPD-blocked field in structured-fields opt-in set")
+
 // ErrRateLimited is returned by Summarize when the rate limiter denies
 // the call. It is multi-wrapped together with ErrLLMUnavailable so
 // existing callers that only branch on ErrLLMUnavailable keep working

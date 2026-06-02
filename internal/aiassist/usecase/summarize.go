@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -201,7 +202,12 @@ func (s *Service) Summarize(ctx context.Context, req SummarizeRequest) (*Summari
 		return &SummarizeResponse{Summary: cached, CacheHit: true}, nil
 	}
 
-	reservation, llmResp, err := s.reserveAndCall(ctx, req, policy)
+	dispatchPrompt, err := s.buildDispatchPrompt(ctx, req, policy)
+	if err != nil {
+		return nil, err
+	}
+
+	reservation, llmResp, err := s.reserveAndCall(ctx, req, policy, dispatchPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +217,132 @@ func (s *Service) Summarize(ctx context.Context, req SummarizeRequest) (*Summari
 		return nil, err
 	}
 	return &SummarizeResponse{Summary: committed, CacheHit: false}, nil
+}
+
+// buildDispatchPrompt assembles the final text the LLM adapter receives.
+// Two transformations apply, in order:
+//
+//  1. The free-text message body (req.Prompt) is fed through the wired
+//     Anonymizer when policy.Anonymize is true and the use case has an
+//     anonymizer wired. This preserves ADR-0041 D3 — every payload that
+//     leaves for an external LLM passes through the anonymizer first —
+//     and is the cleartext-path guard for SIN-63995 AC #5: even with
+//     Yellow structured fields opted-in, a bare CPF / phone / email in
+//     the body is still tokenised before dispatch.
+//
+//  2. The Policy.StructuredFields set is materialised into a named
+//     context block via aipolicy.LGPDFieldCatalog().PromptForm. Yellow
+//     entries render as their tokenised PromptForm (e.g.
+//     `customer.email = "[PII:EMAIL]"`); Green entries render
+//     unconditionally so data-minimisation does not silently lose the
+//     non-PII context (customer.display_name, channel, ...). Red entries
+//     are rejected with aiassist.ErrLGPDBlocked — defence in depth on
+//     top of aipolicy.ValidateStructuredFields.
+//
+// The function NEVER reads cleartext values from a contact aggregate:
+// only the catalog's PromptForm strings reach the prompt. That is the
+// LGPD invariant the SE spec calls out (lgpd-field-spec §"Sent how").
+func (s *Service) buildDispatchPrompt(ctx context.Context, req SummarizeRequest, policy aiassist.Policy) (string, error) {
+	body, err := s.anonymizeForDispatch(ctx, req.Prompt, policy)
+	if err != nil {
+		return "", err
+	}
+	contextBlock, err := assembleStructuredContext(policy.StructuredFields)
+	if err != nil {
+		return "", err
+	}
+	if contextBlock == "" {
+		return body, nil
+	}
+	return contextBlock + "\n" + body, nil
+}
+
+// anonymizeForDispatch applies the wired Anonymizer to the body when
+// policy.Anonymize is true. When the anonymizer is not wired (test
+// convenience, same gate as the consent path) the body passes through
+// unchanged. Failure is fail-closed: the use case never falls back to
+// cleartext on an anonymizer error, matching the consent gate.
+func (s *Service) anonymizeForDispatch(ctx context.Context, body string, policy aiassist.Policy) (string, error) {
+	if s.anonymizer == nil || !policy.Anonymize {
+		return body, nil
+	}
+	out, err := s.anonymizer.Anonymize(ctx, body)
+	if err != nil {
+		return "", fmt.Errorf("aiassist/usecase: anonymize for dispatch: %w", err)
+	}
+	return out, nil
+}
+
+// structuredContextHeader is the marker line the assembled prompt
+// prepends before the per-field PromptForm entries. The model sees a
+// clearly-labelled block so reviewers reading prompt logs can tell the
+// structured context apart from the conversation body. The literal is
+// stable so downstream prompt evaluations can pin against it.
+const structuredContextHeader = "# Structured customer context (LGPD-classified — never cleartext for PII)\n"
+
+// assembleStructuredContext renders the structured-fields block. Green
+// entries from the catalog are always included (data-minimisation:
+// unconditional non-PII fields); Yellow entries are included only when
+// named in opted; Red entries trigger ErrLGPDBlocked even though the
+// resolver should already have stripped them.
+//
+// Unknown names also trigger ErrLGPDBlocked: the catalog is a closed
+// allow-list and a name the catalog does not know cannot be safely
+// rendered, so we fail-closed rather than skip.
+//
+// The empty case (no Yellow opt-in) still emits the Green block — the
+// LLM always sees the operational-necessity context. The function
+// returns "" only if the catalog itself reports no Green entries, which
+// is a coding error (catalog is hard-coded to ship at least four Greens).
+func assembleStructuredContext(opted []string) (string, error) {
+	// Quick membership lookup on the opt-in set.
+	optedSet := make(map[string]struct{}, len(opted))
+	for _, name := range opted {
+		optedSet[strings.TrimSpace(name)] = struct{}{}
+	}
+
+	// Defence in depth: every name in the opt-in set MUST be a Yellow
+	// catalog entry. Red entries are LGPD-blocked; Green entries are
+	// unconditional and never persisted in the opt-in slice; unknown
+	// names are not in the closed allow-list. All three cases fail
+	// closed with ErrLGPDBlocked so a future bug in the resolver / form
+	// / database cannot funnel a sensitive name into the prompt.
+	for name := range optedSet {
+		if name == "" {
+			continue
+		}
+		entry, ok := aipolicy.LGPDFieldByName(name)
+		if !ok {
+			return "", fmt.Errorf("%w: unknown field %q", aiassist.ErrLGPDBlocked, name)
+		}
+		switch entry.Tier {
+		case aipolicy.TierRed:
+			return "", fmt.Errorf("%w: red-tier field %q", aiassist.ErrLGPDBlocked, name)
+		case aipolicy.TierGreen:
+			return "", fmt.Errorf("%w: green-tier field %q must not appear in opt-in set", aiassist.ErrLGPDBlocked, name)
+		case aipolicy.TierYellow:
+			// expected
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(structuredContextHeader)
+	for _, entry := range aipolicy.LGPDFieldCatalog() {
+		switch entry.Tier {
+		case aipolicy.TierGreen:
+			// Unconditional: rendered every call.
+			b.WriteString(entry.PromptForm)
+			b.WriteByte('\n')
+		case aipolicy.TierYellow:
+			if _, ok := optedSet[entry.Name]; ok {
+				b.WriteString(entry.PromptForm)
+				b.WriteByte('\n')
+			}
+		case aipolicy.TierRed:
+			// Red is never rendered, regardless of opt-in.
+		}
+	}
+	return b.String(), nil
 }
 
 // Invalidate marks every currently-valid summary on the conversation
@@ -348,12 +480,18 @@ func idempotencyKey(req SummarizeRequest, phaseSuffix string) string {
 // catch a stranded reservation eventually, but releasing eagerly keeps
 // the user-visible balance accurate). The returned reservation pointer
 // is the surviving handle the caller hands to commitAndPersist.
+//
+// dispatchPrompt is the fully assembled prompt (structured-fields
+// block + anonymised body) produced by buildDispatchPrompt. The wallet
+// reservation and the LLM call both see the same string so the
+// estimator charges for what actually leaves the process.
 func (s *Service) reserveAndCall(
 	ctx context.Context,
 	req SummarizeRequest,
 	policy aiassist.Policy,
+	dispatchPrompt string,
 ) (*wallet.Reservation, aiassist.LLMResponse, error) {
-	estimate := aiassist.EstimateReservation(req.Prompt, policy.Model, policy.MaxOutputTokens)
+	estimate := aiassist.EstimateReservation(dispatchPrompt, policy.Model, policy.MaxOutputTokens)
 	reserveKey := idempotencyKey(req, reservationKeySuffix)
 	reservation, err := s.walletSvc.Reserve(ctx, req.TenantID, estimate, reserveKey)
 	if err != nil {
@@ -364,7 +502,7 @@ func (s *Service) reserveAndCall(
 	}
 
 	llmReq := aiassist.LLMRequest{
-		Prompt:         req.Prompt,
+		Prompt:         dispatchPrompt,
 		Model:          policy.Model,
 		MaxTokens:      int(policy.MaxOutputTokens),
 		IdempotencyKey: idempotencyKey(req, ""),

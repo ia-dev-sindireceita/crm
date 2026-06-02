@@ -132,6 +132,18 @@ type Policy struct {
 	// nothing to gate against") and is the documented test-only
 	// value.
 	PromptVersion string
+
+	// StructuredFields lists the Yellow-tier contact-aggregate field
+	// names the operator opted into for this policy scope (UX-F8 /
+	// SIN-63945). The use case treats each entry as a name into
+	// aipolicy.LGPDFieldCatalog and emits the matching PromptForm —
+	// always the tokenised form (e.g. customer.email = "[PII:EMAIL]"),
+	// never the cleartext value. Green-tier names are unconditional
+	// and not carried in this slice; Red-tier names are stripped at
+	// the resolver boundary (ValidateStructuredFields), and the use
+	// case re-asserts the invariant with a typed sentinel
+	// (ErrLGPDBlocked) for defence in depth.
+	StructuredFields []string
 }
 
 // PolicyResolver is the port the use case calls to pick the effective
