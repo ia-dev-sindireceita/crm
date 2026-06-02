@@ -459,12 +459,14 @@ jobs:
               cat /tmp/login.body
               return 1
             fi
-            if ! grep -q "Set-Cookie: __Host-sess-tenant" /tmp/login.headers; then
+            # Staging serves HTTP/2 (lowercase header names per RFC 7540 §8.1.2).
+            # Match Set-Cookie case-insensitively, matching the Location grep below.
+            if ! grep -qi "Set-Cookie: __Host-sess-tenant" /tmp/login.headers; then
               echo "::error::missing __Host-sess-tenant cookie"
               cat /tmp/login.headers
               return 1
             fi
-            if ! grep -q "Set-Cookie: __Host-csrf" /tmp/login.headers; then
+            if ! grep -qi "Set-Cookie: __Host-csrf" /tmp/login.headers; then
               echo "::error::missing __Host-csrf cookie"
               cat /tmp/login.headers
               return 1
