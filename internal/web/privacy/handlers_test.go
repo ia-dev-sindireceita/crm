@@ -316,6 +316,32 @@ func TestRoutes_OnlyGET(t *testing.T) {
 	}
 }
 
+// TestView_RendersPrintHint pins SIN-62917 option (c.1) — the
+// disclosure page surfaces a "save as PDF via Ctrl+P" hint so a
+// tenant can archive the DPA disclosure without us shipping any
+// PDF-generation dependency. The hint must carry the
+// .privacy-print-hint class so the print stylesheet can hide it
+// from the printed output (the help text itself is screen-only).
+func TestView_RendersPrintHint(t *testing.T) {
+	mux := newHandler(t, webprivacy.Deps{
+		Model: modelOK("openrouter/auto"),
+		Now:   fixedClock(time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)),
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, newRequest(t, http.MethodGet, "/settings/privacy", tenantFixture()))
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="privacy-print-hint"`) {
+		t.Errorf("body missing .privacy-print-hint container — the print stylesheet relies on it to hide the hint from the printed page")
+	}
+	if !strings.Contains(body, "Salvar como PDF") {
+		t.Errorf("body missing the user-facing %q action label", "Salvar como PDF")
+	}
+	if !strings.Contains(body, "<kbd>Ctrl</kbd>") || !strings.Contains(body, "<kbd>P</kbd>") {
+		t.Errorf("body missing the Ctrl/P kbd hints")
+	}
+}
+
 // TestView_RendersUnder300ms is a coarse latency floor for AC #1 (p95
 // < 300ms). The test runs the render N times and asserts the mean
 // latency is well below the budget. We do not measure p95 directly in

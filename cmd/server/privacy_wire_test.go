@@ -278,3 +278,32 @@ func TestPrivacyStylesheet_ServedAsCSS(t *testing.T) {
 		}
 	}
 }
+
+// TestPrivacyStylesheet_HasPrintMedia is the SIN-62917 / option
+// (c.1) regression guard: the print stylesheet must declare an
+// @media print block AND hide the .privacy-print-hint helper, or
+// browsers will print the on-screen Ctrl+P hint into the saved
+// PDF — wrong content for an LGPD archival copy.
+func TestPrivacyStylesheet_HasPrintMedia(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../../web/static"))))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/static/css/privacy.css", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{
+		"@media print",
+		".privacy-print-hint",
+		"@page",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("privacy.css missing %q — print-friendly layout broken", needle)
+		}
+	}
+}
