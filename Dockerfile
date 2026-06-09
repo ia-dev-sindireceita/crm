@@ -26,7 +26,7 @@
 # syntax=docker/dockerfile:1.7
 
 # --- builder stage ---------------------------------------------------------
-FROM golang:1.26.3-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS builder
+FROM golang:1.26.4-alpine@sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f AS builder
 
 WORKDIR /src
 
@@ -62,9 +62,9 @@ ARG COMMIT_SHA=unknown
 
 # CGO_ENABLED=0 + -trimpath + -ldflags="-s -w" yields a small, reproducible,
 # statically linked binary. GOFLAGS prevents the toolchain from auto-downloading
-# a different Go version at build time (we want the pinned 1.26.3 alpine image,
-# matching go.mod's `toolchain go1.26.3` directive — bumped here as a follow-up
-# to SIN-62297 c4b2c73 toolchain pin so the in-container compile matches CI).
+# a different Go version at build time (we want the pinned 1.26.4 alpine image,
+# matching go.mod's `toolchain go1.26.4` directive — bumped under SIN-64487 to
+# pick up the CVE-2026-42504 stdlib fix; the in-container compile matches CI).
 # -X github.com/.../internal/version.commitSHA=${COMMIT_SHA} injects the SHA
 # into the server binary only — workers omit the -X so changing the build
 # arg does not bust their cached layers for unrelated rebuilds.
