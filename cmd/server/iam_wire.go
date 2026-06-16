@@ -220,6 +220,14 @@ type iamHandlerOpts struct {
 	// unmounted. Built by the wire layer in consent_wire.go.
 	WebConsent http.Handler
 
+	// WebBillingInvoices is the SIN-62963 HTMX PIX-invoice surface mux.
+	// Nil keeps the /billing/invoices* + /billing/dunning-banner routes
+	// unmounted; the wire in billing_invoices_wire.go owns its runtime
+	// + master_ops pgxpools and returns nil when either DSN is missing
+	// or a connection fails. SIN-64974 added this slot — the surface was
+	// shipped but never plumbed, leaving the routes 404 in staging.
+	WebBillingInvoices http.Handler
+
 	// WebInbox is the SIN-63821 operator inbox HTMX UI handler.
 	// Built by inbox_wire.go with stub use cases in W1 so the
 	// routes render the empty-inbox shell while the real channel
@@ -494,6 +502,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebLGPD:             lgpdRoutes,
 		WebPublicPrivacy:    opts.WebPublicPrivacy,
 		WebConsent:          opts.WebConsent,
+		WebBillingInvoices:  opts.WebBillingInvoices,
 		WebInbox:            opts.WebInbox,
 		WebWallet:           opts.WebWallet,
 		Theme:               opts.Theme,

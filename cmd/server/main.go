@@ -304,6 +304,15 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webConsentHandler, webConsentCleanup := buildConsentHandler(ctx, getenv)
 	defer webConsentCleanup()
 
+	// SIN-64974 — HTMX PIX-invoice surface (Fase 4, SIN-62963). The
+	// surface shipped its handler + adapters but was never wired in
+	// cmd/server, so the router's `if deps.WebBillingInvoices != nil`
+	// guard left /billing/invoices* 404'ing in staging (SIN-64964).
+	// Same fail-soft pattern: a nil handler leaves the routes unmounted
+	// when DATABASE_URL / MASTER_OPS_DATABASE_URL is unset.
+	webBillingInvoicesHandler, webBillingInvoicesCleanup := buildWebBillingInvoicesHandler(ctx, getenv)
+	defer webBillingInvoicesCleanup()
+
 	// SIN-63821 — operator inbox HTMX UI (parent SIN-63793). W1 wires
 	// the route shell with stub use cases so the surface mounts cleanly;
 	// W2/W4/W5 land the real channel adapter + WalletDebitor. Same
@@ -324,20 +333,21 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
 	// catch-all handler.
 	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv, iamHandlerOpts{
-		WebContacts:      webContactsHandler,
-		WebFunnel:        webFunnelHandler,
-		WebPrivacy:       webPrivacyHandler,
-		WebAIPolicy:      webAIPolicyHandler,
-		WebCatalog:       webCatalogHandler,
-		WebCampaigns:     webCampaignsHandler,
-		WebFunnelRules:   webFunnelRulesHandler,
-		WebBranding:      brandingStack.Handler,
-		WebPublicPrivacy: webPublicPrivacyHandler,
-		WebConsent:       webConsentHandler,
-		WebInbox:         webInboxHandler,
-		WebWallet:        webWalletHandler,
-		Theme:            brandingStack.Theme,
-		Metrics:          metrics,
+		WebContacts:        webContactsHandler,
+		WebFunnel:          webFunnelHandler,
+		WebPrivacy:         webPrivacyHandler,
+		WebAIPolicy:        webAIPolicyHandler,
+		WebCatalog:         webCatalogHandler,
+		WebCampaigns:       webCampaignsHandler,
+		WebFunnelRules:     webFunnelRulesHandler,
+		WebBranding:        brandingStack.Handler,
+		WebPublicPrivacy:   webPublicPrivacyHandler,
+		WebConsent:         webConsentHandler,
+		WebBillingInvoices: webBillingInvoicesHandler,
+		WebInbox:           webInboxHandler,
+		WebWallet:          webWalletHandler,
+		Theme:              brandingStack.Theme,
+		Metrics:            metrics,
 		// SIN-63940 / UX-F3 — surface the custom-domain UI gate to
 		// /hello-tenant. The handler itself is built below by
 		// buildCustomDomainHandler; we cannot reuse its `cdHandler !=
