@@ -180,14 +180,26 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		logger:  logger,
 	}
 
+	// Conversation-context read feeds the real channel scope to the
+	// AI-assist policy + customer panel (SIN-64969). Funnel readers are
+	// nil here: this dev/staging loop wires no funnel storage, so the
+	// stage fields degrade to zero-values (graceful) until the panel UI
+	// ticket wires them. Channel + contact + assignment resolve fully.
+	ctxUC, err := inboxusecase.NewGetConversationContext(deps.Repo, deps.Contacts, nil, nil)
+	if err != nil {
+		adapter.Stop()
+		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: conversation context usecase: %w", err)
+	}
+
 	handlerDeps := webinbox.Deps{
-		ListConversations: bootstrappedList,
-		ListMessages:      listMsgsUC,
-		SendOutbound:      sendUC,
-		GetMessage:        getMsgUC,
-		CSRFToken:         csrfTokenFromSessionContext,
-		UserID:            userIDFromSessionContext,
-		Logger:            logger,
+		ListConversations:   bootstrappedList,
+		ListMessages:        listMsgsUC,
+		SendOutbound:        sendUC,
+		GetMessage:          getMsgUC,
+		ConversationContext: ctxUC,
+		CSRFToken:           csrfTokenFromSessionContext,
+		UserID:              userIDFromSessionContext,
+		Logger:              logger,
 	}
 	h, err := webinbox.New(handlerDeps)
 	if err != nil {

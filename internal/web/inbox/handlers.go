@@ -54,6 +54,17 @@ type GetMessageUseCase interface {
 	Execute(ctx context.Context, in inboxusecase.GetMessageInput) (inboxusecase.GetMessageResult, error)
 }
 
+// GetConversationContextUseCase is the read side that gathers the
+// conversation's channel + (future side-panel) funnel/assignment
+// context (SIN-64969). The view handler uses it to feed the real
+// conversation channel scope to the AI-assist policy and the customer
+// panel, replacing the PR10 empty-scope stub. It is optional: when nil
+// the channel falls back to empty (the policy resolver then uses its
+// tenant-scope default), preserving the original behaviour.
+type GetConversationContextUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.GetConversationContextInput) (inboxusecase.GetConversationContextResult, error)
+}
+
 // CSRFTokenFn returns the request's CSRF token (typically sourced from
 // the session via the IAM auth middleware). The empty string is a
 // programming error: every handler runs after RequireAuth, which
@@ -92,6 +103,13 @@ type Deps struct {
 	// adapter that satisfies the port projects the contact onto
 	// CustomerInfo at the boundary.
 	CustomerInfo CustomerInfoLoader
+	// ConversationContext is the optional read-side that resolves the
+	// conversation's channel (SIN-64969). When wired, the view handler
+	// feeds the real channel scope to the AI-assist policy + customer
+	// panel; when nil the channel falls back to empty (the original PR10
+	// behaviour). It complements CustomerInfo (contact projection) — this
+	// one carries the channel + funnel/assignment context.
+	ConversationContext GetConversationContextUseCase
 }
 
 // CustomerInfoLoader is the read-side port that hydrates the customer
@@ -255,14 +273,33 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pre-render the assist button when the feature is wired. The
-	// channel/team scope is currently empty (filled by a future read
-	// use case, see PR10) — the policy resolver falls through to the
-	// tenant-scope row, which is the correct default.
+	// Resolve the real conversation channel for the AI-assist policy
+	// scope, the customer panel, and the view template (SIN-64969,
+	// replacing the PR10 empty-scope stub). The read is best-effort:
+	// ListMessages above already 404s a missing conversation, so a
+	// failure here degrades to the empty scope rather than failing the
+	// whole pane — the policy resolver then falls through to its
+	// tenant-scope default, which is the safe behaviour.
+	channel := ""
+	if h.deps.ConversationContext != nil {
+		ctxRes, err := h.deps.ConversationContext.Execute(r.Context(), inboxusecase.GetConversationContextInput{
+			TenantID:       tenant.ID,
+			ConversationID: conversationID,
+		})
+		if err != nil {
+			h.deps.Logger.Warn("web/inbox: conversation context read", "err", err)
+		} else {
+			channel = ctxRes.Context.Channel
+		}
+	}
+
+	// Pre-render the assist button when the feature is wired. The team
+	// scope stays empty (conversations carry no team affinity in v1);
+	// the channel scope is now the real conversation channel.
 	var assistHTML template.HTML
 	if h.deps.AIAssist.Summarizer != nil {
 		var buf strings.Builder
-		if err := h.renderAssistButton(r.Context(), &buf, tenant.ID, conversationID, "", "", token); err != nil {
+		if err := h.renderAssistButton(r.Context(), &buf, tenant.ID, conversationID, channel, "", token); err != nil {
 			h.deps.Logger.Error("web/inbox: render assist button", "err", err)
 		} else {
 			assistHTML = template.HTML(buf.String())
@@ -289,7 +326,6 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	var customerHTML template.HTML
 	{
 		var buf strings.Builder
-		channel := "" // filled by a future read use case (PR10)
 		if err := customerPanelTmpl.Execute(&buf, customerPanelData{
 			HasConversation: true,
 			ConversationID:  conversationID,
@@ -306,7 +342,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := conversationViewTmpl.Execute(w, viewData{
 		ConversationID: conversationID,
-		Channel:        "", // filled by a future read use case (PR10)
+		Channel:        channel,
 		Messages:       res.Items,
 		CSRFInput:      csrf.FormHidden(token),
 		CustomerPanel:  customerHTML,
