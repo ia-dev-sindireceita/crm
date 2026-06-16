@@ -988,6 +988,8 @@ func NewRouter(deps Deps) http.Handler {
 					// the post-login index in sync with the /dashboard mount
 					// (memory hello_tenant_sync_on_mount).
 					DashboardEnabled: deps.WebDashboard != nil,
+					// SIN-64977 — contacts management list link.
+					ContactsEnabled: deps.WebContacts != nil,
 				},
 			}))
 			if deps.Authorizer != nil {
@@ -1020,6 +1022,29 @@ func NewRouter(deps Deps) http.Handler {
 				webContacts := middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebContacts)
 				authed.Method(http.MethodGet, "/contacts/{contactID}", webContacts)
 				authed.Method(http.MethodPost, "/contacts/identity/split", webContacts)
+
+				// SIN-64977 — contacts management surface (list/search +
+				// edit). The read route (GET /contacts) gates on
+				// ActionTenantContactRead exactly like /hello-tenant; the
+				// edit routes gate on ActionTenantContactUpdate. The seed
+				// "atendente" role holds both actions (authorizer.go),
+				// avoiding the SIN-63793/63858 first-login 403. When
+				// Authorizer is nil (router tests that don't exercise the
+				// authz seam) the routes fall back to RequireAuth-only so
+				// existing suites keep their pre-PR behaviour.
+				contactsRead := webContacts
+				contactsWrite := webContacts
+				if deps.Authorizer != nil {
+					contactsRead = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantContactRead, nil)(deps.WebContacts),
+					)
+					contactsWrite = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantContactUpdate, nil)(deps.WebContacts),
+					)
+				}
+				authed.Method(http.MethodGet, "/contacts", contactsRead)
+				authed.Method(http.MethodGet, "/contacts/{contactID}/edit", contactsWrite)
+				authed.Method(http.MethodPost, "/contacts/{contactID}/edit", contactsWrite)
 			}
 
 			// SIN-62862 — HTMX funnel board UI (SIN-62797 follow-up).

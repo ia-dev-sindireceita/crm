@@ -31,12 +31,27 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
+	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
+	"github.com/pericles-luz/crm/internal/contacts"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
+	inboxdomain "github.com/pericles-luz/crm/internal/inbox"
 	webcontacts "github.com/pericles-luz/crm/internal/web/contacts"
 )
+
+// contactConversationReader is the narrow read port the contact detail
+// view uses for recent conversation history. The postgres inbox Store
+// satisfies it structurally (ListConversationsByContact). Declared here
+// in the composition root so the wire can hand it to
+// contactsusecase.NewGetContactDetail, whose own reader interface is
+// unexported.
+type contactConversationReader interface {
+	ListConversationsByContact(ctx context.Context, tenantID, contactID uuid.UUID, limit int) ([]*inboxdomain.Conversation, error)
+}
 
 // buildWebContactsHandler returns the HTMX contacts mux + a cleanup
 // closure that releases the pgxpool. A nil handler signals "skip
@@ -60,13 +75,30 @@ func buildWebContactsHandler(ctx context.Context, getenv func(string) string) (h
 		log.Printf("crm: web/contacts handler disabled — identity store: %v", err)
 		return nil, noop
 	}
-	handler, err := assembleWebContactsHandler(store)
+	// SIN-64977 — the management surface (list/search/detail/edit) reads
+	// the contacts.Repository adapter (Store) and the inbox conversation
+	// history reader. Both come off the same pool. A failure to build
+	// either degrades to the identity-split-only handler rather than
+	// dropping the whole surface.
+	contactsRepo, err := pgcontacts.New(pool)
+	if err != nil {
+		pool.Close()
+		log.Printf("crm: web/contacts handler disabled — contacts store: %v", err)
+		return nil, noop
+	}
+	var convReader contactConversationReader
+	if inboxStore, ierr := pginbox.New(pool); ierr != nil {
+		log.Printf("crm: web/contacts conversation history disabled — inbox store: %v", ierr)
+	} else {
+		convReader = inboxStore
+	}
+	handler, err := assembleWebContactsHandlerWith(store, contactsRepo, convReader)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/contacts handler disabled — assemble: %v", err)
 		return nil, noop
 	}
-	log.Printf("crm: web/contacts HTMX routes mounted on public listener")
+	log.Printf("crm: web/contacts HTMX routes mounted on public listener (management surface enabled)")
 	return handler, func() { pool.Close() }
 }
 
@@ -81,23 +113,45 @@ func buildWebContactsHandler(ctx context.Context, getenv func(string) string) (h
 // programmer bug and panic — preserving honest error reporting at the
 // boundary the caller actually exercises.
 func assembleWebContactsHandler(repo contactsusecase.IdentitySplitRepository) (http.Handler, error) {
-	if repo == nil {
+	return assembleWebContactsHandlerWith(repo, nil, nil)
+}
+
+// assembleWebContactsHandlerWith constructs the full management handler:
+// the identity-split use cases (always) plus the SIN-64977 list/detail/
+// edit use cases when contactsRepo is non-nil. convReader is optional —
+// nil degrades the detail view's conversation history to empty.
+//
+// The downstream Must* constructors panic only on a nil dependency; the
+// nil-repo guards here make those branches unreachable, so a panic would
+// be a genuine programmer bug rather than an operational error.
+func assembleWebContactsHandlerWith(
+	identityRepo contactsusecase.IdentitySplitRepository,
+	contactsRepo contacts.Repository,
+	convReader contactConversationReader,
+) (http.Handler, error) {
+	if identityRepo == nil {
 		return nil, errors.New("htmx_wire: identity split repository is nil")
 	}
-	loadUC, err := contactsusecase.NewLoadIdentityForContact(repo)
+	loadUC, err := contactsusecase.NewLoadIdentityForContact(identityRepo)
 	if err != nil {
 		panic(fmt.Errorf("htmx_wire: NewLoadIdentityForContact (unreachable): %w", err))
 	}
-	splitUC, err := contactsusecase.NewSplitIdentityLink(repo)
+	splitUC, err := contactsusecase.NewSplitIdentityLink(identityRepo)
 	if err != nil {
 		panic(fmt.Errorf("htmx_wire: NewSplitIdentityLink (unreachable): %w", err))
 	}
-	h, err := webcontacts.New(webcontacts.Deps{
+	deps := webcontacts.Deps{
 		LoadIdentity: loadUC,
 		SplitLink:    splitUC,
 		CSRFToken:    csrfTokenFromSessionContext,
 		Logger:       slog.Default(),
-	})
+	}
+	if contactsRepo != nil {
+		deps.ListContacts = contactsusecase.MustNewListContacts(contactsRepo)
+		deps.UpdateContact = contactsusecase.MustNewUpdateContact(contactsRepo)
+		deps.GetDetail = contactsusecase.MustNewGetContactDetail(contactsRepo, convReader)
+	}
+	h, err := webcontacts.New(deps)
 	if err != nil {
 		panic(fmt.Errorf("htmx_wire: webcontacts.New (unreachable): %w", err))
 	}
