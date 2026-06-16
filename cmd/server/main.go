@@ -197,6 +197,16 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 		ms.Register(mux)
 	}
 
+	// SIN-64971 Instagram inbound webhook → ReceiveInbound (conversation
+	// + contact upsert/identity + dedup). The dedicated /webhooks/instagram
+	// route is more specific than the generic Meta `/webhooks/{channel}/{token}`
+	// pattern, so Go 1.22's mux prefers it.
+	ig := buildInstagramWiring(ctx, getenv)
+	if ig != nil {
+		defer ig.Cleanup()
+		ig.Register(mux)
+	}
+
 	// SIN-62964 PIX Inter webhook receiver. Fail-soft on missing
 	// secret / DSN / Redis just like the other webhook wirings; the
 	// more-specific `POST /webhooks/pix/inter` pattern wins over the
