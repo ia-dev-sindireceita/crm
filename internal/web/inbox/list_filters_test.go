@@ -107,6 +107,44 @@ func TestList_RichRowRendersNameSnippetAndBadges(t *testing.T) {
 	}
 }
 
+func TestList_StateFilterPillsAreKeyboardAccessible(t *testing.T) {
+	t.Parallel()
+	summaries := &stubSummaries{res: inboxusecase.ListConversationSummariesResult{
+		Items: []inboxusecase.ConversationView{{
+			ID: uuid.New(), Channel: "whatsapp", State: "open",
+			ContactDisplayName: "Cliente", LastMessageAt: time.Now(),
+		}},
+	}}
+	h := newHandlerWithSummaries(t, summaries, &stubMessages{}, uuid.Nil)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, "/inbox?state=open", "", uuid.New()))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// WCAG 2.1.1: pills must be real links (focusable + no-JS fallback),
+	// each carrying an href equal to its hx-get target. The active pill is
+	// marked with aria-current, and the legacy role="button"/aria-pressed
+	// (which made them non-focusable) must be gone.
+	for _, want := range []string{
+		`href="/inbox?state=open`,
+		`href="/inbox?state=closed`,
+		`href="/inbox?state=&channel=`,
+		`aria-current="true"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("filter pills missing %q: %q", want, body)
+		}
+	}
+	for _, gone := range []string{`role="button"`, "aria-pressed"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("filter pills still carry legacy %q: %q", gone, body)
+		}
+	}
+}
+
 func TestList_OutboundSnippetGetsVocePrefix(t *testing.T) {
 	t.Parallel()
 	summaries := &stubSummaries{res: inboxusecase.ListConversationSummariesResult{

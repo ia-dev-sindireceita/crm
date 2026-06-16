@@ -321,14 +321,17 @@ var inboxListRegionTmpl = template.Must(template.New("inbox_list_region").Funcs(
 var inboxFiltersTmpl = template.Must(template.New("inbox_filters").Funcs(templateFuncs).Parse(`<form class="inbox-filters" role="search" aria-label="Filtrar conversas"
       hx-get="/inbox" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">
   <div class="inbox-filters__group" role="group" aria-label="Estado">
-    <a class="inbox-filters__pill{{if eq .Filters.State "open"}} is-active{{end}}" role="button"
-       aria-pressed="{{if eq .Filters.State "open"}}true{{else}}false{{end}}"
+    <a class="inbox-filters__pill{{if eq .Filters.State "open"}} is-active{{end}}"
+       href="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}"
+       {{if eq .Filters.State "open"}}aria-current="true"{{end}}
        hx-get="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}">Abertas</a>
-    <a class="inbox-filters__pill{{if eq .Filters.State "closed"}} is-active{{end}}" role="button"
-       aria-pressed="{{if eq .Filters.State "closed"}}true{{else}}false{{end}}"
+    <a class="inbox-filters__pill{{if eq .Filters.State "closed"}} is-active{{end}}"
+       href="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}"
+       {{if eq .Filters.State "closed"}}aria-current="true"{{end}}
        hx-get="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}">Fechadas</a>
-    <a class="inbox-filters__pill{{if eq .Filters.State ""}} is-active{{end}}" role="button"
-       aria-pressed="{{if eq .Filters.State ""}}true{{else}}false{{end}}"
+    <a class="inbox-filters__pill{{if eq .Filters.State ""}} is-active{{end}}"
+       href="/inbox?state=&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}"
+       {{if eq .Filters.State ""}}aria-current="true"{{end}}
        hx-get="/inbox?state=&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}">Todas</a>
   </div>
   <label class="inbox-filters__field">
