@@ -32,9 +32,12 @@ import (
 // is `bool` by type, never an error string: "mounted | not" is the
 // information ceiling — exposing the wire failure reason would leak
 // DSN / infra detail on an unauthenticated endpoint. Whether a surface
-// is mounted is already inferable by an unauthenticated HTTP probe, so
-// the boolean does not widen the attack surface. `omitempty` keeps the
-// legacy JSON shape unchanged for callers that do not wire the option.
+// is mounted is already inferable by an unauthenticated HTTP probe —
+// including the public surfaces (campaign_public, public_privacy, chat),
+// where a mounted route answers with its own non-404 semantics and a nil
+// handler answers a bare 404 — so the boolean does not widen the attack
+// surface. `omitempty` keeps the legacy JSON shape unchanged for callers
+// that do not wire the option.
 type healthResponse struct {
 	Status               string          `json:"status"`
 	CommitSHA            string          `json:"commit_sha"`

@@ -30,6 +30,8 @@ var stubHandler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 var allSurfaceKeys = []string{
 	"ai_policy", "catalog", "funnel", "funnel_rules",
 	"privacy", "campaigns", "consent", "inbox", "contacts",
+	"campaign_public", "public_privacy", "chat",
+	"branding", "wallet", "billing_invoices",
 }
 
 func TestDeps_WebSurfaces_KeySet(t *testing.T) {
@@ -66,17 +68,27 @@ func TestDeps_WebSurfaces_PresentHandlersTrue(t *testing.T) {
 	t.Parallel()
 	// Wire every gated surface; each must report true.
 	deps := httpapi.Deps{
-		WebAIPolicy:    stubHandler,
-		WebCatalog:     stubHandler,
-		WebFunnel:      stubHandler,
-		WebFunnelRules: stubHandler,
-		WebPrivacy:     stubHandler,
-		WebCampaigns:   stubHandler,
-		WebConsent:     stubHandler,
-		WebInbox:       stubHandler,
-		WebContacts:    stubHandler,
+		WebAIPolicy:        stubHandler,
+		WebCatalog:         stubHandler,
+		WebFunnel:          stubHandler,
+		WebFunnelRules:     stubHandler,
+		WebPrivacy:         stubHandler,
+		WebCampaigns:       stubHandler,
+		WebConsent:         stubHandler,
+		WebInbox:           stubHandler,
+		WebContacts:        stubHandler,
+		WebCampaignPublic:  stubHandler,
+		WebPublicPrivacy:   stubHandler,
+		WebChat:            stubHandler,
+		WebBranding:        stubHandler,
+		WebWallet:          stubHandler,
+		WebBillingInvoices: stubHandler,
 	}
-	for k, v := range deps.WebSurfaces() {
+	got := deps.WebSurfaces()
+	if len(got) != len(allSurfaceKeys) {
+		t.Fatalf("WebSurfaces has %d keys, want %d (all wired)", len(got), len(allSurfaceKeys))
+	}
+	for k, v := range got {
 		if !v {
 			t.Fatalf("surfaces[%q]=false, want true when handler wired", k)
 		}

@@ -565,20 +565,38 @@ type Deps struct {
 // SECURITY: the returned values are booleans only. The wire failure
 // reason (e.g. "web/aipolicy disabled — <DSN error>") is NEVER surfaced
 // here — "mounted | not" is the information ceiling for the
-// unauthenticated /health endpoint. This does NOT cover the stale-image
-// case (binary built from older source than the running deploy): the map
-// reflects the running binary's wireup, not the source tree.
+// unauthenticated /health endpoint. This holds for the PUBLIC surfaces
+// too (campaign_public, public_privacy, chat): whether they are mounted
+// is already inferable by an unauthenticated HTTP probe — mounted yields
+// the surface's own non-404 semantics, nil yields a bare 404 — so the
+// boolean does not widen the attack surface. This does NOT cover the
+// stale-image case (binary built from older source than the running
+// deploy): the map reflects the running binary's wireup, not the source
+// tree.
+//
+// The map MUST enumerate every simple `deps.WebX != nil`-gated web
+// surface so an operator never mistakes an untracked surface for an
+// unmounted one (the false-confidence this guardrail exists to kill).
+// Composite gates (WebLGPD sub-fields, UserMFA sub-fields) are
+// intentionally excluded: they are not a single nil-handler predicate
+// and would need their own multi-field shape — out of scope here.
 func (d Deps) WebSurfaces() map[string]bool {
 	return map[string]bool{
-		"ai_policy":    d.WebAIPolicy != nil,
-		"catalog":      d.WebCatalog != nil,
-		"funnel":       d.WebFunnel != nil,
-		"funnel_rules": d.WebFunnelRules != nil,
-		"privacy":      d.WebPrivacy != nil,
-		"campaigns":    d.WebCampaigns != nil,
-		"consent":      d.WebConsent != nil,
-		"inbox":        d.WebInbox != nil,
-		"contacts":     d.WebContacts != nil,
+		"ai_policy":        d.WebAIPolicy != nil,
+		"catalog":          d.WebCatalog != nil,
+		"funnel":           d.WebFunnel != nil,
+		"funnel_rules":     d.WebFunnelRules != nil,
+		"privacy":          d.WebPrivacy != nil,
+		"campaigns":        d.WebCampaigns != nil,
+		"consent":          d.WebConsent != nil,
+		"inbox":            d.WebInbox != nil,
+		"contacts":         d.WebContacts != nil,
+		"campaign_public":  d.WebCampaignPublic != nil,
+		"public_privacy":   d.WebPublicPrivacy != nil,
+		"chat":             d.WebChat != nil,
+		"branding":         d.WebBranding != nil,
+		"wallet":           d.WebWallet != nil,
+		"billing_invoices": d.WebBillingInvoices != nil,
 	}
 }
 
