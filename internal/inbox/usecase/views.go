@@ -19,6 +19,15 @@ var ErrNotFound = inbox.ErrNotFound
 // package only.
 var ErrConversationClosed = inbox.ErrConversationClosed
 
+// ErrAlreadyAssigned re-exports inbox.ErrAlreadyAssigned so the
+// web/inbox handler can check for the no-op idempotent assign path
+// without importing the domain root.
+var ErrAlreadyAssigned = inbox.ErrAlreadyAssigned
+
+// ErrUserNotAssignable re-exports inbox.ErrUserNotAssignable for the
+// same reason — the assign handler maps it to 403.
+var ErrUserNotAssignable = inbox.ErrUserNotAssignable
+
 // ConversationView is the read-only projection of an inbox.Conversation
 // suitable for the HTMX inbox UI. It exists so the web/inbox handler
 // package can consume conversation data without importing the domain

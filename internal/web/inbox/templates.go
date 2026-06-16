@@ -519,18 +519,73 @@ var conversationContextTmpl = template.Must(template.New("conversation_context")
     <p class="conversation-context__funnel-empty">Sem etapa definida</p>
     {{- end}}
   </section>
-  <section class="conversation-context__section conversation-context__assignment" aria-label="Atribuição" data-testid="conversation-context-assignment">
-    <h3 class="conversation-context__subtitle">Atribuição</h3>
-    {{- if .Assigned}}
-    <p class="conversation-context__assignment-value conversation-context__assignment-value--assigned">Atribuída</p>
-    {{- else}}
-    <p class="conversation-context__assignment-value conversation-context__assignment-value--unassigned">Não atribuída</p>
-    {{- end}}
-  </section>
+  {{template "conversation_assignment" .}}
 {{- else}}
   <p class="conversation-context__empty" data-testid="conversation-context-empty">Contexto indisponível.</p>
 {{- end}}
 </aside>
+`))
+
+// conversationAssignmentTmpl renders the assignment section of the
+// conversation context panel (SIN-64979). It is also the standalone
+// HTMX swap target for POST /inbox/conversations/{id}/assign responses:
+// the form targets "#conversation-context-assignment" with
+// hx-swap="outerHTML", so the element returned here replaces the old
+// section in place without reloading the full context panel.
+//
+// When .Assignees is non-nil the section renders an interactive
+// dropdown + "Atribuir a mim" shortcut; when nil it degrades to the
+// same read-only "Atribuída / Não atribuída" text the context panel
+// showed before SIN-64979 so unwired deployments keep the same UX.
+//
+// CSP-safe: no inline on*= handlers — the forms use hx-* attributes
+// exclusively. The parent layout's hx-headers body attribute propagates
+// the X-CSRF-Token to all HTMX requests, so no hidden field is needed
+// inside the partial.
+var conversationAssignmentTmpl = template.Must(template.New("conversation_assignment").Funcs(templateFuncs).Parse(`<section id="conversation-context-assignment" class="conversation-context__section conversation-context__assignment" aria-label="Atribuição" data-testid="conversation-context-assignment">
+  <h3 class="conversation-context__subtitle">Atribuição</h3>
+{{- if .Assignees}}
+  <p class="conversation-context__assignment-current">
+    {{- if .AssignedDisplayName}}
+    <span class="assignee-chip" title="{{.AssignedDisplayName}}"><span aria-hidden="true">{{initials .AssignedDisplayName}}</span></span>
+    <span class="conversation-context__assignment-label">{{.AssignedDisplayName}}</span>
+    {{- else if .Assigned}}
+    <span class="assignee-chip assignee-chip--unknown"><span aria-hidden="true">?</span></span>
+    <span class="conversation-context__assignment-label">Atribuída</span>
+    {{- else}}
+    <span class="assignee-chip assignee-chip--unassigned" aria-hidden="true">—</span>
+    <span class="conversation-context__assignment-label conversation-context__assignment-label--unassigned">Não atribuída</span>
+    {{- end}}
+  </p>
+  <form class="conversation-context__assign-form"
+        hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
+        hx-target="#conversation-context-assignment"
+        hx-swap="outerHTML">
+    <label for="assign-target-{{.ConversationIDStr}}" class="visually-hidden">Atribuir a</label>
+    <select id="assign-target-{{.ConversationIDStr}}" name="targetUserID" class="conversation-context__assign-select">
+      {{- range .Assignees}}
+      <option value="{{.UserID}}">{{.DisplayName}}</option>
+      {{- end}}
+    </select>
+    <button type="submit" class="conversation-context__assign-btn">Atribuir</button>
+  </form>
+  {{- if .CurrentUserID}}
+  <form class="conversation-context__assign-me-form"
+        hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
+        hx-target="#conversation-context-assignment"
+        hx-swap="outerHTML">
+    <input type="hidden" name="targetUserID" value="{{.CurrentUserID}}">
+    <button type="submit" class="conversation-context__assign-me-btn">Atribuir a mim</button>
+  </form>
+  {{- end}}
+{{- else}}
+  {{- if .Assigned}}
+  <p class="conversation-context__assignment-value conversation-context__assignment-value--assigned">Atribuída</p>
+  {{- else}}
+  <p class="conversation-context__assignment-value conversation-context__assignment-value--unassigned">Não atribuída</p>
+  {{- end}}
+{{- end}}
+</section>
 `))
 
 // customerPanelTmpl is the right rail. It is rendered both inside the
@@ -683,7 +738,7 @@ func init() {
 	// {{template "conversation_list" …}} and so on with one template
 	// tree. Errors here are programmer errors (typos in the template
 	// source) — surface them at process start, not at request time.
-	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl} {
+	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
 		if _, err := inboxLayoutTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + ": " + err.Error())
 		}
@@ -696,12 +751,12 @@ func init() {
 			panic("inbox/web: register " + child.Name() + " in list region: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl} {
+	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{channelBadgeTmpl} {
+	for _, child := range []*template.Template{channelBadgeTmpl, conversationAssignmentTmpl} {
 		if _, err := conversationContextTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in context: " + err.Error())
 		}
@@ -728,6 +783,7 @@ func init() {
 		inboxListRegionTmpl,
 		conversationViewTmpl,
 		conversationContextTmpl,
+		conversationAssignmentTmpl,
 		customerPanelTmpl,
 		channelBadgeTmpl,
 		inboxLayoutTmpl,

@@ -78,6 +78,31 @@ type GetConversationContextUseCase interface {
 	Execute(ctx context.Context, in inboxusecase.GetConversationContextInput) (inboxusecase.GetConversationContextResult, error)
 }
 
+// AssignConversationUseCase is the write-side port for assigning (or
+// re-assigning) a conversation to an attendant (SIN-64978 / SIN-64979).
+// It is optional on Deps: when nil the assign route is not registered so
+// deployments that have not wired the attendant repository keep the
+// original read-only surface.
+type AssignConversationUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.AssignConversationInput) (inboxusecase.AssignConversationResult, error)
+}
+
+// AssignableRow is the web-local projection of inbox.AssignableAttendant.
+// Kept here (instead of importing the domain root) because the
+// forbidwebboundary lint forbids web/* from importing internal/inbox
+// directly. The composition root maps domain rows to this shape.
+type AssignableRow struct {
+	UserID      uuid.UUID
+	DisplayName string
+}
+
+// ListAssignableUseCase feeds the assignment-dropdown with the tenant's
+// eligible attendants (SIN-64979). It is optional: when nil the
+// assignment panel renders read-only (no dropdown / no assign button).
+type ListAssignableUseCase interface {
+	Execute(ctx context.Context, tenantID uuid.UUID) ([]AssignableRow, error)
+}
+
 // CSRFTokenFn returns the request's CSRF token (typically sourced from
 // the session via the IAM auth middleware). The empty string is a
 // programming error: every handler runs after RequireAuth, which
@@ -130,6 +155,17 @@ type Deps struct {
 	// behaviour). It complements CustomerInfo (contact projection) — this
 	// one carries the channel + funnel/assignment context.
 	ConversationContext GetConversationContextUseCase
+	// AssignConversation is the optional write-side for assigning a
+	// conversation (SIN-64979). When wired, POST
+	// /inbox/conversations/{id}/assign is registered and the context panel
+	// renders the interactive assignment widget; when nil the route is
+	// absent and the panel renders read-only.
+	AssignConversation AssignConversationUseCase
+	// ListAssignable is the optional read-side that feeds the assignment
+	// dropdown (SIN-64979). When wired, the view handler loads the
+	// tenant's eligible attendants and passes them to the context panel so
+	// the dropdown is pre-populated; when nil the form is not rendered.
+	ListAssignable ListAssignableUseCase
 }
 
 // CustomerInfoLoader is the read-side port that hydrates the customer
@@ -217,6 +253,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /inbox/conversations/{id}/messages/{msgID}/status", h.status)
 	if h.deps.AIAssist.Summarizer != nil {
 		mux.HandleFunc("POST /inbox/conversations/{id}/ai-assist", h.aiAssist)
+	}
+	if h.deps.AssignConversation != nil {
+		mux.HandleFunc("POST /inbox/conversations/{id}/assign", h.assign)
 	}
 }
 
@@ -483,6 +522,32 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Enrich the context panel with the assignable-attendant list when
+	// the dep is wired (SIN-64979). Best-effort: a load failure only
+	// costs the interactive widget; the panel still renders read-only.
+	if h.deps.ListAssignable != nil {
+		contextPanel.ConversationIDStr = conversationID.String()
+		assignees, err := h.deps.ListAssignable.Execute(r.Context(), tenant.ID)
+		if err != nil {
+			h.deps.Logger.Warn("web/inbox: list assignable", "err", err)
+		} else {
+			contextPanel.Assignees = assignees
+			if uid := h.deps.UserID(r); uid != uuid.Nil {
+				contextPanel.CurrentUserID = uid.String()
+			}
+			// Resolve the current assignee's display name from the
+			// dropdown list so the badge reads a name, not an ID.
+			if contextPanel.AssignedUserID != "" {
+				for _, a := range assignees {
+					if a.UserID.String() == contextPanel.AssignedUserID {
+						contextPanel.AssignedDisplayName = a.DisplayName
+						break
+					}
+				}
+			}
+		}
+	}
+
 	// Pre-render the assist button when the feature is wired. The team
 	// scope stays empty (conversations carry no team affinity in v1);
 	// the channel scope is now the real conversation channel.
@@ -671,6 +736,97 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// assign handles POST /inbox/conversations/{id}/assign (SIN-64979).
+// It validates the form-supplied targetUserID (UUID shape only — tenant
+// and role checks are the use-case's responsibility), delegates to
+// AssignConversation, then re-renders the assignment panel partial so
+// HTMX can swap it in place without a full conversation reload.
+// ErrAlreadyAssigned is treated as a successful idempotent no-op: the
+// panel re-renders with the unchanged assignee so the operator sees
+// visual confirmation that the assignment is still in effect.
+func (h *Handler) assign(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	targetStr := strings.TrimSpace(r.PostFormValue("targetUserID"))
+	if targetStr == "" {
+		http.Error(w, "targetUserID required", http.StatusBadRequest)
+		return
+	}
+	targetUserID, err := uuid.Parse(targetStr)
+	if err != nil {
+		http.Error(w, "targetUserID must be a valid UUID", http.StatusBadRequest)
+		return
+	}
+
+	_, err = h.deps.AssignConversation.Execute(r.Context(), inboxusecase.AssignConversationInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+		TargetUserID:   targetUserID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, inboxusecase.ErrAlreadyAssigned):
+			// idempotent no-op: fall through to re-render the panel
+		case errors.Is(err, inboxusecase.ErrNotFound):
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		case errors.Is(err, inboxusecase.ErrUserNotAssignable):
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		default:
+			h.fail(w, http.StatusInternalServerError, "assign conversation", err)
+			return
+		}
+	}
+
+	// Re-render the assignment panel partial. Load the fresh attendant
+	// list for the dropdown; on failure degrade to read-only.
+	panel := h.buildAssignPanel(r.Context(), tenant.ID, conversationID, targetUserID)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := conversationAssignmentTmpl.Execute(w, panel); err != nil {
+		h.deps.Logger.Error("web/inbox: render assign panel", "err", err)
+	}
+}
+
+// buildAssignPanel assembles the contextPanelData subset the assignment
+// partial needs. It calls ListAssignable (when wired) to populate the
+// dropdown and resolves the new assignee's display name from the list.
+func (h *Handler) buildAssignPanel(ctx context.Context, tenantID, conversationID, assignedUserID uuid.UUID) contextPanelData {
+	panel := contextPanelData{
+		ConversationIDStr: conversationID.String(),
+		Assigned:          assignedUserID != uuid.Nil,
+		AssignedUserID:    assignedUserID.String(),
+	}
+	if h.deps.ListAssignable == nil {
+		return panel
+	}
+	assignees, err := h.deps.ListAssignable.Execute(ctx, tenantID)
+	if err != nil {
+		h.deps.Logger.Warn("web/inbox: list assignable for assign panel", "err", err)
+		return panel
+	}
+	panel.Assignees = assignees
+	for _, a := range assignees {
+		if a.UserID == assignedUserID {
+			panel.AssignedDisplayName = a.DisplayName
+			break
+		}
+	}
+	return panel
+}
+
 // fail centralises the error reporting + log path. The response body
 // never carries the underlying error text — error detail goes to logs.
 func (h *Handler) fail(w http.ResponseWriter, status int, msg string, err error) {
@@ -760,6 +916,16 @@ type contextPanelData struct {
 	FunnelStageKey  string
 	Assigned        bool
 	AssignedUserID  string
+	// Assignment widget (SIN-64979). Non-nil Assignees enables the
+	// interactive dropdown + "Atribuir a mim" button; nil leaves the
+	// section read-only. ConversationIDStr drives the form action URL.
+	// CurrentUserID enables the "Atribuir a mim" shortcut (empty when
+	// the session has no user claim). AssignedDisplayName is the
+	// resolved label for the current lead (empty when unresolved).
+	Assignees           []AssignableRow
+	ConversationIDStr   string
+	CurrentUserID       string
+	AssignedDisplayName string
 }
 
 // contextIdentity is one contact channel identity (e.g. a WhatsApp
@@ -776,12 +942,13 @@ type contextIdentity struct {
 // dereference a pointer.
 func newContextPanelData(v inboxusecase.ConversationContextView) contextPanelData {
 	d := contextPanelData{
-		HasContext:      true,
-		Channel:         v.Channel,
-		ContactName:     v.ContactDisplayName,
-		FunnelStageName: v.FunnelStageName,
-		FunnelStageKey:  v.FunnelStageKey,
-		Assigned:        v.Assigned,
+		HasContext:        true,
+		Channel:           v.Channel,
+		ContactName:       v.ContactDisplayName,
+		FunnelStageName:   v.FunnelStageName,
+		FunnelStageKey:    v.FunnelStageKey,
+		Assigned:          v.Assigned,
+		ConversationIDStr: v.ConversationID.String(),
 	}
 	if v.AssignedUserID != nil {
 		d.AssignedUserID = v.AssignedUserID.String()

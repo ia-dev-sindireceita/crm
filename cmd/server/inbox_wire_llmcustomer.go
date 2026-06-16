@@ -59,13 +59,16 @@ import (
 const llmcustomerReplyDelay = 500 * time.Millisecond
 
 // fakellmRepository is the union port the llmcustomer wire wants from
-// storage: every inbox.Repository method plus the dedup ledger ones.
-// *pginbox.Store already satisfies both halves; declaring the union
-// keeps the assembly function port-shaped (no concrete pg dependency)
-// so tests can inject an in-memory fake without spinning up Postgres.
+// storage: every inbox.Repository method plus the dedup ledger, the
+// assignment history ledger, and the conversation-lead cache.
+// *pginbox.Store satisfies all four; declaring the union keeps the
+// assembly function port-shaped (no concrete pg dependency) so tests
+// can inject an in-memory fake without spinning up Postgres.
 type fakellmRepository interface {
 	inbox.Repository
 	inbox.InboundDedupRepository
+	inbox.AssignmentRepository
+	inbox.ConversationLeadStore
 }
 
 // inboxLLMCustomerDeps bundles the ports assembleInboxLLMCustomerHandler
@@ -87,6 +90,10 @@ type inboxLLMCustomerDeps struct {
 	// atendente chip (SIN-64967). nil leaves every row's assignee label
 	// unresolved (rendered as "não atribuída" semantics handled upstream).
 	Directory inbox.UserDirectory
+	// Attendants backs the assignment use case (SIN-64979): IsAssignable
+	// for the write path, ListAssignable for the dropdown. nil disables
+	// the assign route and the interactive panel widget.
+	Attendants inbox.AssignableAttendantRepository
 	// Contacts is the contacts port the upsert-by-channel use case
 	// reads/writes.
 	Contacts contacts.Repository
@@ -220,6 +227,24 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: conversation context usecase: %w", err)
 	}
 
+	// Assignment use case + dropdown (SIN-64979). Both are optional on
+	// Deps: when Attendants is nil the route is not registered and the
+	// panel degrades to read-only. The postgres *pginbox.Store satisfies
+	// both inbox.AssignableAttendantRepository and the ledger/cache ports
+	// required by NewAssignConversation — the same store instance backs
+	// all three so there is no consistency gap.
+	var assignUC webinbox.AssignConversationUseCase
+	var listAssignableUC webinbox.ListAssignableUseCase
+	if deps.Attendants != nil {
+		assignUC = inboxusecase.MustNewAssignConversation(
+			deps.Repo,
+			deps.Repo,
+			deps.Repo,
+			deps.Attendants,
+		)
+		listAssignableUC = &listAssignableAdapter{r: deps.Attendants}
+	}
+
 	handlerDeps := webinbox.Deps{
 		ListConversations:   bootstrappedList,
 		ListSummaries:       summaries,
@@ -227,6 +252,8 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		SendOutbound:        sendUC,
 		GetMessage:          getMsgUC,
 		ConversationContext: ctxUC,
+		AssignConversation:  assignUC,
+		ListAssignable:      listAssignableUC,
 		CSRFToken:           csrfTokenFromSessionContext,
 		UserID:              userIDFromSessionContext,
 		Logger:              logger,
@@ -306,8 +333,12 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 		Repo: inboxStore,
 		// *pginbox.Store satisfies inbox.ConversationReadModel too, so the
 		// same store backs the enriched GET /inbox list (SIN-64968).
-		ReadModel:  inboxStore,
-		Directory:  userDir,
+		ReadModel: inboxStore,
+		Directory: userDir,
+		// *pginbox.Store satisfies inbox.AssignableAttendantRepository
+		// (ListAssignable / IsAssignable) so the same store backs the
+		// assignment use case and dropdown (SIN-64979).
+		Attendants: inboxStore,
 		Contacts:   contactsStore,
 		LLM:        personaLLM,
 		ReplyDelay: llmcustomerReplyDelay,
@@ -486,4 +517,26 @@ func (b *bootstrapOnListSummaries) releasePending(tenantID uuid.UUID) {
 		return
 	}
 	delete(b.seen, tenantID)
+}
+
+// listAssignableAdapter adapts inbox.AssignableAttendantRepository to
+// webinbox.ListAssignableUseCase so the composition root does not import
+// the domain package from web/inbox (forbidwebboundary).
+type listAssignableAdapter struct {
+	r inbox.AssignableAttendantRepository
+}
+
+func (a *listAssignableAdapter) Execute(ctx context.Context, tenantID uuid.UUID) ([]webinbox.AssignableRow, error) {
+	items, err := a.r.ListAssignable(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]webinbox.AssignableRow, len(items))
+	for i, it := range items {
+		out[i] = webinbox.AssignableRow{
+			UserID:      it.UserID,
+			DisplayName: it.DisplayName,
+		}
+	}
+	return out, nil
 }
