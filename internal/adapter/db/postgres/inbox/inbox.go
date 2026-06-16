@@ -33,9 +33,11 @@ import (
 // Compile-time assertions: Store satisfies both ports. If a port grows
 // or shrinks, the build fails here before any caller notices.
 var (
-	_ domain.Repository             = (*Store)(nil)
-	_ domain.InboundDedupRepository = (*Store)(nil)
-	_ domain.ConversationReadModel  = (*Store)(nil)
+	_ domain.Repository                    = (*Store)(nil)
+	_ domain.InboundDedupRepository        = (*Store)(nil)
+	_ domain.ConversationReadModel         = (*Store)(nil)
+	_ domain.AssignableAttendantRepository = (*Store)(nil)
+	_ domain.ConversationLeadStore         = (*Store)(nil)
 )
 
 // pgUniqueViolation is the SQLSTATE for unique-violation. We translate
@@ -428,9 +430,10 @@ func (s *Store) ListConversationSummaries(ctx context.Context, tenantID uuid.UUI
 			 WHERE ($1::text = '' OR c.state = $1)
 			   AND ($2::text = '' OR c.channel = $2)
 			   AND ($3::uuid IS NULL OR c.assigned_user_id = $3)
+			   AND (NOT $4::bool OR c.assigned_user_id IS NULL)
 			 ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id ASC
-			 LIMIT $4
-		`, string(filter.State), filter.Channel, assigned, limit)
+			 LIMIT $5
+		`, string(filter.State), filter.Channel, assigned, filter.UnassignedOnly, limit)
 		if err != nil {
 			return err
 		}
