@@ -552,6 +552,36 @@ type Deps struct {
 	CustomDomainEnabled bool
 }
 
+// WebSurfaces (SIN-64985) returns the mounted/not-mounted state of every
+// auth-gated web surface whose route registration is gated on a
+// `deps.WebX != nil` check in NewRouter. It is the single source of
+// truth for that predicate set: /health (via handler.WithSurfaces)
+// reports it as booleans so an operator can `curl /health` and tell
+// whether a fail-soft `build*Handler` returned nil at boot (router skips
+// the mount → bare 404). The same predicates drive the route gates
+// below and the /hello-tenant index, so this map and those mounts cannot
+// drift.
+//
+// SECURITY: the returned values are booleans only. The wire failure
+// reason (e.g. "web/aipolicy disabled — <DSN error>") is NEVER surfaced
+// here — "mounted | not" is the information ceiling for the
+// unauthenticated /health endpoint. This does NOT cover the stale-image
+// case (binary built from older source than the running deploy): the map
+// reflects the running binary's wireup, not the source tree.
+func (d Deps) WebSurfaces() map[string]bool {
+	return map[string]bool{
+		"ai_policy":    d.WebAIPolicy != nil,
+		"catalog":      d.WebCatalog != nil,
+		"funnel":       d.WebFunnel != nil,
+		"funnel_rules": d.WebFunnelRules != nil,
+		"privacy":      d.WebPrivacy != nil,
+		"campaigns":    d.WebCampaigns != nil,
+		"consent":      d.WebConsent != nil,
+		"inbox":        d.WebInbox != nil,
+		"contacts":     d.WebContacts != nil,
+	}
+}
+
 // LGPDRoutes bundles the two inner handlers and the shared rate-limit
 // middleware for the LGPD data-subject admin surface (SIN-63186). Each
 // http.Handler slot is the per-method func extracted from
@@ -723,7 +753,7 @@ func NewRouter(deps Deps) http.Handler {
 	// at boot from internal/version (SIN-63146) so cd-stg can detect a
 	// stale `docker compose pull`; empty Deps.CommitSHA renders as
 	// "unknown" inside the handler.
-	r.Get("/health", handler.Health(deps.CommitSHA))
+	r.Get("/health", handler.Health(deps.CommitSHA, handler.WithSurfaces(deps.WebSurfaces())))
 
 	// /metrics is whitelist-mounted: no tenant, no auth, no metrics
 	// recursion. Access control belongs at the network edge (firewall
