@@ -244,6 +244,57 @@ func TestList_FiltersParsedAndForwardedToUseCase(t *testing.T) {
 	}
 }
 
+// TestList_UnassignedQueueForwardsUnassignedFilter pins the SIN-64979
+// "visão de fila" queue: ?assigned=unassigned must forward Unassigned=true
+// to the read-side use case with NO AssignedUserID (the use case rejects
+// the combination), so the list shows only conversations with no lead.
+func TestList_UnassignedQueueForwardsUnassignedFilter(t *testing.T) {
+	t.Parallel()
+	sessionUser := uuid.New()
+	summaries := &stubSummaries{}
+	h := newHandlerWithSummaries(t, summaries, &stubMessages{}, sessionUser)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, "/inbox?assigned=unassigned", "", uuid.New()))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	in := summaries.input()
+	if !in.Unassigned {
+		t.Error("Unassigned = false, want true forwarded for the fila queue")
+	}
+	if in.AssignedUserID != uuid.Nil {
+		t.Errorf("AssignedUserID = %v, want Nil (mutually exclusive with unassigned)", in.AssignedUserID)
+	}
+}
+
+// TestList_UnassignedQueueRendersSelectedOption proves the assignment
+// queue <select> reflects the active queue (so the swap doesn't silently
+// reset it) and keeps the "Não atribuídas" option present.
+func TestList_UnassignedQueueRendersSelectedOption(t *testing.T) {
+	t.Parallel()
+	summaries := &stubSummaries{res: inboxusecase.ListConversationSummariesResult{
+		Items: []inboxusecase.ConversationView{{
+			ID: uuid.New(), Channel: "whatsapp", State: "open",
+			ContactDisplayName: "Cliente", LastMessageAt: time.Now(),
+		}},
+	}}
+	h := newHandlerWithSummaries(t, summaries, &stubMessages{}, uuid.Nil)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, "/inbox?assigned=unassigned", "", uuid.New()))
+	body := rec.Body.String()
+	if !strings.Contains(body, `<option value="unassigned" selected>`) {
+		t.Errorf("unassigned option not marked selected: %q", body)
+	}
+	if !strings.Contains(body, "Não atribuídas") {
+		t.Errorf("fila queue option missing: %q", body)
+	}
+}
+
 func TestList_AssignedMeNeverTrustsClientID(t *testing.T) {
 	t.Parallel()
 	sessionUser := uuid.New()

@@ -19,14 +19,22 @@ package httpapi_test
 // rendering, which is covered by web/inbox handler tests).
 
 import (
+	"context"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
+	csrfmw "github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/iam/authz"
 	"github.com/pericles-luz/crm/internal/tenancy"
@@ -216,6 +224,209 @@ func TestRouter_WebInbox_NestedRoutesReachInnerHandler(t *testing.T) {
 	}
 	if len(inboxH.calls) != 2 {
 		t.Fatalf("inner call count=%d, want 2 (%+v)", len(inboxH.calls), inboxH.calls)
+	}
+}
+
+// --- SIN-64979: POST /inbox/conversations/{id}/assign route mount ---
+//
+// The assign route is a state-changing POST, so it sits behind the
+// authed group's RequireCSRF gate *and* RequireAction. roledIAM (above)
+// mints role-bearing sessions but no CSRF token, so it cannot drive a
+// passing POST. csrfRoledIAM is a self-contained IAMService fake that
+// mints sessions carrying both a Role (for RequireAction) and a fixed
+// CSRF token (so the login handler sets the __Host-csrf cookie and the
+// CSRF triple-match passes). It is independent of roledIAM precisely
+// because the SIN-62767 quality bar forbids editing that shared fixture.
+
+const assignCSRFToken = "test-csrf-token-assign-aaaaaaaaaaaaaaaaaaaaaaa"
+
+type csrfRoledIAM struct {
+	mu       sync.Mutex
+	tenants  map[string]uuid.UUID
+	users    map[string]roledUser
+	sessions map[uuid.UUID]map[uuid.UUID]roledSession
+}
+
+func newCSRFRoledIAM(tenants map[string]uuid.UUID) *csrfRoledIAM {
+	return &csrfRoledIAM{
+		tenants:  tenants,
+		users:    map[string]roledUser{},
+		sessions: map[uuid.UUID]map[uuid.UUID]roledSession{},
+	}
+}
+
+func (s *csrfRoledIAM) addUser(host, email, password string, role iam.Role, userID uuid.UUID) {
+	s.users[host+"|"+email] = roledUser{
+		tenantID: s.tenants[host],
+		userID:   userID,
+		password: password,
+		role:     role,
+	}
+}
+
+func (s *csrfRoledIAM) Login(_ context.Context, host, email, password string, _ net.IP, _, _ string) (iam.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tenantID, ok := s.tenants[host]
+	if !ok {
+		return iam.Session{}, iam.ErrInvalidCredentials
+	}
+	u, ok := s.users[host+"|"+email]
+	if !ok || u.password != password {
+		return iam.Session{}, iam.ErrInvalidCredentials
+	}
+	id := uuid.New()
+	sess := roledSession{id: id, userID: u.userID, tenantID: tenantID, role: u.role, expires: time.Now().Add(time.Hour)}
+	if s.sessions[tenantID] == nil {
+		s.sessions[tenantID] = map[uuid.UUID]roledSession{}
+	}
+	s.sessions[tenantID][id] = sess
+	return iam.Session{ID: id, UserID: u.userID, TenantID: tenantID, Role: u.role, ExpiresAt: sess.expires, CSRFToken: assignCSRFToken}, nil
+}
+
+func (s *csrfRoledIAM) Logout(_ context.Context, tenantID, sessionID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.sessions[tenantID]; ok {
+		delete(m, sessionID)
+	}
+	return nil
+}
+
+func (s *csrfRoledIAM) ValidateSession(_ context.Context, tenantID, sessionID uuid.UUID) (iam.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.sessions[tenantID]
+	if !ok {
+		return iam.Session{}, iam.ErrSessionNotFound
+	}
+	sess, ok := m[sessionID]
+	if !ok {
+		return iam.Session{}, iam.ErrSessionNotFound
+	}
+	if time.Now().After(sess.expires) {
+		return iam.Session{}, iam.ErrSessionExpired
+	}
+	return iam.Session{ID: sess.id, UserID: sess.userID, TenantID: sess.tenantID, Role: sess.role, ExpiresAt: sess.expires, CSRFToken: assignCSRFToken}, nil
+}
+
+// newAssignRouter wires a router with the recording WebInbox handler and
+// a csrfRoledIAM store + production RBAC authorizer, so both the
+// RequireAction gate and the RequireCSRF gate are live on the assign POST.
+func newAssignRouter(t *testing.T, inboxHandler http.Handler) (http.Handler, *csrfRoledIAM, string) {
+	t.Helper()
+	const host = "acme.crm.local"
+	acmeID := uuid.New()
+	tenants := map[string]*tenancy.Tenant{host: {ID: acmeID, Name: "acme", Host: host}}
+	tenantIDs := map[string]uuid.UUID{host: acmeID}
+	store := newCSRFRoledIAM(tenantIDs)
+	resolver := &fakeResolver{byHost: tenants}
+	deps := httpapi.Deps{
+		IAM:            store,
+		TenantResolver: resolver,
+		WebInbox:       inboxHandler,
+		Authorizer: authz.New(authz.Config{
+			Inner:    iam.NewRBACAuthorizer(iam.RBACConfig{}),
+			Recorder: &authzRecorder{},
+			Sampler:  authz.NeverSample{},
+		}),
+	}
+	return httpapi.NewRouter(deps), store, host
+}
+
+// loginBothCookies signs the user in and returns the session + CSRF
+// cookies the login handler set, so a follow-up POST can satisfy the
+// CSRF triple-match.
+func loginBothCookies(t *testing.T, h http.Handler, host, email, password string) (sess, csrf *http.Cookie) {
+	t.Helper()
+	form := url.Values{}
+	form.Set("email", email)
+	form.Set("password", password)
+	rec := do(t, h, http.MethodPost, host, "/login", strings.NewReader(form.Encode()))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("login status=%d, want 302; body=%q", rec.Code, rec.Body.String())
+	}
+	for _, c := range rec.Result().Cookies() {
+		switch c.Name {
+		case sessioncookie.NameTenant:
+			sess = c
+		case sessioncookie.NameCSRF:
+			csrf = c
+		}
+	}
+	if sess == nil || csrf == nil {
+		t.Fatalf("login did not set both cookies: sess=%v csrf=%v", sess, csrf)
+	}
+	return sess, csrf
+}
+
+// postAssign fires POST /inbox/conversations/{id}/assign with a fully
+// valid CSRF presentation (cookie + matching header + same-origin),
+// isolating the route-table / RequireAction behaviour from CSRF noise.
+func postAssign(t *testing.T, h http.Handler, host, convID, targetUserID string, sess, csrf *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	form := url.Values{}
+	form.Set("targetUserID", targetUserID)
+	r := httptest.NewRequest(http.MethodPost, "/inbox/conversations/"+convID+"/assign", strings.NewReader(form.Encode()))
+	r.Host = host
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "https://"+host)
+	r.Header.Set(csrfmw.HeaderName, assignCSRFToken)
+	r.AddCookie(sess)
+	r.AddCookie(csrf)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// TestRouter_WebInbox_AssignRouteReachableForAtendente is the Blocker-1
+// regression (SecurityEngineer + CTO review of PR #317): the POST assign
+// route was registered only on the inner mux, so chi 404'd it before the
+// handler. This pins the chi route table — an authorized atendente, with
+// a valid CSRF presentation, reaches the inner handler with POST on the
+// assign path. Without the router.go mount this fails with 404.
+func TestRouter_WebInbox_AssignRouteReachableForAtendente(t *testing.T) {
+	t.Parallel()
+	inboxH := &recordingInbox{}
+	h, store, host := newAssignRouter(t, inboxH)
+	store.addUser(host, "atendente@acme.test", "pw", iam.RoleTenantAtendente, uuid.New())
+
+	sess, csrf := loginBothCookies(t, h, host, "atendente@acme.test", "pw")
+	convID := uuid.New().String()
+	rec := postAssign(t, h, host, convID, uuid.New().String(), sess, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 (atendente must reach POST assign); body=%q", rec.Code, rec.Body.String())
+	}
+	if len(inboxH.calls) != 1 {
+		t.Fatalf("inner call count=%d, want 1 (%+v)", len(inboxH.calls), inboxH.calls)
+	}
+	c := inboxH.calls[0]
+	if c.method != http.MethodPost || c.path != "/inbox/conversations/"+convID+"/assign" {
+		t.Fatalf("inner call=%+v, want POST .../assign", c)
+	}
+	if !c.hadPrincipal {
+		t.Fatalf("inner handler ran without iam.Principal (RequireAuth missing)")
+	}
+}
+
+// TestRouter_WebInbox_AssignRouteDeniedForCommon proves the assign POST
+// inherits the RequireAction(ActionTenantInboxRead) gate: a Common-role
+// session — with a fully valid CSRF presentation, so the 403 can only
+// come from RequireAction, not CSRF — is denied before the inner handler
+// runs.
+func TestRouter_WebInbox_AssignRouteDeniedForCommon(t *testing.T) {
+	t.Parallel()
+	inboxH := &recordingInbox{}
+	h, store, host := newAssignRouter(t, inboxH)
+	store.addUser(host, "common@acme.test", "pw", iam.RoleTenantCommon, uuid.New())
+
+	sess, csrf := loginBothCookies(t, h, host, "common@acme.test", "pw")
+	rec := postAssign(t, h, host, uuid.New().String(), uuid.New().String(), sess, csrf)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403 (common denied at RequireAction, CSRF valid); body=%q", rec.Code, rec.Body.String())
+	}
+	if len(inboxH.calls) != 0 {
+		t.Fatalf("inner handler ran on a deny path: %+v", inboxH.calls)
 	}
 }
 

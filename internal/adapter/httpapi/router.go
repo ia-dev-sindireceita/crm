@@ -1212,6 +1212,17 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/inbox/conversations/{id}", webInbox)
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/messages", webInbox)
 				authed.Method(http.MethodGet, "/inbox/conversations/{id}/messages/{msgID}/status", webInbox)
+				// SIN-64979 — conversation-assignment write route. The inner
+				// mux (web/inbox Routes) registers it conditionally on the
+				// AssignConversation dep, but chi enumerates the subtree
+				// route-by-route, so the POST must be listed here too or it
+				// 404s before the handler (the inner-mux handler tests pass
+				// without it — they bypass chi). Same RequireAuth +
+				// RequireAction(ActionTenantInboxRead) envelope as the reads;
+				// the route additionally inherits the authed group's
+				// RequireCSRF gate. When the dep is nil the inner mux returns
+				// 404 for the POST, so listing it here is safe either way.
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/assign", webInbox)
 			}
 
 			// SIN-63942 / UX-F5 — gerente wallet UI. Four routes share

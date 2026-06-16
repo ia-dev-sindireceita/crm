@@ -311,28 +311,34 @@ var inboxListRegionTmpl = template.Must(template.New("inbox_list_region").Funcs(
 </div>
 `))
 
-// inboxFiltersTmpl is the filter bar (SIN-64968 §3). State is a group of
-// pill links (hx-get); channel is a <select> and "minhas" a checkbox,
-// both firing via hx-trigger="change" (an HTMX attribute — NOT an inline
-// onchange handler, which the strict CSP would render-but-never-execute).
-// Every control re-emits the full filter set so combinations accumulate
-// (AND) and the active state survives the swap. The whole region is the
-// target so the active pill re-renders.
+// inboxFiltersTmpl is the filter bar (SIN-64968 §3 + SIN-64979 §4). State
+// is a group of pill links (hx-get); channel and the assignment queue are
+// <select>s, all firing via hx-trigger="change" (an HTMX attribute — NOT
+// an inline onchange handler, which the strict CSP would
+// render-but-never-execute). The assignment queue is the SIN-64979 "visão
+// de fila": "Todas" (no filter), "Não atribuídas" (unassigned queue), and
+// "Atribuídas a mim" (the session user's conversations) — a single
+// mutually-exclusive <select> rather than two toggles, matching the
+// read-side use case which rejects the unassigned+user combination. Every
+// control re-emits the full filter set (hx-include="closest form" + the
+// pills' explicit hrefs) so combinations accumulate (AND) and the active
+// state survives the swap. The whole region is the target so the active
+// pill re-renders.
 var inboxFiltersTmpl = template.Must(template.New("inbox_filters").Funcs(templateFuncs).Parse(`<form class="inbox-filters" role="search" aria-label="Filtrar conversas"
       hx-get="/inbox" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">
   <div class="inbox-filters__group" role="group" aria-label="Estado">
     <a class="inbox-filters__pill{{if eq .Filters.State "open"}} is-active{{end}}"
-       href="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}"
+       href="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
        {{if eq .Filters.State "open"}}aria-current="true"{{end}}
-       hx-get="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}">Abertas</a>
+       hx-get="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Abertas</a>
     <a class="inbox-filters__pill{{if eq .Filters.State "closed"}} is-active{{end}}"
-       href="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}"
+       href="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
        {{if eq .Filters.State "closed"}}aria-current="true"{{end}}
-       hx-get="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}">Fechadas</a>
+       hx-get="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Fechadas</a>
     <a class="inbox-filters__pill{{if eq .Filters.State ""}} is-active{{end}}"
-       href="/inbox?state=&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}"
+       href="/inbox?state=&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
        {{if eq .Filters.State ""}}aria-current="true"{{end}}
-       hx-get="/inbox?state=&channel={{.Filters.Channel}}&assigned={{if .Filters.AssignedMe}}me{{end}}">Todas</a>
+       hx-get="/inbox?state=&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Todas</a>
   </div>
   <label class="inbox-filters__field">
     <span class="visually-hidden">Canal</span>
@@ -344,9 +350,13 @@ var inboxFiltersTmpl = template.Must(template.New("inbox_filters").Funcs(templat
       <option value="webchat"{{if eq .Filters.Channel "webchat"}} selected{{end}}>Webchat</option>
     </select>
   </label>
-  <label class="inbox-filters__toggle">
-    <input type="checkbox" name="assigned" value="me" hx-trigger="change" hx-get="/inbox" hx-include="closest form" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true"{{if .Filters.AssignedMe}} checked{{end}}>
-    <span>Atribuídas a mim</span>
+  <label class="inbox-filters__field">
+    <span class="visually-hidden">Fila de atribuição</span>
+    <select name="assigned" class="inbox-filters__select" aria-label="Fila de atribuição" hx-trigger="change" hx-get="/inbox" hx-include="closest form" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">
+      <option value=""{{if and (not .Filters.AssignedMe) (not .Filters.Unassigned)}} selected{{end}}>Todas as filas</option>
+      <option value="unassigned"{{if .Filters.Unassigned}} selected{{end}}>Não atribuídas</option>
+      <option value="me"{{if .Filters.AssignedMe}} selected{{end}}>Atribuídas a mim</option>
+    </select>
   </label>
   <input type="hidden" name="state" value="{{.Filters.State}}">
 </form>

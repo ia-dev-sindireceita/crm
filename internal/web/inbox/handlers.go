@@ -315,9 +315,18 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 // erroring the swap. AssignedMe drives the "minhas" filter using the
 // session user id resolved in buildListRegion.
 type inboxFilter struct {
-	State      string // "", "open", "closed"
-	Channel    string // "", "whatsapp", "instagram", "messenger", "webchat"
+	State   string // "", "open", "closed"
+	Channel string // "", "whatsapp", "instagram", "messenger", "webchat"
+	// AssignedMe drives the "atribuídas a mim" queue (assigned=me): the
+	// list is filtered to the session user's conversations.
 	AssignedMe bool
+	// Unassigned drives the "fila / não atribuídas" queue
+	// (assigned=unassigned): the list is filtered to conversations with no
+	// current lead. Mutually exclusive with AssignedMe — parseInboxFilter
+	// reads a single `assigned` value, so at most one is ever set, which
+	// keeps the read-side use case (it rejects the unassigned+user combo)
+	// from ever seeing both.
+	Unassigned bool
 }
 
 // inboxFilterChannels mirrors the read-model's known carriers
@@ -357,10 +366,30 @@ func parseInboxFilter(r *http.Request) inboxFilter {
 		}
 	}
 
+	// The assignment queue is a single mutually-exclusive value:
+	// "me" → my conversations, "unassigned" → the unattended queue,
+	// anything else (incl. absent / "all") → no assignment filter.
+	assigned := strings.ToLower(strings.TrimSpace(q.Get("assigned")))
 	return inboxFilter{
 		State:      state,
 		Channel:    channel,
-		AssignedMe: strings.EqualFold(strings.TrimSpace(q.Get("assigned")), "me"),
+		AssignedMe: assigned == "me",
+		Unassigned: assigned == "unassigned",
+	}
+}
+
+// AssignedParam renders the assignment queue back to its `assigned=`
+// query value ("me" / "unassigned" / ""). Exported so the filter
+// template can carry the active queue into the state-pill links and the
+// row hrefs without re-deriving it. Mutually exclusive by construction.
+func (f inboxFilter) AssignedParam() string {
+	switch {
+	case f.AssignedMe:
+		return "me"
+	case f.Unassigned:
+		return "unassigned"
+	default:
+		return ""
 	}
 }
 
@@ -372,11 +401,7 @@ func (f inboxFilter) query() string {
 	v := url.Values{}
 	v.Set("state", f.State)
 	v.Set("channel", f.Channel)
-	if f.AssignedMe {
-		v.Set("assigned", "me")
-	} else {
-		v.Set("assigned", "")
-	}
+	v.Set("assigned", f.AssignedParam())
 	return "?" + v.Encode()
 }
 
@@ -386,7 +411,7 @@ func (f inboxFilter) query() string {
 // link); the default + zero rows means the tenant simply has no
 // conversations yet.
 func (f inboxFilter) nonDefault() bool {
-	return f.State != "open" || f.Channel != "" || f.AssignedMe
+	return f.State != "open" || f.Channel != "" || f.AssignedMe || f.Unassigned
 }
 
 // buildListRegion runs the read side and assembles the listRegionData the
@@ -439,10 +464,14 @@ func (h *Handler) buildListRegion(r *http.Request, tenantID uuid.UUID, f inboxFi
 	}
 
 	res, err := h.deps.ListSummaries.Execute(r.Context(), inboxusecase.ListConversationSummariesInput{
-		TenantID:       tenantID,
-		State:          f.State,
-		Channel:        f.Channel,
+		TenantID: tenantID,
+		State:    f.State,
+		Channel:  f.Channel,
+		// AssignedUserID and Unassigned are mutually exclusive (the filter
+		// carries a single `assigned` value), so the read-side use case
+		// never sees the combination it rejects.
 		AssignedUserID: assignedUserID,
+		Unassigned:     f.Unassigned,
 	})
 	if err != nil {
 		return listRegionData{}, err
@@ -537,14 +566,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 			}
 			// Resolve the current assignee's display name from the
 			// dropdown list so the badge reads a name, not an ID.
-			if contextPanel.AssignedUserID != "" {
-				for _, a := range assignees {
-					if a.UserID.String() == contextPanel.AssignedUserID {
-						contextPanel.AssignedDisplayName = a.DisplayName
-						break
-					}
-				}
-			}
+			contextPanel.AssignedDisplayName = assigneeDisplayName(assignees, contextPanel.AssignedUserID)
 		}
 	}
 
@@ -818,13 +840,26 @@ func (h *Handler) buildAssignPanel(ctx context.Context, tenantID, conversationID
 		return panel
 	}
 	panel.Assignees = assignees
+	panel.AssignedDisplayName = assigneeDisplayName(assignees, assignedUserID.String())
+	return panel
+}
+
+// assigneeDisplayName resolves an attendant's human label from the
+// assignable list by user id (string form, as the templates carry it).
+// Returns "" when the id is empty or not present in the list (no
+// directory match), so the caller falls back to the unassigned styling.
+// Shared by the conversation view and the post-assign panel rebuild so
+// the lookup lives in one place.
+func assigneeDisplayName(assignees []AssignableRow, userID string) string {
+	if userID == "" {
+		return ""
+	}
 	for _, a := range assignees {
-		if a.UserID == assignedUserID {
-			panel.AssignedDisplayName = a.DisplayName
-			break
+		if a.UserID.String() == userID {
+			return a.DisplayName
 		}
 	}
-	return panel
+	return ""
 }
 
 // fail centralises the error reporting + log path. The response body
