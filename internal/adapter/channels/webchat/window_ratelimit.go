@@ -15,14 +15,19 @@ import (
 //
 // Limits are selected by the key prefix the handler builds:
 //
-//	wc.sess.<tenant>.<ip_hash>  → 10 sessions / minute  (D5 session create)
-//	wc.msg.<session_id>         → 60 messages / minute  (D5 message)
+//	wc.sess.<tenant>.<ip_hash>   → 10 sessions / minute  (D5 session create, per IP)
+//	wc.s24.<tenant>.<net_hash>   → 200 sessions / minute (D5 /24 anti-sybil)
+//	wc.msg.<session_id>          → 60 messages / minute   (D5 message)
+//	wc.stream.<session_id>       → 60 connects / minute   (D5 SSE entry rate)
+//
+// The per-(tenant × IP) and per-session SSE *concurrency* caps in D5
+// (1/session, 5/IP) are enforced separately in Broker.Subscribe — they
+// bound live connections, not request rate. wc.stream.* here bounds the
+// connect/reconnect *rate* so an open→close loop (which never trips the
+// concurrency cap) still gets throttled.
 //
 // Fase 2 is single-instance, so an in-memory window is acceptable per
-// ADR-0021 D5 ("Multi-instance sync via Redis fica para Fase 3"). The
-// /24 anti-sybil bucket and the SSE connection caps in D5 are NOT yet
-// enforced here — they are tracked as follow-up hardening for the
-// SecurityEngineer review of the public surface.
+// ADR-0021 D5 ("Multi-instance sync via Redis fica para Fase 3").
 type WindowRateLimiter struct {
 	mu       sync.Mutex
 	buckets  map[string]*windowBucket
@@ -49,8 +54,8 @@ type windowBucket struct {
 const maxWindowBuckets = 100_000
 
 // NewWindowRateLimiter returns the production limiter wired with the
-// ADR-0021 D5 defaults (10 session-creates/min, 60 messages/min, and a
-// 60/min fallback for any other key).
+// ADR-0021 D5 defaults (10 session-creates/min/IP, 200/min/24, 60
+// messages/min, 60 stream-connects/min, and a 60/min fallback).
 func NewWindowRateLimiter() *WindowRateLimiter {
 	return newWindowRateLimiterWithClock(time.Now)
 }
@@ -62,7 +67,9 @@ func newWindowRateLimiterWithClock(now func() time.Time) *WindowRateLimiter {
 		buckets: make(map[string]*windowBucket),
 		rules: []windowRule{
 			{prefix: "wc.sess.", limit: 10, window: time.Minute},
+			{prefix: "wc.s24.", limit: 200, window: time.Minute},
 			{prefix: "wc.msg.", limit: 60, window: time.Minute},
+			{prefix: "wc.stream.", limit: 60, window: time.Minute},
 		},
 		fallback: windowRule{limit: 60, window: time.Minute},
 		now:      now,
