@@ -962,3 +962,277 @@ func (o *fixedOutbound) SendMessage(_ context.Context, _ inbox.OutboundMessage) 
 	}
 	return o.channelExternalID, nil
 }
+
+// ---------------------------------------------------------------------------
+// SIN-64967 — read-model: ListConversationSummaries + UserDirectory.
+// These exercise the GET /inbox list pane read side: last-message snippet
+// + direction (single lateral query), the channel/assigned filters, tenant
+// isolation, and the atendente-label directory.
+// ---------------------------------------------------------------------------
+
+// hydrateAndSave persists a message with an explicit created_at so the
+// lateral "latest message" lookup has a deterministic ordering basis.
+func hydrateAndSave(t *testing.T, store *pginbox.Store, tenant, convID uuid.UUID, dir inbox.MessageDirection, body string, at time.Time) {
+	t.Helper()
+	status := inbox.MessageStatusDelivered
+	if dir == inbox.MessageDirectionOut {
+		status = inbox.MessageStatusSent
+	}
+	m := inbox.HydrateMessage(uuid.New(), tenant, convID, dir, body, status, "", nil, at)
+	if err := store.SaveMessage(context.Background(), m); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+}
+
+func TestInboxAdapter_ListConversationSummaries_SnippetAndDirection(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+	contact := seedInboxContact(t, db, tenant)
+
+	withMsgs, _ := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), withMsgs); err != nil {
+		t.Fatalf("CreateConversation withMsgs: %v", err)
+	}
+	base := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	hydrateAndSave(t, store, tenant, withMsgs.ID, inbox.MessageDirectionIn, "primeira mensagem do contato", base)
+	hydrateAndSave(t, store, tenant, withMsgs.ID, inbox.MessageDirectionOut, "resposta do atendente", base.Add(time.Minute))
+
+	empty, _ := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), empty); err != nil {
+		t.Fatalf("CreateConversation empty: %v", err)
+	}
+
+	got, err := store.ListConversationSummaries(context.Background(), tenant, inbox.ConversationFilter{}, 10)
+	if err != nil {
+		t.Fatalf("ListConversationSummaries: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	byID := map[uuid.UUID]inbox.ConversationListItem{}
+	for _, it := range got {
+		byID[it.ID] = it
+	}
+	wm := byID[withMsgs.ID]
+	if wm.LastMessageSnippet != "resposta do atendente" {
+		t.Errorf("snippet = %q, want last (outbound) message body", wm.LastMessageSnippet)
+	}
+	if wm.LastMessageDirection != inbox.MessageDirectionOut {
+		t.Errorf("direction = %q, want out", wm.LastMessageDirection)
+	}
+	// seedInboxContact sets display_name "Alice"; it wins over the channel
+	// identifier fallback.
+	if wm.ContactDisplayName != "Alice" {
+		t.Errorf("ContactDisplayName = %q, want Alice", wm.ContactDisplayName)
+	}
+	em := byID[empty.ID]
+	if em.LastMessageSnippet != "" || em.LastMessageDirection != "" {
+		t.Errorf("empty conversation should carry no snippet/direction, got %q/%q", em.LastMessageSnippet, em.LastMessageDirection)
+	}
+}
+
+func TestInboxAdapter_ListConversationSummaries_ContactNameFallback(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+
+	// Contact with an empty display_name but a channel identity: the label
+	// must fall back to the channel external_id, never blank.
+	var contactID uuid.UUID
+	if err := db.AdminPool().QueryRow(context.Background(),
+		`INSERT INTO contact (tenant_id, display_name) VALUES ($1, '') RETURNING id`, tenant).Scan(&contactID); err != nil {
+		t.Fatalf("seed nameless contact: %v", err)
+	}
+	if _, err := db.AdminPool().Exec(context.Background(),
+		`INSERT INTO contact_channel_identity (tenant_id, contact_id, channel, external_id)
+		 VALUES ($1, $2, 'whatsapp', '+5511888887777')`, tenant, contactID); err != nil {
+		t.Fatalf("seed channel identity: %v", err)
+	}
+	conv := inbox.HydrateConversation(uuid.New(), tenant, contactID, "whatsapp",
+		inbox.ConversationStateOpen, nil, time.Time{}, time.Time{})
+	if err := store.CreateConversation(context.Background(), conv); err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	got, err := store.ListConversationSummaries(context.Background(), tenant, inbox.ConversationFilter{}, 10)
+	if err != nil {
+		t.Fatalf("ListConversationSummaries: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].ContactDisplayName != "+5511888887777" {
+		t.Errorf("ContactDisplayName = %q, want channel external_id fallback", got[0].ContactDisplayName)
+	}
+}
+
+func TestInboxAdapter_ListConversationSummaries_ChannelFilter(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+	contact := seedInboxContact(t, db, tenant)
+
+	wa, _ := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), wa); err != nil {
+		t.Fatalf("CreateConversation wa: %v", err)
+	}
+	ig, _ := inbox.NewConversation(tenant, contact.ID, "instagram")
+	if err := store.CreateConversation(context.Background(), ig); err != nil {
+		t.Fatalf("CreateConversation ig: %v", err)
+	}
+
+	got, err := store.ListConversationSummaries(context.Background(), tenant, inbox.ConversationFilter{Channel: "instagram"}, 10)
+	if err != nil {
+		t.Fatalf("ListConversationSummaries: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != ig.ID {
+		t.Fatalf("channel filter = %+v, want only instagram conversation", got)
+	}
+}
+
+func TestInboxAdapter_ListConversationSummaries_AssignedFilter(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenant := seedContactsTenant(t, db)
+	contact := seedInboxContact(t, db, tenant)
+	userA := seedUserForAssignment(t, db.AdminPool(), tenant)
+
+	mine, _ := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), mine); err != nil {
+		t.Fatalf("CreateConversation mine: %v", err)
+	}
+	other, _ := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), other); err != nil {
+		t.Fatalf("CreateConversation other: %v", err)
+	}
+	if _, err := db.AdminPool().Exec(context.Background(),
+		`UPDATE conversation SET assigned_user_id = $1 WHERE id = $2`, userA, mine.ID); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	got, err := store.ListConversationSummaries(context.Background(), tenant, inbox.ConversationFilter{AssignedUserID: userA}, 10)
+	if err != nil {
+		t.Fatalf("ListConversationSummaries: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != mine.ID {
+		t.Fatalf("assigned filter = %+v, want only the conversation assigned to userA", got)
+	}
+	if got[0].AssignedUserID == nil || *got[0].AssignedUserID != userA {
+		t.Errorf("AssignedUserID = %v, want %s", got[0].AssignedUserID, userA)
+	}
+}
+
+func TestInboxAdapter_ListConversationSummaries_TenantIsolation(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	tenantA := seedContactsTenant(t, db)
+	tenantB := seedContactsTenant(t, db)
+	contactA := seedInboxContact(t, db, tenantA)
+
+	convA, _ := inbox.NewConversation(tenantA, contactA.ID, "whatsapp")
+	if err := store.CreateConversation(context.Background(), convA); err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	got, err := store.ListConversationSummaries(context.Background(), tenantB, inbox.ConversationFilter{}, 10)
+	if err != nil {
+		t.Fatalf("ListConversationSummaries B: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("tenant B saw %d rows, want 0 (RLS isolation)", len(got))
+	}
+}
+
+func TestInboxAdapter_ListConversationSummaries_RejectsBadInput(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	if _, err := store.ListConversationSummaries(context.Background(), uuid.Nil, inbox.ConversationFilter{}, 10); err == nil {
+		t.Error("zero tenant err = nil")
+	}
+	tenant := seedContactsTenant(t, db)
+	if _, err := store.ListConversationSummaries(context.Background(), tenant, inbox.ConversationFilter{}, 0); err == nil {
+		t.Error("limit=0 err = nil")
+	}
+	if _, err := store.ListConversationSummaries(context.Background(), tenant, inbox.ConversationFilter{}, 999999); err != nil {
+		t.Errorf("clamp err = %v", err)
+	}
+}
+
+func newUserDirectory(t *testing.T, db *testpg.DB) *pginbox.UserDirectory {
+	t.Helper()
+	d, err := pginbox.NewUserDirectory(db.RuntimePool())
+	if err != nil {
+		t.Fatalf("NewUserDirectory: %v", err)
+	}
+	return d
+}
+
+func TestInboxUserDirectory_New_RejectsNilPool(t *testing.T) {
+	if _, err := pginbox.NewUserDirectory(nil); err == nil {
+		t.Error("NewUserDirectory(nil) err = nil")
+	}
+}
+
+func TestInboxUserDirectory_LabelsByID(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	dir := newUserDirectory(t, db)
+	tenant := seedContactsTenant(t, db)
+	userA := seedUserForAssignment(t, db.AdminPool(), tenant)
+	userB := seedUserForAssignment(t, db.AdminPool(), tenant)
+	missing := uuid.New()
+
+	got, err := dir.LabelsByID(context.Background(), tenant, []uuid.UUID{userA, userB, missing})
+	if err != nil {
+		t.Fatalf("LabelsByID: %v", err)
+	}
+	// seedUserForAssignment uses "<uuid>@test" → local part is the uuid.
+	if got[userA] != userA.String() {
+		t.Errorf("label[A] = %q, want %q", got[userA], userA.String())
+	}
+	if got[userB] != userB.String() {
+		t.Errorf("label[B] = %q, want %q", got[userB], userB.String())
+	}
+	if _, ok := got[missing]; ok {
+		t.Errorf("missing id should be absent, got %q", got[missing])
+	}
+}
+
+func TestInboxUserDirectory_EmptyIDs(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	dir := newUserDirectory(t, db)
+	tenant := seedContactsTenant(t, db)
+	got, err := dir.LabelsByID(context.Background(), tenant, nil)
+	if err != nil {
+		t.Fatalf("LabelsByID: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty ids should yield empty map, got %v", got)
+	}
+}
+
+func TestInboxUserDirectory_RejectsNilTenant(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	dir := newUserDirectory(t, db)
+	if _, err := dir.LabelsByID(context.Background(), uuid.Nil, []uuid.UUID{uuid.New()}); err == nil {
+		t.Error("nil tenant err = nil")
+	}
+}
+
+func TestInboxUserDirectory_TenantIsolation(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	dir := newUserDirectory(t, db)
+	tenantA := seedContactsTenant(t, db)
+	tenantB := seedContactsTenant(t, db)
+	userA := seedUserForAssignment(t, db.AdminPool(), tenantA)
+
+	// Looking up tenant A's user under tenant B must return nothing — RLS
+	// on users hides cross-tenant rows even with a caller-supplied id.
+	got, err := dir.LabelsByID(context.Background(), tenantB, []uuid.UUID{userA})
+	if err != nil {
+		t.Fatalf("LabelsByID: %v", err)
+	}
+	if _, ok := got[userA]; ok {
+		t.Errorf("tenant B resolved tenant A's user: %q", got[userA])
+	}
+}
