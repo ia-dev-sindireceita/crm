@@ -281,6 +281,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	// whole pane — the policy resolver then falls through to its
 	// tenant-scope default, which is the safe behaviour.
 	channel := ""
+	var contextPanel contextPanelData
 	if h.deps.ConversationContext != nil {
 		ctxRes, err := h.deps.ConversationContext.Execute(r.Context(), inboxusecase.GetConversationContextInput{
 			TenantID:       tenant.ID,
@@ -290,6 +291,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 			h.deps.Logger.Warn("web/inbox: conversation context read", "err", err)
 		} else {
 			channel = ctxRes.Context.Channel
+			contextPanel = newContextPanelData(ctxRes.Context)
 		}
 	}
 
@@ -346,6 +348,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		Messages:       res.Items,
 		CSRFInput:      csrf.FormHidden(token),
 		CustomerPanel:  customerHTML,
+		Context:        contextPanel,
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render view", "err", err)
 	}
@@ -502,6 +505,71 @@ type viewData struct {
 	Messages       []inboxusecase.MessageView
 	CSRFInput      template.HTML
 	CustomerPanel  template.HTML
+	// Context drives the conversation context side panel (SIN-64970):
+	// contact identity, channel, funnel stage, and assignment state. Its
+	// zero value (HasContext=false) renders the panel's degraded
+	// "contexto indisponível" state, so a skipped or failed context read
+	// never breaks the conversation pane.
+	Context contextPanelData
+}
+
+// contextPanelData is the web-local projection of
+// inboxusecase.ConversationContextView (SIN-64970, frontend half of
+// SIN-64959) that backs the conversation context side panel. Keeping it
+// local — rather than handing the use-case view straight to the template
+// — decouples the template from the use-case shape and lets each block
+// degrade independently: an empty ContactName, nil Identities, an empty
+// FunnelStageName, or Assigned=false each collapse their own section
+// instead of breaking the layout (partial-data tolerance).
+//
+// HasContext is false when the context read was skipped (no wired
+// ConversationContext use case) or failed; the panel then renders its
+// "contexto indisponível" state rather than a half-empty card.
+type contextPanelData struct {
+	HasContext      bool
+	Channel         string
+	ContactName     string
+	Identities      []contextIdentity
+	FunnelStageName string
+	FunnelStageKey  string
+	Assigned        bool
+	AssignedUserID  string
+}
+
+// contextIdentity is one contact channel identity (e.g. a WhatsApp
+// phone) shown in the side panel's "Identidades" list.
+type contextIdentity struct {
+	Channel    string
+	ExternalID string
+}
+
+// newContextPanelData projects a use-case ConversationContextView onto
+// the template-facing contextPanelData. It is total: every field maps
+// straight through and the optional AssignedUserID pointer is rendered
+// as its string form only when present, so the template never has to
+// dereference a pointer.
+func newContextPanelData(v inboxusecase.ConversationContextView) contextPanelData {
+	d := contextPanelData{
+		HasContext:      true,
+		Channel:         v.Channel,
+		ContactName:     v.ContactDisplayName,
+		FunnelStageName: v.FunnelStageName,
+		FunnelStageKey:  v.FunnelStageKey,
+		Assigned:        v.Assigned,
+	}
+	if v.AssignedUserID != nil {
+		d.AssignedUserID = v.AssignedUserID.String()
+	}
+	if len(v.ContactIdentities) > 0 {
+		d.Identities = make([]contextIdentity, 0, len(v.ContactIdentities))
+		for _, id := range v.ContactIdentities {
+			d.Identities = append(d.Identities, contextIdentity{
+				Channel:    id.Channel,
+				ExternalID: id.ExternalID,
+			})
+		}
+	}
+	return d
 }
 
 // customerPanelData drives the right-rail customer panel. HasConversation
