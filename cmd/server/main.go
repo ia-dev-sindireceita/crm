@@ -611,6 +611,17 @@ func runInternal(ctx context.Context, addr string, handler http.Handler) error {
 // SIN-63825 / SIN-63793 W6.
 var inboxChannelProviderForHealth atomic.Pointer[string]
 
+// surfacesForHealth carries the web-surface mounted/not map that the
+// router wireup (iamRoutes → httpapi.Deps.WebSurfaces) publishes once at
+// boot, read by healthHandler on every /health request. It uses the same
+// atomic.Pointer discipline as inboxChannelProviderForHealth: the
+// production happens-before via the accept loop does not extend across
+// the sibling cmd/server tests that exercise wireup and healthHandler
+// concurrently. A nil load (a /health probe issued before the router is
+// wired) omits the surfaces field via the WithSurfaces(nil) path, so the
+// legacy JSON shape is preserved. SIN-64985.
+var surfacesForHealth atomic.Pointer[map[string]bool]
+
 // healthHandler is the public /health closure constructed from
 // handler.Health with the build-time commit SHA and the resolved inbox
 // channel provider. It is wired here so the cd-stg smoke gate
@@ -618,14 +629,25 @@ var inboxChannelProviderForHealth atomic.Pointer[string]
 // workflow head SHA, and the SIN-63825 inbox smoke gate can read
 // .inbox_channel_provider. See SIN-63165 for the wireup-shadow bug
 // this var fixes.
+//
+// SIN-64985 — it also reports the surfaces map (web-surface name →
+// mounted boolean) so an operator can diagnose a silently-nil surface
+// (router skips the `deps.WebX != nil` mount → bare 404) with a single
+// `curl /health`, no container-log access. Booleans only; the wire
+// failure reason is never exposed (see handler.WithSurfaces).
 var healthHandler http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
 	var provider string
 	if p := inboxChannelProviderForHealth.Load(); p != nil {
 		provider = *p
 	}
+	var surfaces map[string]bool
+	if s := surfacesForHealth.Load(); s != nil {
+		surfaces = *s
+	}
 	handler.Health(
 		version.CommitSHA(),
 		handler.WithInboxChannelProvider(provider),
+		handler.WithSurfaces(surfaces),
 	).ServeHTTP(w, r)
 }
 

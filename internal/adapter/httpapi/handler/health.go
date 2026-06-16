@@ -23,10 +23,26 @@ import (
 // deploy ("disabled" or unset) without SSH access to the boot log.
 // `omitempty` keeps the legacy JSON shape unchanged for callers that do
 // not wire the option.
+// surfaces (SIN-64985) is an opt-in map of web-surface name → mounted
+// boolean, set via WithSurfaces. Each entry mirrors a router.go
+// `if deps.WebX != nil` mount gate, so an operator can `curl /health`
+// and tell whether a surface silently failed to wire (a fail-soft
+// `build*Handler` that returns nil makes the router skip the mount →
+// 404 indistinguishable from a route that never existed). The map value
+// is `bool` by type, never an error string: "mounted | not" is the
+// information ceiling — exposing the wire failure reason would leak
+// DSN / infra detail on an unauthenticated endpoint. Whether a surface
+// is mounted is already inferable by an unauthenticated HTTP probe —
+// including the public surfaces (campaign_public, public_privacy, chat),
+// where a mounted route answers with its own non-404 semantics and a nil
+// handler answers a bare 404 — so the boolean does not widen the attack
+// surface. `omitempty` keeps the legacy JSON shape unchanged for callers
+// that do not wire the option.
 type healthResponse struct {
-	Status               string `json:"status"`
-	CommitSHA            string `json:"commit_sha"`
-	InboxChannelProvider string `json:"inbox_channel_provider,omitempty"`
+	Status               string          `json:"status"`
+	CommitSHA            string          `json:"commit_sha"`
+	InboxChannelProvider string          `json:"inbox_channel_provider,omitempty"`
+	Surfaces             map[string]bool `json:"surfaces,omitempty"`
 }
 
 // HealthOption tunes the healthResponse rendered by Health. Options are
@@ -43,6 +59,31 @@ type HealthOption func(*healthResponse)
 func WithInboxChannelProvider(name string) HealthOption {
 	return func(resp *healthResponse) {
 		resp.InboxChannelProvider = name
+	}
+}
+
+// WithSurfaces sets the surfaces JSON field on /health (SIN-64985) — a
+// map of web-surface name → mounted boolean. cmd/server passes the map
+// derived from Deps.WebSurfaces() so an operator can diagnose a
+// silently-nil surface (router skips the mount → bare 404) with a single
+// `curl /health`, no container-log access. Only booleans cross the
+// boundary; the wire failure reason is never exposed (see healthResponse
+// doc). An empty or nil map omits the field and keeps the legacy shape.
+// A populated map renders even when every value is false — that is the
+// whole point of the diagnostic.
+func WithSurfaces(surfaces map[string]bool) HealthOption {
+	return func(resp *healthResponse) {
+		if len(surfaces) == 0 {
+			resp.Surfaces = nil
+			return
+		}
+		// Defensive copy: the caller's map (Deps-derived, potentially
+		// shared) must not be aliased into the sealed closure.
+		cp := make(map[string]bool, len(surfaces))
+		for k, v := range surfaces {
+			cp[k] = v
+		}
+		resp.Surfaces = cp
 	}
 }
 

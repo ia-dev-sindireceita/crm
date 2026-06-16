@@ -494,7 +494,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		masterTenantsCleanup = stack.Cleanup
 	}
 
-	h := httpapi.NewRouter(httpapi.Deps{
+	routerDeps := httpapi.Deps{
 		IAM: iamAdapter{
 			tenants:  tenants,
 			users:    users,
@@ -542,7 +542,16 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		CustomDomainEnabled: opts.CustomDomainEnabled,
 		Impersonation:       impersonationRoutes,
 		MasterTenants:       masterTenantsRoutes,
-	})
+	}
+
+	// SIN-64985 — publish the web-surface mounted/not map (booleans only)
+	// for /health BEFORE the listener accepts connections, derived from
+	// the same Deps that gate the route mounts so the diagnostic cannot
+	// drift from reality. Read by healthHandler via surfacesForHealth.
+	surfaces := routerDeps.WebSurfaces()
+	surfacesForHealth.Store(&surfaces)
+
+	h := httpapi.NewRouter(routerDeps)
 
 	fullCleanup := func() {
 		masterTenantsCleanup()

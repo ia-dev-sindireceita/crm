@@ -571,6 +571,54 @@ type Deps struct {
 	CustomDomainEnabled bool
 }
 
+// WebSurfaces (SIN-64985) returns the mounted/not-mounted state of every
+// auth-gated web surface whose route registration is gated on a
+// `deps.WebX != nil` check in NewRouter. It is the single source of
+// truth for that predicate set: /health (via handler.WithSurfaces)
+// reports it as booleans so an operator can `curl /health` and tell
+// whether a fail-soft `build*Handler` returned nil at boot (router skips
+// the mount → bare 404). The same predicates drive the route gates
+// below and the /hello-tenant index, so this map and those mounts cannot
+// drift.
+//
+// SECURITY: the returned values are booleans only. The wire failure
+// reason (e.g. "web/aipolicy disabled — <DSN error>") is NEVER surfaced
+// here — "mounted | not" is the information ceiling for the
+// unauthenticated /health endpoint. This holds for the PUBLIC surfaces
+// too (campaign_public, public_privacy, chat): whether they are mounted
+// is already inferable by an unauthenticated HTTP probe — mounted yields
+// the surface's own non-404 semantics, nil yields a bare 404 — so the
+// boolean does not widen the attack surface. This does NOT cover the
+// stale-image case (binary built from older source than the running
+// deploy): the map reflects the running binary's wireup, not the source
+// tree.
+//
+// The map MUST enumerate every simple `deps.WebX != nil`-gated web
+// surface so an operator never mistakes an untracked surface for an
+// unmounted one (the false-confidence this guardrail exists to kill).
+// Composite gates (WebLGPD sub-fields, UserMFA sub-fields) are
+// intentionally excluded: they are not a single nil-handler predicate
+// and would need their own multi-field shape — out of scope here.
+func (d Deps) WebSurfaces() map[string]bool {
+	return map[string]bool{
+		"ai_policy":        d.WebAIPolicy != nil,
+		"catalog":          d.WebCatalog != nil,
+		"funnel":           d.WebFunnel != nil,
+		"funnel_rules":     d.WebFunnelRules != nil,
+		"privacy":          d.WebPrivacy != nil,
+		"campaigns":        d.WebCampaigns != nil,
+		"consent":          d.WebConsent != nil,
+		"inbox":            d.WebInbox != nil,
+		"contacts":         d.WebContacts != nil,
+		"campaign_public":  d.WebCampaignPublic != nil,
+		"public_privacy":   d.WebPublicPrivacy != nil,
+		"chat":             d.WebChat != nil,
+		"branding":         d.WebBranding != nil,
+		"wallet":           d.WebWallet != nil,
+		"billing_invoices": d.WebBillingInvoices != nil,
+	}
+}
+
 // LGPDRoutes bundles the two inner handlers and the shared rate-limit
 // middleware for the LGPD data-subject admin surface (SIN-63186). Each
 // http.Handler slot is the per-method func extracted from
@@ -742,7 +790,7 @@ func NewRouter(deps Deps) http.Handler {
 	// at boot from internal/version (SIN-63146) so cd-stg can detect a
 	// stale `docker compose pull`; empty Deps.CommitSHA renders as
 	// "unknown" inside the handler.
-	r.Get("/health", handler.Health(deps.CommitSHA))
+	r.Get("/health", handler.Health(deps.CommitSHA, handler.WithSurfaces(deps.WebSurfaces())))
 
 	// /metrics is whitelist-mounted: no tenant, no auth, no metrics
 	// recursion. Access control belongs at the network edge (firewall
