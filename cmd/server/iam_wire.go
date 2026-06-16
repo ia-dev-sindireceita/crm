@@ -115,6 +115,17 @@ var iamRoutes = []string{
 	// stdlib mux the custom-domain catch-all at "/" would shadow them.
 	"/inbox",
 	"/inbox/",
+	// SIN-64975 — HTMX branding admin surface (Fase 5, SIN-63084).
+	// The handler was registered inside the chi authed/tenanted group
+	// (router.go) but never added here, so the stdlib mux dispatched
+	// every /branding* request to the custom-domain catch-all at "/"
+	// instead of chi — staging returned 404 for an otherwise
+	// fully-wired, non-nil handler. The "/branding" exact pattern
+	// matches GET /branding; the "/branding/" subtree catches the four
+	// POSTs (logo, palette/override, palette/save, palette/revert).
+	// Identical defect + fix to the SIN-63821 inbox mount above.
+	"/branding",
+	"/branding/",
 	"/m/",
 	// SIN-63957 — master tenants + grants surface (Fase 2.5 C9/C10 +
 	// SIN-63605 + SIN-63958 impersonation). The "/master/" subtree
