@@ -297,13 +297,30 @@ func networkBucket(ipStr string) string {
 	return ip.Mask(net.CIDRMask(48, 128)).String()
 }
 
+// clientIP returns the caller's IP as the rate-limit + ip_hash key
+// source. It trusts ONLY r.RemoteAddr and never reads the client-supplied
+// X-Real-IP / X-Forwarded-For / True-Client-IP headers directly.
+//
+// SIN-64991 (trust-boundary follow-up of SIN-64986 / OWASP A05): the
+// widget routes are mounted in the tenanted group, which inherits the
+// router-root trusted-proxy RealIP wrapper (httpapi.NewTrustedRealIP,
+// SIN-62978). That wrapper has already rewritten r.RemoteAddr from the
+// forwarded-identity headers IFF the immediate TCP peer is inside the
+// trusted-proxy CIDR allowlist (Caddy edge), and stripped those headers
+// otherwise. Re-reading X-Real-IP here would reintroduce the per-IP
+// rate-limit bypass (D5): a caller not behind the Caddy edge could spoof
+// X-Real-IP per request to partition the rate-limit bucket and the
+// ip_hash session key. By keying off r.RemoteAddr alone, an untrusted
+// peer is always seen as its raw TCP source.
+//
+// net.SplitHostPort strips the port for the common "ip:port" RemoteAddr
+// (incl. bracketed IPv6 "[::1]:5555"); a bare IP — which chimw.RealIP
+// writes when it honours a trusted header — has no port to split, so we
+// return it unchanged instead of truncating an IPv6 address at the last
+// colon.
 func clientIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	addr := r.RemoteAddr
-	if i := strings.LastIndex(addr, ":"); i != -1 {
-		return addr[:i]
-	}
-	return addr
+	return r.RemoteAddr
 }
