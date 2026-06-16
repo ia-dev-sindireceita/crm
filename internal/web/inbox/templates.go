@@ -448,6 +448,7 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
     <h1 class="conversation__title">Conversa</h1>
     {{template "channel_badge" .Channel}}
   </header>
+  {{template "conversation_context" .Context}}
   <ol id="conversation-thread" class="conversation__thread" role="list">
     {{range .Messages}}
       {{template "message_bubble" .}}
@@ -468,6 +469,68 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
   </form>
 </article>
 {{.CustomerPanel}}
+`))
+
+// conversationContextTmpl is the conversation context side panel
+// (SIN-64970, frontend half of SIN-64959). It surfaces the read-only
+// ConversationContextView projection — contact identity, channel,
+// funnel stage, and assignment state — beside the message thread so the
+// operator has the sale context without leaving the conversation.
+//
+// Every block is partial-data tolerant: a missing contact renders
+// "Contato sem nome" and no identity list; a conversation that has never
+// moved on the funnel renders "Sem etapa definida"; an unassigned
+// conversation renders "Não atribuída". When the whole context read was
+// skipped or failed (HasContext=false) the panel collapses to a single
+// "Contexto indisponível" line rather than a half-empty card.
+//
+// Accessibility: the panel is a semantic <aside> with a labelled region
+// per facet (Contato / Canal / Funil / Atribuição). CSP-safe: no inline
+// on*= handlers — the panel is pure server-rendered markup.
+var conversationContextTmpl = template.Must(template.New("conversation_context").Funcs(templateFuncs).Parse(`<aside class="conversation-context" aria-labelledby="conversation-context-title" data-testid="conversation-context">
+  <h2 id="conversation-context-title" class="conversation-context__title">Contexto da conversa</h2>
+{{- if .HasContext}}
+  <section class="conversation-context__section conversation-context__contact" aria-label="Contato" data-testid="conversation-context-contact">
+    <h3 class="conversation-context__subtitle">Contato</h3>
+    <p class="conversation-context__contact-name">{{if .ContactName}}{{.ContactName}}{{else}}Contato sem nome{{end}}</p>
+    {{- if .Identities}}
+    <ul class="conversation-context__identities" role="list">
+      {{- range .Identities}}
+      <li class="conversation-context__identity">
+        {{template "channel_badge" .Channel}}
+        <span class="conversation-context__identity-id">{{.ExternalID}}</span>
+      </li>
+      {{- end}}
+    </ul>
+    {{- end}}
+  </section>
+  <section class="conversation-context__section conversation-context__channel" aria-label="Canal" data-testid="conversation-context-channel">
+    <h3 class="conversation-context__subtitle">Canal</h3>
+    <p class="conversation-context__channel-value">
+      {{template "channel_badge" .Channel}}
+      <span class="conversation-context__channel-label">{{channelLabel .Channel}}</span>
+    </p>
+  </section>
+  <section class="conversation-context__section conversation-context__funnel" aria-label="Etapa do funil" data-testid="conversation-context-funnel">
+    <h3 class="conversation-context__subtitle">Etapa do funil</h3>
+    {{- if .FunnelStageName}}
+    <p class="conversation-context__funnel-stage" data-stage-key="{{.FunnelStageKey}}">{{.FunnelStageName}}</p>
+    {{- else}}
+    <p class="conversation-context__funnel-empty">Sem etapa definida</p>
+    {{- end}}
+  </section>
+  <section class="conversation-context__section conversation-context__assignment" aria-label="Atribuição" data-testid="conversation-context-assignment">
+    <h3 class="conversation-context__subtitle">Atribuição</h3>
+    {{- if .Assigned}}
+    <p class="conversation-context__assignment-value conversation-context__assignment-value--assigned">Atribuída</p>
+    {{- else}}
+    <p class="conversation-context__assignment-value conversation-context__assignment-value--unassigned">Não atribuída</p>
+    {{- end}}
+  </section>
+{{- else}}
+  <p class="conversation-context__empty" data-testid="conversation-context-empty">Contexto indisponível.</p>
+{{- end}}
+</aside>
 `))
 
 // customerPanelTmpl is the right rail. It is rendered both inside the
@@ -542,7 +605,7 @@ var customerPanelTmpl = template.Must(template.New("customer_panel").Funcs(templ
     <section id="ai-assist-panel" class="customer-summary__panel ai-assist__panel" data-testid="customer-summary-panel" aria-live="polite">
       <p class="customer-summary__empty">Clique para gerar um resumo e 3 dicas para fechar a venda.</p>
     </section>
-    <section id="ai-consent-modal" class="ai-consent-modal ai-consent-modal--placeholder" hidden></section>
+    <section id="ai-consent-modal" class="ai-consent-modal" hidden></section>
     {{- else}}
     <p class="customer-summary__empty" data-testid="customer-summary-disabled">IA não está disponível neste tenant.</p>
     {{- end}}
@@ -633,9 +696,14 @@ func init() {
 			panic("inbox/web: register " + child.Name() + " in list region: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl} {
+	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl} {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
+		}
+	}
+	for _, child := range []*template.Template{channelBadgeTmpl} {
+		if _, err := conversationContextTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
+			panic("inbox/web: register " + child.Name() + " in context: " + err.Error())
 		}
 	}
 	for _, child := range []*template.Template{channelBadgeTmpl} {
@@ -659,6 +727,7 @@ func init() {
 		inboxFiltersTmpl,
 		inboxListRegionTmpl,
 		conversationViewTmpl,
+		conversationContextTmpl,
 		customerPanelTmpl,
 		channelBadgeTmpl,
 		inboxLayoutTmpl,

@@ -194,6 +194,14 @@ type iamHandlerOpts struct {
 	// is unauthenticated by design (AC #1).
 	WebCampaignPublic http.Handler
 
+	// WebChat is the SIN-64972 webchat widget handler (ADR-0021),
+	// pre-assembled with the ReceiveInbound stack + per-tenant origin
+	// allowlist / signature / rate limiter by webchat_wire.go. Built
+	// inside buildIAMHandler so it reuses the IAM pool. A non-nil value
+	// supplied by the caller wins over the wire-built handler so tests
+	// can inject a stub. Nil keeps /widget/v1/* unmounted.
+	WebChat http.Handler
+
 	// WebBranding is the SIN-63084 HTMX branding admin mux. Nil keeps
 	// the /branding* routes unmounted; the wire in branding_ui_wire.go
 	// has no DB dependency and only returns nil on a programmer error
@@ -219,6 +227,14 @@ type iamHandlerOpts struct {
 	// keeps GET /consent/cookies-banner and POST /consent/cookies
 	// unmounted. Built by the wire layer in consent_wire.go.
 	WebConsent http.Handler
+
+	// WebBillingInvoices is the SIN-62963 HTMX PIX-invoice surface mux.
+	// Nil keeps the /billing/invoices* + /billing/dunning-banner routes
+	// unmounted; the wire in billing_invoices_wire.go owns its runtime
+	// + master_ops pgxpools and returns nil when either DSN is missing
+	// or a connection fails. SIN-64974 added this slot — the surface was
+	// shipped but never plumbed, leaving the routes 404 in staging.
+	WebBillingInvoices http.Handler
 
 	// WebInbox is the SIN-63821 operator inbox HTMX UI handler.
 	// Built by inbox_wire.go with stub use cases in W1 so the
@@ -390,6 +406,20 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		}
 	}
 
+	// SIN-64972 — public webchat widget surface (ADR-0021). Built here
+	// so it reuses the IAM pool (no second pgxpool). A build failure is
+	// non-fatal — the router simply omits /widget/v1/* and the rest of
+	// IAM keeps serving. opts.WebChat, when set by the caller, wins over
+	// the wire-built handler (tests rely on this).
+	webChat := opts.WebChat
+	if webChat == nil {
+		if h, err := buildWebchatHandler(pool, getenv); err != nil {
+			log.Printf("crm: webchat widget handler disabled — %v", err)
+		} else {
+			webChat = h
+		}
+	}
+
 	// SIN-63186 — LGPD admin handlers + lgpd_admin rate limit. Built
 	// here so it reuses the IAM pool + Redis; opens a second pgxpool
 	// against MASTER_OPS_DATABASE_URL for the store constructor (the
@@ -490,10 +520,12 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebCampaigns:        opts.WebCampaigns,
 		WebFunnelRules:      opts.WebFunnelRules,
 		WebCampaignPublic:   webCampaignPublic,
+		WebChat:             webChat,
 		WebBranding:         opts.WebBranding,
 		WebLGPD:             lgpdRoutes,
 		WebPublicPrivacy:    opts.WebPublicPrivacy,
 		WebConsent:          opts.WebConsent,
+		WebBillingInvoices:  opts.WebBillingInvoices,
 		WebInbox:            opts.WebInbox,
 		WebWallet:           opts.WebWallet,
 		Theme:               opts.Theme,

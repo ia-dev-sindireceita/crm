@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -50,8 +51,25 @@ func (a *Adapter) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limit: 10 new sessions / min / ip+tenant (ADR-0021 D5).
-	ipKey := fmt.Sprintf("wc.sess.%s.%x", tenantID, sha256.Sum256([]byte(clientIP(r)+tenantID.String())))
+	// ipHash = sha256(ip || tenant_id); the plaintext IP never leaves
+	// this scope, so the value persisted on the session row (and used
+	// as the rate-limit key) is LGPD-safe.
+	ip := clientIP(r)
+	ipHash := fmt.Sprintf("%x", sha256.Sum256([]byte(ip+tenantID.String())))
+	ipKey := "wc.sess." + tenantID.String() + "." + ipHash
 	if ok, after, _ := a.rl.Allow(ctx, ipKey); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(after.Seconds())))
+		http.Error(w, "", http.StatusTooManyRequests)
+		return
+	}
+
+	// /24 anti-sybil bucket (ADR-0021 D5): 200 session-creates / min per
+	// (tenant × IPv4 /24). Stops a single subnet from rotating IPs to
+	// dodge the per-IP cap above. net_hash = sha256(network || tenant_id)
+	// keeps it LGPD-safe — the network prefix never persists in plaintext.
+	netHash := fmt.Sprintf("%x", sha256.Sum256([]byte(networkBucket(ip)+tenantID.String())))
+	netKey := "wc.s24." + tenantID.String() + "." + netHash
+	if ok, after, _ := a.rl.Allow(ctx, netKey); !ok {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(after.Seconds())))
 		http.Error(w, "", http.StatusTooManyRequests)
 		return
@@ -81,6 +99,7 @@ func (a *Adapter) handleSession(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		CSRFTokenHash: hashToken(csrfToken),
 		OriginSig:     originSig,
+		IPHash:        ipHash,
 		ExpiresAt:     now.Add(sessionTTL),
 	}
 	if err := a.sessions.Create(ctx, sess); err != nil {
@@ -204,11 +223,34 @@ func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	// Stream-entry rate limit (ADR-0021 D5): bound the connect/reconnect
+	// rate per session. The concurrency caps below stop simultaneous
+	// streams; this throttles an open→close loop that never holds more
+	// than one stream at a time and so would dodge the concurrency cap.
+	if ok, after, _ := a.rl.Allow(ctx, "wc.stream."+sessID); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(after.Seconds())))
+		http.Error(w, "", http.StatusTooManyRequests)
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
+
+	// Concurrency caps (ADR-0021 D5, threat T5): 1 stream / session_id,
+	// 5 / (tenant × IP). Reject excess BEFORE writing the 200 so the
+	// client sees a clean 429 instead of an aborted event-stream. The
+	// per-IP bucket reuses the session's LGPD-safe ip_hash.
+	sub, ok := a.broker.Subscribe(sessID, sess.IPHash)
+	if !ok {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "", http.StatusTooManyRequests)
+		return
+	}
+	defer a.broker.Unsubscribe(sessID, sess.IPHash, sub)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -220,9 +262,6 @@ func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 	// causing a deadlock in tests.
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	sub := a.broker.Subscribe(sessID)
-	defer a.broker.Unsubscribe(sessID, sub)
 
 	for {
 		select {
@@ -241,6 +280,21 @@ func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// networkBucket reduces an IP to its anti-sybil network prefix: the /24
+// for IPv4, the /48 for IPv6 (a single allocation in practice). The
+// result feeds the LGPD-safe net_hash, never persisting in plaintext.
+// An unparseable address falls back to itself so it is still bucketed.
+func networkBucket(ipStr string) string {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ipStr
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.Mask(net.CIDRMask(24, 32)).String()
+	}
+	return ip.Mask(net.CIDRMask(48, 128)).String()
 }
 
 func clientIP(r *http.Request) string {

@@ -239,6 +239,205 @@ func (s *Store) FindByChannelIdentity(ctx context.Context, tenantID uuid.UUID, c
 	return contacts.Hydrate(contactID, tenantID, displayName, identities, createdAt, updatedAt), nil
 }
 
+// List returns one page of contacts under the tenant scope plus the
+// total count matching the filter. The text search is a parameterised,
+// case-insensitive match (ILIKE) against the contact display name OR the
+// external id of any linked channel identity (phone/email). The identity
+// match uses an EXISTS sub-query rather than a JOIN so a contact with
+// several matching identities is still counted once — no DISTINCT, no
+// row multiplication, and the total stays exact.
+//
+// Pagination is deterministic: ORDER BY display_name ASC, id ASC with
+// LIMIT/OFFSET, so two calls for adjacent pages never drop or duplicate a
+// row even when names collide. Identities for the page are loaded in a
+// single batched query (WHERE contact_id = ANY) so List is O(2) queries,
+// not O(N+1).
+func (s *Store) List(ctx context.Context, tenantID uuid.UUID, f contacts.ListFilter) ([]*contacts.Contact, int, error) {
+	if tenantID == uuid.Nil {
+		return nil, 0, fmt.Errorf("contacts/postgres: List: tenant id is nil")
+	}
+	f = f.Normalized()
+
+	// pattern is empty when there is no text filter; the SQL treats an
+	// empty pattern as "match everything" via the ($1 = '' OR …) guard so
+	// we do not branch the query text.
+	var pattern string
+	if f.Query != "" {
+		pattern = "%" + escapeLike(f.Query) + "%"
+	}
+
+	var (
+		out   []*contacts.Contact
+		total int
+	)
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		// Total count first (ignoring pagination) so the caller can render
+		// "N of total" even when the page is empty.
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*)
+			  FROM contact c
+			 WHERE ($1 = '' OR c.display_name ILIKE $1 ESCAPE '\'
+			        OR EXISTS (
+			            SELECT 1 FROM contact_channel_identity i
+			             WHERE i.contact_id = c.id
+			               AND i.external_id ILIKE $1 ESCAPE '\'))
+		`, pattern).Scan(&total); err != nil {
+			return err
+		}
+		if total == 0 {
+			return nil
+		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT c.id, c.display_name, c.created_at, c.updated_at
+			  FROM contact c
+			 WHERE ($1 = '' OR c.display_name ILIKE $1 ESCAPE '\'
+			        OR EXISTS (
+			            SELECT 1 FROM contact_channel_identity i
+			             WHERE i.contact_id = c.id
+			               AND i.external_id ILIKE $1 ESCAPE '\'))
+			 ORDER BY c.display_name ASC, c.id ASC
+			 LIMIT $2 OFFSET $3
+		`, pattern, f.Limit, f.Offset)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		type row struct {
+			id          uuid.UUID
+			displayName string
+			createdAt   time.Time
+			updatedAt   time.Time
+		}
+		var page []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.displayName, &r.createdAt, &r.updatedAt); err != nil {
+				return err
+			}
+			page = append(page, r)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			// Offset past the end of the result set: empty page, real total.
+			return nil
+		}
+
+		ids := make([]uuid.UUID, len(page))
+		for i, r := range page {
+			ids[i] = r.id
+		}
+		identities, err := scanIdentitiesForContacts(ctx, tx, ids)
+		if err != nil {
+			return err
+		}
+		out = make([]*contacts.Contact, len(page))
+		for i, r := range page {
+			out[i] = contacts.Hydrate(r.id, tenantID, r.displayName, identities[r.id], r.createdAt, r.updatedAt)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("contacts/postgres: List: %w", err)
+	}
+	return out, total, nil
+}
+
+// Update persists the editable fields of an existing contact (display
+// name + updated_at) under the tenant scope. It deliberately does not
+// touch contact_channel_identity rows — identity changes go through the
+// identity-split flow. Returns contacts.ErrNotFound when the UPDATE
+// matches no row (unknown id, or RLS hid another tenant's row), so the
+// caller cannot tell "does not exist" from "exists under another tenant".
+func (s *Store) Update(ctx context.Context, c *contacts.Contact) error {
+	if c == nil {
+		return fmt.Errorf("contacts/postgres: Update: nil contact")
+	}
+	if c.TenantID == uuid.Nil {
+		return fmt.Errorf("contacts/postgres: Update: tenant id is nil")
+	}
+	if c.ID == uuid.Nil {
+		return contacts.ErrNotFound
+	}
+	updated := c.UpdatedAt
+	if updated.IsZero() {
+		updated = s.nowUTC()
+	}
+	var affected int64
+	err := postgres.WithTenant(ctx, s.pool, c.TenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE contact
+			   SET display_name = $2,
+			       updated_at   = $3
+			 WHERE id = $1
+		`, c.ID, c.DisplayName, updated)
+		if err != nil {
+			return err
+		}
+		affected = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("contacts/postgres: Update: %w", err)
+	}
+	if affected == 0 {
+		return contacts.ErrNotFound
+	}
+	c.UpdatedAt = updated
+	return nil
+}
+
+// scanIdentitiesForContacts batch-loads channel identities for every id
+// in ids and groups them by contact id. One query, no N+1. The returned
+// map omits contacts with zero identities (the caller treats a missing
+// key as "nil identities"). Identities are ordered by channel so the
+// per-contact slice is deterministic, matching scanIdentities.
+func scanIdentitiesForContacts(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) (map[uuid.UUID][]contacts.ChannelIdentity, error) {
+	out := make(map[uuid.UUID][]contacts.ChannelIdentity, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT contact_id, channel, external_id
+		  FROM contact_channel_identity
+		 WHERE contact_id = ANY($1)
+		 ORDER BY contact_id ASC, channel ASC
+	`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			contactID  uuid.UUID
+			channel    string
+			externalID string
+		)
+		if err := rows.Scan(&contactID, &channel, &externalID); err != nil {
+			return nil, err
+		}
+		out[contactID] = append(out[contactID], contacts.ChannelIdentity{Channel: channel, ExternalID: externalID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// escapeLike escapes the LIKE/ILIKE metacharacters (backslash, percent,
+// underscore) in a user-supplied search term so a query containing "%"
+// or "_" is matched literally rather than as a wildcard. The adapter
+// pairs this with `ESCAPE '\'` in the SQL. This is a correctness/UX guard,
+// not a SQL-injection guard — injection is already prevented by passing
+// the term as a bound parameter.
+func escapeLike(s string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(s)
+}
+
 // scanIdentities loads every channel identity for contactID using the
 // supplied tx. Caller owns the transaction lifecycle.
 func scanIdentities(ctx context.Context, tx pgx.Tx, contactID uuid.UUID) ([]contacts.ChannelIdentity, error) {

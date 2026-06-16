@@ -67,6 +67,29 @@ func Hydrate(id, tenantID uuid.UUID, displayName string, identities []ChannelIde
 	return c
 }
 
+// Rename changes the contact's editable display name. It enforces the
+// same invariant as the New constructor — the name MUST be non-empty
+// after trimming — so an edit can never blank out the inbox header. On
+// success the name is updated to the trimmed value and UpdatedAt is
+// bumped; on a blank name ErrEmptyDisplayName is returned and the
+// aggregate is left untouched. This is the only sanctioned way to mutate
+// the name so the invariant lives with the aggregate (DDD lens), not in
+// every caller.
+func (c *Contact) Rename(displayName string) error {
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		return ErrEmptyDisplayName
+	}
+	if displayName == c.DisplayName {
+		// No-op rename: keep UpdatedAt stable so an idempotent save does
+		// not churn the timestamp.
+		return nil
+	}
+	c.DisplayName = displayName
+	c.UpdatedAt = now()
+	return nil
+}
+
 // AddChannelIdentity validates the (channel, externalID) pair via
 // NewChannelIdentity and attaches it to the contact. The invariant "at
 // most one identity per channel per contact" is enforced here:

@@ -16,10 +16,12 @@ import (
 // from their request context; passing uuid.Nil yields a clean error,
 // not a row-leak.
 //
-// The port is intentionally small — Save, FindByID,
-// FindByChannelIdentity — because PR3 only needs the upsert-by-channel
-// use-case. PR4 (inbox listing) and PR6 (webhook receiver) extend it
-// when their own use-cases need List / Update / DeleteIdentity.
+// The port grew over the Fase 1 stack: Save, FindByID,
+// FindByChannelIdentity for the upsert-by-channel use-case (PR3), then
+// List + Update for the contacts management surface (SIN-64976, child of
+// SIN-64962) — list/search/detail/edit. Channel identities are NOT
+// edited through Update; they follow the existing identity-split flow
+// (internal/contacts/identity_port.go).
 type Repository interface {
 	// Save persists a brand-new Contact along with all its channel
 	// identities in a single transaction. Returns
@@ -42,4 +44,25 @@ type Repository interface {
 	// if missing" decision so the receiver can name a tenant
 	// explicitly.
 	FindByChannelIdentity(ctx context.Context, tenantID uuid.UUID, channel, externalID string) (*Contact, error)
+
+	// List returns one page of contacts under the tenant scope plus the
+	// total number of contacts matching the filter (ignoring pagination)
+	// so the caller can render "showing N of total". The filter's Query
+	// is matched case-insensitively against the contact display name and
+	// the external ids of its channel identities (phone/email). Results
+	// are ordered deterministically (display name, then id) so paging is
+	// stable across calls. A uuid.Nil tenant yields a clean error, never a
+	// cross-tenant row leak. An empty page (offset past the end, or no
+	// match) is (nil, total, nil), not an error.
+	List(ctx context.Context, tenantID uuid.UUID, f ListFilter) (items []*Contact, total int, err error)
+
+	// Update persists the editable fields of an existing contact
+	// (currently the display name) under the tenant scope. It does NOT
+	// touch channel identities — those are managed through the
+	// identity-split flow. Returns ErrNotFound when no row matches the
+	// (tenant, id) pair, so the caller maps that to a 404 instead of a
+	// silent no-op. The caller MUST mutate the aggregate through its
+	// methods (e.g. Contact.Rename) before calling Update so the
+	// invariants and UpdatedAt stamp are coherent.
+	Update(ctx context.Context, c *Contact) error
 }

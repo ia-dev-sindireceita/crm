@@ -450,6 +450,66 @@ func (s *Store) ListConversationSummaries(ctx context.Context, tenantID uuid.UUI
 	return out, nil
 }
 
+// ListConversationsByContact returns up to `limit` conversations for a
+// single contact under the tenant scope, newest-last-message-first. It
+// backs the contact-detail "conversation history" panel (SIN-64976):
+// the contacts read-side has a contact id and wants its threads, which
+// the conversation_contact_idx index (migration 0088, on
+// conversation(contact_id)) serves directly.
+//
+// This method is deliberately NOT part of the inbox.Repository port —
+// only the postgres Store exposes it, and the contacts use-case declares
+// a narrow reader interface satisfied structurally. Keeping it off the
+// port avoids forcing every inbox.Repository fake to grow a method it
+// does not exercise (mirrors the funnel Store.FindByID precedent used by
+// GetConversationContext).
+//
+// A uuid.Nil tenant or contact yields an empty result with a clean error
+// / nil rather than a cross-contact leak. limit must be > 0; the adapter
+// clamps to the same upper bound as ListConversations.
+func (s *Store) ListConversationsByContact(ctx context.Context, tenantID, contactID uuid.UUID, limit int) ([]*domain.Conversation, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationsByContact: tenant id is nil")
+	}
+	if contactID == uuid.Nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationsByContact: limit must be > 0")
+	}
+	const maxLimit = 200
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	var out []*domain.Conversation
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, tenant_id, contact_id, channel, state,
+			       assigned_user_id, last_message_at, created_at
+			  FROM conversation
+			 WHERE contact_id = $1
+			 ORDER BY COALESCE(last_message_at, created_at) DESC, id ASC
+			 LIMIT $2
+		`, contactID, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			conv, err := scanConversation(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, conv)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationsByContact: %w", err)
+	}
+	return out, nil
+}
+
 // ListMessages returns the messages for a conversation under the tenant
 // scope, ordered oldest-first by created_at so the inbox renders the
 // chat top→bottom. Returns ErrNotFound when the conversation itself is
