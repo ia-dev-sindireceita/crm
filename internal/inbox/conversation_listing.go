@@ -82,10 +82,17 @@ func UserLabelFromEmail(email string) string {
 //	Channel        — "" returns all carriers (validated against knownChannels)
 //	AssignedUserID — uuid.Nil returns conversations regardless of assignee;
 //	                 a non-nil id implements the "atribuídas a mim" filter
+//	UnassignedOnly — true restricts to conversations with no current lead
+//	                 (assigned_user_id IS NULL), i.e. the inbox "fila" /
+//	                 "sem responsável" queue. Mutually exclusive with a
+//	                 non-nil AssignedUserID (the use case rejects the combo);
+//	                 the adapter applies both predicates with AND so a stray
+//	                 combination yields an empty set rather than a leak.
 type ConversationFilter struct {
 	State          ConversationState
 	Channel        string
 	AssignedUserID uuid.UUID
+	UnassignedOnly bool
 }
 
 // ConversationListItem is the flat read-model projection backing the

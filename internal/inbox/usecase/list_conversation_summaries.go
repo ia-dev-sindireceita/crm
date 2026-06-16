@@ -40,6 +40,12 @@ type ListConversationSummariesInput struct {
 	// restricts to that user. The handler sources the id from the
 	// session, never from the request body.
 	AssignedUserID uuid.UUID
+	// Unassigned implements the "fila" / "sem responsável" filter: true
+	// restricts to conversations with no current lead. It is mutually
+	// exclusive with a non-nil AssignedUserID — supplying both is a caller
+	// bug rejected with ErrInvalidStatus rather than silently AND-ed into an
+	// always-empty result.
+	Unassigned bool
 	// Limit caps the page size; a zero or negative limit defaults to
 	// defaultListLimit so the handler need not hardcode pagination policy.
 	Limit int
@@ -92,6 +98,11 @@ func (u *ListConversationSummaries) Execute(ctx context.Context, in ListConversa
 	if err := inbox.ValidateListChannel(channel); err != nil {
 		return ListConversationSummariesResult{}, err
 	}
+	// The "unassigned" and "assigned to user" axes are mutually exclusive:
+	// a row cannot be both unassigned and led by a specific operator.
+	if in.Unassigned && in.AssignedUserID != uuid.Nil {
+		return ListConversationSummariesResult{}, inbox.ErrInvalidStatus
+	}
 	limit := in.Limit
 	if limit <= 0 {
 		limit = defaultListLimit
@@ -100,6 +111,7 @@ func (u *ListConversationSummaries) Execute(ctx context.Context, in ListConversa
 		State:          state,
 		Channel:        channel,
 		AssignedUserID: in.AssignedUserID,
+		UnassignedOnly: in.Unassigned,
 	}, limit)
 	if err != nil {
 		return ListConversationSummariesResult{}, err
