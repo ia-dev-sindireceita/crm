@@ -3,7 +3,6 @@ package inbox
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -64,7 +63,7 @@ func (d *UserDirectory) LabelsByID(ctx context.Context, tenantID uuid.UUID, ids 
 			if err := rows.Scan(&id, &email); err != nil {
 				return err
 			}
-			out[id] = userLabelFromEmail(email)
+			out[id] = domain.UserLabelFromEmail(email)
 		}
 		return rows.Err()
 	})
@@ -72,17 +71,4 @@ func (d *UserDirectory) LabelsByID(ctx context.Context, tenantID uuid.UUID, ids 
 		return nil, fmt.Errorf("inbox/postgres: LabelsByID: %w", err)
 	}
 	return out, nil
-}
-
-// userLabelFromEmail derives a human label from a user's email. The users
-// table has no display-name column (migration 0005), so the local-part
-// (before "@") is the best available label. Inputs without a usable
-// local-part fall back to the trimmed email so the UI always has
-// something to render.
-func userLabelFromEmail(email string) string {
-	email = strings.TrimSpace(email)
-	if i := strings.IndexByte(email, '@'); i > 0 {
-		return email[:i]
-	}
-	return email
 }

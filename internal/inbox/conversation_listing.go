@@ -60,6 +60,21 @@ func Snippet(body string) string {
 	return strings.TrimRight(string(runes[:SnippetMaxChars]), " ") + "…"
 }
 
+// UserLabelFromEmail derives a human label from a user's email. The users
+// table has no display-name column (migration 0005), so the local-part
+// (before "@") is the best available label. Inputs without a usable
+// local-part fall back to the trimmed email so the UI always has something
+// to render. This is pure presentation logic, kept in the domain alongside
+// Snippet/ValidateListChannel; the postgres UserDirectory adapter calls it
+// after fetching the email (SIN-64967).
+func UserLabelFromEmail(email string) string {
+	email = strings.TrimSpace(email)
+	if i := strings.IndexByte(email, '@'); i > 0 {
+		return email[:i]
+	}
+	return email
+}
+
 // ConversationFilter narrows ListConversationSummaries on the read side.
 // Every field is optional; a zero value means "no filter" on that axis:
 //
