@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -32,6 +33,18 @@ const maxBodyChars = 4096
 // full domain in.
 type ListConversationsUseCase interface {
 	Execute(ctx context.Context, in inboxusecase.ListConversationsInput) (inboxusecase.ListConversationsResult, error)
+}
+
+// ListSummariesUseCase is the enriched read side backing GET /inbox
+// (SIN-64967 read-model → SIN-64968 UI). It returns ConversationViews
+// carrying the contact name, last-message snippet + direction, the
+// awaiting-reply flag, and the assigned-atendente label the rich list
+// renders. It is optional on Deps: when wired the list handler consumes
+// it (badges, snippet, filters); when nil the handler falls back to the
+// legacy ListConversations (channel + timestamp only) so deployments
+// that have not wired the read-model keep rendering.
+type ListSummariesUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.ListConversationSummariesInput) (inboxusecase.ListConversationSummariesResult, error)
 }
 
 // ListMessagesUseCase is the conversation-view read side.
@@ -85,12 +98,19 @@ type UserIDFn func(*http.Request) uuid.UUID
 // registered, so existing deployments keep the same surface.
 type Deps struct {
 	ListConversations ListConversationsUseCase
-	ListMessages      ListMessagesUseCase
-	SendOutbound      SendOutboundUseCase
-	GetMessage        GetMessageUseCase
-	CSRFToken         CSRFTokenFn
-	UserID            UserIDFn
-	Logger            *slog.Logger
+	// ListSummaries is the optional enriched read side (SIN-64968). When
+	// wired the list handler renders the rich row (contact name, snippet,
+	// badges) and the state/channel/"minhas" filters; when nil it falls
+	// back to ListConversations. Wiring it in the composition root is what
+	// upgrades GET /inbox from the bare channel+timestamp list to the full
+	// UX-spec surface.
+	ListSummaries ListSummariesUseCase
+	ListMessages  ListMessagesUseCase
+	SendOutbound  SendOutboundUseCase
+	GetMessage    GetMessageUseCase
+	CSRFToken     CSRFTokenFn
+	UserID        UserIDFn
+	Logger        *slog.Logger
 	// AIAssist wires the optional SIN-62908 ai-assist feature. The
 	// nested Summarizer field is the activation switch.
 	AIAssist AssistDeps
@@ -200,30 +220,36 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	}
 }
 
-// list renders the full inbox shell (left list + empty right pane).
+// list renders the inbox list (left pane). On a full navigation it
+// renders the whole shell; on an HTMX request (a filter change) it
+// renders only the list region partial so the conversation + customer
+// panes are left untouched. The active filters come from the query
+// string; the "minhas" filter is keyed to the session user id, never a
+// client-supplied id (secure-by-default).
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	tenant, err := tenancy.FromContext(r.Context())
 	if err != nil {
 		h.fail(w, http.StatusInternalServerError, "tenant required", err)
 		return
 	}
-	res, err := h.deps.ListConversations.Execute(r.Context(), inboxusecase.ListConversationsInput{
-		TenantID: tenant.ID,
-		State:    "open",
-	})
+	filter := parseInboxFilter(r)
+	region, err := h.buildListRegion(r, tenant.ID, filter, uuid.Nil, false)
 	if err != nil {
 		h.fail(w, http.StatusInternalServerError, "list conversations", err)
 		return
 	}
-	rows := make([]listRow, 0, len(res.Items))
-	for _, c := range res.Items {
-		rows = append(rows, listRow{
-			ID:            c.ID,
-			Channel:       c.Channel,
-			Snippet:       "", // hydrated in PR10 (last-message snapshot)
-			LastMessageAt: c.LastMessageAt,
-		})
+
+	// HTMX filter requests swap only the list region; a full navigation
+	// (or no-JS request) renders the entire shell so the surface is
+	// bookmarkable with the filters applied.
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := inboxListRegionTmpl.Execute(w, region); err != nil {
+			h.deps.Logger.Error("web/inbox: render list region", "err", err)
+		}
+		return
 	}
+
 	token := h.deps.CSRFToken(r)
 	if token == "" {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
@@ -233,13 +259,175 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if err := inboxLayoutTmpl.Execute(w, layoutData{
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
-		List:             listData{Items: rows},
+		List:             region,
 		Customer:         customerPanelData{HasConversation: false},
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render layout", "err", err)
 	}
+}
+
+// inboxFilters are the validated, sanitised list filters parsed from the
+// query string. State defaults to "open" (the operator triages open work
+// first, matching the legacy handler); an absent state param means the
+// default, an explicit empty state means "all". Channel is restricted to
+// the known carriers — an unknown value degrades to "" (all) rather than
+// erroring the swap. AssignedMe drives the "minhas" filter using the
+// session user id resolved in buildListRegion.
+type inboxFilter struct {
+	State      string // "", "open", "closed"
+	Channel    string // "", "whatsapp", "instagram", "messenger", "webchat"
+	AssignedMe bool
+}
+
+// inboxFilterChannels mirrors the read-model's known carriers
+// (internal/inbox.knownChannels). It is duplicated here, rather than
+// imported, because the forbidwebboundary lint forbids web/* from
+// importing the inbox domain root; keeping a tiny local allowlist lets
+// the handler sanitise a stray channel param to "" (all) instead of
+// surfacing a 400 on an otherwise harmless filter swap.
+var inboxFilterChannels = map[string]struct{}{
+	"whatsapp":  {},
+	"instagram": {},
+	"messenger": {},
+	"webchat":   {},
+}
+
+// parseInboxFilter reads the state/channel/assigned filters from the
+// request query string and normalises them. It never trusts a
+// client-supplied user id: the "minhas" toggle is a boolean here and the
+// concrete id is sourced from the session in buildListRegion.
+func parseInboxFilter(r *http.Request) inboxFilter {
+	q := r.URL.Query()
+
+	state := "open"
+	if q.Has("state") {
+		switch v := strings.ToLower(strings.TrimSpace(q.Get("state"))); v {
+		case "", "open", "closed":
+			state = v
+		default:
+			state = "open"
+		}
+	}
+
+	channel := strings.ToLower(strings.TrimSpace(q.Get("channel")))
+	if channel != "" {
+		if _, ok := inboxFilterChannels[channel]; !ok {
+			channel = ""
+		}
+	}
+
+	return inboxFilter{
+		State:      state,
+		Channel:    channel,
+		AssignedMe: strings.EqualFold(strings.TrimSpace(q.Get("assigned")), "me"),
+	}
+}
+
+// query renders the filter set back into a querystring (leading "?") so
+// the row links can carry the active filters into GET
+// /inbox/conversations/{id}; the view handler re-parses them to re-render
+// the OOB list under the same filters (SIN-64966 §4.3, option a).
+func (f inboxFilter) query() string {
+	v := url.Values{}
+	v.Set("state", f.State)
+	v.Set("channel", f.Channel)
+	if f.AssignedMe {
+		v.Set("assigned", "me")
+	} else {
+		v.Set("assigned", "")
+	}
+	return "?" + v.Encode()
+}
+
+// nonDefault reports whether any filter narrows past the default view
+// (open / all channels / not-mine). It drives the empty-state copy:
+// non-default + zero rows means "none with these filters" (offer a clear
+// link); the default + zero rows means the tenant simply has no
+// conversations yet.
+func (f inboxFilter) nonDefault() bool {
+	return f.State != "open" || f.Channel != "" || f.AssignedMe
+}
+
+// buildListRegion runs the read side and assembles the listRegionData the
+// region template renders. It prefers the enriched ListSummaries use case
+// (snippet + badges + filters); when that dep is nil it falls back to the
+// legacy ListConversations (channel + timestamp only, open conversations)
+// so the surface still renders. activeID marks the open conversation's
+// row; oob flags the region for an out-of-band swap.
+func (h *Handler) buildListRegion(r *http.Request, tenantID uuid.UUID, f inboxFilter, activeID uuid.UUID, oob bool) (listRegionData, error) {
+	region := listRegionData{
+		Filters:     f,
+		HasFilters:  f.nonDefault(),
+		OOB:         oob,
+		FilterQuery: f.query(),
+	}
+
+	if h.deps.ListSummaries == nil {
+		// Legacy fallback: the enriched read-model is not wired. Only the
+		// open-state list is available, with no snippet/badges/filters.
+		res, err := h.deps.ListConversations.Execute(r.Context(), inboxusecase.ListConversationsInput{
+			TenantID: tenantID,
+			State:    "open",
+		})
+		if err != nil {
+			return listRegionData{}, err
+		}
+		region.Filters = inboxFilter{State: "open"}
+		region.HasFilters = false
+		region.FilterQuery = region.Filters.query()
+		region.Items = make([]listRow, 0, len(res.Items))
+		for _, c := range res.Items {
+			region.Items = append(region.Items, listRow{
+				ID:            c.ID,
+				Channel:       c.Channel,
+				LastMessageAt: c.LastMessageAt,
+				Active:        c.ID == activeID,
+			})
+		}
+		return region, nil
+	}
+
+	var assignedUserID uuid.UUID
+	if f.AssignedMe {
+		// The "minhas" filter is keyed to the authenticated session user;
+		// a client-supplied id is never honoured. UserID may return
+		// uuid.Nil when the session carries no user claim — the use case
+		// then treats it as "no assignee filter", which stays tenant-scoped
+		// (no cross-tenant leak), so this degrades safely.
+		assignedUserID = h.deps.UserID(r)
+	}
+
+	res, err := h.deps.ListSummaries.Execute(r.Context(), inboxusecase.ListConversationSummariesInput{
+		TenantID:       tenantID,
+		State:          f.State,
+		Channel:        f.Channel,
+		AssignedUserID: assignedUserID,
+	})
+	if err != nil {
+		return listRegionData{}, err
+	}
+	region.Items = make([]listRow, 0, len(res.Items))
+	for _, c := range res.Items {
+		row := listRow{
+			ID:            c.ID,
+			Channel:       c.Channel,
+			ContactName:   c.ContactDisplayName,
+			Snippet:       c.LastMessageSnippet,
+			OutboundLast:  c.LastMessageDirection == "out",
+			AwaitingReply: c.AwaitingReply,
+			Closed:        c.State == "closed",
+			LastMessageAt: c.LastMessageAt,
+			Active:        c.ID == activeID,
+		}
+		if c.AssignedUserLabel != nil {
+			row.AssigneeLabel = *c.AssignedUserLabel
+			row.AssigneeInitials = initials(*c.AssignedUserLabel)
+		}
+		region.Items = append(region.Items, row)
+	}
+	return region, nil
 }
 
 // view renders a single conversation pane (thread + compose form +
@@ -351,6 +539,27 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		Context:        contextPanel,
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render view", "err", err)
+		return
+	}
+
+	// Out-of-band refresh of the list region so the opened conversation's
+	// row gets the active marker (aria-current + accent) and the list
+	// reflects the latest ordering/awaiting state — all server-driven, no
+	// inline JS (SIN-64966 §4.3). The active filters ride in on the row's
+	// query params (option a), so the OOB list stays under the same
+	// filter set instead of silently resetting. Best-effort: a read error
+	// here only costs the active marker (re-applied on the next list
+	// load), so it must not fail the conversation swap. Skipped when the
+	// enriched read side is not wired (the legacy list cannot be filtered).
+	if h.deps.ListSummaries != nil {
+		region, err := h.buildListRegion(r, tenant.ID, parseInboxFilter(r), conversationID, true)
+		if err != nil {
+			h.deps.Logger.Warn("web/inbox: oob list refresh", "err", err)
+			return
+		}
+		if err := inboxListRegionTmpl.Execute(w, region); err != nil {
+			h.deps.Logger.Error("web/inbox: render oob list", "err", err)
+		}
 	}
 }
 
@@ -469,25 +678,42 @@ func (h *Handler) fail(w http.ResponseWriter, status int, msg string, err error)
 	http.Error(w, http.StatusText(status), status)
 }
 
-// listRow is the row shape consumed by conversation_list.templ. The
-// template references .ID / .Channel / .Snippet / .LastMessageAt.
+// listRow is the row shape consumed by the conversation_list template.
+// The legacy fallback path populates only ID / Channel / LastMessageAt;
+// the enriched path fills the contact name, snippet (+ direction), the
+// awaiting-reply / closed flags, and the assignee label + initials.
 type listRow struct {
-	ID            uuid.UUID
-	Channel       string
-	Snippet       string
-	LastMessageAt time.Time
+	ID               uuid.UUID
+	Channel          string
+	ContactName      string
+	Snippet          string
+	OutboundLast     bool // last message was outbound → "Você:" snippet prefix
+	AwaitingReply    bool // last message inbound → waiting badge + accent
+	Closed           bool // conversation state == "closed" → closed badge
+	AssigneeLabel    string
+	AssigneeInitials string
+	LastMessageAt    time.Time
+	Active           bool // this row is the open conversation (aria-current)
 }
 
-// listData wraps the row slice for the inbox-layout template.
-type listData struct {
-	Items []listRow
+// listRegionData drives the inbox_list_region template (filter bar +
+// conversation list). It is the single swap target for filter changes
+// and for the OOB row-active refresh, so it carries both the current
+// filters and the row set. FilterQuery is the encoded "?state=…" the row
+// links append so opening a conversation preserves the active filters.
+type listRegionData struct {
+	Filters     inboxFilter
+	Items       []listRow
+	HasFilters  bool   // non-default filters active → "none with filters" empty copy
+	OOB         bool   // render the wrapper with hx-swap-oob="true"
+	FilterQuery string // "?state=…&channel=…&assigned=…" for row links
 }
 
 // layoutData drives the full-page inbox shell template.
 type layoutData struct {
 	CSRFMeta         template.HTML
 	HXHeaders        template.HTMLAttr
-	List             listData
+	List             listRegionData
 	Customer         customerPanelData
 	TenantThemeStyle template.CSS
 	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty

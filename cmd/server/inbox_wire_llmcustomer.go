@@ -77,6 +77,16 @@ type inboxLLMCustomerDeps struct {
 	// Repo backs every inbox-side use case (list, get, save) AND the
 	// dedup ledger the bootstrap inbound consults.
 	Repo fakellmRepository
+	// ReadModel is the optional enriched read side (SIN-64967) that backs
+	// the rich GET /inbox list (snippet + atendente + filters, SIN-64968).
+	// nil falls back to the legacy channel+timestamp list. The postgres
+	// path supplies the same *pginbox.Store, which satisfies both ports;
+	// the in-memory test path may leave it nil.
+	ReadModel inbox.ConversationReadModel
+	// Directory is the optional user-label resolver for the assigned-
+	// atendente chip (SIN-64967). nil leaves every row's assignee label
+	// unresolved (rendered as "não atribuída" semantics handled upstream).
+	Directory inbox.UserDirectory
 	// Contacts is the contacts port the upsert-by-channel use case
 	// reads/writes.
 	Contacts contacts.Repository
@@ -180,6 +190,25 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		logger:  logger,
 	}
 
+	// Enriched read side (SIN-64968). When a read model is wired the web
+	// handler prefers it over ListConversations, so the lazy bootstrap
+	// must fire on THIS path too — wrap it in the same bootstrap decorator
+	// so the very first GET /inbox still seeds the synthetic conversation
+	// before the rich list renders.
+	var summaries webinbox.ListSummariesUseCase
+	if deps.ReadModel != nil {
+		summariesUC, err := inboxusecase.NewListConversationSummaries(deps.ReadModel, deps.Directory)
+		if err != nil {
+			adapter.Stop()
+			return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: list summaries usecase: %w", err)
+		}
+		summaries = &bootstrapOnListSummaries{
+			inner:   summariesUC,
+			adapter: adapter,
+			logger:  logger,
+		}
+	}
+
 	// Conversation-context read feeds the real channel scope to the
 	// AI-assist policy + customer panel (SIN-64969). Funnel readers are
 	// nil here: this dev/staging loop wires no funnel storage, so the
@@ -193,6 +222,7 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 
 	handlerDeps := webinbox.Deps{
 		ListConversations:   bootstrappedList,
+		ListSummaries:       summaries,
 		ListMessages:        listMsgsUC,
 		SendOutbound:        sendUC,
 		GetMessage:          getMsgUC,
@@ -264,12 +294,20 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pgcontacts.New: %w", err)
 	}
+	userDir, err := pginbox.NewUserDirectory(pool)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pginbox.NewUserDirectory: %w", err)
+	}
 	personaLLM, err := buildPersonaLLM(getenv)
 	if err != nil {
 		return nil, nil, fmt.Errorf("persona-llm: %w", err)
 	}
 	mux, cleanup, _, err := assembleInboxLLMCustomerHandler(inboxLLMCustomerDeps{
-		Repo:       inboxStore,
+		Repo: inboxStore,
+		// *pginbox.Store satisfies inbox.ConversationReadModel too, so the
+		// same store backs the enriched GET /inbox list (SIN-64968).
+		ReadModel:  inboxStore,
+		Directory:  userDir,
 		Contacts:   contactsStore,
 		LLM:        personaLLM,
 		ReplyDelay: llmcustomerReplyDelay,
@@ -377,6 +415,71 @@ func (b *bootstrapOnListConversations) markPending(tenantID uuid.UUID) bool {
 // (dedup ledger) so the only risk of leaving the mark in place is
 // silently swallowing a transient LLM error on the very first call.
 func (b *bootstrapOnListConversations) releasePending(tenantID uuid.UUID) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.seen == nil {
+		return
+	}
+	delete(b.seen, tenantID)
+}
+
+// bootstrapOnListSummaries is the enriched-read-side twin of
+// bootstrapOnListConversations (SIN-64968). When the web handler is wired
+// with a ListSummaries dep it serves GET /inbox from the read model
+// instead of ListConversations, so the lazy synthetic-conversation
+// bootstrap must hang off THIS use case to keep the dev/staging loop
+// self-seeding on the operator's first visit. Bootstrap is idempotent
+// (in-memory once-per-tenant set + dedup ledger) so it stays a single
+// synthetic conversation even though both decorators front the same
+// adapter.
+type bootstrapOnListSummaries struct {
+	inner   *inboxusecase.ListConversationSummaries
+	adapter *llmcustomer.Adapter
+	logger  *slog.Logger
+
+	mu   sync.Mutex
+	seen map[uuid.UUID]struct{}
+}
+
+// Execute implements webinbox.ListSummariesUseCase. The bootstrap runs
+// synchronously before the underlying list so the first /inbox response
+// sees the synthetic conversation already created.
+func (b *bootstrapOnListSummaries) Execute(ctx context.Context, in inboxusecase.ListConversationSummariesInput) (inboxusecase.ListConversationSummariesResult, error) {
+	if in.TenantID != uuid.Nil && b.markPending(in.TenantID) {
+		if err := b.adapter.Bootstrap(ctx, in.TenantID); err != nil {
+			logger := b.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.WarnContext(ctx, "fakellm bootstrap deferred",
+				"tenant_id", in.TenantID.String(),
+				"err", err.Error(),
+			)
+			b.releasePending(in.TenantID)
+		}
+	}
+	return b.inner.Execute(ctx, in)
+}
+
+// markPending records the first time tenantID is seen in this process,
+// mirroring bootstrapOnListConversations.markPending. Returns true iff
+// the caller now owns the bootstrap responsibility.
+func (b *bootstrapOnListSummaries) markPending(tenantID uuid.UUID) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.seen == nil {
+		b.seen = make(map[uuid.UUID]struct{})
+	}
+	if _, ok := b.seen[tenantID]; ok {
+		return false
+	}
+	b.seen[tenantID] = struct{}{}
+	return true
+}
+
+// releasePending undoes a markPending after a failed Bootstrap so the
+// next list attempt retries.
+func (b *bootstrapOnListSummaries) releasePending(tenantID uuid.UUID) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.seen == nil {
