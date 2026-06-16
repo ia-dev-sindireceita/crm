@@ -150,6 +150,25 @@ func (a *Adapter) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// D4 — origin signature re-verification (ADR-0021, OWASP A01/A07,
+	// defense-in-depth). The signature bound to the session at create
+	// time is HMAC-SHA256(tenant_origin_secret, canonical_origin). We
+	// re-derive it from THIS request's Origin header via the same
+	// validator path and compare constant-time against the stored value,
+	// so a session/CSRF token replayed from a different (e.g. cloned-
+	// widget) origin is rejected even though it passed D2 at create time.
+	// We additionally honor an explicit X-Webchat-Origin-Signature header
+	// (the value the widget echoes from the server-injected origin→hmac
+	// lookup table) when present, so a forged or stale header is rejected
+	// too. D2 (allowlist) remains the primary control; this is redundant
+	// DiD per ADR-0021.
+	if !a.originSignatureOK(ctx, r, sess) {
+		a.logger.Warn("webchat.origin_signature_fail",
+			"session_id", sessID, "tenant_id", sess.TenantID.String())
+		http.Error(w, "", http.StatusForbidden)
+		return
+	}
+
 	on, err := a.flag.Enabled(ctx, sess.TenantID)
 	if err != nil || !on {
 		http.NotFound(w, r)
@@ -275,6 +294,25 @@ func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// originSignatureOK re-verifies the D4 origin signature for an inbound
+// message against the signature bound to the session at create time.
+// It returns true only when the signature recomputed from this request's
+// Origin matches the stored one (constant-time) AND, if the client sent
+// an explicit X-Webchat-Origin-Signature header, that header also matches.
+// Errors from the validator fail closed.
+func (a *Adapter) originSignatureOK(ctx context.Context, r *http.Request, sess Session) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	recomputed, err := a.origins.HMAC(ctx, sess.TenantID, origin)
+	if err != nil || !hmac.Equal([]byte(recomputed), []byte(sess.OriginSig)) {
+		return false
+	}
+	if presented := r.Header.Get(HeaderOriginSig); presented != "" &&
+		!hmac.Equal([]byte(presented), []byte(sess.OriginSig)) {
+		return false
+	}
+	return true
 }
 
 func hashToken(token string) string {

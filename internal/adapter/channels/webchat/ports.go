@@ -17,8 +17,9 @@ const (
 	EnvEnabled     = "FEATURE_WEBCHAT_ENABLED"
 	EnvTenantAllow = "FEATURE_WEBCHAT_TENANTS"
 
-	HeaderSession = "X-Webchat-Session"
-	HeaderCSRF    = "X-Webchat-CSRF"
+	HeaderSession   = "X-Webchat-Session"
+	HeaderCSRF      = "X-Webchat-CSRF"
+	HeaderOriginSig = "X-Webchat-Origin-Signature"
 
 	sessionTTL = 30 * time.Minute
 )
