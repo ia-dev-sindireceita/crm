@@ -56,6 +56,11 @@ type HelloTenantExtendedDeps struct {
 	LGPDEnabled         bool
 	MFAEnabled          bool
 	CustomDomainEnabled bool
+	// ContactsEnabled mirrors deps.WebContacts != nil in router.go
+	// (SIN-64977 — the contacts management list surface). B-2 rule
+	// (SIN-63821): a newly mounted auth-gated subtree MUST add its link
+	// here or the post-login landing silently loses the navigation.
+	ContactsEnabled bool
 	// WalletEnabled mirrors deps.WebWallet != nil in router.go
 	// (SIN-63942 / UX-F5). True renders the wallet card / surface link
 	// live; false renders the standard "Indisponível neste ambiente"
@@ -314,6 +319,16 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 	// legacy test fixtures keep their pre-PR rendering.
 	if deps.Extended != nil {
 		all = append(all,
+			helloSurfaceRow{
+				Path:         "/contacts",
+				SurfaceLabel: "Contatos",
+				CardLabel:    "Base de contatos",
+				Available:    deps.Extended.ContactsEnabled,
+				Description:  "Buscar, abrir e editar contatos — com canais vinculados e histórico de conversas por contato.",
+				Roles:        atendenteOrAbove,
+				// TopNav: false — body-only surface; the top bar stays
+				// scannable per AC §2.
+			},
 			helloSurfaceRow{
 				Path:         "/branding",
 				SurfaceLabel: "Branding",
