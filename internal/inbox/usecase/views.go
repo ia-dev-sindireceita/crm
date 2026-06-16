@@ -31,6 +31,34 @@ type ConversationView struct {
 	AssignedUserID *uuid.UUID
 	LastMessageAt  time.Time
 	CreatedAt      time.Time
+
+	// --- read-model enrichments (SIN-64967, GET /inbox list pane) ---
+
+	// ContactDisplayName is the primary row label (the contact's name),
+	// resolved adapter-side in the main listing query. Never empty: the
+	// adapter falls back to the channel identifier, then the contact id,
+	// so the template always has a human-renderable label instead of a
+	// bare UUID. Populated only by the ListConversationSummaries use case.
+	ContactDisplayName string
+	// LastMessageSnippet is the truncated, whitespace-collapsed body of
+	// the most recent message (server-side capped at inbox.SnippetMaxChars).
+	// Empty when the conversation has no messages yet. Populated only by
+	// the ListConversationSummaries use case; the legacy ListConversations
+	// path leaves it empty.
+	LastMessageSnippet string
+	// LastMessageDirection is the direction of the most recent message
+	// ("in"/"out"); empty when there are no messages.
+	LastMessageDirection string
+	// AwaitingReply is true when the last message was inbound ("in"),
+	// i.e. the contact is waiting for the tenant to respond. Derived from
+	// LastMessageDirection; no read-receipt schema is involved (CTO
+	// decision: a real unread counter is a follow-up).
+	AwaitingReply bool
+	// AssignedUserLabel is the human label for AssignedUserID (resolved
+	// via the UserDirectory port). nil when the conversation is
+	// unassigned, when no directory is wired, or when the user row could
+	// not be resolved under the tenant scope.
+	AssignedUserLabel *string
 }
 
 // MessageView is the read-only projection of an inbox.Message used by
@@ -88,6 +116,35 @@ func conversationToView(c *inbox.Conversation) ConversationView {
 		LastMessageAt:  c.LastMessageAt,
 		CreatedAt:      c.CreatedAt,
 	}
+}
+
+// listItemToView projects a read-model inbox.ConversationListItem
+// (SIN-64967) onto ConversationView. It derives AwaitingReply (the last
+// message is inbound and therefore unanswered) and attaches the
+// assigned-atendente label the use case resolved through the
+// UserDirectory port. labels may be nil (no directory wired / no
+// assignees), in which case AssignedUserLabel is left nil.
+func listItemToView(item inbox.ConversationListItem, labels map[uuid.UUID]string) ConversationView {
+	v := ConversationView{
+		ID:                   item.ID,
+		ContactID:            item.ContactID,
+		Channel:              item.Channel,
+		State:                string(item.State),
+		AssignedUserID:       item.AssignedUserID,
+		LastMessageAt:        item.LastMessageAt,
+		CreatedAt:            item.CreatedAt,
+		ContactDisplayName:   item.ContactDisplayName,
+		LastMessageSnippet:   item.LastMessageSnippet,
+		LastMessageDirection: string(item.LastMessageDirection),
+		AwaitingReply:        item.LastMessageDirection == inbox.MessageDirectionIn,
+	}
+	if item.AssignedUserID != nil && labels != nil {
+		if label, ok := labels[*item.AssignedUserID]; ok && label != "" {
+			l := label
+			v.AssignedUserLabel = &l
+		}
+	}
+	return v
 }
 
 // messageToView projects an inbox.Message onto the read-only view shape.
