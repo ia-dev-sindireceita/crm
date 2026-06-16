@@ -360,6 +360,29 @@ type Deps struct {
 	//   GET    /c/{slug}
 	WebCampaignPublic http.Handler
 
+	// WebChat is the SIN-64972 public webchat widget surface from
+	// internal/adapter/channels/webchat (ADR-0021). Mounted inside the
+	// tenanted group BUT outside the authed sub-group: the visitor is
+	// anonymous by design, so middleware.TenantScope resolves the
+	// tenant from Host (making tenancy.FromContext work in the handler)
+	// while the standard cookie-CSRF middleware — which lives only on
+	// the authed sub-group — never double-applies over the widget's own
+	// X-Webchat-CSRF double-submit (D3). The wire in
+	// cmd/server/webchat_wire.go bundles the per-tenant origin allowlist
+	// (D2), origin-signature (D4), windowed rate limiter (D5) and the
+	// ReceiveInbound stack, so the slot here is the ready http.Handler.
+	//
+	// Nil keeps /widget/v1/* unmounted; cmd/server passes nil when
+	// DATABASE_URL is unset so partial-stack boots stay green. When
+	// mounted, the per-tenant feature flag still gates every request to
+	// 404 until the tenant is allow-listed (D7).
+	//
+	// Routes mounted:
+	//   POST /widget/v1/session
+	//   POST /widget/v1/message
+	//   GET  /widget/v1/stream
+	WebChat http.Handler
+
 	// WebBranding is the HTMX admin UI for the tenant branding surface
 	// (SIN-63084 / Fase 5). Same envelope as WebCatalog / WebAIPolicy:
 	// RequireAuth installs the principal, RequireAction(iam.
@@ -768,6 +791,19 @@ func NewRouter(deps Deps) http.Handler {
 		if deps.WebConsent != nil {
 			tenanted.Method(http.MethodGet, "/consent/cookies-banner", deps.WebConsent)
 			tenanted.Method(http.MethodPost, "/consent/cookies", deps.WebConsent)
+		}
+
+		// SIN-64972 / ADR-0021 — public webchat widget. Mounted in the
+		// tenanted group, outside the authed sub-group: the visitor is
+		// anonymous so TenantScope resolves the tenant from Host before
+		// the handler runs, and the standard cookie-CSRF middleware
+		// (authed-only) does not shadow the widget's X-Webchat-CSRF
+		// double-submit. deps.WebChat re-dispatches on the exact
+		// method+path it registered, so the three routes share one slot.
+		if deps.WebChat != nil {
+			tenanted.Method(http.MethodPost, "/widget/v1/session", deps.WebChat)
+			tenanted.Method(http.MethodPost, "/widget/v1/message", deps.WebChat)
+			tenanted.Method(http.MethodGet, "/widget/v1/stream", deps.WebChat)
 		}
 
 		// SIN-63361 — MFA-aware POST /login. When deps.UserMFA.LoginPost

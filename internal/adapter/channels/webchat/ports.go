@@ -33,6 +33,7 @@ type Session struct {
 	TenantID      uuid.UUID
 	CSRFTokenHash string // sha256(csrf_token), base64url-encoded
 	OriginSig     string // HMAC-SHA256(tenant_origin_secret, canonical_origin)
+	IPHash        string // sha256(ip || tenant_id), hex; LGPD-safe (ADR-0021 D5)
 	ExpiresAt     time.Time
 }
 

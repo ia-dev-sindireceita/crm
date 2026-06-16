@@ -50,7 +50,11 @@ func (a *Adapter) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limit: 10 new sessions / min / ip+tenant (ADR-0021 D5).
-	ipKey := fmt.Sprintf("wc.sess.%s.%x", tenantID, sha256.Sum256([]byte(clientIP(r)+tenantID.String())))
+	// ipHash = sha256(ip || tenant_id); the plaintext IP never leaves
+	// this scope, so the value persisted on the session row (and used
+	// as the rate-limit key) is LGPD-safe.
+	ipHash := fmt.Sprintf("%x", sha256.Sum256([]byte(clientIP(r)+tenantID.String())))
+	ipKey := "wc.sess." + tenantID.String() + "." + ipHash
 	if ok, after, _ := a.rl.Allow(ctx, ipKey); !ok {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(after.Seconds())))
 		http.Error(w, "", http.StatusTooManyRequests)
@@ -81,6 +85,7 @@ func (a *Adapter) handleSession(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		CSRFTokenHash: hashToken(csrfToken),
 		OriginSig:     originSig,
+		IPHash:        ipHash,
 		ExpiresAt:     now.Add(sessionTTL),
 	}
 	if err := a.sessions.Create(ctx, sess); err != nil {
