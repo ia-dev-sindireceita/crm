@@ -42,8 +42,10 @@ func freshDBWithCatalog(t *testing.T) (*testpg.DB, context.Context) {
 		// SIN-63946: adds product.category for the UX-F9 sidebar /
 		// filter. Tests that pre-date this column round-trip an empty
 		// string by default (HydrateProductFull picks "" when
-		// SetCategory is never called).
-		"0118_product_category.up.sql",
+		// SetCategory is never called). Renumbered 0118→0120 in this
+		// PR to resolve the duplicate-0118 collision with
+		// 0118_ai_policy_structured_fields.
+		"0120_product_category.up.sql",
 	)
 	return db, ctx
 }

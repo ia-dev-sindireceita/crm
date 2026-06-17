@@ -1,4 +1,4 @@
--- 0118_product_category.up.sql
+-- 0120_product_category.up.sql
 -- SIN-63946 / UX-F9: add product.category for catalog categorization.
 --
 -- The catalog (web/catalog) renders a sidebar with category counts plus
