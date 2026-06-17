@@ -1,0 +1,16 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="Indigo accent" subtitle="The single calm accent — CTAs, links, selection" -->
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{margin:0;padding:18px;background:var(--bg-app);font-family:var(--font-sans)}
+.ramp{display:grid;grid-template-columns:repeat(8,1fr);gap:6px}
+.sw{display:flex;flex-direction:column;gap:5px}
+.chip{height:54px;border-radius:var(--radius-md)}
+.n{font-size:10px;color:var(--text-secondary);font-weight:500}
+.h{font-size:9px;color:var(--text-tertiary);font-family:var(--font-mono)}
+.tag{position:absolute;margin:4px;font-size:9px;font-weight:600;color:#fff;background:rgba(0,0,0,.2);border-radius:3px;padding:1px 4px}</style></head>
+<body><div class="ramp" id="r"></div>
+<script>
+const steps=[["50","#EEEFFB"],["100","#DDE0F6"],["200","#C2C7EF"],["300","#A3AAE8"],["400","#7C85E0"],["500","#5B63D3","500 · primary"],["600","#4A51C0","hover"],["700","#3C43A2","active"]];
+document.getElementById('r').innerHTML=steps.map(([n,h,t])=>`<div class="sw"><div class="chip" style="background:${h};position:relative">${t?`<span class="tag">${t}</span>`:''}</div><div class="n">${n}</div><div class="h">${h}</div></div>`).join('');
+</script>
+</body></html>

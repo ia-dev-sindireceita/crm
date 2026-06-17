@@ -1,0 +1,145 @@
+/* ============================================================
+   PEITHO — COLOR TOKENS
+   Built for 8h/day use. Soft greys, one calm indigo accent,
+   muted semantic colors. No pure black, no pure white surfaces.
+   ============================================================ */
+
+:root {
+  /* --- Neutral ramp (cool grey, slightly blue) --- */
+  --gray-0:   #FFFFFF;
+  --gray-25:  #FBFBFD;
+  --gray-50:  #F4F5F7;   /* app background */
+  --gray-100: #ECEEF2;
+  --gray-150: #E3E6EC;
+  --gray-200: #D7DBE3;
+  --gray-300: #C0C5D0;
+  --gray-400: #99A0AE;
+  --gray-500: #6B7280;   /* secondary text */
+  --gray-600: #4B5160;
+  --gray-700: #353B49;
+  --gray-800: #242833;
+  --gray-900: #1A1A2E;   /* primary text */
+
+  /* --- Accent: soft indigo (primary action / links) --- */
+  --indigo-50:  #EEEFFB;
+  --indigo-100: #DDE0F6;
+  --indigo-200: #C2C7EF;
+  --indigo-300: #A3AAE8;
+  --indigo-400: #7C85E0;
+  --indigo-500: #5B63D3;  /* PRIMARY accent */
+  --indigo-600: #4A51C0;  /* hover */
+  --indigo-700: #3C43A2;  /* active / pressed */
+  --indigo-800: #2F3580;
+
+  /* --- Semantic: status colors (muted, never alarming) --- */
+  --green-50:  #E5F4EC;
+  --green-500: #2F9E6F;   /* won / success */
+  --green-600: #268560;
+
+  --rose-50:   #F9E9EC;
+  --rose-500:  #C9536A;   /* lost / danger (desaturated) */
+  --rose-600:  #B14257;
+
+  --amber-50:  #FBF2DF;
+  --amber-500: #C98A2B;   /* in negotiation / warning */
+  --amber-600: #AC7420;
+
+  --blue-50:   #E7F0F9;
+  --blue-500:  #3B82C4;   /* info */
+  --blue-600:  #2F6BA4;
+
+  --teal-50:   #E1F2F1;
+  --teal-500:  #2E9B92;   /* secondary neutral accent (tags) */
+
+  /* ============================================================
+     SEMANTIC ALIASES — light theme (default)
+     Components reference ONLY these.
+     ============================================================ */
+  --bg-app:        var(--gray-50);
+  --bg-subtle:     var(--gray-100);
+  --surface:       var(--gray-0);     /* cards, panels */
+  --surface-2:     var(--gray-25);    /* nested / hover surfaces */
+  --surface-sunken: var(--gray-100);
+
+  --border:        var(--gray-200);
+  --border-strong: var(--gray-300);
+  --border-subtle: var(--gray-150);
+
+  --text-primary:   var(--gray-900);
+  --text-secondary: var(--gray-500);
+  --text-tertiary:  var(--gray-400);
+  --text-on-accent: #FFFFFF;
+  --text-link:      var(--indigo-600);
+
+  --accent:        var(--indigo-500);
+  --accent-hover:  var(--indigo-600);
+  --accent-active: var(--indigo-700);
+  --accent-soft:   var(--indigo-50);
+  --accent-border: var(--indigo-200);
+  --focus-ring:    var(--indigo-400);
+
+  --status-won-fg:  var(--green-600);
+  --status-won-bg:  var(--green-50);
+  --status-lost-fg: var(--rose-600);
+  --status-lost-bg: var(--rose-50);
+  --status-nego-fg: var(--amber-600);
+  --status-nego-bg: var(--amber-50);
+  --status-info-fg: var(--blue-600);
+  --status-info-bg: var(--blue-50);
+  --status-neutral-fg: var(--gray-600);
+  --status-neutral-bg: var(--gray-100);
+
+  /* avatar palette (muted, assigned by hash) */
+  --avatar-1: #5B63D3;
+  --avatar-2: #2E9B92;
+  --avatar-3: #C98A2B;
+  --avatar-4: #C9536A;
+  --avatar-5: #3B82C4;
+  --avatar-6: #7A6BD0;
+}
+
+/* ============================================================
+   DARK THEME — #0F1117 base, same accent lifted in luminosity.
+   ============================================================ */
+[data-theme="dark"] {
+  --bg-app:        #0F1117;
+  --bg-subtle:     #14171F;
+  --surface:       #171A22;   /* cards, panels */
+  --surface-2:     #1E222C;   /* nested / hover */
+  --surface-sunken: #0C0E13;
+
+  --border:        #282D38;
+  --border-strong: #353B49;
+  --border-subtle: #1F242E;
+
+  --text-primary:   #E7E9F0;
+  --text-secondary: #9BA3B2;
+  --text-tertiary:  #6B7280;
+  --text-on-accent: #FFFFFF;
+  --text-link:      #9098EC;
+
+  --accent:        #6970DD;
+  --accent-hover:  #7C84E8;
+  --accent-active: #8990ED;
+  --accent-soft:   #1E2236;
+  --accent-border: #353C66;
+  --focus-ring:    #7C84E8;
+
+  --status-won-fg:  #5FC79B;
+  --status-won-bg:  #14271F;
+  --status-lost-fg: #E08197;
+  --status-lost-bg: #2A1820;
+  --status-nego-fg: #E0B468;
+  --status-nego-bg: #2A2113;
+  --status-info-fg: #6FAEE0;
+  --status-info-bg: #14202E;
+  --status-neutral-fg: #9BA3B2;
+  --status-neutral-bg: #20242E;
+
+  --avatar-1: #7C84E8;
+  --avatar-2: #45B3AA;
+  --avatar-3: #DDA64C;
+  --avatar-4: #DD7488;
+  --avatar-5: #5C9FDC;
+  --avatar-6: #9486E0;
+}

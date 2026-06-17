@@ -1,0 +1,39 @@
+/* ============================================================
+   PEITHO — SPACING & RADIUS TOKENS
+   Strict 4px grid. Density-medium (Linear / Notion territory).
+   ============================================================ */
+
+:root {
+  --space-0:  0;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-7:  28px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  /* Corner radii — restrained, never pill-y except chips */
+  --radius-xs:   3px;
+  --radius-sm:   5px;
+  --radius-md:   7px;   /* default: inputs, buttons */
+  --radius-lg:   10px;  /* cards, panels */
+  --radius-xl:   14px;  /* modals, command bar */
+  --radius-full: 9999px;
+
+  /* Control heights — compact density */
+  --control-sm: 28px;
+  --control-md: 32px;   /* default button / input */
+  --control-lg: 38px;
+
+  /* Layout */
+  --sidebar-w:        236px;
+  --sidebar-collapsed:60px;
+  --topbar-h:         52px;
+  --content-max:      1320px;
+}
