@@ -673,6 +673,16 @@ ACME_EMAIL=REPLACE_WITH_REAL_OPS_EMAIL
 # does not matter; every entry must already have an A record pointing at
 # the VPS public IP (verify with the dig loop above).
 STG_TENANT_HOSTS=acme.crm.REPLACE_WITH_BASE, globex.crm.REPLACE_WITH_BASE
+# SIN-65076 — operator-console hostname. When set, the app wires it into
+# httpapi.Deps.MasterHost so the /m/* master console is reachable on this
+# host and the host joins the CSRF Origin/Referer allowlist. The tenant
+# login path deliberately refuses users.role='master' (SIN-63340 STRIDE-E),
+# so the master UI is ONLY reachable via this dedicated host. Leave the line
+# absent to keep the console disabled (graceful default). Before enabling:
+#   1) confirm the value with the CEO (proposal below),
+#   2) add an A record for it pointing at the VPS public IP,
+#   3) add it to STG_TENANT_HOSTS above so Caddy provisions a TLS cert.
+# MASTER_CONSOLE_HOST=master.crm.REPLACE_WITH_BASE
 # APP_IMAGE is rewritten by the deploy wrapper on every push. Bootstrap with
 # the digest you discover in §5 below — full ref like
 # ghcr.io/pericles-luz/crm@sha256:6b8f…f730ba.
