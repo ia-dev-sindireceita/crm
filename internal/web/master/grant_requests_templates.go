@@ -72,6 +72,7 @@ var grantRequestsTemplateFuncs = template.FuncMap{
 	"truncateImpersonationReason": truncateImpersonationReason,
 	"csrfHiddenForToken":          csrfHiddenForToken,
 	"eqUUID":                      eqUUID,
+	"icon":                        iconSVG,
 }
 
 // eqUUID returns true when two uuids are equal. Used by templates to
@@ -230,7 +231,7 @@ var grantRequestDetailPanelTmpl = template.Must(template.New("grant_request_deta
   <div class="master-grant-request-detail__columns">
     <article class="master-grant-request-detail__column master-grant-request-detail__column--requester"
              aria-labelledby="grant-request-requester-title">
-      <span class="master-grant-request-detail__sigil">🔒 SOLICITANTE</span>
+      <span class="master-grant-request-detail__sigil">{{icon "lock"}} SOLICITANTE</span>
       <h2 id="grant-request-requester-title">Quem pediu</h2>
       <dl>
         <dt>Solicitante</dt><dd>{{.Request.CreatedByID}}</dd>
@@ -250,7 +251,7 @@ var grantRequestDetailPanelTmpl = template.Must(template.New("grant_request_deta
 
     <article class="master-grant-request-detail__column master-grant-request-detail__column--reviewer"
              aria-labelledby="grant-request-reviewer-title">
-      <span class="master-grant-request-detail__sigil">✔ REVISOR (você)</span>
+      <span class="master-grant-request-detail__sigil">{{icon "check"}} REVISOR (você)</span>
       <h2 id="grant-request-reviewer-title">O que acontece se aprovar</h2>
       <dl>
         <dt>Equivalência em tokens</dt>
@@ -270,7 +271,7 @@ var grantRequestDetailPanelTmpl = template.Must(template.New("grant_request_deta
           <p class="master-grant-request-detail__self-guard"
              role="alert"
              data-self-approve-guard="true">
-            ⚠ Você é o solicitante — não pode aprovar nem rejeitar a
+            {{icon "octagon-alert"}} Você é o solicitante — não pode aprovar nem rejeitar a
             própria solicitação. Aguarde a revisão por outro master.
             (Regra 4-eyes — defendida em UI e backend.)
           </p>

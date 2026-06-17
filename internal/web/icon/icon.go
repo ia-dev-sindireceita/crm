@@ -82,6 +82,9 @@ var paths = map[string]string{
 	// octagon-alert: replaces the 🛑 stop emoji in the master
 	// impersonation banner — an octagonal "halt" sign with an alert bar.
 	"octagon-alert": `<path d="M12 16h.01"/><path d="M12 8v4"/><path d="M15.312 2a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586l-4.688-4.688A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2z"/>`,
+	// lock: replaces the 🔒 padlock emoji on the master grant-request
+	// "SOLICITANTE" sigil — a closed padlock framing the 4-eyes column.
+	"lock": `<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>`,
 }
 
 // filledIcons lists icons rendered as a solid fill rather than a stroke

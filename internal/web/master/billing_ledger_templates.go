@@ -127,6 +127,7 @@ var billingLedgerFuncs = template.FuncMap{
 	"isZeroUUID":      isZeroUUID,
 	"hasGrantRef":     hasGrantRef,
 	"hasSubRef":       hasSubRef,
+	"icon":            iconSVG,
 }
 
 // ledgerSourceLabel maps the persisted token_ledger.source string onto

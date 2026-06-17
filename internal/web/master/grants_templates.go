@@ -49,6 +49,7 @@ var grantsTemplateFuncs = template.FuncMap{
 	"formatImpersonationISO":      formatImpersonationISO,
 	"truncateImpersonationReason": truncateImpersonationReason,
 	"csrfHiddenForToken":          csrfHiddenForToken,
+	"icon":                        iconSVG,
 }
 
 func formatGrantTime(t time.Time) string {

@@ -53,7 +53,7 @@ const impersonationBannerSource = `{{define "shell_impersonation_banner"}}
           tabindex="0"
           autofocus>SAIR DA IMPERSONAÇÃO</button>
   <span class="shell__impersonation-pill">
-    <span aria-hidden="true" class="shell__impersonation-pill-icon">🛑</span>
+    <span aria-hidden="true" class="shell__impersonation-pill-icon">{{icon "octagon-alert"}}</span>
     IMPERSONANDO
   </span>
   <span class="shell__impersonation-tenant">
@@ -82,7 +82,7 @@ const impersonationBannerSource = `{{define "shell_impersonation_banner"}}
           class="master-audit-feed__chip"
           aria-expanded="false"
           aria-controls="master-audit-feed-panel">
-    <span aria-hidden="true">⚡</span> Auditoria
+    <span aria-hidden="true">{{icon "zap"}}</span> Auditoria
   </button>
   <section class="master-audit-feed__panel"
            id="master-audit-feed-panel"
@@ -110,6 +110,7 @@ var impersonationBannerTmpl = template.Must(template.New("shell_impersonation_ba
 		"formatImpersonationISO":      formatImpersonationISO,
 		"truncateImpersonationReason": truncateImpersonationReason,
 		"csrfHiddenForToken":          csrfHiddenForToken,
+		"icon":                        iconSVG,
 	}).
 	Parse(impersonationBannerSource))
 
