@@ -477,6 +477,8 @@ var contactLayoutTmpl = template.Must(template.New("contact_lgpd.layout").Funcs(
   <title>LGPD — controles do contato</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/lgpd.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -555,6 +557,8 @@ var requestsLayoutTmpl = template.Must(template.New("lgpd_requests.layout").Func
   <title>LGPD — solicitações de deleção</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/lgpd.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
