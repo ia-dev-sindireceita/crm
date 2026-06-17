@@ -430,6 +430,82 @@ func TestRouter_WebInbox_AssignRouteDeniedForCommon(t *testing.T) {
 	}
 }
 
+// --- SIN-65004: POST /inbox/conversations/{id}/ai-assist route mount ---
+//
+// Same defect class as the assign route above (SIN-64979): the ai-assist
+// POST was registered only on the inner mux (web/inbox Routes, conditional
+// on AIAssist.Summarizer), so chi 404'd it before the handler in
+// production. The recording WebInbox handler used here stands in for the
+// inner mux, so these tests pin the chi route table + security envelope
+// (RequireAuth → RequireAction → RequireCSRF), not the feature gating.
+
+// postAIAssist fires POST /inbox/conversations/{id}/ai-assist with a fully
+// valid CSRF presentation (cookie + matching header + same-origin), so the
+// route-table / RequireAction behaviour is isolated from CSRF noise. It
+// reuses the assignCSRFToken/csrfRoledIAM seam from the assign tests.
+func postAIAssist(t *testing.T, h http.Handler, host, convID string, sess, csrf *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/inbox/conversations/"+convID+"/ai-assist", nil)
+	r.Host = host
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "https://"+host)
+	r.Header.Set(csrfmw.HeaderName, assignCSRFToken)
+	r.AddCookie(sess)
+	r.AddCookie(csrf)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// TestRouter_WebInbox_AIAssistRouteReachableForAtendente pins the chi
+// route table for the ai-assist POST: an authorized atendente, with a
+// valid CSRF presentation, reaches the inner handler with POST on the
+// ai-assist path. Without the router.go mount this fails with 404.
+func TestRouter_WebInbox_AIAssistRouteReachableForAtendente(t *testing.T) {
+	t.Parallel()
+	inboxH := &recordingInbox{}
+	h, store, host := newAssignRouter(t, inboxH)
+	store.addUser(host, "atendente@acme.test", "pw", iam.RoleTenantAtendente, uuid.New())
+
+	sess, csrf := loginBothCookies(t, h, host, "atendente@acme.test", "pw")
+	convID := uuid.New().String()
+	rec := postAIAssist(t, h, host, convID, sess, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 (atendente must reach POST ai-assist); body=%q", rec.Code, rec.Body.String())
+	}
+	if len(inboxH.calls) != 1 {
+		t.Fatalf("inner call count=%d, want 1 (%+v)", len(inboxH.calls), inboxH.calls)
+	}
+	c := inboxH.calls[0]
+	if c.method != http.MethodPost || c.path != "/inbox/conversations/"+convID+"/ai-assist" {
+		t.Fatalf("inner call=%+v, want POST .../ai-assist", c)
+	}
+	if !c.hadPrincipal {
+		t.Fatalf("inner handler ran without iam.Principal (RequireAuth missing)")
+	}
+}
+
+// TestRouter_WebInbox_AIAssistRouteDeniedForCommon proves the ai-assist
+// POST inherits the RequireAction(ActionTenantInboxRead) gate: a
+// Common-role session — with a fully valid CSRF presentation, so the 403
+// can only come from RequireAction, not CSRF — is denied before the inner
+// handler runs.
+func TestRouter_WebInbox_AIAssistRouteDeniedForCommon(t *testing.T) {
+	t.Parallel()
+	inboxH := &recordingInbox{}
+	h, store, host := newAssignRouter(t, inboxH)
+	store.addUser(host, "common@acme.test", "pw", iam.RoleTenantCommon, uuid.New())
+
+	sess, csrf := loginBothCookies(t, h, host, "common@acme.test", "pw")
+	rec := postAIAssist(t, h, host, uuid.New().String(), sess, csrf)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403 (common denied at RequireAction, CSRF valid); body=%q", rec.Code, rec.Body.String())
+	}
+	if len(inboxH.calls) != 0 {
+		t.Fatalf("inner handler ran on a deny path: %+v", inboxH.calls)
+	}
+}
+
 // avoid unused import error when middleware.SessionFromContext changes
 // upstream; keep the import alive so future test growth has the
 // session helpers at hand.
