@@ -134,6 +134,15 @@ func pingWithRetry(ctx context.Context, p Pinger, budget, initialBackoff, maxBac
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
+		// Per-attempt deadline fired but the caller ctx is still live. A
+		// reboot produces *fast* kernel errors (ECONNREFUSED while Postgres
+		// starts, then 57P03 while it initialises) — those retry below and
+		// the pool self-heals. A per-attempt timeout firing instead means the
+		// host is hanging (slow DNS / no TCP RST), which is not a "coming up"
+		// condition: fail fast without spending the remaining budget.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		// Surface the real ping error (not a ctx/timer artifact) once the
 		// budget is spent or the next backoff would overrun it.
 		if now := time.Now(); !now.Before(deadline) || !now.Add(backoff).Before(deadline) {

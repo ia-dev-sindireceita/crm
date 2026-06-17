@@ -133,24 +133,26 @@ func (h *hangingPinger) Ping(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func TestPingWithRetry_HangingPingBoundedByBudget(t *testing.T) {
+func TestPingWithRetry_HangingPingFailsFast(t *testing.T) {
 	t.Parallel()
 	// Caller ctx has NO deadline (mirrors production main / cmd/server
-	// tests). Each Ping hangs; only the per-attempt timeout lets the loop
-	// make progress and return within the budget instead of blocking
-	// forever. Without the fix this test would hang until the go-test
-	// timeout fired.
+	// tests). The ping hangs until its per-attempt deadline fires, surfacing
+	// context.DeadlineExceeded. A hanging host is not a "coming up" condition,
+	// so pingWithRetry must fail fast on the FIRST attempt (calls == 1) rather
+	// than burning the remaining budget on a host that will not answer.
 	hp := &hangingPinger{}
 	start := time.Now()
-	err := pingWithRetry(context.Background(), hp, 40*time.Millisecond, fastInitial, 5*time.Millisecond)
+	err := pingWithRetry(context.Background(), hp, 10*time.Second, fastInitial, 5*time.Millisecond)
 	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("err: got nil, want a non-nil timeout error")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err: got %v, want context.DeadlineExceeded", err)
 	}
-	if elapsed > 2*time.Second {
-		t.Errorf("elapsed %v: per-attempt timeout did not bound a hanging ping", elapsed)
+	if hp.calls != 1 {
+		t.Errorf("calls: got %d, want 1 (fail fast, no retry on a hanging host)", hp.calls)
 	}
-	if hp.calls < 1 {
-		t.Errorf("calls: got %d, want at least one bounded ping attempt", hp.calls)
+	// The single bounded attempt (perAttempt = min(maxBackoff*2, remaining) =
+	// 10ms here) returns long before the 10s budget.
+	if elapsed > time.Second {
+		t.Errorf("elapsed %v: did not fail fast on the per-attempt timeout", elapsed)
 	}
 }
