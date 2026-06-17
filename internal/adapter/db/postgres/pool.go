@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,6 +21,14 @@ import (
 // EnvDSN names the env var that holds the runtime DSN. cmd/server reads it
 // (see PR3 wire-up) and passes the value to NewFromEnv / New.
 const EnvDSN = "DATABASE_URL"
+
+// EnvPingRetryBudget names the optional env var overriding the boot-time ping
+// retry budget. The value is parsed as a Go time.Duration (e.g. "30s",
+// "1ms"); when unset, empty, or unparseable, New falls back to
+// defaultPingRetryBudget so production keeps its 60s self-heal window. Boot
+// tests that point DATABASE_URL at an unreachable host set it tiny so each
+// pool fails fast instead of spending the full budget per pool.
+const EnvPingRetryBudget = "DB_PING_RETRY_BUDGET"
 
 // Fase 0 defaults. Tuned for a single-replica app talking to one Postgres;
 // PR9 revisits when the production Dockerfile and staging soak land.
@@ -76,11 +85,28 @@ func New(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("postgres: connect: %w", err)
 	}
-	if err := pingWithRetry(ctx, pool, defaultPingRetryBudget, defaultPingInitialBackoff, defaultPingMaxBackoff); err != nil {
+	budget := resolvePingRetryBudget(os.Getenv(EnvPingRetryBudget))
+	if err := pingWithRetry(ctx, pool, budget, defaultPingInitialBackoff, defaultPingMaxBackoff); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
 	return pool, nil
+}
+
+// resolvePingRetryBudget parses raw (a time.Duration string from
+// EnvPingRetryBudget) and returns it when valid and strictly positive;
+// otherwise it returns defaultPingRetryBudget. Keeping the parse pure (no
+// os.Getenv inside) lets it be unit-tested without mutating the process
+// environment.
+func resolvePingRetryBudget(raw string) time.Duration {
+	if raw == "" {
+		return defaultPingRetryBudget
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultPingRetryBudget
+	}
+	return d
 }
 
 // Pinger is the tiny seam pingWithRetry needs. *pgxpool.Pool already
@@ -110,13 +136,21 @@ type Pinger interface {
 func pingWithRetry(ctx context.Context, p Pinger, budget, initialBackoff, maxBackoff time.Duration) error {
 	deadline := time.Now().Add(budget)
 	backoff := initialBackoff
+	var lastErr error
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			// Budget gone before this attempt could start.
+			// Budget gone. Surface the last ping error if at least one
+			// attempt was made (the top-of-loop guard can win the race with
+			// the mid-loop exit below when a backoff sleep pushes time past
+			// the deadline). Fall back to DeadlineExceeded only when the
+			// budget was so small no ping could be attempted at all.
+			if lastErr != nil {
+				return lastErr
+			}
 			return context.DeadlineExceeded
 		}
 		perAttempt := maxBackoff * 2
@@ -129,20 +163,17 @@ func pingWithRetry(ctx context.Context, p Pinger, budget, initialBackoff, maxBac
 		if err == nil {
 			return nil
 		}
+		lastErr = err
 		// The caller's ctx (not the per-attempt budget) being done means
 		// stop now and surface its error, not the attempt's timeout.
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
-		// Per-attempt deadline fired but the caller ctx is still live. A
-		// reboot produces *fast* kernel errors (ECONNREFUSED while Postgres
-		// starts, then 57P03 while it initialises) — those retry below and
-		// the pool self-heals. A per-attempt timeout firing instead means the
-		// host is hanging (slow DNS / no TCP RST), which is not a "coming up"
-		// condition: fail fast without spending the remaining budget.
-		if errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
+		// Retry on ANY ping failure up to the budget (literal AC1): a host
+		// that is still coming up surfaces transient errors, and a host that
+		// hangs at the TCP layer is bounded by the per-attempt timeout above,
+		// so the loop still exits within budget either way.
+		//
 		// Surface the real ping error (not a ctx/timer artifact) once the
 		// budget is spent or the next backoff would overrun it.
 		if now := time.Now(); !now.Before(deadline) || !now.Add(backoff).Before(deadline) {
