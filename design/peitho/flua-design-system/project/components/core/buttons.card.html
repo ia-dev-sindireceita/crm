@@ -1,0 +1,45 @@
+<!-- @dsCard group="Components" viewport="700x250" name="Buttons & Icon Buttons" subtitle="Actions: primary, secondary, ghost, danger — plus icon buttons" -->
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>body{margin:0;padding:20px;background:var(--bg-app)}.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { Button, IconButton, Kbd } = window.FluaDesignSystem_2587b4;
+function Demo(){
+  return (<div>
+    <div className="row">
+      <Button variant="primary" leftIcon="plus">Novo lead</Button>
+      <Button variant="secondary">Filtrar</Button>
+      <Button variant="ghost" rightIcon="chevron-down">Ordenar</Button>
+      <Button variant="danger" leftIcon="trash">Excluir</Button>
+      <Button variant="primary" disabled>Desativado</Button>
+    </div>
+    <div className="row">
+      <Button size="sm" variant="secondary">Pequeno</Button>
+      <Button size="md" variant="secondary">Médio</Button>
+      <Button size="lg" variant="secondary">Grande</Button>
+      <Button size="md" variant="primary" rightIcon="sparkles">Resumir com IA</Button>
+    </div>
+    <div className="row">
+      <IconButton icon="phone" label="Ligar" />
+      <IconButton icon="mail" label="E-mail" />
+      <IconButton icon="more-horizontal" label="Mais" />
+      <IconButton icon="star" variant="outline" label="Favoritar" />
+      <IconButton icon="filter" variant="solid" label="Filtros" />
+      <IconButton icon="bell" active label="Notificações" />
+      <span style={{display:'inline-flex',alignItems:'center',gap:6,marginLeft:8,color:'var(--text-secondary)',fontSize:'var(--text-sm)'}}>
+        Abrir busca <Kbd>⌘</Kbd><Kbd>K</Kbd>
+      </span>
+    </div>
+  </div>);
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script>
+</body></html>

@@ -1,0 +1,15 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="Neutral ramp" subtitle="Cool grey scale — backgrounds, borders, text" -->
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{margin:0;padding:18px;background:var(--bg-app);font-family:var(--font-sans)}
+.ramp{display:grid;grid-template-columns:repeat(11,1fr);gap:6px}
+.sw{display:flex;flex-direction:column;gap:5px}
+.chip{height:54px;border-radius:var(--radius-md);box-shadow:inset 0 0 0 1px rgba(0,0,0,.06)}
+.n{font-size:10px;color:var(--text-secondary);font-weight:500}
+.h{font-size:9px;color:var(--text-tertiary);font-family:var(--font-mono)}</style></head>
+<body><div class="ramp" id="r"></div>
+<script>
+const steps=[["0","#FFFFFF"],["25","#FBFBFD"],["50","#F4F5F7"],["100","#ECEEF2"],["200","#D7DBE3"],["300","#C0C5D0"],["400","#99A0AE"],["500","#6B7280"],["600","#4B5160"],["700","#353B49"],["900","#1A1A2E"]];
+document.getElementById('r').innerHTML=steps.map(([n,h])=>`<div class="sw"><div class="chip" style="background:${h}"></div><div class="n">${n}</div><div class="h">${h}</div></div>`).join('');
+</script>
+</body></html>
