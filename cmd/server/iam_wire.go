@@ -62,6 +62,19 @@ const envSlackWebhook = "SLACK_WEBHOOK_URL"
 //   - "/settings/privacy/dpa.md" matches the DPA download. The longer
 //     pattern wins by Go 1.22 mux specificity, so the exact page route
 //     still hits the page handler.
+//
+// SIN-64973 adds the AI-policy admin UI (SIN-62906). The handler was
+// built (cmd/server/ai_policy_wire.go) and wired into the chi router
+// via iamHandlerOpts.WebAIPolicy, but the dispatch prefix was never
+// added here — so the public stdlib mux never delegated
+// "/settings/ai-policy*" to chi and the custom-domain catch-all at "/"
+// swallowed it, returning a clean 404 (not the authed 302) in staging.
+// Same wireup gap memory reference_crm_router_nil_dep_silent_skip warns
+// about, at the public-mux dispatch layer.
+//   - "/settings/ai-policy" matches the list page (GET) + create (POST).
+//   - "/settings/ai-policy/" matches the subtree (new, preview,
+//     {scope}/{id}/edit, PATCH/DELETE {scope}/{id}). The exact pattern
+//     still wins for GET/POST /settings/ai-policy by mux specificity.
 var iamRoutes = []string{
 	"/login",
 	"/logout",
@@ -71,6 +84,8 @@ var iamRoutes = []string{
 	"/funnel/",
 	"/settings/privacy",
 	"/settings/privacy/dpa.md",
+	"/settings/ai-policy",
+	"/settings/ai-policy/",
 	"/catalog",
 	"/catalog/",
 	"/campaigns",
