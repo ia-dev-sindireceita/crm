@@ -469,12 +469,10 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
         hx-post="/inbox/conversations/{{.ConversationID}}/messages"
         hx-target="#conversation-thread"
         hx-swap="beforeend"
-        hx-indicator="#compose-indicator"
-        hx-on::after-request="this.reset()">
+        hx-indicator="#compose-indicator">
     {{.CSRFInput}}
     <label for="compose-body" class="visually-hidden">Mensagem</label>
-    <textarea id="compose-body" name="body" rows="3" maxlength="4096" required
-              placeholder="Escreva sua resposta…"></textarea>
+    {{template "compose_textarea" false}}
     <button type="submit" class="conversation__compose-submit">Enviar</button>
     <span id="compose-indicator" class="conversation__compose-indicator" role="status" aria-live="polite">Enviando…</span>
   </form>
@@ -744,6 +742,25 @@ var messageBubbleTmpl = template.Must(template.New("message_bubble").Funcs(templ
 </li>
 `))
 
+// composeTextareaTmpl is the single source of truth for the outbound
+// compose <textarea>. It renders in two places that MUST stay identical:
+//
+//   - inside conversationViewTmpl's compose form ({{template
+//     "compose_textarea" false}}), and
+//   - as a standalone out-of-band fragment from the send handler
+//     ({{template "compose_textarea" true}}), which clears the field
+//     after a successful POST.
+//
+// The dot is a bool: true emits hx-swap-oob="true" so htmx replaces the
+// live #compose-body element by id (a pure DOM swap — no new Function,
+// no eval), false omits it for the in-form render. This replaces the old
+// hx-on::after-request="this.reset()" which htmx compiled with
+// new Function(...) and which therefore threw EvalError under the prod
+// strict CSP (script-src without 'unsafe-eval') — see SIN-65067/SIN-65068.
+var composeTextareaTmpl = template.Must(template.New("compose_textarea").Parse(
+	`<textarea id="compose-body" name="body" rows="3" maxlength="4096" required` +
+		` placeholder="Escreva sua resposta…"{{if .}} hx-swap-oob="true"{{end}}></textarea>`))
+
 func init() {
 	// Cross-register partials so the layout can render
 	// {{template "conversation_list" …}} and so on with one template
@@ -762,7 +779,7 @@ func init() {
 			panic("inbox/web: register " + child.Name() + " in list region: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
+	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl, composeTextareaTmpl} {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
 		}
@@ -789,6 +806,7 @@ func init() {
 	// goroutine init) makes all subsequent concurrent executions read-only.
 	for _, t := range []*template.Template{
 		messageBubbleTmpl,
+		composeTextareaTmpl,
 		conversationListTmpl,
 		inboxFiltersTmpl,
 		inboxListRegionTmpl,
