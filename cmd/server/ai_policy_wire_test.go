@@ -136,3 +136,27 @@ func TestAssembleWebAIPolicyHandler_NilResolverErrorMessage(t *testing.T) {
 		t.Fatal("errors.Is sentinel returned false")
 	}
 }
+
+// TestIAMRoutesIncludesAIPolicy pins the stdlib-mux dispatch path that
+// SIN-64973 was missing: the public mux must delegate both the exact
+// "/settings/ai-policy" (list GET + create POST) and the subtree
+// "/settings/ai-policy/" (new, preview, {scope}/{id}/edit, PATCH/DELETE)
+// to the chi router. The handler is built (ai_policy_wire.go) and wired
+// via iamHandlerOpts.WebAIPolicy, but without these prefixes in
+// iamRoutes the routes fall through to the custom-domain catch-all at
+// "/" and return a clean 404 (not the authed 302) — the exact staging
+// regression SIN-64973 found. This assertion catches a re-drop.
+func TestIAMRoutesIncludesAIPolicy(t *testing.T) {
+	t.Parallel()
+	want := map[string]bool{"/settings/ai-policy": false, "/settings/ai-policy/": false}
+	for _, r := range iamRoutes {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		}
+	}
+	for pattern, found := range want {
+		if !found {
+			t.Errorf("iamRoutes does not contain %q — the SIN-62906 ai-policy mount would be unreachable (SIN-64973)", pattern)
+		}
+	}
+}
