@@ -286,7 +286,8 @@ func TestNoopUnpublishedSource_FetchReturnsEmpty(t *testing.T) {
 // SIN-62300 acceptance criteria.
 func TestRunWith_MountsWebhookAndRunsWorker(t *testing.T) {
 	t.Parallel()
-	addr := freePort(t)
+	ln := freeListener(t)
+	addr := ln.Addr().String()
 	pool := &fakeWebhookPool{}
 	dial := func(context.Context, string) (webhookPool, error) {
 		return pool, nil
@@ -294,7 +295,7 @@ func TestRunWith_MountsWebhookAndRunsWorker(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- runWith(ctx, addr, webhookEnvAll(addr), dial) }()
+	go func() { errCh <- runWithListener(ctx, ln, webhookEnvAll(addr), dial) }()
 	waitForListening(t, addr)
 
 	res, err := http.Post("http://"+addr+"/webhooks/whatsapp/some-token", "application/json", strings.NewReader(`{}`))
@@ -337,7 +338,8 @@ func TestRunWith_MountsWebhookAndRunsWorker(t *testing.T) {
 // listener has drained. Covers the workerErr branch of runWith.
 func TestRunWith_WrapsWorkerErrorOnDeadline(t *testing.T) {
 	t.Parallel()
-	addr := freePort(t)
+	ln := freeListener(t)
+	addr := ln.Addr().String()
 	pool := &fakeWebhookPool{}
 	dial := func(context.Context, string) (webhookPool, error) {
 		return pool, nil
@@ -345,7 +347,7 @@ func TestRunWith_WrapsWorkerErrorOnDeadline(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	err := runWith(ctx, addr, webhookEnvAll(addr), dial)
+	err := runWithListener(ctx, ln, webhookEnvAll(addr), dial)
 	if err == nil {
 		t.Fatal("expected non-nil error after deadline")
 	}
@@ -362,7 +364,8 @@ func TestRunWith_WrapsWorkerErrorOnDeadline(t *testing.T) {
 // runWith must not require the webhook env to boot.
 func TestRunWith_WebhookDisabledStillRunsHealth(t *testing.T) {
 	t.Parallel()
-	addr := freePort(t)
+	ln := freeListener(t)
+	addr := ln.Addr().String()
 	dial := func(context.Context, string) (webhookPool, error) {
 		t.Fatal("dial must not be called when WEBHOOK_ENABLED is unset")
 		return nil, nil
@@ -371,7 +374,7 @@ func TestRunWith_WebhookDisabledStillRunsHealth(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- runWith(ctx, addr, getenv, dial) }()
+	go func() { errCh <- runWithListener(ctx, ln, getenv, dial) }()
 	waitForListening(t, addr)
 
 	res, err := http.Get("http://" + addr + "/health")

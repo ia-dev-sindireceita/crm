@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -165,7 +166,30 @@ func run(ctx context.Context, addr string) error {
 // runWith is the test-friendly variant of run. The dial seam lets unit
 // tests drive the SIN-62300 webhook wiring without Postgres; production
 // passes defaultWebhookDial via run().
+//
+// runWith binds the public listener up front and hands the live
+// net.Listener to runWithListener. Binding here (rather than letting
+// http.Server.ListenAndServe bind later) means the process owns the port
+// for the whole server lifetime — there is no close-then-rebind window.
+// Tests that need a guaranteed-free port call runWithListener directly
+// with a :0 listener they bound themselves, eliminating the freePort
+// TOCTOU race (SIN-65045).
 func runWith(ctx context.Context, addr string, getenv func(string) string, webhookDial webhookDial) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return runWithListener(ctx, ln, getenv, webhookDial)
+}
+
+// runWithListener serves the public CRM mux on an already-bound listener.
+// The caller owns the listener for the server's whole lifetime; on
+// ctx-cancel srv.Shutdown closes it. Splitting the bind out of the serve
+// loop lets a test pre-bind a :0 listener and read back the real address,
+// so there is never a window where the port is free for another test to
+// grab (SIN-65045).
+func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) string, webhookDial webhookDial) error {
+	addr := ln.Addr().String()
 	mux := newMux()
 
 	// SIN-62300 webhook intake — registered before the custom-domain
@@ -560,7 +584,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	}
 
 	log.Printf("crm: public listener on %s", addr)
-	srvErr := srv.ListenAndServe()
+	srvErr := srv.Serve(ln)
 	workerWG.Wait()
 	if srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
 		return srvErr

@@ -165,6 +165,21 @@ func freePort(t *testing.T) string {
 	return addr
 }
 
+// freeListener binds a live :0 listener on loopback and hands it back
+// still open. The server-under-test (runWithListener) takes ownership and
+// closes it on shutdown. Because the port is never released between bind
+// and serve, there is no window for another parallel test to grab it —
+// this is the TOCTOU-free replacement for freePort+runWith (SIN-65045).
+func freeListener(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	return l
+}
+
 func waitForListening(t *testing.T, addr string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
