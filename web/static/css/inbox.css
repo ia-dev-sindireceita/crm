@@ -543,17 +543,8 @@
   opacity: 1;
 }
 
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
+/* .visually-hidden is provided by the design-system layer (tokens.css),
+   which the inbox layout loads ahead of this sheet (SIN-65097). */
 
 /* ---- Message bubbles -------------------------------------------------- */
 
@@ -815,6 +806,163 @@
   color: var(--text-muted);
   font-size: var(--text-sm);
   line-height: var(--text-sm-line);
+}
+
+/* ---- AI assist panel (SIN-65097) -------------------------------------- *
+ * Styles the .ai-assist__* fragments rendered by internal/web/inbox/
+ * ai_assist.go into #ai-assist-panel (right rail). All colour/space/radius
+ * comes from tokens.css so the [data-theme="dark"] palette is inherited
+ * with no light-only literals. */
+
+.ai-assist__form {
+  margin: 0 0 var(--space-2) 0;
+}
+
+.ai-assist__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  background: var(--color-primary);
+  color: var(--text-on-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  font-weight: var(--font-semibold);
+  min-height: var(--hit-target-min);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.ai-assist__button:hover {
+  background: var(--color-primary-hover);
+}
+
+.ai-assist__button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.ai-assist__button--disabled,
+.ai-assist__button:disabled {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.ai-assist__result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ai-assist__result-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.ai-assist__result-title {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.ai-assist__cache-hint {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ai-assist__summary {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-default);
+  white-space: pre-wrap;
+}
+
+.ai-assist__suggestions-title {
+  margin: var(--space-1) 0 0 0;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.ai-assist__suggestions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ai-assist__suggestion {
+  margin: 0;
+}
+
+.ai-assist__suggestion-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-default);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+
+.ai-assist__suggestion-btn:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+.ai-assist__suggestion-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Banners + toasts map onto the semantic surface/text token pairs so the
+   alert/status tone carries through to dark mode unchanged. */
+.ai-assist__banner,
+.ai-assist__toast {
+  margin: var(--space-2) 0 0 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.ai-assist__banner--balance,
+.ai-assist__banner--unavailable {
+  background: var(--color-warning-surface);
+  color: var(--color-warning-text);
+}
+
+.ai-assist__banner--policy,
+.ai-assist__toast--rate {
+  background: var(--color-info-surface);
+  color: var(--color-info-text);
 }
 
 .customer-tips {
