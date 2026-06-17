@@ -31,10 +31,25 @@
 .inbox-shell {
   display: grid;
   grid-template-columns: 320px 1fr 360px;
-  height: 100vh;
+  height: 100dvh;
   font-family: var(--font-sans);
   color: var(--text-default);
   background: var(--surface-0);
+}
+
+/* ---- App-shell host fit (SIN-65104) ---------------------------------- */
+/* The inbox renders inside the global SidebarNav app-shell. The shell's
+   main column adds reading padding + max-width centering (app-shell.css
+   `.app-shell__main` / `.app-shell__main > *`) that would box in the
+   full-bleed 3-pane inbox, so zero them for this page and let the inbox
+   own the full viewport height beside the sticky sidebar. `:has()` is
+   already within the stylesheet budget (components.css). */
+.app-shell__main:has(> .inbox-shell) {
+  padding: 0;
+}
+.app-shell__main > .inbox-shell {
+  max-width: none;
+  margin-inline: 0;
 }
 
 .inbox-list-pane {
@@ -1061,15 +1076,19 @@
 /* ---- Tablet (drawer) -------------------------------------------------- */
 
 @media (min-width: 600px) and (max-width: 899px) {
+  /* Below 900px the app-shell sidebar collapses into a sticky top bar of
+     height --topbar-h (app-shell.css), so the inbox must drop below it
+     rather than assume the full viewport (SIN-65104). */
   .inbox-shell {
     grid-template-columns: 320px 1fr;
+    height: calc(100dvh - var(--topbar-h));
   }
   .inbox-customer-pane {
     position: fixed;
-    top: 0;
+    top: var(--topbar-h);
     right: 0;
     width: 360px;
-    height: 100vh;
+    height: calc(100dvh - var(--topbar-h));
     z-index: 1;
     transform: translateX(100%);
     transition: transform var(--motion-base) var(--ease-out);
@@ -1088,9 +1107,12 @@
 /* ---- Mobile (stacked + bottom sheet) ---------------------------------- */
 
 @media (max-width: 599px) {
+  /* Same topbar offset as the tablet breakpoint: the inbox stacks below
+     the collapsed app-shell top bar (SIN-65104). */
   .inbox-shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr;
+    height: calc(100dvh - var(--topbar-h));
   }
   .inbox-list-pane {
     max-height: 40vh;
