@@ -702,6 +702,14 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := messageBubbleTmpl.Execute(w, msg); err != nil {
 		h.deps.Logger.Error("web/inbox: render bubble", "err", err)
+		return
+	}
+	// Out-of-band textarea reset: htmx swaps the live #compose-body by id
+	// (pure DOM replacement, no eval), clearing the field after a
+	// successful send. Replaces the old hx-on::after-request="this.reset()"
+	// which threw EvalError under the prod strict CSP (SIN-65068).
+	if err := composeTextareaTmpl.Execute(w, true); err != nil {
+		h.deps.Logger.Error("web/inbox: render compose reset", "err", err)
 	}
 }
 
