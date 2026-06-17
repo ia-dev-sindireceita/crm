@@ -39,7 +39,7 @@
 }
 
 .wallet-breadcrumbs a {
-  color: var(--color-primary);
+  color: var(--color-link);
   text-decoration: none;
 }
 
@@ -204,7 +204,7 @@
 
 .wallet-button--ghost {
   background: transparent;
-  color: var(--color-primary);
+  color: var(--color-link);
   border-color: var(--color-primary);
 }
 

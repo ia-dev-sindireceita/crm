@@ -63,7 +63,7 @@
   font-size: var(--text-xl);
   font-weight: var(--font-semibold);
   letter-spacing: 0.04em;
-  color: var(--color-primary);
+  color: var(--color-link);
   background-color: var(--surface-1);
   border-radius: var(--radius-md);
 }

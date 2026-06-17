@@ -339,7 +339,7 @@
 }
 
 .conversation-list__empty-clear {
-  color: var(--color-primary);
+  color: var(--color-link);
   font-size: var(--text-sm);
 }
 
@@ -582,7 +582,7 @@
   border: 1px solid var(--border-subtle);
   background: var(--surface-0);
   text-decoration: none;
-  color: var(--color-primary);
+  color: var(--color-link);
   align-self: flex-start;
 }
 
@@ -630,7 +630,7 @@
 }
 
 .message-bubble__status--read {
-  color: var(--color-primary);
+  color: var(--color-link);
 }
 
 .message-bubble__status--failed {

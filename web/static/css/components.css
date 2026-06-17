@@ -59,7 +59,7 @@
 .btn--ghost {
   background-color: transparent;
   border-color: transparent;
-  color: var(--color-primary);
+  color: var(--color-link);
 }
 
 .btn--ghost:hover {
