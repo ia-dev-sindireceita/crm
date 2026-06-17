@@ -525,6 +525,24 @@
   visibility: visible;
 }
 
+/*
+ * htmx default indicator styles (SIN-65046). htmx is loaded with
+ * {"includeIndicatorStyles":false} so it does NOT inject its own inline
+ * <style> block at init — that inline tag has no CSP nonce and is blocked
+ * by the strict `style-src 'self' 'nonce-…'` policy (no 'unsafe-inline').
+ * We restate htmx's defaults here, served from 'self', so any element
+ * using the stock `.htmx-indicator` class still toggles correctly.
+ */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 0.2s ease-in;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
