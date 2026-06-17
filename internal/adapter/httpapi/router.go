@@ -1319,6 +1319,19 @@ func NewRouter(deps Deps) http.Handler {
 				// RequireCSRF gate. When the dep is nil the inner mux returns
 				// 404 for the POST, so listing it here is safe either way.
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/assign", webInbox)
+				// SIN-65004 — ai-assist write route. Same defect class as
+				// the assign route above: the inner mux (web/inbox Routes)
+				// registers it conditionally on AIAssist.Summarizer, but
+				// chi enumerates the subtree route-by-route, so the POST
+				// must be listed here too or it 404s before the handler
+				// (the inner-mux handler tests pass without it — they
+				// bypass chi). Same RequireAuth +
+				// RequireAction(ActionTenantInboxRead) envelope as the
+				// reads; the route additionally inherits the authed group's
+				// RequireCSRF gate. When AIAssist.Summarizer is nil the
+				// inner mux returns 404 for the POST, so listing it here is
+				// safe either way (the feature stays gated).
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/ai-assist", webInbox)
 			}
 
 			// SIN-65008 — managerial dashboard / relatórios surface
