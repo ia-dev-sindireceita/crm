@@ -49,11 +49,11 @@ func TestRender_BrandShowsTenantNameAndLogo(t *testing.T) {
 	mustContain(t, body, `<span class="app-shell__brand-text">Acme Co</span>`)
 }
 
-func TestRender_BrandFallsBackToCRMWhenTenantNameEmpty(t *testing.T) {
+func TestRender_BrandFallsBackToPeithoWhenTenantNameEmpty(t *testing.T) {
 	t.Parallel()
 	body := renderShell(t, pageData{shell.Data{}})
 
-	mustContain(t, body, `<span class="app-shell__brand-text">CRM</span>`)
+	mustContain(t, body, `<span class="app-shell__brand-text">Peitho</span>`)
 	mustNotContain(t, body, "<img src=")
 }
 
@@ -287,7 +287,7 @@ func TestRender_TitleBlockOverridesDefault(t *testing.T) {
 	body := renderShell(t, pageData{shell.Data{}})
 
 	// content.html defines {{define "title"}} so we get its value,
-	// not the default "CRM".
+	// not the default "Peitho".
 	mustContain(t, body, "<title>shell-test-title</title>")
 }
 
@@ -350,7 +350,7 @@ func TestData_NonStructTypes_FallBackToDefaults(t *testing.T) {
 	}
 	body := buf.String()
 	// fallback tenant name and default user-menu label
-	mustContain(t, body, ">CRM<")
+	mustContain(t, body, ">Peitho<")
 	mustContain(t, body, "Conta")
 }
 
@@ -366,7 +366,7 @@ func TestData_NilData_FallBackToDefaults(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	body := buf.String()
-	mustContain(t, body, ">CRM<")
+	mustContain(t, body, ">Peitho<")
 }
 
 func TestData_StringFieldForTenantThemeStyle(t *testing.T) {
@@ -411,7 +411,7 @@ func TestData_WrongFieldTypesIgnored(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	body := buf.String()
-	mustContain(t, body, ">CRM<")
+	mustContain(t, body, ">Peitho<")
 	mustContain(t, body, "Conta")
 }
 
@@ -426,7 +426,7 @@ func TestData_NilPointerFallsBack(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	body := buf.String()
-	mustContain(t, body, ">CRM<")
+	mustContain(t, body, ">Peitho<")
 }
 
 func TestNavItems_NonSliceFieldType(t *testing.T) {

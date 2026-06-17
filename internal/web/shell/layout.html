@@ -11,7 +11,7 @@
     {{- with shellActiveImpersonation .}}<link rel="stylesheet" href="/static/css/master.css">{{end}}
     <script src="/static/js/app-shell.js" defer></script>
     {{block "head_extra" .}}{{end}}
-    <title>{{block "title" .}}CRM{{end}}</title>
+    <title>{{block "title" .}}Peitho{{end}}</title>
   </head>
   <body{{with shellCSRFToken .}} {{csrfHXHeaders .}}{{end}}{{with shellActiveImpersonation .}} data-impersonating="true"{{end}}>
     {{template "shell_impersonation_banner" .}}
