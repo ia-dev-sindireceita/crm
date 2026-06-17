@@ -9,6 +9,7 @@ package views_test
 import (
 	"bytes"
 	"html/template"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -303,10 +304,24 @@ func TestLayout_LinksAuthStylesheet(t *testing.T) {
 	if strings.Contains(got, `href="/static/css/auth.css" nonce=`) {
 		t.Fatalf("<link> tag must not carry a nonce attribute: %q", got)
 	}
-	if strings.Contains(got, `href="//`) || strings.Contains(got, `href="http`) {
-		t.Fatalf("<link> href must stay same-origin: %q", got)
+	// Same-origin pin scoped to <link> elements (SIN-65075): the
+	// earlier whole-document scan for `href="http` also caught the
+	// login footer's intentional external <a href="https://lmhost...">
+	// (SIN-65075), a false positive — the SIN-63294 guard's subject is
+	// the stylesheet <link>, not arbitrary anchors. Match the <link>
+	// element with a regex so the check survives a multi-line render
+	// (a line-based scan would let a cross-origin stylesheet split
+	// across lines slip past). nonce assertion above is untouched.
+	if bad := linkCrossOriginHref.FindString(got); bad != "" {
+		t.Fatalf("<link> href must stay same-origin: %q", bad)
 	}
 }
+
+// linkCrossOriginHref matches a <link> element whose href is absolute
+// (https:/http:) or protocol-relative (//) — i.e. cross-origin. The
+// [^>]* span crosses internal newlines (any char but '>') so the guard
+// does not depend on the tag rendering on a single line.
+var linkCrossOriginHref = regexp.MustCompile(`<link\b[^>]*href="(//|https?:)`)
 
 // TestLayout_AuthStylesheetPresentOnHello asserts the link tag is
 // emitted on the authenticated layout too (not only login). Both
