@@ -6,8 +6,8 @@ package handler_test
 //   - the design-system stylesheets (tokens / components / app-shell)
 //     are linked in the documented order, and the legacy auth.css link
 //     survives via the new `head_extra` block,
-//   - the top-bar brand renders the tenant name as both the aria-label
-//     and the brand-text span,
+//   - the sidebar brand renders the tenant name as both the aria-label
+//     and the brand-text span (SIN-65092: top-bar → SidebarNav),
 //   - the top-bar nav renders ONLY the live surfaces with short labels
 //     (disabled surfaces stay in the body list, never bleed into the
 //     chrome),
@@ -82,14 +82,17 @@ func TestNewHelloTenant_ShellChromeLoadsStylesheets(t *testing.T) {
 	}
 }
 
-func TestNewHelloTenant_ShellTopBarRendersTenantBrand(t *testing.T) {
+func TestNewHelloTenant_ShellSidebarRendersTenantBrand(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
 	handler.NewHelloTenant(handler.HelloTenantDeps{})(rec, shellHelloRequest(t))
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `class="app-shell__topbar"`) {
-		t.Fatalf("body missing top-bar chrome: %q", body)
+	// SIN-65092 — the Peitho Tranche B redesign replaced the top-bar chrome
+	// with a SidebarNav; the brand now lives in the sidebar head. Brand
+	// assertions below are unchanged (anchor/aria-label/brand-text).
+	if !strings.Contains(body, `class="app-shell__sidebar"`) {
+		t.Fatalf("body missing sidebar chrome: %q", body)
 	}
 	if !strings.Contains(body, `class="app-shell__brand"`) {
 		t.Fatalf("body missing brand anchor: %q", body)

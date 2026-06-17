@@ -258,7 +258,7 @@ func TestRender_AppShellToggleScriptIsLinked(t *testing.T) {
 }
 
 func TestRender_HamburgerHasMinHitTargetAttributes(t *testing.T) {
-	// Mobile collapse is CSS-driven (@media max-width: 599px) but the
+	// Mobile collapse is CSS-driven (@media max-width: 899px) but the
 	// hamburger button must always be present in DOM with the right
 	// aria attributes so keyboard navigation works in every breakpoint.
 	t.Parallel()
