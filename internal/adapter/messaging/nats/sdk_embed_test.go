@@ -9,7 +9,6 @@ package nats_test
 
 import (
 	"context"
-	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,6 +20,14 @@ import (
 
 	natsadapter "github.com/pericles-luz/crm/internal/adapter/messaging/nats"
 )
+
+// embeddedReadyTimeout is the upper bound runEmbeddedWith waits for the
+// in-process nats-server to accept connections. ReadyForConnections polls
+// internally and returns the moment the server is up, so this is a
+// deterministic ceiling, not a sleep — it just has to be generous enough
+// that a loaded CI runner under `go test -race` does not trip it. The old
+// fixed 5s deadline flaked the fork merge gate (SIN-65045).
+const embeddedReadyTimeout = 30 * time.Second
 
 // runEmbedded boots a JetStream-enabled NATS server bound to a free
 // port and returns its URL plus a cleanup function. JetStream storage
@@ -36,10 +43,14 @@ func runEmbedded(t *testing.T) string {
 func runEmbeddedWith(t *testing.T, override func(*natsserver.Options)) string {
 	t.Helper()
 
-	port := pickFreePort(t)
+	// Port: RANDOM_PORT lets nats-server bind a free ephemeral port and
+	// own it for its whole lifetime; ClientURL() reads back the real
+	// port. This removes the pick-free-port-then-rebind TOCTOU gap that
+	// could leave the server unable to bind under parallel `-race` load
+	// (the server would then never reach ReadyForConnections). SIN-65045.
 	opts := &natsserver.Options{
 		Host:      "127.0.0.1",
-		Port:      port,
+		Port:      natsserver.RANDOM_PORT,
 		NoLog:     true,
 		NoSigs:    true,
 		JetStream: true,
@@ -59,20 +70,15 @@ func runEmbeddedWith(t *testing.T, override func(*natsserver.Options)) string {
 		_ = os.RemoveAll(filepath.Join(opts.StoreDir, "jetstream"))
 	})
 	go s.Start()
-	if !s.ReadyForConnections(5 * time.Second) {
+	// ReadyForConnections returns as soon as the server accepts (it polls
+	// internally), so this is deterministic — the budget is only an upper
+	// bound. Keep it generous so a loaded CI runner that needs a few
+	// seconds to schedule the JetStream goroutine does not flake the
+	// merge gate; on a healthy box this still returns in milliseconds.
+	if !s.ReadyForConnections(embeddedReadyTimeout) {
 		t.Fatal("nats-server not ready in time")
 	}
 	return s.ClientURL()
-}
-
-func pickFreePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
 }
 
 func connect(t *testing.T, url string) *natsadapter.SDKAdapter {

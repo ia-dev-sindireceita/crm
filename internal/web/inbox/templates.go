@@ -270,10 +270,11 @@ var inboxLayoutTmpl = template.Must(template.New("inbox.layout").Funcs(templateF
   <meta charset="utf-8">
   <title>Inbox</title>
   {{.CSRFMeta}}
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/inbox.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{$.CSPNonce}}" defer></script>
 </head>
 <body {{.HXHeaders}}>
   <main class="inbox-shell" role="main" data-testid="inbox-shell">
