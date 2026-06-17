@@ -180,12 +180,16 @@ if [ "${SMOKE_MODE}" = "degraded" ]; then
   exit 0
 fi
 
-# The list template renders each conversation as
-#   <a … href="/inbox/conversations/<uuid>" hx-get="/inbox/conversations/<uuid>">…
-# Match the first href to keep the smoke robust against future
-# className changes.
-conversation_id=$(grep -oE 'href="/inbox/conversations/[0-9a-fA-F-]+"' "${INBOX_HTML}" \
-  | head -n1 | sed -E 's#.*/inbox/conversations/([0-9a-fA-F-]+)".*#\1#' || true)
+# The live summaries list template (internal/web/inbox/templates.go,
+# conversationListTmpl) renders each conversation as
+#   <a href="/inbox/conversations/<uuid>{{$.FilterQuery}}" …>
+# where FilterQuery is a "?assigned=&channel=&state=…" suffix. The UUID
+# is therefore NOT immediately followed by the closing quote, so the old
+# quote-anchored regex (…<uuid>") silently false-failed stage=bootstrap
+# as "template drift" once the filter query string shipped (SIN-65065).
+# Match the UUID and stop at the first non-hex char (`"` or `?`).
+conversation_id=$(grep -oE 'href="/inbox/conversations/[0-9a-fA-F-]+' "${INBOX_HTML}" \
+  | head -n1 | sed -E 's#.*/inbox/conversations/([0-9a-fA-F-]+).*#\1#' || true)
 if [ -z "${conversation_id}" ]; then
   # The empty-state template renders `<li class="conversation-list__empty">`.
   if grep -q 'conversation-list__empty' "${INBOX_HTML}"; then
