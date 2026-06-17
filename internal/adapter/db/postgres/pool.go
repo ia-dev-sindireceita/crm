@@ -100,6 +100,13 @@ type Pinger interface {
 // budget bounds total wall-clock even when ctx has no deadline. It never
 // busy-spins: each wait is a time.Timer selected against ctx.Done(), so
 // there is no goroutine leak.
+//
+// Each Ping attempt gets its own bounded deadline (min(maxBackoff*2,
+// remaining budget)). Without this cap a single p.Ping(ctx) can block
+// forever when the caller ctx has no deadline (production main, cmd/server
+// tests) and the DB host hangs at the TCP layer (slow DNS / no RST): the
+// budget check below sits *after* the Ping, so it is never reached. The
+// per-attempt timeout guarantees pingWithRetry exits within budget.
 func pingWithRetry(ctx context.Context, p Pinger, budget, initialBackoff, maxBackoff time.Duration) error {
 	deadline := time.Now().Add(budget)
 	backoff := initialBackoff
@@ -107,9 +114,25 @@ func pingWithRetry(ctx context.Context, p Pinger, budget, initialBackoff, maxBac
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := p.Ping(ctx)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			// Budget gone before this attempt could start.
+			return context.DeadlineExceeded
+		}
+		perAttempt := maxBackoff * 2
+		if perAttempt > remaining {
+			perAttempt = remaining
+		}
+		pingCtx, pingCancel := context.WithTimeout(ctx, perAttempt)
+		err := p.Ping(pingCtx)
+		pingCancel()
 		if err == nil {
 			return nil
+		}
+		// The caller's ctx (not the per-attempt budget) being done means
+		// stop now and surface its error, not the attempt's timeout.
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
 		}
 		// Surface the real ping error (not a ctx/timer artifact) once the
 		// budget is spent or the next backoff would overrun it.

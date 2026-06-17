@@ -119,3 +119,38 @@ func TestPingWithRetry_ContextAlreadyCancelled(t *testing.T) {
 		t.Errorf("calls: got %d, want 0 (no ping after cancel)", fp.calls)
 	}
 }
+
+// hangingPinger blocks until its (per-attempt) ctx is cancelled, then returns
+// that ctx's error. It models a DB host that hangs at the TCP layer (slow
+// DNS / no RST). Before the per-attempt-timeout fix, pingWithRetry passed the
+// raw caller ctx straight to Ping, so with a deadline-less caller ctx this
+// would block forever and the budget check was never reached.
+type hangingPinger struct{ calls int }
+
+func (h *hangingPinger) Ping(ctx context.Context) error {
+	h.calls++
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestPingWithRetry_HangingPingBoundedByBudget(t *testing.T) {
+	t.Parallel()
+	// Caller ctx has NO deadline (mirrors production main / cmd/server
+	// tests). Each Ping hangs; only the per-attempt timeout lets the loop
+	// make progress and return within the budget instead of blocking
+	// forever. Without the fix this test would hang until the go-test
+	// timeout fired.
+	hp := &hangingPinger{}
+	start := time.Now()
+	err := pingWithRetry(context.Background(), hp, 40*time.Millisecond, fastInitial, 5*time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("err: got nil, want a non-nil timeout error")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("elapsed %v: per-attempt timeout did not bound a hanging ping", elapsed)
+	}
+	if hp.calls < 1 {
+		t.Errorf("calls: got %d, want at least one bounded ping attempt", hp.calls)
+	}
+}
