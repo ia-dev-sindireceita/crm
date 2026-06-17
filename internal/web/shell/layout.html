@@ -9,6 +9,9 @@
     <link rel="stylesheet" href="/static/css/components.css">
     <link rel="stylesheet" href="/static/css/app-shell.css">
     {{- with shellActiveImpersonation .}}<link rel="stylesheet" href="/static/css/master.css">{{end}}
+    <link rel="stylesheet" href="/static/css/brand.css">
+    <link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+    <link rel="manifest" href="/static/site.webmanifest">
     <script src="/static/js/app-shell.js" defer></script>
     {{block "head_extra" .}}{{end}}
     <title>{{block "title" .}}Peitho{{end}}</title>
@@ -44,7 +47,7 @@
           tabindex="0"
           autofocus>SAIR DA IMPERSONAÇÃO</button>
   <span class="shell__impersonation-pill" aria-hidden="false">
-    <span aria-hidden="true" class="shell__impersonation-pill-icon">🛑</span>
+    <span aria-hidden="true" class="shell__impersonation-pill-icon">{{icon "octagon-alert" 16}}</span>
     IMPERSONANDO
   </span>
   <span class="shell__impersonation-tenant">
@@ -69,7 +72,7 @@
 {{define "app_shell_topbar"}}
 <header class="app-shell__topbar" role="banner">
   <a class="app-shell__brand" href="/hello-tenant" aria-label="{{shellTenantName .}}">
-    {{- with shellTenantLogo .}}<img src="{{.}}" alt="{{shellTenantName $}}">{{end}}
+    {{- with shellTenantLogo .}}<img src="{{.}}" alt="{{shellTenantName $}}">{{else}}<svg class="app-shell__brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true"><path d="M21 50 V14" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="32" cy="24" r="11" stroke="currentColor" stroke-width="7" fill="none"/></svg>{{end}}
     <span class="app-shell__brand-text">{{shellTenantName .}}</span>
   </a>
   <button type="button"
@@ -93,7 +96,7 @@
     <button type="button"
             class="app-shell__user-menu-toggle"
             aria-haspopup="menu"
-            aria-expanded="false">{{shellUserDisplayName .}}</button>
+            aria-expanded="false">{{shellUserDisplayName .}}{{icon "chevron-down" 14}}</button>
     {{- with shellUserMenuItems .}}
     <div class="app-shell__user-menu-panel" role="menu" hidden>
       {{- range .}}
