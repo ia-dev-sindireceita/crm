@@ -1,61 +1,124 @@
 /*
  * SIN-63935 / UX-F1 — Design-system foundation tokens.
+ * SIN-65087 / Peitho A2 — Peitho light + dark palette + self-hosted fonts.
  *
  * The values below are the SINGLE SOURCE OF TRUTH for every visual
  * constant in the CRM. Feature stylesheets MUST consume these via the
  * --space-*, --text-*, --color-*, --radius-*, --shadow-*, --motion-*
  * custom properties — never via bare hex / px / ms literals.
  *
+ * Peitho values (source of truth: design/peitho/) are the DEFAULTS.
+ * The token NAMES are stable — only their values changed in A2 — so every
+ * feature stylesheet that already consumes them keeps working unchanged.
+ *
  * Per-tenant branding overrides happen at a strictly higher specificity
  * via `branding.ThemeStyleFromPalette` (see internal/branding); the
  * inline `<style id="tenant-theme">` injected by app-shell wins because
  * it lands later in the cascade and also targets :root. Tokens declared
- * here are the OK-contrast WCAG-AA neutral fallback when no tenant
- * palette is bound.
+ * here are the Peitho neutral fallback when no tenant palette is bound;
+ * the per-tenant palette still overrides --color-primary et al.
+ *
+ * Dark mode: add `data-theme="dark"` to a root element; the
+ * [data-theme="dark"] block below re-binds the same token names.
+ *
+ * Fonts: Inter (UI) + JetBrains Mono (numbers / IDs) are self-hosted
+ * woff2 under /static/fonts/ (no Google CDN); they load under the strict
+ * CSP `font-src 'self'` directive. font-display: swap avoids FOIT.
  */
 
-:root {
-  /* ---- Color: neutral surfaces (light theme default) ---------------- */
-  --surface-0: #ffffff;
-  --surface-1: #f7f8fa;
-  --surface-2: #eef0f3;
-  --surface-3: #e1e4e9;
+/* ---- Self-hosted webfonts (variable, weight axis 100–900) ---------- */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC,
+    U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC,
+    U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
 
-  /* ---- Color: text (contrast checked against --surface-0) ----------- */
-  --text-strong: #0f1419;   /* 16.7:1 on --surface-0 */
-  --text-default: #1f2328;  /* 13.4:1 on --surface-0 */
-  --text-muted: #57606a;    /*  5.1:1 on --surface-0 */
+:root {
+  /* ---- Color: neutral surfaces (Peitho cool-grey ramp, light) ------ */
+  --surface-0: #ffffff;   /* cards / panels — white                   */
+  --surface-1: #f4f5f7;   /* app background (Peitho gray-50)          */
+  --surface-2: #eceef2;   /* nested / hover surfaces (gray-100)       */
+  --surface-3: #e3e6ec;   /* sunken / strong fill (gray-150)          */
+
+  /* ---- Color: text (Peitho ink; contrast checked on --surface-1) --- */
+  --text-strong: #1a1a2e;   /* ink — headings, 14.9:1 on --surface-1  */
+  --text-default: #242833;  /* body (gray-800), 12.6:1 on --surface-1 */
+  --text-muted: #6b7280;    /* secondary (gray-500), 4.6:1 AA         */
   --text-on-primary: #ffffff;
 
   /* ---- Color: borders --------------------------------------------- */
-  --border-subtle: #d0d7de;
-  --border-strong: #afb8c1;
+  --border-subtle: #e3e6ec;  /* gray-150 */
+  --border-strong: #c0c5d0;  /* gray-300 */
 
-  /* ---- Color: brand (override targets) ----------------------------- */
-  --color-primary: #1f6feb;
-  --color-secondary: #57606a;
-  --color-accent: #54aeff;
+  /* ---- Color: brand — single Peitho indigo accent ------------------ */
+  /* (also the per-tenant branding override targets — keep these names) */
+  --color-primary: #5b63d3;    /* indigo-500 — primary action / focus  */
+  --color-secondary: #6b7280;  /* gray-500 — neutral secondary         */
+  --color-accent: #7c85e0;     /* indigo-400 — soft accent             */
 
-  /* Texto-link. Escurecido p/ AA (>=4.5:1) em surfaces 0-3.
+  /* Indigo accent states (hover / active / soft) per Peitho spec. */
+  --color-primary-hover: #4a51c0;   /* indigo-600 */
+  --color-primary-active: #3c43a2;  /* indigo-700 */
+  --color-primary-soft: #eeeffb;    /* indigo-50  */
+
+  /* Texto-link. Indigo-600 for AA (>=4.5:1) on surfaces 0-3.
      --color-primary fica reservado a fill/border/focus. */
-  --color-link: #175ed1;
+  --color-link: #4a51c0;   /* indigo-600, 6.6:1 on white */
 
-  /* ---- Color: feedback (each band carries text + surface) ---------- */
-  --color-success: #1a7f37;
+  /* ---- Color: feedback — muted Peitho semantics ------------------- */
+  /* Each band carries a foreground (AA) + a soft surface tint.        */
+  --color-success: #268560;          /* green-600 */
   --color-success-text: #ffffff;
-  --color-success-surface: #dafbe1;
+  --color-success-surface: #e5f4ec;  /* green-50  */
 
-  --color-warning: #9a6700;
+  --color-warning: #ac7420;          /* amber-600 */
   --color-warning-text: #ffffff;
-  --color-warning-surface: #fff8c5;
+  --color-warning-surface: #fbf2df;  /* amber-50  */
 
-  --color-danger: #cf222e;
+  --color-danger: #b14257;           /* rose-600 (desaturated) */
   --color-danger-text: #ffffff;
-  --color-danger-surface: #ffebe9;
+  --color-danger-surface: #f9e9ec;   /* rose-50   */
 
-  --color-info: #0969da;
+  --color-info: #2f6ba4;             /* blue-600  */
   --color-info-text: #ffffff;
-  --color-info-surface: #ddf4ff;
+  --color-info-surface: #e7f0f9;     /* blue-50   */
 
   /* ---- Spacing scale (multiples of 4) ----------------------------- */
   --space-1: 4px;
@@ -67,9 +130,11 @@
   --space-7: 48px;
   --space-8: 64px;
 
-  /* ---- Type scale -------------------------------------------------- */
-  --font-sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* ---- Type ramp --------------------------------------------------- */
+  /* Inter for UI, JetBrains Mono for numerals / IDs. Fallbacks keep the
+     layout stable before the self-hosted woff2 loads (font-display:swap). */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   --text-xs: 12px;
   --text-xs-line: 16px;
@@ -85,26 +150,29 @@
   --text-xl-line: 28px;
   --text-2xl: 28px;
   --text-2xl-line: 32px;
+  --text-3xl: 30px;
+  --text-3xl-line: 36px;
 
   --font-regular: 400;
   --font-medium: 500;
   --font-semibold: 600;
 
-  /* ---- Radii ------------------------------------------------------- */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
+  /* ---- Radii (Peitho: 7px controls / 10px cards / 14px modals) ----- */
+  --radius-sm: 5px;
+  --radius-md: 7px;     /* default: inputs, buttons */
+  --radius-lg: 10px;    /* cards, panels */
+  --radius-xl: 14px;    /* modals, command bar */
   --radius-pill: 999px;
 
-  /* ---- Shadow elevations (subtle, not competing with border) ------- */
-  --shadow-1: 0 1px 2px rgba(15, 20, 25, 0.06), 0 1px 1px rgba(15, 20, 25, 0.04);
-  --shadow-2: 0 4px 12px rgba(15, 20, 25, 0.08), 0 2px 4px rgba(15, 20, 25, 0.04);
-  --shadow-3: 0 16px 32px rgba(15, 20, 25, 0.12), 0 6px 12px rgba(15, 20, 25, 0.08);
+  /* ---- Shadow elevations — soft, low-opacity (Peitho ink rgba) ----- */
+  --shadow-1: 0 1px 2px rgba(26, 26, 46, 0.06), 0 1px 3px rgba(26, 26, 46, 0.04);
+  --shadow-2: 0 2px 4px rgba(26, 26, 46, 0.06), 0 4px 12px rgba(26, 26, 46, 0.06);
+  --shadow-3: 0 6px 16px rgba(26, 26, 46, 0.10), 0 2px 6px rgba(26, 26, 46, 0.06);
 
-  /* ---- Motion ------------------------------------------------------ */
+  /* ---- Motion (Peitho: 120–180ms ease) ----------------------------- */
   --motion-fast: 120ms;
-  --motion-base: 200ms;
-  --motion-slow: 320ms;
+  --motion-base: 160ms;
+  --motion-slow: 180ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* ---- Breakpoints (reference only; @media is hand-written) -------- */
@@ -114,6 +182,58 @@
 
   /* ---- Hit target (Fitts mobile minimum) --------------------------- */
   --hit-target-min: 44px;
+}
+
+/*
+ * Dark theme — Peitho #0F1117 base, indigo accent lifted in luminosity.
+ * Re-binds the SAME token names so every consuming stylesheet inherits
+ * dark values with zero per-feature changes. Activate by setting
+ * `data-theme="dark"` on a root element (html / body / app-shell).
+ */
+[data-theme="dark"] {
+  --surface-0: #171a22;   /* cards / panels */
+  --surface-1: #0f1117;   /* app background */
+  --surface-2: #1e222c;   /* nested / hover  */
+  --surface-3: #0c0e13;   /* sunken          */
+
+  --text-strong: #e7e9f0;
+  --text-default: #d4d7e0;
+  --text-muted: #9ba3b2;
+  --text-on-primary: #ffffff;
+
+  --border-subtle: #1f242e;
+  --border-strong: #353b49;
+
+  --color-primary: #6970dd;    /* accent lifted */
+  --color-secondary: #9ba3b2;
+  --color-accent: #7c84e8;
+
+  --color-primary-hover: #7c84e8;
+  --color-primary-active: #8990ed;
+  --color-primary-soft: #1e2236;
+
+  --color-link: #9098ec;
+
+  --color-success: #5fc79b;
+  --color-success-text: #0f1117;
+  --color-success-surface: #14271f;
+
+  --color-warning: #e0b468;
+  --color-warning-text: #0f1117;
+  --color-warning-surface: #2a2113;
+
+  --color-danger: #e08197;
+  --color-danger-text: #0f1117;
+  --color-danger-surface: #2a1820;
+
+  --color-info: #6faee0;
+  --color-info-text: #0f1117;
+  --color-info-surface: #14202e;
+
+  /* Dark mode leans on borders + subtle lift, not heavy shadows. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.40), 0 6px 16px rgba(0, 0, 0, 0.30);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.50), 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 
 /*
@@ -132,14 +252,19 @@
  * Document defaults — every page that loads tokens.css inherits these.
  * Feature stylesheets may override individual properties on their root
  * containers but the body baseline keeps cross-feature parity.
+ *
+ * The page background is the Peitho app surface (--surface-1, soft grey);
+ * cards/panels sit on --surface-0 (white) for the Peitho elevated look.
  */
 html {
   font-family: var(--font-sans);
   font-size: var(--text-base);
   line-height: var(--text-base-line);
   color: var(--text-default);
-  background-color: var(--surface-0);
+  background-color: var(--surface-1);
   -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 body {
