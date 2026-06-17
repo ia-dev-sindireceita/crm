@@ -293,6 +293,21 @@ var inboxLayoutTmpl = template.Must(template.New("inbox.layout").Funcs(templateF
       <span aria-hidden="true">ⓘ</span>
     </button>
   </main>
+  <script nonce="{{$.CSPNonce}}">
+    // Single delegated listener for the AI-assist suggestion chips
+    // (SIN-63977/65097). The chips are HTMX-swapped into #ai-assist-panel
+    // and carry only data-suggestion — no inline hx-on/on* handler, which
+    // the strict CSP would block. Clicking a chip copies its text into the
+    // compose box and focuses it.
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('.ai-assist__suggestion-btn');
+      if (!btn) return;
+      var body = document.getElementById('compose-body');
+      if (!body) return;
+      body.value = btn.getAttribute('data-suggestion') || '';
+      body.focus();
+    });
+  </script>
 </body>
 </html>
 `))

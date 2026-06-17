@@ -683,9 +683,12 @@ var assistButtonTmpl = template.Must(template.New("ai_assist_button").Parse(`<fo
 // assistPanelTmpl renders the success state. The summary block lands
 // in the panel first, followed by the 3-suggestion list — the operator
 // reads the panel top-to-bottom so the "streaming-style" appearance
-// is achieved with a single beforeend swap. Each suggestion has a
-// button that, when clicked, populates the compose textarea via HTMX
-// hx-on::click — the script-free path keeps the page CSP-strict.
+// is achieved with a single beforeend swap. Each suggestion button
+// carries data-suggestion only; a single nonce'd delegated click
+// listener in inboxLayoutTmpl copies the text into #compose-body and
+// focuses it. The fragment emits NO hx-on/on* attribute — htmx compiles
+// hx-on:* with new Function(), which throws EvalError under the prod
+// strict CSP (script-src without 'unsafe-eval'). See SIN-63977/65097.
 var assistPanelTmpl = template.Must(template.New("ai_assist_panel").Parse(`<section class="ai-assist__result" aria-live="polite">
   <header class="ai-assist__result-header">
     <h2 class="ai-assist__result-title">Resumo da conversa</h2>
@@ -698,8 +701,7 @@ var assistPanelTmpl = template.Must(template.New("ai_assist_panel").Parse(`<sect
     {{range $i, $s := .Suggestions}}
     <li class="ai-assist__suggestion">
       <button type="button" class="ai-assist__suggestion-btn"
-              data-suggestion="{{$s}}"
-              hx-on::click="document.getElementById('compose-body').value = this.dataset.suggestion; document.getElementById('compose-body').focus()">
+              data-suggestion="{{$s}}">
         {{$s}}
       </button>
     </li>
