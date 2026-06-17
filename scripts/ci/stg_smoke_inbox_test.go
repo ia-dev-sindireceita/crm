@@ -136,8 +136,8 @@ func newInboxFake(t *testing.T, opts inboxFakeOptions) string {
 <meta name="csrf-token" content="` + fakeCSRF + `">
 <ul class="conversation-list">
 <li class="conversation-list__item"><a class="conversation-list__link"
-   href="/inbox/conversations/` + fakeConversationID + `"
-   hx-get="/inbox/conversations/` + fakeConversationID + `">whatsapp</a></li>
+   href="/inbox/conversations/` + fakeConversationID + `?assigned=&amp;channel=&amp;state=open"
+   hx-get="/inbox/conversations/` + fakeConversationID + `?assigned=&amp;channel=&amp;state=open">whatsapp</a></li>
 </ul></body></html>`))
 	})
 
