@@ -5,7 +5,7 @@ package handler_test
 // both stamp the tenant name from tenancy.FromContext, both load the
 // F1 stylesheet bundle (regression guard against a future refactor
 // that drops the link tags from layout.html), and the "Powered by
-// CRM Sindireceita" footer renders on the default tenant because
+// LMHost" footer (SIN-65075) renders on the default tenant because
 // the handler does not yet emit WhiteLabel=true (tenant-settings
 // read port lands in a follow-up issue).
 
@@ -113,8 +113,8 @@ func TestLoginGet_PlatformFooterOnDefaultTenant(t *testing.T) {
 	handler.LoginGet(rec, r)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "Powered by CRM Sindireceita") {
-		t.Fatalf("platform footer missing on default tenant: %q", body)
+	if !strings.Contains(body, `Powered by <a href="https://lmhost.com.br" target="_blank" rel="noopener noreferrer">LMHost</a>`) {
+		t.Fatalf("LMHost platform footer missing on default tenant: %q", body)
 	}
 }
 
