@@ -157,6 +157,15 @@
   --font-medium: 500;
   --font-semibold: 600;
 
+  /* ---- Control heights (Peitho density-medium: 32px default) ------- */
+  --control-sm: 28px;   /* compact / inline */
+  --control-md: 32px;   /* default: buttons, inputs, select */
+  --control-lg: 40px;   /* prominent / touch-leaning */
+
+  /* ---- Focus ring (Peitho: 1px accent border + 3px soft glow) ------ */
+  /* Paired with `border-color: var(--color-primary)` on the primitive. */
+  --focus-ring: 0 0 0 3px rgba(91, 99, 211, 0.32);   /* indigo-500 @ 32% */
+
   /* ---- Radii (Peitho: 7px controls / 10px cards / 14px modals) ----- */
   --radius-sm: 5px;
   --radius-md: 7px;     /* default: inputs, buttons */
@@ -182,6 +191,11 @@
 
   /* ---- Hit target (Fitts mobile minimum) --------------------------- */
   --hit-target-min: 44px;
+
+  /* ---- App-shell chrome dimensions (Peitho SidebarNav) ------------- */
+  --sidebar-w: 248px;       /* expanded sidebar width            */
+  --topbar-h: 56px;         /* brand row / mobile bar height     */
+  --nav-item-h: 34px;       /* SidebarNav item height            */
 }
 
 /*
@@ -213,6 +227,9 @@
   --color-primary-soft: #1e2236;
 
   --color-link: #9098ec;
+
+  /* Dark-mode focus glow — lifted opacity so it reads on #0F1117. */
+  --focus-ring: 0 0 0 3px rgba(124, 132, 232, 0.45);
 
   --color-success: #5fc79b;
   --color-success-text: #0f1117;

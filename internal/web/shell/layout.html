@@ -18,10 +18,12 @@
   </head>
   <body{{with shellCSRFToken .}} {{csrfHXHeaders .}}{{end}}{{with shellActiveImpersonation .}} data-impersonating="true"{{end}}>
     {{template "shell_impersonation_banner" .}}
-    {{template "app_shell_topbar" .}}
-    <main class="app-shell__main" role="main">
-      {{block "content" .}}{{end}}
-    </main>
+    <div class="app-shell">
+      {{template "app_shell_sidebar" .}}
+      <main class="app-shell__main" role="main">
+        {{block "content" .}}{{end}}
+      </main>
+    </div>
   </body>
 </html>
 {{end}}
@@ -69,19 +71,21 @@
 {{- end}}
 {{end}}
 
-{{define "app_shell_topbar"}}
-<header class="app-shell__topbar" role="banner">
-  <a class="app-shell__brand" href="/hello-tenant" aria-label="{{shellTenantName .}}">
-    {{- with shellTenantLogo .}}<img src="{{.}}" alt="{{shellTenantName $}}">{{else}}<svg class="app-shell__brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true"><path d="M21 50 V14" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="32" cy="24" r="11" stroke="currentColor" stroke-width="7" fill="none"/></svg>{{end}}
-    <span class="app-shell__brand-text">{{shellTenantName .}}</span>
-  </a>
-  <button type="button"
-          class="app-shell__hamburger"
-          aria-controls="app-shell-nav"
-          aria-expanded="false"
-          aria-label="Abrir menu">
-    <span class="app-shell__hamburger-icon"><span></span></span>
-  </button>
+{{define "app_shell_sidebar"}}
+<aside class="app-shell__sidebar" role="banner">
+  <div class="app-shell__sidebar-head">
+    <a class="app-shell__brand" href="/hello-tenant" aria-label="{{shellTenantName .}}">
+      {{- with shellTenantLogo .}}<img src="{{.}}" alt="{{shellTenantName $}}">{{else}}<svg class="app-shell__brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true"><path d="M21 50 V14" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="32" cy="24" r="11" stroke="currentColor" stroke-width="7" fill="none"/></svg>{{end}}
+      <span class="app-shell__brand-text">{{shellTenantName .}}</span>
+    </a>
+    <button type="button"
+            class="app-shell__hamburger"
+            aria-controls="app-shell-nav"
+            aria-expanded="false"
+            aria-label="Abrir menu">
+      <span class="app-shell__hamburger-icon"><span></span></span>
+    </button>
+  </div>
   {{- with shellNavItems .}}
   <nav id="app-shell-nav"
        class="app-shell__nav"
@@ -112,5 +116,5 @@
     </div>
     {{- end}}
   </div>
-</header>
+</aside>
 {{end}}
