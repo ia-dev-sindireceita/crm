@@ -33,8 +33,11 @@ import (
 // Compile-time assertions: Store satisfies both ports. If a port grows
 // or shrinks, the build fails here before any caller notices.
 var (
-	_ domain.Repository             = (*Store)(nil)
-	_ domain.InboundDedupRepository = (*Store)(nil)
+	_ domain.Repository                    = (*Store)(nil)
+	_ domain.InboundDedupRepository        = (*Store)(nil)
+	_ domain.ConversationReadModel         = (*Store)(nil)
+	_ domain.AssignableAttendantRepository = (*Store)(nil)
+	_ domain.ConversationLeadStore         = (*Store)(nil)
 )
 
 // pgUniqueViolation is the SQLSTATE for unique-violation. We translate
@@ -369,6 +372,147 @@ func (s *Store) ListConversations(ctx context.Context, tenantID uuid.UUID, state
 	return out, nil
 }
 
+// ListConversationSummaries is the read-model (CQRS) path backing the
+// GET /inbox list pane (SIN-64967). It returns up to `limit`
+// ConversationListItem projections under the tenant scope,
+// newest-last-message-first, narrowed by filter (state / channel /
+// assigned user). The last-message snippet and direction are fetched in
+// the SAME query via a LEFT JOIN LATERAL onto message (one row per
+// conversation, ordered by created_at DESC) so the listing never issues
+// a per-conversation follow-up query (no N+1). The primary row label
+// (ContactDisplayName) is resolved in the SAME query via a JOIN on
+// contact, falling back to the channel identifier
+// (contact_channel_identity.external_id) and then the contact id so the
+// UI never renders a bare UUID. The lateral lookup rides the existing
+// message_conversation_created_idx (conversation_id, created_at DESC)
+// from migration 0088; the outer ordering rides
+// conversation_tenant_state_last_msg_idx. RLS hides other tenants' rows —
+// on conversation, contact, and contact_channel_identity alike — so the
+// listing and the label resolution can never cross tenants.
+//
+// The filters are expressed as nullable/sentinel predicates so a single
+// prepared statement serves every combination: an empty state/channel
+// disables that axis and a nil assigned id disables the "minhas" filter.
+func (s *Store) ListConversationSummaries(ctx context.Context, tenantID uuid.UUID, filter domain.ConversationFilter, limit int) ([]domain.ConversationListItem, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationSummaries: tenant id is nil")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationSummaries: limit must be > 0")
+	}
+	const maxLimit = 200
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	var assigned *uuid.UUID
+	if filter.AssignedUserID != uuid.Nil {
+		id := filter.AssignedUserID
+		assigned = &id
+	}
+	var out []domain.ConversationListItem
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT c.id, c.contact_id, c.channel, c.state,
+			       c.assigned_user_id, c.last_message_at, c.created_at,
+			       COALESCE(NULLIF(ct.display_name, ''), cci.external_id, c.contact_id::text) AS contact_label,
+			       lm.body, lm.direction
+			  FROM conversation c
+			  JOIN contact ct ON ct.id = c.contact_id
+			  LEFT JOIN contact_channel_identity cci
+			         ON cci.contact_id = c.contact_id AND cci.channel = c.channel
+			  LEFT JOIN LATERAL (
+			      SELECT m.body, m.direction
+			        FROM message m
+			       WHERE m.conversation_id = c.id
+			       ORDER BY m.created_at DESC, m.id DESC
+			       LIMIT 1
+			  ) lm ON true
+			 WHERE ($1::text = '' OR c.state = $1)
+			   AND ($2::text = '' OR c.channel = $2)
+			   AND ($3::uuid IS NULL OR c.assigned_user_id = $3)
+			   AND (NOT $4::bool OR c.assigned_user_id IS NULL)
+			 ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id ASC
+			 LIMIT $5
+		`, string(filter.State), filter.Channel, assigned, filter.UnassignedOnly, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			item, err := scanConversationListItem(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, item)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationSummaries: %w", err)
+	}
+	return out, nil
+}
+
+// ListConversationsByContact returns up to `limit` conversations for a
+// single contact under the tenant scope, newest-last-message-first. It
+// backs the contact-detail "conversation history" panel (SIN-64976):
+// the contacts read-side has a contact id and wants its threads, which
+// the conversation_contact_idx index (migration 0088, on
+// conversation(contact_id)) serves directly.
+//
+// This method is deliberately NOT part of the inbox.Repository port —
+// only the postgres Store exposes it, and the contacts use-case declares
+// a narrow reader interface satisfied structurally. Keeping it off the
+// port avoids forcing every inbox.Repository fake to grow a method it
+// does not exercise (mirrors the funnel Store.FindByID precedent used by
+// GetConversationContext).
+//
+// A uuid.Nil tenant or contact yields an empty result with a clean error
+// / nil rather than a cross-contact leak. limit must be > 0; the adapter
+// clamps to the same upper bound as ListConversations.
+func (s *Store) ListConversationsByContact(ctx context.Context, tenantID, contactID uuid.UUID, limit int) ([]*domain.Conversation, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationsByContact: tenant id is nil")
+	}
+	if contactID == uuid.Nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationsByContact: limit must be > 0")
+	}
+	const maxLimit = 200
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	var out []*domain.Conversation
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, tenant_id, contact_id, channel, state,
+			       assigned_user_id, last_message_at, created_at
+			  FROM conversation
+			 WHERE contact_id = $1
+			 ORDER BY COALESCE(last_message_at, created_at) DESC, id ASC
+			 LIMIT $2
+		`, contactID, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			conv, err := scanConversation(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, conv)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inbox/postgres: ListConversationsByContact: %w", err)
+	}
+	return out, nil
+}
+
 // ListMessages returns the messages for a conversation under the tenant
 // scope, ordered oldest-first by created_at so the inbox renders the
 // chat top→bottom. Returns ErrNotFound when the conversation itself is
@@ -553,6 +697,47 @@ func scanConversation(row pgx.Row) (*domain.Conversation, error) {
 		id, tenantID, contactID, channel,
 		domain.ConversationState(state), assignedUserID, last, createdAt,
 	), nil
+}
+
+// scanConversationListItem materialises a read-model row produced by
+// ListConversationSummaries. body/direction come from the lateral
+// last-message lookup and are NULL when the conversation has no messages
+// yet; the snippet is truncated here via domain.Snippet so the rune-safe
+// truncation rule lives in one tested place.
+func scanConversationListItem(row pgx.Row) (domain.ConversationListItem, error) {
+	var (
+		id, contactID  uuid.UUID
+		channel, state string
+		assignedUserID *uuid.UUID
+		lastMessageAt  *time.Time
+		createdAt      time.Time
+		contactLabel   string
+		body           *string
+		direction      *string
+	)
+	if err := row.Scan(&id, &contactID, &channel, &state,
+		&assignedUserID, &lastMessageAt, &createdAt, &contactLabel, &body, &direction); err != nil {
+		return domain.ConversationListItem{}, err
+	}
+	item := domain.ConversationListItem{
+		ID:                 id,
+		ContactID:          contactID,
+		Channel:            channel,
+		State:              domain.ConversationState(state),
+		AssignedUserID:     assignedUserID,
+		CreatedAt:          createdAt,
+		ContactDisplayName: contactLabel,
+	}
+	if lastMessageAt != nil {
+		item.LastMessageAt = *lastMessageAt
+	}
+	if body != nil {
+		item.LastMessageSnippet = domain.Snippet(*body)
+	}
+	if direction != nil {
+		item.LastMessageDirection = domain.MessageDirection(*direction)
+	}
+	return item, nil
 }
 
 // scanMessage materialises a message row into the domain shape. It

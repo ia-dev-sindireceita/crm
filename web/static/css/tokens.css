@@ -36,6 +36,10 @@
   --color-secondary: #57606a;
   --color-accent: #54aeff;
 
+  /* Texto-link. Escurecido p/ AA (>=4.5:1) em surfaces 0-3.
+     --color-primary fica reservado a fill/border/focus. */
+  --color-link: #175ed1;
+
   /* ---- Color: feedback (each band carries text + surface) ---------- */
   --color-success: #1a7f37;
   --color-success-text: #ffffff;
@@ -149,7 +153,7 @@ body {
 }
 
 a {
-  color: var(--color-primary);
+  color: var(--color-link);
 }
 
 a:focus-visible,

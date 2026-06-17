@@ -56,6 +56,24 @@ type HelloTenantExtendedDeps struct {
 	LGPDEnabled         bool
 	MFAEnabled          bool
 	CustomDomainEnabled bool
+	// ContactsEnabled mirrors deps.WebContacts != nil in router.go
+	// (SIN-64977 — the contacts management list surface). B-2 rule
+	// (SIN-63821): a newly mounted auth-gated subtree MUST add its link
+	// here or the post-login landing silently loses the navigation.
+	ContactsEnabled bool
+	// WalletEnabled mirrors deps.WebWallet != nil in router.go
+	// (SIN-63942 / UX-F5). True renders the wallet card / surface link
+	// live; false renders the standard "Indisponível neste ambiente"
+	// disabled state so the gap is visible to the gerente.
+	WalletEnabled bool
+	// DashboardEnabled mirrors deps.WebDashboard != nil in router.go
+	// (SIN-65008 — managerial dashboard / relatórios). True renders the
+	// "Painel / relatórios" surface link live; false renders the
+	// disabled "Indisponível neste ambiente" hint so the gap is visible
+	// to the operator (memory hello_tenant_sync_on_mount — a mounted
+	// subtree MUST update this index or the post-login landing silently
+	// loses the link).
+	DashboardEnabled bool
 }
 
 // NewHelloTenant returns the post-login landing handler with a typed
@@ -212,7 +230,7 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 	gerenteOnly := []iam.Role{iam.RoleTenantGerente}
 	everyTenantRole := []iam.Role{iam.RoleTenantCommon, iam.RoleTenantAtendente, iam.RoleTenantGerente}
 
-	all := make([]helloSurfaceRow, 0, 13)
+	all := make([]helloSurfaceRow, 0, 14)
 
 	// SIN-63940 — Fase 6 inbox card sits at the top of the index when
 	// the extended wire layer has migrated. Atendente's primary surface
@@ -302,6 +320,16 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 	if deps.Extended != nil {
 		all = append(all,
 			helloSurfaceRow{
+				Path:         "/contacts",
+				SurfaceLabel: "Contatos",
+				CardLabel:    "Base de contatos",
+				Available:    deps.Extended.ContactsEnabled,
+				Description:  "Buscar, abrir e editar contatos — com canais vinculados e histórico de conversas por contato.",
+				Roles:        atendenteOrAbove,
+				// TopNav: false — body-only surface; the top bar stays
+				// scannable per AC §2.
+			},
+			helloSurfaceRow{
 				Path:         "/branding",
 				SurfaceLabel: "Branding",
 				CardLabel:    "Identidade visual",
@@ -316,6 +344,15 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 				CardLabel:    "Faturamento",
 				Available:    deps.Extended.BillingEnabled,
 				Description:  "Consultar faturas PIX, histórico de cobrança e situação de mensalidade do tenant.",
+				Roles:        gerenteOnly,
+				TopNav:       true, // AC §2 — gerente nav
+			},
+			helloSurfaceRow{
+				Path:         "/wallet",
+				SurfaceLabel: "Saldo de tokens",
+				CardLabel:    "Wallet",
+				Available:    deps.Extended.WalletEnabled,
+				Description:  "Acompanhar saldo de tokens, projeção de esgotamento e ledger LGPD-seguro do consumo de IA.",
 				Roles:        gerenteOnly,
 				TopNav:       true, // AC §2 — gerente nav
 			},
@@ -352,6 +389,20 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 				// matrix.
 				Roles: nil,
 				// TopNav: false — settings surface; body-only per AC §2
+			},
+			helloSurfaceRow{
+				Path:         "/dashboard",
+				SurfaceLabel: "Painel / relatórios",
+				CardLabel:    "Painel / relatórios",
+				Available:    deps.Extended.DashboardEnabled,
+				Description:  "Acompanhar indicadores de atendimento e funil (conversas, tempos de resposta, volume por canal) e exportar relatórios em CSV.",
+				// Gated in router.go on RequireAction(ActionTenantContactRead),
+				// satisfied by atendente AND gerente — keep the index in sync
+				// with that gate so the seed atendente (the only HTTP-loginable
+				// seed user) sees the link.
+				Roles: atendenteOrAbove,
+				// TopNav: false — reporting surface; body-only keeps the
+				// top-bar scannable, matching the privacy/2FA precedent.
 			},
 		)
 	}
@@ -394,6 +445,7 @@ var shortNavLabels = map[string]string{
 	"/consent/cookies-banner": "Consentimento",
 	"/branding":               "Branding",
 	"/billing/invoices":       "Faturas",
+	"/wallet":                 "Wallet",
 	"/admin/lgpd/requests":    "LGPD",
 	"/tenant/custom-domains":  "Domínio",
 	"/admin/2fa/setup":        "2FA",

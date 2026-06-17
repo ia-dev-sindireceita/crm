@@ -1,0 +1,269 @@
+/*
+ * SIN-63945 / UX-F8 — /settings/ai-policy page styles.
+ *
+ * Two-column desktop layout (form left, sticky precedence rail right).
+ * Single column below --bp-md with the precedence rail moving below the
+ * form so the operator scrolls the form first on mobile. Every value
+ * consumes a token from tokens.css; no bare hex / px / ms literals.
+ *
+ * Field-tier rows + LGPD banner are design-system components and live
+ * in components.css so future LGPD touchpoints inherit them.
+ */
+
+.aipolicy-shell {
+  max-width: var(--bp-lg);
+  margin: 0 auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.aipolicy-header h1 {
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-line);
+  color: var(--text-strong);
+  margin: 0 0 var(--space-2);
+}
+
+.aipolicy-lede {
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+  color: var(--text-default);
+  margin: 0 0 var(--space-2);
+}
+
+.aipolicy-meta {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.aipolicy-shell-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+.aipolicy-shell-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.aipolicy-shell-rail {
+  position: sticky;
+  top: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background-color: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.aipolicy-shell-rail h2 {
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-line);
+  margin: 0;
+  color: var(--text-strong);
+}
+
+.aipolicy-precedence-input fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.aipolicy-precedence-input__mode {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.aipolicy-precedence-input__id input {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+
+.aipolicy-precedence {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.aipolicy-precedence__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.aipolicy-precedence__head h3 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.aipolicy-precedence__doherty {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.aipolicy-precedence__empty {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin: 0;
+  padding: var(--space-3);
+  background-color: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.aipolicy-precedence__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.aipolicy-precedence__table th,
+.aipolicy-precedence__table td {
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.aipolicy-precedence__pre {
+  background-color: var(--surface-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  overflow-x: auto;
+  margin: 0;
+}
+
+.aipolicy-precedence__note small {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.aipolicy-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.aipolicy-table th,
+.aipolicy-table td {
+  text-align: left;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.aipolicy-row--disabled td {
+  color: var(--text-muted);
+}
+
+.aipolicy-empty {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  padding: var(--space-3);
+  background-color: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.aipolicy-form fieldset {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.aipolicy-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.aipolicy-form input[type="text"],
+.aipolicy-form select {
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+
+.aipolicy-toggle {
+  flex-direction: row !important;
+  align-items: center;
+  gap: var(--space-2) !important;
+}
+
+.aipolicy-form button[type="submit"] {
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-4);
+  background-color: var(--color-primary);
+  color: var(--text-on-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  font-weight: var(--font-medium);
+  min-height: var(--hit-target-min);
+  cursor: pointer;
+}
+
+.aipolicy-form-error {
+  padding: var(--space-2) var(--space-3);
+  background-color: var(--color-danger-surface);
+  color: var(--color-danger);
+  border-left: 4px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+}
+
+.aipolicy-preview-card {
+  background-color: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.aipolicy-preview-card dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.aipolicy-preview-card dt {
+  font-weight: var(--font-medium);
+  color: var(--text-strong);
+}
+
+.aipolicy-preview-card dd {
+  margin: 0;
+  color: var(--text-default);
+}
+
+@media (max-width: 900px) {
+  .aipolicy-shell-inner {
+    grid-template-columns: 1fr;
+  }
+  .aipolicy-shell-rail {
+    position: static;
+    order: 2;
+  }
+}

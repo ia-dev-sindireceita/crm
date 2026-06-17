@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -50,8 +51,25 @@ func (a *Adapter) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limit: 10 new sessions / min / ip+tenant (ADR-0021 D5).
-	ipKey := fmt.Sprintf("wc.sess.%s.%x", tenantID, sha256.Sum256([]byte(clientIP(r)+tenantID.String())))
+	// ipHash = sha256(ip || tenant_id); the plaintext IP never leaves
+	// this scope, so the value persisted on the session row (and used
+	// as the rate-limit key) is LGPD-safe.
+	ip := clientIP(r)
+	ipHash := fmt.Sprintf("%x", sha256.Sum256([]byte(ip+tenantID.String())))
+	ipKey := "wc.sess." + tenantID.String() + "." + ipHash
 	if ok, after, _ := a.rl.Allow(ctx, ipKey); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(after.Seconds())))
+		http.Error(w, "", http.StatusTooManyRequests)
+		return
+	}
+
+	// /24 anti-sybil bucket (ADR-0021 D5): 200 session-creates / min per
+	// (tenant × IPv4 /24). Stops a single subnet from rotating IPs to
+	// dodge the per-IP cap above. net_hash = sha256(network || tenant_id)
+	// keeps it LGPD-safe — the network prefix never persists in plaintext.
+	netHash := fmt.Sprintf("%x", sha256.Sum256([]byte(networkBucket(ip)+tenantID.String())))
+	netKey := "wc.s24." + tenantID.String() + "." + netHash
+	if ok, after, _ := a.rl.Allow(ctx, netKey); !ok {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(after.Seconds())))
 		http.Error(w, "", http.StatusTooManyRequests)
 		return
@@ -81,6 +99,7 @@ func (a *Adapter) handleSession(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		CSRFTokenHash: hashToken(csrfToken),
 		OriginSig:     originSig,
+		IPHash:        ipHash,
 		ExpiresAt:     now.Add(sessionTTL),
 	}
 	if err := a.sessions.Create(ctx, sess); err != nil {
@@ -127,6 +146,25 @@ func (a *Adapter) handleMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Constant-time CSRF verification (double-submit, no cookies).
 	if !hmac.Equal([]byte(hashToken(csrfPresented)), []byte(sess.CSRFTokenHash)) {
+		http.Error(w, "", http.StatusForbidden)
+		return
+	}
+
+	// D4 — origin signature re-verification (ADR-0021, OWASP A01/A07,
+	// defense-in-depth). The signature bound to the session at create
+	// time is HMAC-SHA256(tenant_origin_secret, canonical_origin). We
+	// re-derive it from THIS request's Origin header via the same
+	// validator path and compare constant-time against the stored value,
+	// so a session/CSRF token replayed from a different (e.g. cloned-
+	// widget) origin is rejected even though it passed D2 at create time.
+	// We additionally honor an explicit X-Webchat-Origin-Signature header
+	// (the value the widget echoes from the server-injected origin→hmac
+	// lookup table) when present, so a forged or stale header is rejected
+	// too. D2 (allowlist) remains the primary control; this is redundant
+	// DiD per ADR-0021.
+	if !a.originSignatureOK(ctx, r, sess) {
+		a.logger.Warn("webchat.origin_signature_fail",
+			"session_id", sessID, "tenant_id", sess.TenantID.String())
 		http.Error(w, "", http.StatusForbidden)
 		return
 	}
@@ -204,11 +242,34 @@ func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	// Stream-entry rate limit (ADR-0021 D5): bound the connect/reconnect
+	// rate per session. The concurrency caps below stop simultaneous
+	// streams; this throttles an open→close loop that never holds more
+	// than one stream at a time and so would dodge the concurrency cap.
+	if ok, after, _ := a.rl.Allow(ctx, "wc.stream."+sessID); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(after.Seconds())))
+		http.Error(w, "", http.StatusTooManyRequests)
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
+
+	// Concurrency caps (ADR-0021 D5, threat T5): 1 stream / session_id,
+	// 5 / (tenant × IP). Reject excess BEFORE writing the 200 so the
+	// client sees a clean 429 instead of an aborted event-stream. The
+	// per-IP bucket reuses the session's LGPD-safe ip_hash.
+	sub, ok := a.broker.Subscribe(sessID, sess.IPHash)
+	if !ok {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "", http.StatusTooManyRequests)
+		return
+	}
+	defer a.broker.Unsubscribe(sessID, sess.IPHash, sub)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -220,9 +281,6 @@ func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 	// causing a deadlock in tests.
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	sub := a.broker.Subscribe(sessID)
-	defer a.broker.Unsubscribe(sessID, sub)
 
 	for {
 		select {
@@ -238,18 +296,69 @@ func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// originSignatureOK re-verifies the D4 origin signature for an inbound
+// message against the signature bound to the session at create time.
+// It returns true only when the signature recomputed from this request's
+// Origin matches the stored one (constant-time) AND, if the client sent
+// an explicit X-Webchat-Origin-Signature header, that header also matches.
+// Errors from the validator fail closed.
+func (a *Adapter) originSignatureOK(ctx context.Context, r *http.Request, sess Session) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	recomputed, err := a.origins.HMAC(ctx, sess.TenantID, origin)
+	if err != nil || !hmac.Equal([]byte(recomputed), []byte(sess.OriginSig)) {
+		return false
+	}
+	if presented := r.Header.Get(HeaderOriginSig); presented != "" &&
+		!hmac.Equal([]byte(presented), []byte(sess.OriginSig)) {
+		return false
+	}
+	return true
+}
+
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+// networkBucket reduces an IP to its anti-sybil network prefix: the /24
+// for IPv4, the /48 for IPv6 (a single allocation in practice). The
+// result feeds the LGPD-safe net_hash, never persisting in plaintext.
+// An unparseable address falls back to itself so it is still bucketed.
+func networkBucket(ipStr string) string {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ipStr
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.Mask(net.CIDRMask(24, 32)).String()
+	}
+	return ip.Mask(net.CIDRMask(48, 128)).String()
+}
+
+// clientIP returns the caller's IP as the rate-limit + ip_hash key
+// source. It trusts ONLY r.RemoteAddr and never reads the client-supplied
+// X-Real-IP / X-Forwarded-For / True-Client-IP headers directly.
+//
+// SIN-64991 (trust-boundary follow-up of SIN-64986 / OWASP A05): the
+// widget routes are mounted in the tenanted group, which inherits the
+// router-root trusted-proxy RealIP wrapper (httpapi.NewTrustedRealIP,
+// SIN-62978). That wrapper has already rewritten r.RemoteAddr from the
+// forwarded-identity headers IFF the immediate TCP peer is inside the
+// trusted-proxy CIDR allowlist (Caddy edge), and stripped those headers
+// otherwise. Re-reading X-Real-IP here would reintroduce the per-IP
+// rate-limit bypass (D5): a caller not behind the Caddy edge could spoof
+// X-Real-IP per request to partition the rate-limit bucket and the
+// ip_hash session key. By keying off r.RemoteAddr alone, an untrusted
+// peer is always seen as its raw TCP source.
+//
+// net.SplitHostPort strips the port for the common "ip:port" RemoteAddr
+// (incl. bracketed IPv6 "[::1]:5555"); a bare IP — which chimw.RealIP
+// writes when it honours a trusted header — has no port to split, so we
+// return it unchanged instead of truncating an IPv6 address at the last
+// colon.
 func clientIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	addr := r.RemoteAddr
-	if i := strings.LastIndex(addr, ":"); i != -1 {
-		return addr[:i]
-	}
-	return addr
+	return r.RemoteAddr
 }

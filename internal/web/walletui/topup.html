@@ -1,0 +1,42 @@
+{{define "head_extra"}}
+<link rel="stylesheet" href="/static/css/wallet.css">
+{{end}}
+{{define "title"}}Comprar tokens · {{.TenantName}}{{end}}
+{{define "content"}}
+<section class="wallet-shell" aria-label="Catálogo de pacotes de tokens" data-testid="wallet-topup">
+  <header class="wallet-shell__header">
+    <nav class="wallet-breadcrumbs" aria-label="Você está em">
+      <a href="/wallet" data-testid="wallet-back">← Saldo</a>
+    </nav>
+    <h1>Comprar tokens</h1>
+    <p class="wallet-shell__subtitle">Os pacotes abaixo são cobrados via PIX. O melhor custo por mil tokens é destacado para facilitar a comparação.</p>
+  </header>
+
+  {{if .Packages}}
+  <ol class="wallet-topup-grid" role="list">
+    {{range .Packages}}
+    <li class="wallet-topup-card{{if .BestValue}} wallet-topup-card--best{{end}}"
+        data-testid="wallet-topup-card"
+        data-slug="{{.Slug}}"
+        {{if .BestValue}}aria-label="{{.Name}} — melhor custo por mil tokens"{{end}}>
+      {{if .BestValue}}
+      <p class="wallet-topup-card__badge" aria-hidden="false">Melhor custo</p>
+      {{end}}
+      <h2 class="wallet-topup-card__name">{{.Name}}</h2>
+      <p class="wallet-topup-card__tokens" data-testid="wallet-topup-tokens"><strong>{{.TokensLabel}}</strong> tokens</p>
+      <p class="wallet-topup-card__price" data-testid="wallet-topup-price">{{.PriceLabel}}</p>
+      <p class="wallet-topup-card__rate" data-testid="wallet-topup-rate">{{.RateLabel}} a cada 1.000 tokens</p>
+      <a class="wallet-button wallet-button--primary"
+         href="/billing/invoices?package={{.Slug}}"
+         data-testid="wallet-topup-buy">Comprar com PIX</a>
+    </li>
+    {{end}}
+  </ol>
+  {{else}}
+  <section class="wallet-empty-state" data-testid="wallet-topup-empty">
+    <h2>Catálogo ainda não disponível</h2>
+    <p>O administrador master ainda não publicou pacotes de tokens. Enquanto isso, fale com o suporte ou use o fluxo de cobrança recorrente em <a href="/billing/invoices">faturas</a>.</p>
+  </section>
+  {{end}}
+</section>
+{{end}}

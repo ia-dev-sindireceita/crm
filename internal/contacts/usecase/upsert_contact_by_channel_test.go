@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -128,6 +130,88 @@ func (r *fakeRepo) FindByChannelIdentity(_ context.Context, tenantID uuid.UUID, 
 		return nil, contacts.ErrNotFound
 	}
 	return contacts.Hydrate(row.id, row.tenantID, row.displayName, row.identities, zeroTime, zeroTime), nil
+}
+
+// List and Update were appended to fakeRepo when contacts.Repository grew
+// (SIN-64976) so the fake still satisfies the port. They are functional —
+// tenant-scoped, deterministic order, offset pagination, ErrNotFound on a
+// missing row — so the management use-case tests reuse this same fake. No
+// existing test case or assertion above was modified.
+func (r *fakeRepo) List(_ context.Context, tenantID uuid.UUID, f contacts.ListFilter) ([]*contacts.Contact, int, error) {
+	if tenantID == uuid.Nil {
+		return nil, 0, errors.New("fakeRepo: nil tenant")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.findErr != nil {
+		return nil, 0, r.findErr
+	}
+	f = f.Normalized()
+	q := strings.ToLower(f.Query)
+	var matched []storedContact
+	for _, row := range r.byID {
+		if row.tenantID != tenantID {
+			continue
+		}
+		if q != "" && !fakeContactMatches(row, q) {
+			continue
+		}
+		matched = append(matched, row)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if matched[i].displayName != matched[j].displayName {
+			return matched[i].displayName < matched[j].displayName
+		}
+		return matched[i].id.String() < matched[j].id.String()
+	})
+	total := len(matched)
+	lo := f.Offset
+	if lo > total {
+		lo = total
+	}
+	hi := lo + f.Limit
+	if hi > total {
+		hi = total
+	}
+	page := matched[lo:hi]
+	out := make([]*contacts.Contact, 0, len(page))
+	for _, row := range page {
+		out = append(out, contacts.Hydrate(row.id, row.tenantID, row.displayName, row.identities, zeroTime, zeroTime))
+	}
+	return out, total, nil
+}
+
+func (r *fakeRepo) Update(_ context.Context, c *contacts.Contact) error {
+	if c == nil {
+		return errors.New("fakeRepo: nil contact")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.saveErr != nil {
+		return r.saveErr
+	}
+	row, ok := r.byID[c.ID]
+	if !ok || row.tenantID != c.TenantID {
+		return contacts.ErrNotFound
+	}
+	row.displayName = c.DisplayName
+	r.byID[c.ID] = row
+	return nil
+}
+
+// fakeContactMatches mirrors the adapter's search predicate: a
+// case-insensitive substring match against the display name or any
+// identity external id.
+func fakeContactMatches(row storedContact, lowerQuery string) bool {
+	if strings.Contains(strings.ToLower(row.displayName), lowerQuery) {
+		return true
+	}
+	for _, id := range row.identities {
+		if strings.Contains(strings.ToLower(id.ExternalID), lowerQuery) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNew_RejectsNilRepo(t *testing.T) {

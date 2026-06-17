@@ -76,8 +76,18 @@ type Policy struct {
 	AIEnabled     bool
 	Anonymize     bool
 	OptIn         bool
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+
+	// StructuredFields lists the contact-aggregate field names the
+	// operator opted into for this policy scope. SIN-63945 / UX-F8.
+	// Persisted in migration 0118 as ai_policy.structured_fields TEXT[].
+	// Only entries from the Yellow tier of LGPDFieldCatalog are valid;
+	// Red entries are rejected at ValidateStructuredFields and the
+	// resolver never emits them in the cascade output. Green entries
+	// are always sent and do not appear in this slice.
+	StructuredFields []string
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // ResolveInput names a single call site: which tenant is asking for a

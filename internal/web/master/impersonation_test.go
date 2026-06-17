@@ -17,8 +17,10 @@ package master_test
 // (internal/adapter/httpapi/middleware/impersonation_session_test.go).
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -389,6 +391,71 @@ func TestImpersonationHandler_Start_Concurrent409(t *testing.T) {
 	h.Start(rec2, impersonateRequest(t, testTargetTenantID, "second envelope same session"))
 	if rec2.Code != http.StatusConflict {
 		t.Fatalf("second start: status=%d, want 409; body=%q", rec2.Code, rec2.Body.String())
+	}
+}
+
+// SIN-63979 / [CRM][SEC-F4]: when the audit write fails AND the
+// Sessions.End rollback also fails (double db failure), the handler
+// must log an Error line with enough context for oncall to correlate
+// the leaked envelope with the user-visible 500.
+//
+// Behavioural contract is unchanged — the 500 still ships, the envelope
+// stays leaked (the 15-min expiry middleware reaps it). The only new
+// signal is the searchable log line. This test injects an endErr so the
+// rollback path returns a non-ErrNoActiveImpersonation error, captures
+// the slog output, and asserts the expected fields are present.
+func TestImpersonationHandler_Start_RollbackFailureLogged(t *testing.T) {
+	t.Parallel()
+	repo := newFakeImpersonationRepo()
+	// Trip the audit write so we enter the rollback branch.
+	aud := &fakeAudit{failOn: audit.SecurityEventImpersonationStart}
+	// Trip the rollback itself — non-ErrNoActiveImpersonation so the
+	// fake returns the injected error rather than the idempotent
+	// "already ended" sentinel.
+	rollbackErr := errors.New("db down (test): end rollback unavailable")
+	repo.endErr = rollbackErr
+
+	// Capture slog Error output into a buffer so we can grep it for
+	// the rollback line.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	h, err := master.NewImpersonationHandler(master.ImpersonationDeps{
+		Sessions: repo,
+		Auditor:  aud,
+		Tenants:  defaultResolver(),
+		Logger:   logger,
+		Clock:    func() time.Time { return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewImpersonationHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.Start(rec, impersonateRequest(t, testTargetTenantID, "rollback-failure-logged path"))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500; body=%q", rec.Code, rec.Body.String())
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "audit_failed rollback also failed") {
+		t.Errorf("log missing rollback-failure line; got=%q", got)
+	}
+	if !strings.Contains(got, "master_user_id="+testMasterUserID.String()) {
+		t.Errorf("log missing master_user_id=%s; got=%q", testMasterUserID, got)
+	}
+	if !strings.Contains(got, "session_id=") {
+		t.Errorf("log missing session_id field; got=%q", got)
+	}
+	// end_error carries the rollback failure verbatim — quote-escape
+	// because slog text handler may wrap values containing spaces.
+	if !strings.Contains(got, "end_error=") || !strings.Contains(got, rollbackErr.Error()) {
+		t.Errorf("log missing end_error=%q; got=%q", rollbackErr.Error(), got)
+	}
+	// audit_error carries the original audit-write failure so oncall
+	// can tell the two db hits apart.
+	if !strings.Contains(got, "audit_error=") || !strings.Contains(got, "audit: write failed (test)") {
+		t.Errorf("log missing audit_error from primary audit-write failure; got=%q", got)
 	}
 }
 

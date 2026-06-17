@@ -424,7 +424,7 @@ body[data-impersonating="true"] {
 /* ─── Tenant list / wizard utility classes ──────────────────────────── */
 
 .master-tenants__action-link {
-  color: var(--color-primary);
+  color: var(--color-link);
   text-decoration: none;
 }
 
@@ -434,6 +434,6 @@ body[data-impersonating="true"] {
 }
 
 .master-tenants__crumb a {
-  color: var(--color-primary);
+  color: var(--color-link);
   text-decoration: none;
 }

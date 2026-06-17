@@ -49,8 +49,13 @@ type pageData struct {
 	TenantName  string
 	GeneratedAt string
 	Rows        []productRow
-	CSRFMeta    template.HTML
-	HXHeaders   template.HTMLAttr
+	// Categories is the sidebar group-count list (SIN-63946).
+	Categories []CategoryBucket
+	// Filter exposes the active ?q= / ?category= so the template can
+	// keep the search box and the active sidebar bucket in sync.
+	Filter    listFilter
+	CSRFMeta  template.HTML
+	HXHeaders template.HTMLAttr
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS
@@ -73,6 +78,7 @@ type productRow struct {
 	Description string
 	PriceCents  int
 	Tags        []string
+	Category    string
 	UpdatedAt   string
 }
 
@@ -122,6 +128,7 @@ type productFormData struct {
 	Description  string
 	PriceCents   int
 	TagsRaw      string
+	Category     string
 	FieldError   string
 	ErrorMessage string
 }
@@ -165,6 +172,7 @@ func rowFromProduct(p *catalog.Product) productRow {
 		Description: p.Description(),
 		PriceCents:  p.PriceCents(),
 		Tags:        p.Tags(),
+		Category:    p.Category(),
 		UpdatedAt:   p.UpdatedAt().UTC().Format(time.RFC3339),
 	}
 }
@@ -300,11 +308,24 @@ func joinTags(tags []string) string {
 	return strings.Join(tags, ", ")
 }
 
+// categoryLabel renders a product's category column, falling back to
+// the "Sem categoria" badge when the field is empty so the table cell
+// stays scannable. Matches the sidebar label for the
+// UncategorizedKey bucket.
+func categoryLabel(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "Sem categoria"
+	}
+	return s
+}
+
 var funcs = template.FuncMap{
-	"formatPrice": formatPrice,
-	"scopeLabel":  scopeLabel,
-	"sourceLabel": sourceLabel,
-	"joinTags":    joinTags,
+	"formatPrice":       formatPrice,
+	"scopeLabel":        scopeLabel,
+	"sourceLabel":       sourceLabel,
+	"joinTags":          joinTags,
+	"categoryLabel":     categoryLabel,
+	"promptPreviewSeed": promptPreviewSeed,
 }
 
 // listPartialSrc is the catalog table partial. It is rendered both by
@@ -312,12 +333,13 @@ var funcs = template.FuncMap{
 // target stays in sync.
 const listPartialSrc = `
 {{define "catalog.listPartial"}}
-<table id="catalog-list">
-  <thead><tr><th>Nome</th><th>Descrição</th><th>Preço</th><th>Tags</th><th>Atualizado</th><th>Ações</th></tr></thead>
+<table id="catalog-list" class="catalog-list">
+  <thead><tr><th>Nome</th><th>Categoria</th><th>Descrição</th><th>Preço</th><th>Tags</th><th>Atualizado</th><th>Ações</th></tr></thead>
   <tbody>
   {{- range .Rows}}
     <tr>
       <td><a href="/catalog/{{.ID}}">{{.Name}}</a></td>
+      <td>{{categoryLabel .Category}}</td>
       <td>{{.Description}}</td>
       <td>{{formatPrice .PriceCents}}</td>
       <td>{{joinTags .Tags}}</td>
@@ -328,10 +350,42 @@ const listPartialSrc = `
       </td>
     </tr>
   {{- else}}
-    <tr><td colspan="6">Nenhum produto cadastrado.</td></tr>
+    <tr><td colspan="7">Nenhum produto cadastrado.</td></tr>
   {{- end}}
   </tbody>
 </table>
+{{end}}
+`
+
+// categorySidebarSrc renders the category-count sidebar plus the
+// search box. Both the search box and the bucket links GET /catalog
+// with hx-push-url so the operator can deep-link, refresh, and copy a
+// filtered view.
+const categorySidebarSrc = `
+{{define "catalog.sidebar"}}
+<aside class="catalog-sidebar" aria-label="Categorias">
+  <form class="catalog-sidebar__search" hx-get="/catalog" hx-target="#catalog-list-wrapper" hx-select="#catalog-list" hx-push-url="true" hx-trigger="keyup changed delay:300ms from:input, change from:input">
+    <label>Buscar por nome
+      <input type="search" name="q" value="{{.Filter.Query}}" maxlength="200" placeholder="ex.: mensalidade">
+    </label>
+    {{- if .Filter.Category}}<input type="hidden" name="category" value="{{.Filter.Category}}">{{end}}
+  </form>
+  <nav class="catalog-sidebar__categories" aria-label="Filtrar por categoria">
+    <a href="/catalog{{if .Filter.Query}}?q={{.Filter.Query}}{{end}}"
+       hx-get="/catalog{{if .Filter.Query}}?q={{.Filter.Query}}{{end}}"
+       hx-target="#catalog-list-wrapper" hx-select="#catalog-list" hx-push-url="true"
+       {{if eq .Filter.Category ""}}aria-current="page"{{end}}>Todas</a>
+    {{- range .Categories}}
+    {{- $href := printf "/catalog?category=%s" .Key}}
+    {{- if $.Filter.Query}}{{$href = printf "%s&q=%s" $href $.Filter.Query}}{{end}}
+    <a href="{{$href}}"
+       hx-get="{{$href}}"
+       hx-target="#catalog-list-wrapper" hx-select="#catalog-list" hx-push-url="true"
+       data-category-key="{{.Key}}"
+       {{if eq .Key $.Filter.Category}}aria-current="page"{{end}}>{{.Label}} <span class="catalog-sidebar__count">({{.Count}})</span></a>
+    {{- end}}
+  </nav>
+</aside>
 {{end}}
 `
 
@@ -350,6 +404,36 @@ const previewPartialSrc = `
 </div>
 {{end}}
 `
+
+// promptPreviewSrc is the live-preview panel that re-renders on every
+// keystroke in the argument editor (SIN-63946). The three boxes
+// (system / user / argument) are class-tagged so the operator can tell
+// at a glance which segment they are editing. The wrapping id stays
+// stable so HTMX can swap the entire fragment without remount jitter.
+const promptPreviewSrc = `
+{{define "catalog.promptPreview"}}
+<div id="prompt-preview" class="catalog-prompt-preview" data-product="{{.ProductName}}" data-scope-type="{{.ScopeLabel}}" data-scope-id="{{.ScopeID}}">
+  <header class="catalog-prompt-preview__header">
+    <strong>Prompt completo (preview)</strong>
+    <span>Escopo: {{.ScopeLabel}}{{if .ScopeID}} · ID {{.ScopeID}}{{end}}</span>
+  </header>
+  {{- range .Segments}}
+  <section class="catalog-prompt-preview__segment catalog-prompt-preview__segment--{{.Role}}" data-role="{{.Role}}">
+    <span class="catalog-prompt-preview__role">{{.Label}}</span>
+    <pre class="catalog-prompt-preview__text">{{.Text}}</pre>
+  </section>
+  {{- end}}
+</div>
+{{end}}
+`
+
+// promptPreviewSeed is the template helper the argument form calls to
+// seed the embedded preview with the operator's current draft, so the
+// first render (before HTMX has fired) already reflects the saved text
+// rather than an empty placeholder.
+func promptPreviewSeed(scopeType, scopeID, text string) PromptPreview {
+	return BuildPromptPreview("", scopeType, scopeID, text)
+}
 
 // detailPartialSrc is the inner argument table + preview shell.
 // Rendered by both the full detail page and the HTMX swap after an
@@ -403,12 +487,15 @@ var pageTmpl = mustParse("catalog.page", `<!doctype html>
 {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
 </head>
 <body {{.HXHeaders}}>
-<main>
+<main class="catalog-shell">
 <h1>Catálogo</h1>
 <p>Tenant: {{.TenantName}} · Atualizado em {{.GeneratedAt}}</p>
-<section id="catalog-list-wrapper">
+<div class="catalog-shell__columns">
+{{template "catalog.sidebar" .}}
+<section id="catalog-list-wrapper" class="catalog-shell__main">
   {{template "catalog.listPartial" .}}
 </section>
+</div>
 <section id="catalog-form">
   <button type="button" hx-get="/catalog/new" hx-target="#catalog-form" hx-swap="innerHTML">Novo produto</button>
 </section>
@@ -462,6 +549,10 @@ var productFormTmpl = mustParse("catalog.productForm", `
 <input type="text" name="name" value="{{.Name}}" required maxlength="200">
 </label>
 {{if eq .FieldError "name"}}<p role="alert">{{.ErrorMessage}}</p>{{end}}
+<label>Categoria
+<input type="text" name="category" value="{{.Category}}" maxlength="64" placeholder="ex.: Assinaturas">
+</label>
+{{if eq .FieldError "category"}}<p role="alert">{{.ErrorMessage}}</p>{{end}}
 <label>Descrição
 <textarea name="description" maxlength="2000">{{.Description}}</textarea>
 </label>
@@ -480,9 +571,17 @@ var productFormTmpl = mustParse("catalog.productForm", `
 `)
 
 // argumentFormTmpl renders both the new and edit argument form.
+// SIN-63946: the form now wraps the editor and the live prompt preview
+// in a two-column flex so the operator sees the assembled LLM call
+// next to the textarea. The textarea fires
+// hx-get="/catalog/{ProductID}/arguments/preview-prompt" on every
+// keystroke (300ms debounce) — and `hx-include="closest form"` ships
+// the surrounding scope_type + scope_id so the preview reflects the
+// pinned anchor in real time.
 var argumentFormTmpl = mustParse("catalog.argumentForm", `
-<form hx-{{.Method}}="{{.Action}}" hx-target="#catalog-detail" hx-swap="outerHTML">
-<fieldset>
+<form hx-{{.Method}}="{{.Action}}" hx-target="#catalog-detail" hx-swap="outerHTML" class="catalog-arg-editor">
+<div class="catalog-arg-editor__columns">
+<fieldset class="catalog-arg-editor__form">
 <legend>{{if .IsNew}}Novo argumento{{else}}Editar argumento{{end}}</legend>
 <label>Escopo
 <select name="scope_type"{{if not .IsNew}} disabled{{end}}>
@@ -497,24 +596,39 @@ var argumentFormTmpl = mustParse("catalog.argumentForm", `
 </label>
 {{if eq .FieldError "scope_id"}}<p role="alert">{{.ErrorMessage}}</p>{{end}}
 <label>Texto
-<textarea name="argument_text" required maxlength="4000">{{.Text}}</textarea>
+<textarea name="argument_text" required maxlength="4000"
+  hx-get="/catalog/{{.ProductID}}/arguments/preview-prompt"
+  hx-trigger="keyup changed delay:300ms, change"
+  hx-target="#prompt-preview"
+  hx-swap="outerHTML"
+  hx-include="closest form">{{.Text}}</textarea>
 </label>
 {{if eq .FieldError "argument_text"}}<p role="alert">{{.ErrorMessage}}</p>{{end}}
 <button type="submit">{{if .IsNew}}Criar{{else}}Salvar{{end}}</button>
 </fieldset>
+<aside class="catalog-arg-editor__preview" aria-live="polite">
+{{template "catalog.promptPreview" promptPreviewSeed .ScopeType .ScopeID .Text}}
+</aside>
+</div>
 </form>
 `)
 
 // mustParse builds a template seeded with the shared partials
-// (listPartial, previewCard, detailPartial) plus the supplied body. Every
-// callable template carries the same partial set so {{template …}}
-// resolves in the page, the post-mutation swap, and the standalone
-// fragment paths.
+// (listPartial, previewCard, detailPartial, sidebar, promptPreview)
+// plus the supplied body. Every callable template carries the same
+// partial set so {{template …}} resolves in the page, the
+// post-mutation swap, and the standalone fragment paths.
 func mustParse(name, body string) *template.Template {
 	t := template.New(name).Funcs(funcs)
 	template.Must(t.Parse(previewPartialSrc))
 	template.Must(t.Parse(listPartialSrc))
 	template.Must(t.Parse(detailPartialSrc))
+	template.Must(t.Parse(categorySidebarSrc))
+	template.Must(t.Parse(promptPreviewSrc))
 	template.Must(t.Parse(body))
 	return t
 }
+
+// promptPreviewTmpl is the standalone fragment GET
+// /catalog/{id}/arguments/preview-prompt swaps into the editor pane.
+var promptPreviewTmpl = mustParse("catalog.promptPreview.invoke", `{{template "catalog.promptPreview" .}}`)

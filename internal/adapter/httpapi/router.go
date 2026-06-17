@@ -360,6 +360,29 @@ type Deps struct {
 	//   GET    /c/{slug}
 	WebCampaignPublic http.Handler
 
+	// WebChat is the SIN-64972 public webchat widget surface from
+	// internal/adapter/channels/webchat (ADR-0021). Mounted inside the
+	// tenanted group BUT outside the authed sub-group: the visitor is
+	// anonymous by design, so middleware.TenantScope resolves the
+	// tenant from Host (making tenancy.FromContext work in the handler)
+	// while the standard cookie-CSRF middleware — which lives only on
+	// the authed sub-group — never double-applies over the widget's own
+	// X-Webchat-CSRF double-submit (D3). The wire in
+	// cmd/server/webchat_wire.go bundles the per-tenant origin allowlist
+	// (D2), origin-signature (D4), windowed rate limiter (D5) and the
+	// ReceiveInbound stack, so the slot here is the ready http.Handler.
+	//
+	// Nil keeps /widget/v1/* unmounted; cmd/server passes nil when
+	// DATABASE_URL is unset so partial-stack boots stay green. When
+	// mounted, the per-tenant feature flag still gates every request to
+	// 404 until the tenant is allow-listed (D7).
+	//
+	// Routes mounted:
+	//   POST /widget/v1/session
+	//   POST /widget/v1/message
+	//   GET  /widget/v1/stream
+	WebChat http.Handler
+
 	// WebBranding is the HTMX admin UI for the tenant branding surface
 	// (SIN-63084 / Fase 5). Same envelope as WebCatalog / WebAIPolicy:
 	// RequireAuth installs the principal, RequireAction(iam.
@@ -448,6 +471,45 @@ type Deps struct {
 	//   GET  /inbox/conversations/{id}/messages/{msgID}/status
 	WebInbox http.Handler
 
+	// WebDashboard is the SIN-65008 managerial dashboard HTMX UI handler
+	// from internal/web/dashboard (frontend half of SIN-64963; the
+	// SIN-65007 read-model backs it). When non-nil, the two routes are
+	// mounted in the authed group so they inherit TenantScope + Auth +
+	// CSRF, and each is gated by RequireAction(iam.ActionTenantContactRead)
+	// — satisfied by tenant_atendente AND tenant_gerente, so the only
+	// HTTP-loginable seed user (agent@acme = atendente) reaches it (a
+	// gerente-only gate would 403 the staging smoke; see SIN-63793/63858).
+	//
+	// Routes mounted:
+	//   GET /dashboard
+	//   GET /dashboard/export.csv
+	//
+	// Nil keeps both routes unmounted (chi emits 404) so router tests
+	// that don't exercise the surface keep their pre-PR behaviour; the
+	// wire layer in cmd/server/dashboard_wire.go returns nil when the
+	// metrics read-model is not wired (DATABASE_URL unset).
+	WebDashboard http.Handler
+
+	// WebWallet is the SIN-63942 / UX-F5 gerente wallet UI handler
+	// from internal/web/walletui. When non-nil, the four /wallet*
+	// routes are mounted in the authed group so they inherit
+	// TenantScope + Auth + CSRF, and each is additionally gated by
+	// RequireAction(iam.ActionTenantWalletViewLedger). Gerente is
+	// the only role on the matrix that may access the wallet — the
+	// gate denies atendente / common with a 403 and an audit row.
+	//
+	// Routes mounted:
+	//   GET /wallet
+	//   GET /wallet/topup
+	//   GET /wallet/ledger
+	//   GET /wallet/ledger.csv
+	//
+	// Nil keeps every /wallet* route unmounted (chi emits 404) so
+	// router tests that don't exercise the surface keep their pre-PR
+	// behaviour. The wire layer in cmd/server/walletui_wire.go
+	// returns nil when DATABASE_URL is unset.
+	WebWallet http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -507,6 +569,54 @@ type Deps struct {
 	// is unset the card renders disabled with the standard "Indisponível
 	// neste ambiente" hint.
 	CustomDomainEnabled bool
+}
+
+// WebSurfaces (SIN-64985) returns the mounted/not-mounted state of every
+// auth-gated web surface whose route registration is gated on a
+// `deps.WebX != nil` check in NewRouter. It is the single source of
+// truth for that predicate set: /health (via handler.WithSurfaces)
+// reports it as booleans so an operator can `curl /health` and tell
+// whether a fail-soft `build*Handler` returned nil at boot (router skips
+// the mount → bare 404). The same predicates drive the route gates
+// below and the /hello-tenant index, so this map and those mounts cannot
+// drift.
+//
+// SECURITY: the returned values are booleans only. The wire failure
+// reason (e.g. "web/aipolicy disabled — <DSN error>") is NEVER surfaced
+// here — "mounted | not" is the information ceiling for the
+// unauthenticated /health endpoint. This holds for the PUBLIC surfaces
+// too (campaign_public, public_privacy, chat): whether they are mounted
+// is already inferable by an unauthenticated HTTP probe — mounted yields
+// the surface's own non-404 semantics, nil yields a bare 404 — so the
+// boolean does not widen the attack surface. This does NOT cover the
+// stale-image case (binary built from older source than the running
+// deploy): the map reflects the running binary's wireup, not the source
+// tree.
+//
+// The map MUST enumerate every simple `deps.WebX != nil`-gated web
+// surface so an operator never mistakes an untracked surface for an
+// unmounted one (the false-confidence this guardrail exists to kill).
+// Composite gates (WebLGPD sub-fields, UserMFA sub-fields) are
+// intentionally excluded: they are not a single nil-handler predicate
+// and would need their own multi-field shape — out of scope here.
+func (d Deps) WebSurfaces() map[string]bool {
+	return map[string]bool{
+		"ai_policy":        d.WebAIPolicy != nil,
+		"catalog":          d.WebCatalog != nil,
+		"funnel":           d.WebFunnel != nil,
+		"funnel_rules":     d.WebFunnelRules != nil,
+		"privacy":          d.WebPrivacy != nil,
+		"campaigns":        d.WebCampaigns != nil,
+		"consent":          d.WebConsent != nil,
+		"inbox":            d.WebInbox != nil,
+		"contacts":         d.WebContacts != nil,
+		"campaign_public":  d.WebCampaignPublic != nil,
+		"public_privacy":   d.WebPublicPrivacy != nil,
+		"chat":             d.WebChat != nil,
+		"branding":         d.WebBranding != nil,
+		"wallet":           d.WebWallet != nil,
+		"billing_invoices": d.WebBillingInvoices != nil,
+	}
 }
 
 // LGPDRoutes bundles the two inner handlers and the shared rate-limit
@@ -680,7 +790,7 @@ func NewRouter(deps Deps) http.Handler {
 	// at boot from internal/version (SIN-63146) so cd-stg can detect a
 	// stale `docker compose pull`; empty Deps.CommitSHA renders as
 	// "unknown" inside the handler.
-	r.Get("/health", handler.Health(deps.CommitSHA))
+	r.Get("/health", handler.Health(deps.CommitSHA, handler.WithSurfaces(deps.WebSurfaces())))
 
 	// /metrics is whitelist-mounted: no tenant, no auth, no metrics
 	// recursion. Access control belongs at the network edge (firewall
@@ -748,6 +858,19 @@ func NewRouter(deps Deps) http.Handler {
 		if deps.WebConsent != nil {
 			tenanted.Method(http.MethodGet, "/consent/cookies-banner", deps.WebConsent)
 			tenanted.Method(http.MethodPost, "/consent/cookies", deps.WebConsent)
+		}
+
+		// SIN-64972 / ADR-0021 — public webchat widget. Mounted in the
+		// tenanted group, outside the authed sub-group: the visitor is
+		// anonymous so TenantScope resolves the tenant from Host before
+		// the handler runs, and the standard cookie-CSRF middleware
+		// (authed-only) does not shadow the widget's X-Webchat-CSRF
+		// double-submit. deps.WebChat re-dispatches on the exact
+		// method+path it registered, so the three routes share one slot.
+		if deps.WebChat != nil {
+			tenanted.Method(http.MethodPost, "/widget/v1/session", deps.WebChat)
+			tenanted.Method(http.MethodPost, "/widget/v1/message", deps.WebChat)
+			tenanted.Method(http.MethodGet, "/widget/v1/stream", deps.WebChat)
 		}
 
 		// SIN-63361 — MFA-aware POST /login. When deps.UserMFA.LoginPost
@@ -859,6 +982,14 @@ func NewRouter(deps Deps) http.Handler {
 					LGPDEnabled:         deps.WebLGPD.RequestsPage != nil,
 					MFAEnabled:          deps.UserMFA.Setup != nil,
 					CustomDomainEnabled: deps.CustomDomainEnabled,
+					// SIN-63942 / UX-F5 — wallet UI presence flag.
+					WalletEnabled: deps.WebWallet != nil,
+					// SIN-65008 — managerial dashboard presence flag. Keeps
+					// the post-login index in sync with the /dashboard mount
+					// (memory hello_tenant_sync_on_mount).
+					DashboardEnabled: deps.WebDashboard != nil,
+					// SIN-64977 — contacts management list link.
+					ContactsEnabled: deps.WebContacts != nil,
 				},
 			}))
 			if deps.Authorizer != nil {
@@ -891,6 +1022,29 @@ func NewRouter(deps Deps) http.Handler {
 				webContacts := middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebContacts)
 				authed.Method(http.MethodGet, "/contacts/{contactID}", webContacts)
 				authed.Method(http.MethodPost, "/contacts/identity/split", webContacts)
+
+				// SIN-64977 — contacts management surface (list/search +
+				// edit). The read route (GET /contacts) gates on
+				// ActionTenantContactRead exactly like /hello-tenant; the
+				// edit routes gate on ActionTenantContactUpdate. The seed
+				// "atendente" role holds both actions (authorizer.go),
+				// avoiding the SIN-63793/63858 first-login 403. When
+				// Authorizer is nil (router tests that don't exercise the
+				// authz seam) the routes fall back to RequireAuth-only so
+				// existing suites keep their pre-PR behaviour.
+				contactsRead := webContacts
+				contactsWrite := webContacts
+				if deps.Authorizer != nil {
+					contactsRead = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantContactRead, nil)(deps.WebContacts),
+					)
+					contactsWrite = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantContactUpdate, nil)(deps.WebContacts),
+					)
+				}
+				authed.Method(http.MethodGet, "/contacts", contactsRead)
+				authed.Method(http.MethodGet, "/contacts/{contactID}/edit", contactsWrite)
+				authed.Method(http.MethodPost, "/contacts/{contactID}/edit", contactsWrite)
 			}
 
 			// SIN-62862 — HTMX funnel board UI (SIN-62797 follow-up).
@@ -1154,6 +1308,74 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/inbox/conversations/{id}", webInbox)
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/messages", webInbox)
 				authed.Method(http.MethodGet, "/inbox/conversations/{id}/messages/{msgID}/status", webInbox)
+				// SIN-64979 — conversation-assignment write route. The inner
+				// mux (web/inbox Routes) registers it conditionally on the
+				// AssignConversation dep, but chi enumerates the subtree
+				// route-by-route, so the POST must be listed here too or it
+				// 404s before the handler (the inner-mux handler tests pass
+				// without it — they bypass chi). Same RequireAuth +
+				// RequireAction(ActionTenantInboxRead) envelope as the reads;
+				// the route additionally inherits the authed group's
+				// RequireCSRF gate. When the dep is nil the inner mux returns
+				// 404 for the POST, so listing it here is safe either way.
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/assign", webInbox)
+				// SIN-65004 — ai-assist write route. Same defect class as
+				// the assign route above: the inner mux (web/inbox Routes)
+				// registers it conditionally on AIAssist.Summarizer, but
+				// chi enumerates the subtree route-by-route, so the POST
+				// must be listed here too or it 404s before the handler
+				// (the inner-mux handler tests pass without it — they
+				// bypass chi). Same RequireAuth +
+				// RequireAction(ActionTenantInboxRead) envelope as the
+				// reads; the route additionally inherits the authed group's
+				// RequireCSRF gate. When AIAssist.Summarizer is nil the
+				// inner mux returns 404 for the POST, so listing it here is
+				// safe either way (the feature stays gated).
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/ai-assist", webInbox)
+			}
+
+			// SIN-65008 — managerial dashboard / relatórios surface
+			// (frontend half of SIN-64963; SIN-65007 read-model). Same
+			// envelope as the other web/* handlers: RequireAuth installs
+			// the principal, RequireAction(ActionTenantContactRead) gates
+			// every method. That action is satisfied by atendente AND
+			// gerente, so the seed atendente reaches the page (a
+			// gerente-only gate would 403 the staging smoke). Both routes
+			// are reads; the authed group's RequireCSRF short-circuits
+			// safely on GET. When Authorizer is nil (router tests) the
+			// gate skips and the inner mux still runs with a Principal.
+			if deps.WebDashboard != nil {
+				webDashboard := http.Handler(deps.WebDashboard)
+				if deps.Authorizer != nil {
+					webDashboard = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantContactRead, nil)(webDashboard),
+					)
+				} else {
+					webDashboard = middleware.RequireAuth(middleware.RequireAuthDeps{})(webDashboard)
+				}
+				authed.Method(http.MethodGet, "/dashboard", webDashboard)
+				authed.Method(http.MethodGet, "/dashboard/export.csv", webDashboard)
+			}
+
+			// SIN-63942 / UX-F5 — gerente wallet UI. Four routes share
+			// the RequireAuth + RequireAction envelope: the action is
+			// ActionTenantWalletViewLedger (gerente-only on the ADR-0090
+			// matrix; atendente / common are denied at the gate). When
+			// Authorizer is nil (router tests) the gate skips and the
+			// inner mux still runs with a Principal in context.
+			if deps.WebWallet != nil {
+				webWallet := http.Handler(deps.WebWallet)
+				if deps.Authorizer != nil {
+					webWallet = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantWalletViewLedger, nil)(webWallet),
+					)
+				} else {
+					webWallet = middleware.RequireAuth(middleware.RequireAuthDeps{})(webWallet)
+				}
+				authed.Method(http.MethodGet, "/wallet", webWallet)
+				authed.Method(http.MethodGet, "/wallet/topup", webWallet)
+				authed.Method(http.MethodGet, "/wallet/ledger", webWallet)
+				authed.Method(http.MethodGet, "/wallet/ledger.csv", webWallet)
 			}
 
 			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses

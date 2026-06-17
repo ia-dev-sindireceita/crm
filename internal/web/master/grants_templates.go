@@ -111,6 +111,7 @@ var grantsLayoutTmpl = template.Must(template.New("grants.layout").Funcs(grantsT
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/js/master-grants.js" defer></script>
 </head>
 <body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
   {{template "shell_impersonation_banner" .}}
@@ -159,15 +160,13 @@ var grantsPanelTmpl = template.Must(template.New("grants_panel").Funcs(grantsTem
       <label>
         <input type="radio" name="kind" value="free_subscription_period"
                data-grant-kind-toggle="free"
-               {{if isFreePeriod .Kind}}checked{{end}}
-               onclick="document.querySelectorAll('[data-grant-fields]').forEach(el=>el.hidden=el.dataset.grantFields!==this.value);">
+               {{if isFreePeriod .Kind}}checked{{end}}>
         Período grátis (dias)
       </label>
       <label>
         <input type="radio" name="kind" value="extra_tokens"
                data-grant-kind-toggle="extra"
-               {{if isExtraTokens .Kind}}checked{{end}}
-               onclick="document.querySelectorAll('[data-grant-fields]').forEach(el=>el.hidden=el.dataset.grantFields!==this.value);">
+               {{if isExtraTokens .Kind}}checked{{end}}>
         Tokens extras
       </label>
     </fieldset>

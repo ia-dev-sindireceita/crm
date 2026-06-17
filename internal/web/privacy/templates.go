@@ -103,6 +103,12 @@ var pageTmpl = template.Must(template.New("privacy.page").Parse(`<!doctype html>
         DPA versão <strong>{{.DPAVersion}}</strong> — página gerada em
         <time datetime="{{.GeneratedAt}}">{{.GeneratedAt}}</time>.
       </p>
+      <p class="privacy-print-hint">
+        Para arquivar esta divulgação como PDF, use
+        <kbd>Ctrl</kbd>+<kbd>P</kbd> (ou <kbd>⌘</kbd>+<kbd>P</kbd> no
+        Mac) e selecione &ldquo;Salvar como PDF&rdquo;. A versão do DPA
+        e o carimbo de geração ficam impressos.
+      </p>
     </footer>
   </main>
 </body>

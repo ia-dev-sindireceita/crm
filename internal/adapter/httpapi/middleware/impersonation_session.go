@@ -254,13 +254,15 @@ func withActiveImpersonation(ctx context.Context, s *impersonation.Session) cont
 	return context.WithValue(ctx, activeImpersonationCtxKey{}, s)
 }
 
-// WithActiveImpersonationForTest installs an envelope on the context
-// for tests in external packages. Production callers MUST NOT use this
-// — the middleware is the only path that installs an envelope on the
-// request context. The function is exported so the master package's
-// banner tests can synthesise a request context without standing up
-// the full middleware chain.
-func WithActiveImpersonationForTest(ctx context.Context, s *impersonation.Session) context.Context {
+// InstallActiveImpersonationForTest is the package-private hook
+// (exported only so the sibling middlewaretest subpackage can call it)
+// that installs an envelope on the context without exposing the
+// activeImpersonationCtxKey type. Production callers MUST NOT use it;
+// the only legitimate caller is
+// middlewaretest.WithActiveImpersonation, whose testing.TB parameter
+// guarantees the helper cannot be reached from non-test code.
+// See SIN-63978 / SIN-63956 §F3 for the compile-time-gate rationale.
+func InstallActiveImpersonationForTest(ctx context.Context, s *impersonation.Session) context.Context {
 	return withActiveImpersonation(ctx, s)
 }
 

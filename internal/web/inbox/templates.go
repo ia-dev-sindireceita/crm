@@ -31,14 +31,16 @@ import (
 // them as funcs (rather than computing inside the handler) means the
 // template stays declarative.
 var templateFuncs = template.FuncMap{
-	"relativeTime":  relativeTime,
-	"messageClass":  messageClass,
-	"truncate":      truncate,
-	"isFinalStatus": isFinalStatus,
-	"statusGlyph":   statusGlyph,
-	"statusLabel":   statusLabel,
-	"channelLabel":  channelLabel,
-	"avatarInitial": avatarInitial,
+	"relativeTime":     relativeTime,
+	"relativeTimeLong": relativeTimeLong,
+	"messageClass":     messageClass,
+	"truncate":         truncate,
+	"isFinalStatus":    isFinalStatus,
+	"statusGlyph":      statusGlyph,
+	"statusLabel":      statusLabel,
+	"channelLabel":     channelLabel,
+	"avatarInitial":    avatarInitial,
+	"initials":         initials,
 }
 
 // finalStatuses are the terminal lifecycle states for outbound messages
@@ -110,6 +112,10 @@ func channelLabel(channel string) string {
 		return "WhatsApp"
 	case "instagram":
 		return "Instagram"
+	case "messenger":
+		return "Messenger"
+	case "webchat":
+		return "Webchat"
 	case "facebook":
 		return "Facebook"
 	case "chatbot":
@@ -131,6 +137,62 @@ func avatarInitial(name string) string {
 	}
 	r := []rune(name)
 	return strings.ToUpper(string(r[0]))
+}
+
+// initials derives a 1–2 letter monogram from a display name for the
+// assignee chip (SIN-64968 §2.4). It takes the first letter of the first
+// word and the first letter of the last word; a single-word name yields
+// one letter. Returns "" for empty / whitespace input so the template can
+// branch on it (the unassigned chip renders a dash instead).
+func initials(name string) string {
+	fields := strings.Fields(name)
+	if len(fields) == 0 {
+		return ""
+	}
+	first := []rune(fields[0])
+	out := strings.ToUpper(string(first[0]))
+	if len(fields) > 1 {
+		last := []rune(fields[len(fields)-1])
+		out += strings.ToUpper(string(last[0]))
+	}
+	return out
+}
+
+// relativeTimeLong renders the spelled-out relative timestamp used by the
+// row's <time aria-label> (SIN-64968 §5): "3" is too terse for a screen
+// reader, so the accessible name carries "3 minutos" / "2 horas" / "agora
+// mesmo". Returns "" for the zero time so the caller can omit the
+// aria-label entirely.
+func relativeTimeLong(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "agora mesmo"
+	case d < time.Hour:
+		return plural(int(d/time.Minute), "minuto", "minutos")
+	case d < 24*time.Hour:
+		return plural(int(d/time.Hour), "hora", "horas")
+	default:
+		return plural(int(d/(24*time.Hour)), "dia", "dias")
+	}
+}
+
+// plural renders "<n> <one|many>" picking the singular form for n == 1.
+func plural(n int, one, many string) string {
+	if n <= 1 {
+		return itoa(maxInt(n, 1)) + " " + one
+	}
+	return itoa(n) + " " + many
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // relativeTime renders a coarse "X seconds/minutes/hours/days ago" stamp
@@ -208,15 +270,16 @@ var inboxLayoutTmpl = template.Must(template.New("inbox.layout").Funcs(templateF
   <meta charset="utf-8">
   <title>Inbox</title>
   {{.CSRFMeta}}
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/inbox.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{$.CSPNonce}}" defer></script>
 </head>
 <body {{.HXHeaders}}>
   <main class="inbox-shell" role="main" data-testid="inbox-shell">
     <nav class="inbox-list-pane" aria-label="Conversas" data-testid="inbox-list-pane">
-      {{template "conversation_list" .List}}
+      {{template "inbox_list_region" .List}}
     </nav>
     <section id="inbox-conversation-pane" class="inbox-conversation-pane" aria-live="polite" aria-label="Conversa selecionada" data-testid="inbox-conversation-pane">
       <div class="inbox-empty" role="status">
@@ -234,34 +297,128 @@ var inboxLayoutTmpl = template.Must(template.New("inbox.layout").Funcs(templateF
 </html>
 `))
 
-// conversationListTmpl is the standalone "list of conversations"
-// partial. The layout embeds it on first render; subsequent HTMX
-// requests reuse the same template name so the swap surface is
-// identical.
+// inboxListRegionTmpl wraps the filter bar + the conversation list in a
+// single swap target (SIN-64968). Both the filter controls (hx-target
+// "#conversation-list-region", outerHTML) and the OOB row-active refresh
+// from GET /inbox/conversations/{id} address THIS element by id, so the
+// filter state (active pill / selected channel / "minhas" toggle) is
+// re-rendered server-side alongside the list — no client-side state, no
+// inline on* handlers (CSP of SIN-63977). When OOB is true the wrapper
+// carries hx-swap-oob="true" so HTMX patches it in place from the
+// conversation-view response without disturbing the conversation pane.
+var inboxListRegionTmpl = template.Must(template.New("inbox_list_region").Funcs(templateFuncs).Parse(`<div id="conversation-list-region" class="inbox-list-region"{{if .OOB}} hx-swap-oob="true"{{end}}>
+{{template "inbox_filters" .}}
+{{template "conversation_list" .}}
+</div>
+`))
+
+// inboxFiltersTmpl is the filter bar (SIN-64968 §3 + SIN-64979 §4). State
+// is a group of pill links (hx-get); channel and the assignment queue are
+// <select>s, all firing via hx-trigger="change" (an HTMX attribute — NOT
+// an inline onchange handler, which the strict CSP would
+// render-but-never-execute). The assignment queue is the SIN-64979 "visão
+// de fila": "Todas" (no filter), "Não atribuídas" (unassigned queue), and
+// "Atribuídas a mim" (the session user's conversations) — a single
+// mutually-exclusive <select> rather than two toggles, matching the
+// read-side use case which rejects the unassigned+user combination. Every
+// control re-emits the full filter set (hx-include="closest form" + the
+// pills' explicit hrefs) so combinations accumulate (AND) and the active
+// state survives the swap. The whole region is the target so the active
+// pill re-renders.
+var inboxFiltersTmpl = template.Must(template.New("inbox_filters").Funcs(templateFuncs).Parse(`<form class="inbox-filters" role="search" aria-label="Filtrar conversas"
+      hx-get="/inbox" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">
+  <div class="inbox-filters__group" role="group" aria-label="Estado">
+    <a class="inbox-filters__pill{{if eq .Filters.State "open"}} is-active{{end}}"
+       href="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
+       {{if eq .Filters.State "open"}}aria-current="true"{{end}}
+       hx-get="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Abertas</a>
+    <a class="inbox-filters__pill{{if eq .Filters.State "closed"}} is-active{{end}}"
+       href="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
+       {{if eq .Filters.State "closed"}}aria-current="true"{{end}}
+       hx-get="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Fechadas</a>
+    <a class="inbox-filters__pill{{if eq .Filters.State ""}} is-active{{end}}"
+       href="/inbox?state=&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
+       {{if eq .Filters.State ""}}aria-current="true"{{end}}
+       hx-get="/inbox?state=&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Todas</a>
+  </div>
+  <label class="inbox-filters__field">
+    <span class="visually-hidden">Canal</span>
+    <select name="channel" class="inbox-filters__select" hx-trigger="change" hx-get="/inbox" hx-include="closest form" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">
+      <option value=""{{if eq .Filters.Channel ""}} selected{{end}}>Todos os canais</option>
+      <option value="whatsapp"{{if eq .Filters.Channel "whatsapp"}} selected{{end}}>WhatsApp</option>
+      <option value="instagram"{{if eq .Filters.Channel "instagram"}} selected{{end}}>Instagram</option>
+      <option value="messenger"{{if eq .Filters.Channel "messenger"}} selected{{end}}>Messenger</option>
+      <option value="webchat"{{if eq .Filters.Channel "webchat"}} selected{{end}}>Webchat</option>
+    </select>
+  </label>
+  <label class="inbox-filters__field">
+    <span class="visually-hidden">Fila de atribuição</span>
+    <select name="assigned" class="inbox-filters__select" aria-label="Fila de atribuição" hx-trigger="change" hx-get="/inbox" hx-include="closest form" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">
+      <option value=""{{if and (not .Filters.AssignedMe) (not .Filters.Unassigned)}} selected{{end}}>Todas as filas</option>
+      <option value="unassigned"{{if .Filters.Unassigned}} selected{{end}}>Não atribuídas</option>
+      <option value="me"{{if .Filters.AssignedMe}} selected{{end}}>Atribuídas a mim</option>
+    </select>
+  </label>
+  <input type="hidden" name="state" value="{{.Filters.State}}">
+</form>
+`))
+
+// conversationListTmpl is the conversation list itself (SIN-64968 §1–§2).
+// Each row is a single <a> click target (Fitts) carrying the contact
+// name, last-message snippet (with a "Você:" prefix when the last message
+// was outbound), a relative timestamp, and the channel / awaiting-reply /
+// closed / assignee badges. The row link carries the active filter query
+// params ($.FilterQuery) so opening a conversation re-renders the OOB
+// list under the same filters (CTO ratification of SIN-64966 §4.3,
+// option a — no silent filter reset). The is-waiting / is-active
+// modifiers add the left accent bar + bold name (redundant, non-colour
+// signalling, WCAG 1.4.1).
 //
-// The channel column carries two siblings: a visible <svg> badge (the
-// channel_badge partial) and the existing __channel <span> which
-// preserves a server-rendered text label. CSS hides the text node so
-// only the icon shows visually; the text stays in the AOM so screen
-// readers and the existing regression tests (which look for the
-// literal class+text combination) keep working.
-var conversationListTmpl = template.Must(template.New("conversation_list").Funcs(templateFuncs).Parse(`<ul class="conversation-list" role="list">
+// The hidden .conversation-list__channel span preserves the raw channel
+// slug in the AOM (kept verbatim for the SIN-62919 regression test that
+// scans for the literal class+text combination); the visible channel
+// label is aria-hidden so the channel is not announced twice.
+var conversationListTmpl = template.Must(template.New("conversation_list").Funcs(templateFuncs).Parse(`<ul class="conversation-list" id="conversation-list" role="list">
   {{range .Items}}
   <li class="conversation-list__item" role="listitem">
-    <a href="/inbox/conversations/{{.ID}}"
-       hx-get="/inbox/conversations/{{.ID}}"
+    <a href="/inbox/conversations/{{.ID}}{{$.FilterQuery}}"
+       hx-get="/inbox/conversations/{{.ID}}{{$.FilterQuery}}"
        hx-target="#inbox-conversation-pane"
        hx-swap="innerHTML"
        hx-push-url="true"
-       class="conversation-list__link">
-      {{template "channel_badge" .Channel}}
-      <span class="conversation-list__channel">{{.Channel}}</span>
-      <span class="conversation-list__snippet">{{truncate .Snippet 80}}</span>
-      <time class="conversation-list__time" datetime="{{.LastMessageAt.Format "2006-01-02T15:04:05Z07:00"}}">{{relativeTime .LastMessageAt}}</time>
+       class="conversation-list__link{{if .AwaitingReply}} is-waiting{{end}}{{if .Active}} is-active{{end}}"
+       {{if .Active}}aria-current="page"{{end}}>
+      <span class="conversation-list__lead">
+        {{if .AssigneeLabel}}
+        <span class="assignee-chip" title="{{.AssigneeLabel}}"><span aria-hidden="true">{{.AssigneeInitials}}</span><span class="visually-hidden">Atribuída a {{.AssigneeLabel}}</span></span>
+        {{else}}
+        <span class="assignee-chip assignee-chip--unassigned"><span aria-hidden="true">—</span><span class="visually-hidden">Não atribuída</span></span>
+        {{end}}
+      </span>
+      <span class="conversation-list__main">
+        <span class="conversation-list__topline">
+          <span class="conversation-list__name">{{if .ContactName}}{{.ContactName}}{{else}}Contato sem nome{{end}}</span>
+          <time class="conversation-list__time" datetime="{{.LastMessageAt.Format "2006-01-02T15:04:05Z07:00"}}"{{if not .LastMessageAt.IsZero}} aria-label="Última mensagem há {{relativeTimeLong .LastMessageAt}}"{{end}}>{{relativeTime .LastMessageAt}}</time>
+        </span>
+        <span class="conversation-list__snippet">{{if .OutboundLast}}<span class="conversation-list__snippet-prefix">Você:</span> {{end}}{{truncate .Snippet 80}}</span>
+        <span class="conversation-list__badges">
+          <span class="conversation-list__channel-badge">{{template "channel_badge" .Channel}}<span class="conversation-list__channel-tag" aria-hidden="true">{{channelLabel .Channel}}</span></span>
+          <span class="conversation-list__channel">{{.Channel}}</span>
+          {{if .AwaitingReply}}<span class="waiting-badge"><span class="waiting-badge__dot" aria-hidden="true">●</span> Aguardando resposta</span>{{end}}
+          {{if .Closed}}<span class="state-badge state-badge--closed">Fechada</span>{{end}}
+        </span>
+      </span>
     </a>
   </li>
   {{else}}
-  <li class="conversation-list__empty">Nenhuma conversa.</li>
+  {{if .HasFilters}}
+  <li class="conversation-list__empty conversation-list__empty--filtered">
+    <p class="conversation-list__empty-title">Nenhuma conversa com estes filtros.</p>
+    <a class="conversation-list__empty-clear" hx-get="/inbox" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true" href="/inbox">Limpar filtros</a>
+  </li>
+  {{else}}
+  <li class="conversation-list__empty">Nenhuma conversa. As novas conversas aparecem aqui assim que chegam pelos canais conectados.</li>
+  {{end}}
   {{end}}
 </ul>
 `))
@@ -302,6 +459,7 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
     <h1 class="conversation__title">Conversa</h1>
     {{template "channel_badge" .Channel}}
   </header>
+  {{template "conversation_context" .Context}}
   <ol id="conversation-thread" class="conversation__thread" role="list">
     {{range .Messages}}
       {{template "message_bubble" .}}
@@ -322,6 +480,123 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
   </form>
 </article>
 {{.CustomerPanel}}
+`))
+
+// conversationContextTmpl is the conversation context side panel
+// (SIN-64970, frontend half of SIN-64959). It surfaces the read-only
+// ConversationContextView projection — contact identity, channel,
+// funnel stage, and assignment state — beside the message thread so the
+// operator has the sale context without leaving the conversation.
+//
+// Every block is partial-data tolerant: a missing contact renders
+// "Contato sem nome" and no identity list; a conversation that has never
+// moved on the funnel renders "Sem etapa definida"; an unassigned
+// conversation renders "Não atribuída". When the whole context read was
+// skipped or failed (HasContext=false) the panel collapses to a single
+// "Contexto indisponível" line rather than a half-empty card.
+//
+// Accessibility: the panel is a semantic <aside> with a labelled region
+// per facet (Contato / Canal / Funil / Atribuição). CSP-safe: no inline
+// on*= handlers — the panel is pure server-rendered markup.
+var conversationContextTmpl = template.Must(template.New("conversation_context").Funcs(templateFuncs).Parse(`<aside class="conversation-context" aria-labelledby="conversation-context-title" data-testid="conversation-context">
+  <h2 id="conversation-context-title" class="conversation-context__title">Contexto da conversa</h2>
+{{- if .HasContext}}
+  <section class="conversation-context__section conversation-context__contact" aria-label="Contato" data-testid="conversation-context-contact">
+    <h3 class="conversation-context__subtitle">Contato</h3>
+    <p class="conversation-context__contact-name">{{if .ContactName}}{{.ContactName}}{{else}}Contato sem nome{{end}}</p>
+    {{- if .Identities}}
+    <ul class="conversation-context__identities" role="list">
+      {{- range .Identities}}
+      <li class="conversation-context__identity">
+        {{template "channel_badge" .Channel}}
+        <span class="conversation-context__identity-id">{{.ExternalID}}</span>
+      </li>
+      {{- end}}
+    </ul>
+    {{- end}}
+  </section>
+  <section class="conversation-context__section conversation-context__channel" aria-label="Canal" data-testid="conversation-context-channel">
+    <h3 class="conversation-context__subtitle">Canal</h3>
+    <p class="conversation-context__channel-value">
+      {{template "channel_badge" .Channel}}
+      <span class="conversation-context__channel-label">{{channelLabel .Channel}}</span>
+    </p>
+  </section>
+  <section class="conversation-context__section conversation-context__funnel" aria-label="Etapa do funil" data-testid="conversation-context-funnel">
+    <h3 class="conversation-context__subtitle">Etapa do funil</h3>
+    {{- if .FunnelStageName}}
+    <p class="conversation-context__funnel-stage" data-stage-key="{{.FunnelStageKey}}">{{.FunnelStageName}}</p>
+    {{- else}}
+    <p class="conversation-context__funnel-empty">Sem etapa definida</p>
+    {{- end}}
+  </section>
+  {{template "conversation_assignment" .}}
+{{- else}}
+  <p class="conversation-context__empty" data-testid="conversation-context-empty">Contexto indisponível.</p>
+{{- end}}
+</aside>
+`))
+
+// conversationAssignmentTmpl renders the assignment section of the
+// conversation context panel (SIN-64979). It is also the standalone
+// HTMX swap target for POST /inbox/conversations/{id}/assign responses:
+// the form targets "#conversation-context-assignment" with
+// hx-swap="outerHTML", so the element returned here replaces the old
+// section in place without reloading the full context panel.
+//
+// When .Assignees is non-nil the section renders an interactive
+// dropdown + "Atribuir a mim" shortcut; when nil it degrades to the
+// same read-only "Atribuída / Não atribuída" text the context panel
+// showed before SIN-64979 so unwired deployments keep the same UX.
+//
+// CSP-safe: no inline on*= handlers — the forms use hx-* attributes
+// exclusively. The parent layout's hx-headers body attribute propagates
+// the X-CSRF-Token to all HTMX requests, so no hidden field is needed
+// inside the partial.
+var conversationAssignmentTmpl = template.Must(template.New("conversation_assignment").Funcs(templateFuncs).Parse(`<section id="conversation-context-assignment" class="conversation-context__section conversation-context__assignment" aria-label="Atribuição" data-testid="conversation-context-assignment">
+  <h3 class="conversation-context__subtitle">Atribuição</h3>
+{{- if .Assignees}}
+  <p class="conversation-context__assignment-current">
+    {{- if .AssignedDisplayName}}
+    <span class="assignee-chip" title="{{.AssignedDisplayName}}"><span aria-hidden="true">{{initials .AssignedDisplayName}}</span></span>
+    <span class="conversation-context__assignment-label">{{.AssignedDisplayName}}</span>
+    {{- else if .Assigned}}
+    <span class="assignee-chip assignee-chip--unknown"><span aria-hidden="true">?</span></span>
+    <span class="conversation-context__assignment-label">Atribuída</span>
+    {{- else}}
+    <span class="assignee-chip assignee-chip--unassigned" aria-hidden="true">—</span>
+    <span class="conversation-context__assignment-label conversation-context__assignment-label--unassigned">Não atribuída</span>
+    {{- end}}
+  </p>
+  <form class="conversation-context__assign-form"
+        hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
+        hx-target="#conversation-context-assignment"
+        hx-swap="outerHTML">
+    <label for="assign-target-{{.ConversationIDStr}}" class="visually-hidden">Atribuir a</label>
+    <select id="assign-target-{{.ConversationIDStr}}" name="targetUserID" class="conversation-context__assign-select">
+      {{- range .Assignees}}
+      <option value="{{.UserID}}">{{.DisplayName}}</option>
+      {{- end}}
+    </select>
+    <button type="submit" class="conversation-context__assign-btn">Atribuir</button>
+  </form>
+  {{- if .CurrentUserID}}
+  <form class="conversation-context__assign-me-form"
+        hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
+        hx-target="#conversation-context-assignment"
+        hx-swap="outerHTML">
+    <input type="hidden" name="targetUserID" value="{{.CurrentUserID}}">
+    <button type="submit" class="conversation-context__assign-me-btn">Atribuir a mim</button>
+  </form>
+  {{- end}}
+{{- else}}
+  {{- if .Assigned}}
+  <p class="conversation-context__assignment-value conversation-context__assignment-value--assigned">Atribuída</p>
+  {{- else}}
+  <p class="conversation-context__assignment-value conversation-context__assignment-value--unassigned">Não atribuída</p>
+  {{- end}}
+{{- end}}
+</section>
 `))
 
 // customerPanelTmpl is the right rail. It is rendered both inside the
@@ -396,7 +671,7 @@ var customerPanelTmpl = template.Must(template.New("customer_panel").Funcs(templ
     <section id="ai-assist-panel" class="customer-summary__panel ai-assist__panel" data-testid="customer-summary-panel" aria-live="polite">
       <p class="customer-summary__empty">Clique para gerar um resumo e 3 dicas para fechar a venda.</p>
     </section>
-    <section id="ai-consent-modal" class="ai-consent-modal ai-consent-modal--placeholder" hidden></section>
+    <section id="ai-consent-modal" class="ai-consent-modal" hidden></section>
     {{- else}}
     <p class="customer-summary__empty" data-testid="customer-summary-disabled">IA não está disponível neste tenant.</p>
     {{- end}}
@@ -474,14 +749,27 @@ func init() {
 	// {{template "conversation_list" …}} and so on with one template
 	// tree. Errors here are programmer errors (typos in the template
 	// source) — surface them at process start, not at request time.
-	for _, child := range []*template.Template{conversationListTmpl, conversationViewTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl} {
+	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
 		if _, err := inboxLayoutTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + ": " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl} {
+	// inboxListRegionTmpl is executed standalone for HTMX partial swaps
+	// (filter changes) and OOB refreshes (row activation), so it needs the
+	// filter + list + badge partials registered on its own tree.
+	for _, child := range []*template.Template{inboxFiltersTmpl, conversationListTmpl, channelBadgeTmpl} {
+		if _, err := inboxListRegionTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
+			panic("inbox/web: register " + child.Name() + " in list region: " + err.Error())
+		}
+	}
+	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
+		}
+	}
+	for _, child := range []*template.Template{channelBadgeTmpl, conversationAssignmentTmpl} {
+		if _, err := conversationContextTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
+			panic("inbox/web: register " + child.Name() + " in context: " + err.Error())
 		}
 	}
 	for _, child := range []*template.Template{channelBadgeTmpl} {
@@ -502,7 +790,11 @@ func init() {
 	for _, t := range []*template.Template{
 		messageBubbleTmpl,
 		conversationListTmpl,
+		inboxFiltersTmpl,
+		inboxListRegionTmpl,
 		conversationViewTmpl,
+		conversationContextTmpl,
+		conversationAssignmentTmpl,
 		customerPanelTmpl,
 		channelBadgeTmpl,
 		inboxLayoutTmpl,

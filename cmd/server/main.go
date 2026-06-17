@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -165,7 +166,30 @@ func run(ctx context.Context, addr string) error {
 // runWith is the test-friendly variant of run. The dial seam lets unit
 // tests drive the SIN-62300 webhook wiring without Postgres; production
 // passes defaultWebhookDial via run().
+//
+// runWith binds the public listener up front and hands the live
+// net.Listener to runWithListener. Binding here (rather than letting
+// http.Server.ListenAndServe bind later) means the process owns the port
+// for the whole server lifetime — there is no close-then-rebind window.
+// Tests that need a guaranteed-free port call runWithListener directly
+// with a :0 listener they bound themselves, eliminating the freePort
+// TOCTOU race (SIN-65045).
 func runWith(ctx context.Context, addr string, getenv func(string) string, webhookDial webhookDial) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return runWithListener(ctx, ln, getenv, webhookDial)
+}
+
+// runWithListener serves the public CRM mux on an already-bound listener.
+// The caller owns the listener for the server's whole lifetime; on
+// ctx-cancel srv.Shutdown closes it. Splitting the bind out of the serve
+// loop lets a test pre-bind a :0 listener and read back the real address,
+// so there is never a window where the port is free for another test to
+// grab (SIN-65045).
+func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) string, webhookDial webhookDial) error {
+	addr := ln.Addr().String()
 	mux := newMux()
 
 	// SIN-62300 webhook intake — registered before the custom-domain
@@ -195,6 +219,16 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	if ms != nil {
 		defer ms.Cleanup()
 		ms.Register(mux)
+	}
+
+	// SIN-64971 Instagram inbound webhook → ReceiveInbound (conversation
+	// + contact upsert/identity + dedup). The dedicated /webhooks/instagram
+	// route is more specific than the generic Meta `/webhooks/{channel}/{token}`
+	// pattern, so Go 1.22's mux prefers it.
+	ig := buildInstagramWiring(ctx, getenv)
+	if ig != nil {
+		defer ig.Cleanup()
+		ig.Register(mux)
 	}
 
 	// SIN-62964 PIX Inter webhook receiver. Fail-soft on missing
@@ -294,6 +328,15 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webConsentHandler, webConsentCleanup := buildConsentHandler(ctx, getenv)
 	defer webConsentCleanup()
 
+	// SIN-64974 — HTMX PIX-invoice surface (Fase 4, SIN-62963). The
+	// surface shipped its handler + adapters but was never wired in
+	// cmd/server, so the router's `if deps.WebBillingInvoices != nil`
+	// guard left /billing/invoices* 404'ing in staging (SIN-64964).
+	// Same fail-soft pattern: a nil handler leaves the routes unmounted
+	// when DATABASE_URL / MASTER_OPS_DATABASE_URL is unset.
+	webBillingInvoicesHandler, webBillingInvoicesCleanup := buildWebBillingInvoicesHandler(ctx, getenv)
+	defer webBillingInvoicesCleanup()
+
 	// SIN-63821 — operator inbox HTMX UI (parent SIN-63793). W1 wires
 	// the route shell with stub use cases so the surface mounts cleanly;
 	// W2/W4/W5 land the real channel adapter + WalletDebitor. Same
@@ -302,24 +345,42 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	webInboxHandler, webInboxCleanup := buildInboxHandler(ctx, getenv)
 	defer webInboxCleanup()
 
+	// SIN-63942 / UX-F5 — gerente wallet UI. The wire owns its own
+	// pgxpool and returns nil when DATABASE_URL is unset, leaving the
+	// /wallet* routes unmounted. Same fail-soft pattern as the rest of
+	// the web/* surfaces.
+	webWalletHandler, webWalletCleanup := buildWalletUIHandler(ctx, getenv)
+	defer webWalletCleanup()
+
+	// SIN-65008 — managerial dashboard / relatórios. The SIN-65007
+	// wire owns the metrics pgxpool (its cleanup releases it) and
+	// returns a nil use case when DATABASE_URL is unset; the dashboard
+	// handler wire then returns nil so /dashboard* stays unmounted.
+	metricsDashboardUC, metricsDashboardCleanup := buildMetricsDashboard(ctx, getenv)
+	defer metricsDashboardCleanup()
+	webDashboardHandler := buildDashboardHandler(metricsDashboardUC)
+
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so
 	// Go's ServeMux longer-prefix rule keeps IAM routes out of the
 	// catch-all handler.
 	iamHandler, iamCleanup := buildIAMHandler(ctx, getenv, iamHandlerOpts{
-		WebContacts:      webContactsHandler,
-		WebFunnel:        webFunnelHandler,
-		WebPrivacy:       webPrivacyHandler,
-		WebAIPolicy:      webAIPolicyHandler,
-		WebCatalog:       webCatalogHandler,
-		WebCampaigns:     webCampaignsHandler,
-		WebFunnelRules:   webFunnelRulesHandler,
-		WebBranding:      brandingStack.Handler,
-		WebPublicPrivacy: webPublicPrivacyHandler,
-		WebConsent:       webConsentHandler,
-		WebInbox:         webInboxHandler,
-		Theme:            brandingStack.Theme,
-		Metrics:          metrics,
+		WebContacts:        webContactsHandler,
+		WebFunnel:          webFunnelHandler,
+		WebPrivacy:         webPrivacyHandler,
+		WebAIPolicy:        webAIPolicyHandler,
+		WebCatalog:         webCatalogHandler,
+		WebCampaigns:       webCampaignsHandler,
+		WebFunnelRules:     webFunnelRulesHandler,
+		WebBranding:        brandingStack.Handler,
+		WebPublicPrivacy:   webPublicPrivacyHandler,
+		WebConsent:         webConsentHandler,
+		WebBillingInvoices: webBillingInvoicesHandler,
+		WebInbox:           webInboxHandler,
+		WebDashboard:       webDashboardHandler,
+		WebWallet:          webWalletHandler,
+		Theme:              brandingStack.Theme,
+		Metrics:            metrics,
 		// SIN-63940 / UX-F3 — surface the custom-domain UI gate to
 		// /hello-tenant. The handler itself is built below by
 		// buildCustomDomainHandler; we cannot reuse its `cdHandler !=
@@ -523,7 +584,7 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 	}
 
 	log.Printf("crm: public listener on %s", addr)
-	srvErr := srv.ListenAndServe()
+	srvErr := srv.Serve(ln)
 	workerWG.Wait()
 	if srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
 		return srvErr
@@ -574,6 +635,17 @@ func runInternal(ctx context.Context, addr string, handler http.Handler) error {
 // SIN-63825 / SIN-63793 W6.
 var inboxChannelProviderForHealth atomic.Pointer[string]
 
+// surfacesForHealth carries the web-surface mounted/not map that the
+// router wireup (iamRoutes → httpapi.Deps.WebSurfaces) publishes once at
+// boot, read by healthHandler on every /health request. It uses the same
+// atomic.Pointer discipline as inboxChannelProviderForHealth: the
+// production happens-before via the accept loop does not extend across
+// the sibling cmd/server tests that exercise wireup and healthHandler
+// concurrently. A nil load (a /health probe issued before the router is
+// wired) omits the surfaces field via the WithSurfaces(nil) path, so the
+// legacy JSON shape is preserved. SIN-64985.
+var surfacesForHealth atomic.Pointer[map[string]bool]
+
 // healthHandler is the public /health closure constructed from
 // handler.Health with the build-time commit SHA and the resolved inbox
 // channel provider. It is wired here so the cd-stg smoke gate
@@ -581,14 +653,25 @@ var inboxChannelProviderForHealth atomic.Pointer[string]
 // workflow head SHA, and the SIN-63825 inbox smoke gate can read
 // .inbox_channel_provider. See SIN-63165 for the wireup-shadow bug
 // this var fixes.
+//
+// SIN-64985 — it also reports the surfaces map (web-surface name →
+// mounted boolean) so an operator can diagnose a silently-nil surface
+// (router skips the `deps.WebX != nil` mount → bare 404) with a single
+// `curl /health`, no container-log access. Booleans only; the wire
+// failure reason is never exposed (see handler.WithSurfaces).
 var healthHandler http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
 	var provider string
 	if p := inboxChannelProviderForHealth.Load(); p != nil {
 		provider = *p
 	}
+	var surfaces map[string]bool
+	if s := surfacesForHealth.Load(); s != nil {
+		surfaces = *s
+	}
 	handler.Health(
 		version.CommitSHA(),
 		handler.WithInboxChannelProvider(provider),
+		handler.WithSurfaces(surfaces),
 	).ServeHTTP(w, r)
 }
 

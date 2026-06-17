@@ -87,6 +87,52 @@ func (s *Store) FindByKey(ctx context.Context, tenantID uuid.UUID, key string) (
 	return stage, nil
 }
 
+// FindByID returns the funnel_stage row with (tenant_id, id). RLS hides
+// rows from other tenants, so the result collapses to ErrNotFound for
+// those just like a missing id. It complements FindByKey for callers
+// that hold a stage id rather than a key — e.g. the inbox conversation
+// context read resolves the current stage from a funnel_transition's
+// to_stage_id (SIN-64969). It is intentionally NOT part of the
+// funnel.StageRepository port: the inbox use case declares its own
+// narrow reader interface that this method satisfies structurally, so
+// existing StageRepository implementers stay untouched.
+func (s *Store) FindByID(ctx context.Context, tenantID, stageID uuid.UUID) (*domain.Stage, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("funnel/postgres: FindByID: tenant id is nil")
+	}
+	if stageID == uuid.Nil {
+		return nil, domain.ErrNotFound
+	}
+	var stage *domain.Stage
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `
+			SELECT id, tenant_id, key, label, position, is_default
+			  FROM funnel_stage
+			 WHERE id = $1
+		`, stageID)
+		st := &domain.Stage{}
+		if err := row.Scan(
+			&st.ID,
+			&st.TenantID,
+			&st.Key,
+			&st.Label,
+			&st.Position,
+			&st.IsDefault,
+		); err != nil {
+			return err
+		}
+		stage = st
+		return nil
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("funnel/postgres: FindByID: %w", err)
+	}
+	return stage, nil
+}
+
 // LatestForConversation returns the most-recent transition for the
 // conversation, ordered by transitioned_at DESC (the (tenant_id,
 // conversation_id, transitioned_at DESC) index satisfies this in one

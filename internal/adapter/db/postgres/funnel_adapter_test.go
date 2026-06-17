@@ -181,6 +181,76 @@ func TestFunnelAdapter_FindByKey_EmptyKeyIsNotFound(t *testing.T) {
 	}
 }
 
+// SIN-64969 — FindByID complements FindByKey for callers that hold a
+// stage id (the inbox conversation-context read resolves the current
+// stage from a funnel_transition's to_stage_id).
+
+func TestFunnelAdapter_FindByID_RoundTripsSeededStage(t *testing.T) {
+	db := freshDBWithFunnelAdapter(t)
+	store := newFunnelStore(t, db)
+	tenant := seedFunnelTenant(t, db.AdminPool())
+
+	novo, err := store.FindByKey(context.Background(), tenant, "novo")
+	if err != nil {
+		t.Fatalf("FindByKey novo: %v", err)
+	}
+	got, err := store.FindByID(context.Background(), tenant, novo.ID)
+	if err != nil {
+		t.Fatalf("FindByID(%v): %v", novo.ID, err)
+	}
+	if got.ID != novo.ID || got.Key != "novo" || got.Label != novo.Label {
+		t.Errorf("FindByID = %+v, want id/key/label of %+v", got, novo)
+	}
+	if got.TenantID != tenant {
+		t.Errorf("FindByID TenantID = %v, want %v", got.TenantID, tenant)
+	}
+}
+
+func TestFunnelAdapter_FindByID_UnknownIDReturnsErrNotFound(t *testing.T) {
+	db := freshDBWithFunnelAdapter(t)
+	store := newFunnelStore(t, db)
+	tenant := seedFunnelTenant(t, db.AdminPool())
+
+	_, err := store.FindByID(context.Background(), tenant, uuid.New())
+	if !errors.Is(err, funnel.ErrNotFound) {
+		t.Errorf("FindByID(random) err = %v, want errors.Is(funnel.ErrNotFound)", err)
+	}
+}
+
+func TestFunnelAdapter_FindByID_OtherTenantHiddenByRLS(t *testing.T) {
+	db := freshDBWithFunnelAdapter(t)
+	store := newFunnelStore(t, db)
+	tenantA := seedFunnelTenant(t, db.AdminPool())
+	tenantB := seedFunnelTenant(t, db.AdminPool())
+
+	stageA, err := store.FindByKey(context.Background(), tenantA, "novo")
+	if err != nil {
+		t.Fatalf("FindByKey tenantA: %v", err)
+	}
+	// tenantB cannot see tenantA's stage id — RLS collapses it to
+	// ErrNotFound just like a missing id.
+	if _, err := store.FindByID(context.Background(), tenantB, stageA.ID); !errors.Is(err, funnel.ErrNotFound) {
+		t.Errorf("FindByID(tenantB, tenantA's id) err = %v, want errors.Is(funnel.ErrNotFound)", err)
+	}
+}
+
+func TestFunnelAdapter_FindByID_RejectsZeroTenant(t *testing.T) {
+	db := freshDBWithFunnelAdapter(t)
+	store := newFunnelStore(t, db)
+	if _, err := store.FindByID(context.Background(), uuid.Nil, uuid.New()); err == nil {
+		t.Error("FindByID(uuid.Nil, ...) err = nil, want validation error")
+	}
+}
+
+func TestFunnelAdapter_FindByID_ZeroIDIsNotFound(t *testing.T) {
+	db := freshDBWithFunnelAdapter(t)
+	store := newFunnelStore(t, db)
+	tenant := seedFunnelTenant(t, db.AdminPool())
+	if _, err := store.FindByID(context.Background(), tenant, uuid.Nil); !errors.Is(err, funnel.ErrNotFound) {
+		t.Errorf("FindByID(zero id) err = %v, want errors.Is(funnel.ErrNotFound)", err)
+	}
+}
+
 func TestFunnelAdapter_LatestForConversation_NotFoundOnEmpty(t *testing.T) {
 	db := freshDBWithFunnelAdapter(t)
 	store := newFunnelStore(t, db)

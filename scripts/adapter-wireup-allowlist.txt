@@ -14,6 +14,5 @@
 # Each entry MUST have a one-line comment on the previous line explaining
 # why the orphan is acceptable and naming a tracking issue or owner.
 #
-# As of 2026-05-27 (SIN-63339 ship) every sub-package under
-# internal/adapter/httpapi/ is reachable from cmd/server, so the allowlist
-# is intentionally empty.
+# SIN-63978 / SIN-63956 §F3: testing.TB-gated helper for tests; deliberately not router-mounted (defense-in-depth gate).
+github.com/pericles-luz/crm/internal/adapter/httpapi/middleware/middlewaretest

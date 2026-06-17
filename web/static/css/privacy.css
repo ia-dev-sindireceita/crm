@@ -188,3 +188,118 @@
     min-width: 560px;
   }
 }
+
+/* SIN-62917 / Fase 3 — print-friendly stylesheet so a tenant can
+   "Salvar como PDF" via the browser (Ctrl+P / Cmd+P) and archive
+   the disclosure with the DPA version + timestamp embedded in
+   the footer. Option (c.1) ratified by the board in SIN-62917
+   (request_confirmation 824199bf accepted 2026-05-27).
+
+   Goals:
+   - Fit on a single A4 sheet at default browser print scale
+     (the page is one-screen short already; the table is the
+     densest element).
+   - Drop on-screen-only chrome: muted backgrounds, hover/focus
+     outlines, the screen-only Ctrl+P hint itself.
+   - Keep the load-bearing LGPD content: sub-processor table,
+     DPA version, timestamp, OpenRouter mention.
+*/
+@media print {
+  @page {
+    size: A4;
+    margin: 16mm;
+  }
+
+  body {
+    background: #ffffff;
+    color: #000000;
+  }
+
+  .privacy-shell {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    color: #000000;
+  }
+
+  .privacy-header h1 {
+    font-size: 18pt;
+  }
+
+  .privacy-lede,
+  .privacy-rights p,
+  .privacy-footer p {
+    color: #000000;
+  }
+
+  .privacy-lede a,
+  .privacy-table a {
+    color: #000000;
+    text-decoration: underline;
+  }
+
+  /* Strip the on-screen tinted callouts: ink-heavy backgrounds
+     waste toner and the surrounding borders already partition
+     each section visually. */
+  .privacy-model,
+  .privacy-rights {
+    background: #ffffff;
+    border: 1px solid #000000;
+    border-left-width: 1px;
+    padding: 8pt 12pt;
+  }
+
+  .privacy-model__value {
+    background: #ffffff;
+    color: #000000;
+    border: 1px solid #000000;
+  }
+
+  .privacy-table thead {
+    background: #ffffff;
+  }
+
+  .privacy-table th,
+  .privacy-table td {
+    border-bottom: 1px solid #000000;
+    color: #000000;
+  }
+
+  /* The on-screen amber tint for pending rows is a color-only
+     accessibility crutch in print — the italic "—" placeholder
+     and the "A definir" aria-label already carry the meaning. */
+  .privacy-row--active td,
+  .privacy-row--pending td {
+    background: #ffffff;
+  }
+
+  .privacy-pending {
+    color: #000000;
+  }
+
+  /* Suppress focus outlines: irrelevant on paper. */
+  .privacy-lede a:focus-visible,
+  .privacy-table a:focus-visible {
+    outline: none;
+  }
+
+  /* The Ctrl+P hint is help text for the on-screen viewer only;
+     hide it from the printed output so the archive is clean. */
+  .privacy-print-hint {
+    display: none;
+  }
+
+  /* Avoid page breaks mid-row inside the DPA-required four-column
+     table; each sub-processor row should stay on one page. */
+  .privacy-table tr {
+    page-break-inside: avoid;
+  }
+
+  .privacy-subprocessors {
+    overflow-x: visible;
+  }
+
+  .privacy-table {
+    min-width: 0;
+  }
+}

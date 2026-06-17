@@ -139,3 +139,31 @@ func saveContext(ctx context.Context) context.Context {
 	}
 	return middleware.WithSession(ctx, sess)
 }
+
+// TestIAMRoutesIncludesBranding pins the stdlib-mux dispatch path for
+// the SIN-63084 branding admin surface. The chi router (router.go)
+// mounts GET /branding plus the four /branding/* POSTs inside the
+// authed/tenanted group, but those routes are only reachable if the
+// public stdlib mux delegates the prefixes to the chi router. iamRoutes
+// is that delegation list.
+//
+// SIN-64975: the prefixes were missing here, so every /branding* request
+// fell through to the custom-domain catch-all at "/" and returned 404 in
+// staging even though buildBrandingStack produced a fully-wired, non-nil
+// handler (see TestBuildBrandingStack_ReturnsNonNilHandlerAndTheme).
+// This assertion catches a regression that drops either prefix — the
+// exact "/branding" (GET page) or the "/branding/" subtree (the POSTs).
+func TestIAMRoutesIncludesBranding(t *testing.T) {
+	t.Parallel()
+	want := map[string]bool{"/branding": false, "/branding/": false}
+	for _, r := range iamRoutes {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		}
+	}
+	for route, found := range want {
+		if !found {
+			t.Errorf("iamRoutes does not contain %q — the SIN-63084 branding mount would be unreachable (404 at the custom-domain catch-all)", route)
+		}
+	}
+}

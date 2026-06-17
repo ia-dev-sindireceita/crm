@@ -14,13 +14,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware/middlewaretest"
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/iam/audit"
 	"github.com/pericles-luz/crm/internal/iam/impersonation"
@@ -60,7 +61,7 @@ func bannerCtx(t *testing.T, name, slug string) (context.Context, uuid.UUID) {
 		StartedAt:       time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
 		ExpiresAt:       time.Date(2026, 5, 31, 13, 15, 0, 0, time.UTC),
 	}
-	ctx := middleware.WithActiveImpersonationForTest(context.Background(), sess)
+	ctx := middlewaretest.WithActiveImpersonation(t, context.Background(), sess)
 	return ctx, sess.TargetTenantID
 }
 
@@ -219,6 +220,15 @@ func TestGrantRequestDetail_RendersSelfApproveGuard(t *testing.T) {
 	}
 	if strings.Contains(rendered, `data-approve-trigger="true"`) {
 		t.Fatal("approve button must not render for own request (defense in depth on top of 422)")
+	}
+	// SIN-63980 — spec §4.3 requires hiding both forms entirely; no
+	// approve/reject <form action="…"> markup may leak into the DOM
+	// for the self-creator branch.
+	if regexp.MustCompile(`action="/master/grants/requests/[^"]+/approve"`).MatchString(rendered) {
+		t.Fatal("approve form markup must not render for self-creator (spec §4.3 — hide both forms entirely)")
+	}
+	if regexp.MustCompile(`action="/master/grants/requests/[^"]+/reject"`).MatchString(rendered) {
+		t.Fatal("reject form markup must not render for self-creator (spec §4.3 — hide both forms entirely)")
 	}
 }
 

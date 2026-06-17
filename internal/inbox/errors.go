@@ -53,6 +53,23 @@ var ErrInvalidAssignee = errors.New("inbox: invalid assignee user id")
 // the failure as a clean domain error instead of a SQLSTATE 23514.
 var ErrInvalidLeadReason = errors.New("inbox: invalid lead reason")
 
+// ErrUserNotAssignable is returned by the AssignConversation use case when
+// the target user is not eligible to lead a conversation under the tenant:
+// either the user does not exist under the tenant scope (cross-tenant /
+// unknown id) or the user's tenant role is not one of the inbox roles
+// (tenant_atendente / tenant_gerente). It is the single deny-by-default
+// signal for both the tenant-isolation and the role-gate checks so a
+// caller cannot tell "wrong tenant" from "wrong role".
+var ErrUserNotAssignable = errors.New("inbox: user is not assignable to conversations")
+
+// ErrAlreadyAssigned is returned by the AssignConversation use case when
+// the conversation's current lead is already the requested target user.
+// Re-assigning to the same operator is a no-op against the append-only
+// ledger; surfacing a typed error (rather than silently writing a
+// duplicate history row) lets the UI report "já é o responsável" and keeps
+// assignment_history free of no-op churn.
+var ErrAlreadyAssigned = errors.New("inbox: conversation already assigned to that user")
+
 // ErrInvalidDirection is returned by NewMessage when direction is not
 // one of MessageDirectionIn / MessageDirectionOut.
 var ErrInvalidDirection = errors.New("inbox: invalid message direction")

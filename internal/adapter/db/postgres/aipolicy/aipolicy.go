@@ -69,13 +69,14 @@ func (s *Store) Get(ctx context.Context, tenantID uuid.UUID, scopeType domain.Sc
 		row := tx.QueryRow(ctx, `
 			SELECT tenant_id, scope_type, scope_id,
 			       model, prompt_version, tone, language,
-			       ai_enabled, anonymize, opt_in,
+			       ai_enabled, anonymize, opt_in, structured_fields,
 			       created_at, updated_at
 			  FROM ai_policy
 			 WHERE scope_type = $1
 			   AND scope_id   = $2
 		`, string(scopeType), scopeID)
 		var scopeStr string
+		var fields []string
 		if err := row.Scan(
 			&policy.TenantID,
 			&scopeStr,
@@ -87,12 +88,17 @@ func (s *Store) Get(ctx context.Context, tenantID uuid.UUID, scopeType domain.Sc
 			&policy.AIEnabled,
 			&policy.Anonymize,
 			&policy.OptIn,
+			&fields,
 			&policy.CreatedAt,
 			&policy.UpdatedAt,
 		); err != nil {
 			return err
 		}
 		policy.ScopeType = domain.ScopeType(scopeStr)
+		if fields == nil {
+			fields = []string{}
+		}
+		policy.StructuredFields = fields
 		found = true
 		return nil
 	})
@@ -122,23 +128,28 @@ func (s *Store) Upsert(ctx context.Context, p domain.Policy) error {
 		return fmt.Errorf("aipolicy/postgres: Upsert: %w", domain.ErrInvalidScopeID)
 	}
 
+	fields := p.StructuredFields
+	if fields == nil {
+		fields = []string{}
+	}
 	return postgres.WithTenant(ctx, s.pool, p.TenantID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO ai_policy
 			  (tenant_id, scope_type, scope_id,
 			   model, prompt_version, tone, language,
-			   ai_enabled, anonymize, opt_in)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			   ai_enabled, anonymize, opt_in, structured_fields)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			ON CONFLICT (tenant_id, scope_type, scope_id)
 			DO UPDATE SET
-			   model          = EXCLUDED.model,
-			   prompt_version = EXCLUDED.prompt_version,
-			   tone           = EXCLUDED.tone,
-			   language       = EXCLUDED.language,
-			   ai_enabled     = EXCLUDED.ai_enabled,
-			   anonymize      = EXCLUDED.anonymize,
-			   opt_in         = EXCLUDED.opt_in,
-			   updated_at     = now()
+			   model             = EXCLUDED.model,
+			   prompt_version    = EXCLUDED.prompt_version,
+			   tone              = EXCLUDED.tone,
+			   language          = EXCLUDED.language,
+			   ai_enabled        = EXCLUDED.ai_enabled,
+			   anonymize         = EXCLUDED.anonymize,
+			   opt_in            = EXCLUDED.opt_in,
+			   structured_fields = EXCLUDED.structured_fields,
+			   updated_at        = now()
 		`,
 			p.TenantID,
 			string(p.ScopeType),
@@ -150,6 +161,7 @@ func (s *Store) Upsert(ctx context.Context, p domain.Policy) error {
 			p.AIEnabled,
 			p.Anonymize,
 			p.OptIn,
+			fields,
 		)
 		if err != nil {
 			return fmt.Errorf("aipolicy/postgres: Upsert: %w", err)
@@ -172,7 +184,7 @@ func (s *Store) List(ctx context.Context, tenantID uuid.UUID) ([]domain.Policy, 
 		rows, err := tx.Query(ctx, `
 			SELECT tenant_id, scope_type, scope_id,
 			       model, prompt_version, tone, language,
-			       ai_enabled, anonymize, opt_in,
+			       ai_enabled, anonymize, opt_in, structured_fields,
 			       created_at, updated_at
 			  FROM ai_policy
 			 ORDER BY scope_type, scope_id
@@ -184,6 +196,7 @@ func (s *Store) List(ctx context.Context, tenantID uuid.UUID) ([]domain.Policy, 
 		for rows.Next() {
 			var p domain.Policy
 			var scopeStr string
+			var fields []string
 			if err := rows.Scan(
 				&p.TenantID,
 				&scopeStr,
@@ -195,12 +208,17 @@ func (s *Store) List(ctx context.Context, tenantID uuid.UUID) ([]domain.Policy, 
 				&p.AIEnabled,
 				&p.Anonymize,
 				&p.OptIn,
+				&fields,
 				&p.CreatedAt,
 				&p.UpdatedAt,
 			); err != nil {
 				return err
 			}
 			p.ScopeType = domain.ScopeType(scopeStr)
+			if fields == nil {
+				fields = []string{}
+			}
+			p.StructuredFields = fields
 			out = append(out, p)
 		}
 		return rows.Err()

@@ -167,6 +167,12 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /catalog/{id}/arguments/{arg_id}/edit", h.editArgumentForm)
 	mux.HandleFunc("PATCH /catalog/{id}/arguments/{arg_id}", h.updateArgument)
 	mux.HandleFunc("DELETE /catalog/{id}/arguments/{arg_id}", h.deleteArgument)
+	// SIN-63946: live prompt preview while the operator edits an
+	// argument. Bound to the product (not a specific argument) because
+	// the new-argument form has no argument id yet — both forms POST
+	// the same query-string shape (scope_type, scope_id,
+	// argument_text).
+	mux.HandleFunc("GET /catalog/{id}/arguments/preview-prompt", h.previewPrompt)
 }
 
 // ---------------------------------------------------------------------------
@@ -189,15 +195,50 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
 		return
 	}
+	filter := parseListFilter(r)
+	categories := buildCategoryCounts(products)
+	filtered := applyListFilter(products, filter)
 	h.writeHTML(w, http.StatusOK, pageTmpl, pageData{
 		TenantName:       tenant.Name,
 		GeneratedAt:      h.deps.Now().UTC().Format(time.RFC3339),
-		Rows:             rowsFromProducts(products),
+		Rows:             rowsFromProducts(filtered),
+		Categories:       categories,
+		Filter:           filter,
 		CSRFMeta:         csrf.MetaTag(token),
 		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 	})
+}
+
+// previewPrompt is the live-preview endpoint the argument editor calls
+// on every keystroke (hx-trigger="keyup changed delay:300ms"). It
+// returns a small HTML fragment that re-renders the system / user /
+// argument segments in-place. Render errors are swallowed by writeHTML
+// so a transient render hiccup never 500s the live preview.
+func (h *Handler) previewPrompt(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	productID, ok := parseProductID(r)
+	if !ok {
+		http.Error(w, "invalid product id", http.StatusBadRequest)
+		return
+	}
+	productName := ""
+	if p, perr := h.deps.ProductReader.GetByID(r.Context(), tenant.ID, productID); perr == nil && p != nil {
+		productName = p.Name()
+	}
+	q := r.URL.Query()
+	preview := BuildPromptPreview(
+		productName,
+		strings.TrimSpace(q.Get("scope_type")),
+		strings.TrimSpace(q.Get("scope_id")),
+		q.Get("argument_text"),
+	)
+	h.writeHTML(w, http.StatusOK, promptPreviewTmpl, preview)
 }
 
 func (h *Handler) newProductForm(w http.ResponseWriter, _ *http.Request) {
@@ -225,17 +266,30 @@ func (h *Handler) createProduct(w http.ResponseWriter, r *http.Request) {
 			Method: "post",
 			IsNew:  true,
 			Name:   in.Name, Description: in.Description, PriceCents: in.PriceCents, TagsRaw: in.TagsRaw,
+			Category: in.Category,
 		}, verr)
 		return
 	}
-	p, err := catalog.NewProduct(tenant.ID, in.Name, in.Description, in.PriceCents, in.Tags, h.deps.Now().UTC())
+	now := h.deps.Now().UTC()
+	p, err := catalog.NewProduct(tenant.ID, in.Name, in.Description, in.PriceCents, in.Tags, now)
 	if err != nil {
 		h.renderProductFormError(w, http.StatusUnprocessableEntity, productFormData{
 			Action: "/catalog",
 			Method: "post",
 			IsNew:  true,
 			Name:   in.Name, Description: in.Description, PriceCents: in.PriceCents, TagsRaw: in.TagsRaw,
+			Category: in.Category,
 		}, formError("name", domainProductMessage(err)))
+		return
+	}
+	if err := p.SetCategory(in.Category, now); err != nil {
+		h.renderProductFormError(w, http.StatusUnprocessableEntity, productFormData{
+			Action: "/catalog",
+			Method: "post",
+			IsNew:  true,
+			Name:   in.Name, Description: in.Description, PriceCents: in.PriceCents, TagsRaw: in.TagsRaw,
+			Category: in.Category,
+		}, formError("category", domainProductMessage(err)))
 		return
 	}
 	actor := h.deps.UserID(r)
@@ -320,6 +374,7 @@ func (h *Handler) editProductForm(w http.ResponseWriter, r *http.Request) {
 		Description: p.Description(),
 		PriceCents:  p.PriceCents(),
 		TagsRaw:     strings.Join(p.Tags(), ", "),
+		Category:    p.Category(),
 	})
 }
 
@@ -354,17 +409,19 @@ func (h *Handler) updateProduct(w http.ResponseWriter, r *http.Request) {
 			Action: formAction,
 			Method: "patch",
 			Name:   in.Name, Description: in.Description, PriceCents: in.PriceCents, TagsRaw: in.TagsRaw,
+			Category: in.Category,
 		}, verr)
 		return
 	}
-	// Replay the update through HydrateProduct + Rename/SetPrice so we
-	// preserve created_at and bounce the same validation rules the
+	// Replay the update through HydrateProductFull + Rename/SetPrice so
+	// we preserve created_at and bounce the same validation rules the
 	// constructor enforces.
 	now := h.deps.Now().UTC()
-	updated := catalog.HydrateProduct(existing.ID(), existing.TenantID(),
-		in.Name, in.Description, in.PriceCents, in.Tags, existing.CreatedAt(), now)
-	// HydrateProduct skips invariants; re-run NewProduct against the
-	// new field set to surface ErrInvalidProduct shaped errors and
+	updated := catalog.HydrateProductFull(existing.ID(), existing.TenantID(),
+		in.Name, in.Description, in.PriceCents, in.Tags, in.Category,
+		existing.CreatedAt(), now)
+	// HydrateProductFull skips invariants; re-run NewProduct against
+	// the new field set to surface ErrInvalidProduct shaped errors and
 	// re-clean tags. We discard the resulting product and copy the
 	// validated state via a fresh hydrate so the persisted id remains
 	// stable. If NewProduct rejects, surface the error in the form.
@@ -373,7 +430,17 @@ func (h *Handler) updateProduct(w http.ResponseWriter, r *http.Request) {
 			Action: formAction,
 			Method: "patch",
 			Name:   in.Name, Description: in.Description, PriceCents: in.PriceCents, TagsRaw: in.TagsRaw,
+			Category: in.Category,
 		}, formError("name", domainProductMessage(derr)))
+		return
+	}
+	if cerr := updated.SetCategory(in.Category, now); cerr != nil {
+		h.renderProductFormError(w, http.StatusUnprocessableEntity, productFormData{
+			Action: formAction,
+			Method: "patch",
+			Name:   in.Name, Description: in.Description, PriceCents: in.PriceCents, TagsRaw: in.TagsRaw,
+			Category: in.Category,
+		}, formError("category", domainProductMessage(cerr)))
 		return
 	}
 	actor := h.deps.UserID(r)
@@ -792,6 +859,7 @@ type productFormInput struct {
 	PriceCents  int
 	Tags        []string
 	TagsRaw     string
+	Category    string
 }
 
 func parseProductForm(r *http.Request) (productFormInput, *FormError) {
@@ -799,6 +867,10 @@ func parseProductForm(r *http.Request) (productFormInput, *FormError) {
 		Name:        strings.TrimSpace(r.Form.Get("name")),
 		Description: r.Form.Get("description"),
 		TagsRaw:     r.Form.Get("tags"),
+		Category:    strings.TrimSpace(r.Form.Get("category")),
+	}
+	if len(out.Category) > catalog.MaxCategoryLen {
+		return out, formError("category", fmt.Sprintf("máximo %d caracteres", catalog.MaxCategoryLen))
 	}
 	if out.Name == "" {
 		return out, formError("name", "nome do produto é obrigatório")

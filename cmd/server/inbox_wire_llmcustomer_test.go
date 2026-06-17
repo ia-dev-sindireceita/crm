@@ -728,6 +728,27 @@ func (r *inMemoryInboxRepo) conversationCount() int {
 	return len(r.conversations)
 }
 
+// Assignment ledger stubs — satisfy fakellmRepository (SIN-64979).
+// The integration test does not exercise the assign path, so no-op
+// implementations are sufficient; they keep the binary compilable so
+// the existing bootstrap/send/reply loop continues to run.
+
+func (r *inMemoryInboxRepo) AppendHistory(_ context.Context, tenantID, conversationID, userID uuid.UUID, reason inbox.LeadReason) (*inbox.Assignment, error) {
+	return &inbox.Assignment{TenantID: tenantID, ConversationID: conversationID, UserID: userID, Reason: reason}, nil
+}
+
+func (r *inMemoryInboxRepo) LatestAssignment(_ context.Context, _, _ uuid.UUID) (*inbox.Assignment, error) {
+	return nil, inbox.ErrNotFound
+}
+
+func (r *inMemoryInboxRepo) SetConversationLead(_ context.Context, _, _, _ uuid.UUID) error {
+	return nil
+}
+
+func (r *inMemoryInboxRepo) ListHistory(_ context.Context, _, _ uuid.UUID) ([]*inbox.Assignment, error) {
+	return nil, nil
+}
+
 // inMemoryContactsRepo is a tiny contacts.Repository fake that mirrors
 // the postgres adapter's "find by channel identity / save" contract.
 type inMemoryContactsRepo struct {
@@ -781,4 +802,33 @@ func (r *inMemoryContactsRepo) FindByChannelIdentity(_ context.Context, tenantID
 		return nil, contacts.ErrNotFound
 	}
 	return c, nil
+}
+
+// List and Update were appended when contacts.Repository grew (SIN-64976)
+// so this llmcustomer-wire fake still satisfies the port. The llmcustomer
+// flow does not exercise them, so they are minimal tenant-scoped
+// implementations rather than full search/pagination; the contacts
+// management use-case tests cover that behaviour against their own fake and
+// the real Postgres adapter.
+func (r *inMemoryContactsRepo) List(_ context.Context, tenantID uuid.UUID, _ contacts.ListFilter) ([]*contacts.Contact, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*contacts.Contact
+	for _, c := range r.byID {
+		if c.TenantID == tenantID {
+			out = append(out, c)
+		}
+	}
+	return out, len(out), nil
+}
+
+func (r *inMemoryContactsRepo) Update(_ context.Context, c *contacts.Contact) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.byID[c.ID]
+	if !ok || existing.TenantID != c.TenantID {
+		return contacts.ErrNotFound
+	}
+	r.byID[c.ID] = c
+	return nil
 }
