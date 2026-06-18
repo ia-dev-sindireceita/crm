@@ -527,17 +527,40 @@
 
 .conversation-context__contact-name,
 .conversation-context__channel-label,
-.conversation-context__funnel-stage,
-.conversation-context__funnel-empty,
 .conversation-context__assignment-label {
   margin: 0;
   color: var(--text-default);
   font-weight: var(--font-medium);
 }
 
-.conversation-context__funnel-empty,
 .conversation-context__assignment-label--unassigned,
 .conversation-context__assignment-value--unassigned {
+  color: var(--text-muted);
+  font-weight: var(--font-regular);
+}
+
+/* Funnel stage as a pill chip (SIN-65156): bordered token-surface chip so
+   the stage reads as a discrete state, not body copy. Colour (if any, via
+   data-stage-key) is REINFORCEMENT — the stage name text is always present
+   for WCAG colour-independence. The "Sem etapa" empty state reuses the same
+   chip shape with muted text so the strip height stays constant. Contrast
+   is measured against --surface-1 (the strip background), not white. */
+.conversation-context__funnel-pill {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-default);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+}
+
+.conversation-context__funnel-pill--empty {
   color: var(--text-muted);
   font-weight: var(--font-regular);
 }
@@ -608,6 +631,52 @@
 .conversation-context__assign-btn:hover,
 .conversation-context__assign-me-btn:hover {
   background: var(--surface-2);
+}
+
+/* Assignment editor collapsed behind a native <details> (SIN-65156): the
+   assignee chip + name stay visible above; the select + buttons live inside
+   so the compact strip is not dominated by the form. Native <details> is
+   CSP-safe (no JS, no on*=/hx-on:* handlers). It resets to closed after the
+   hx-swap re-renders the section — acceptable. */
+.conversation-context__assign-details {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* <summary> is the interactive disclosure target: meets the hit-target
+   minimum, reads as clickable, and styles like the inline action buttons.
+   :focus-visible is inherited from the app-shell focus ring. */
+.conversation-context__assign-summary {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: var(--hit-target-min);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text-default);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  list-style: none;
+}
+
+.conversation-context__assign-summary::-webkit-details-marker {
+  display: none;
+}
+
+.conversation-context__assign-summary:hover {
+  background: var(--surface-2);
+}
+
+/* Forms inside the open disclosure wrap onto their own rows rather than
+   stretching the strip tall while closed. */
+.conversation-context__assign-details[open] .conversation-context__assign-form,
+.conversation-context__assign-details[open] .conversation-context__assign-me-form {
+  margin-top: var(--space-1);
 }
 
 .conversation-context__empty {

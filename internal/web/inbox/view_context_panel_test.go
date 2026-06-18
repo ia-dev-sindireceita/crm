@@ -196,6 +196,123 @@ func TestContextPanel_ReadErrorRendersUnavailable(t *testing.T) {
 	}
 }
 
+// TestContextPanel_FunnelStageRendersAsPill is the SIN-65156 refinement:
+// the funnel stage is no longer a plain paragraph but a bordered pill chip.
+// The stage name text is always present (WCAG colour-independence — any
+// data-stage-key colouring is reinforcement only) and the data-stage-key
+// hook is preserved.
+func TestContextPanel_FunnelStageRendersAsPill(t *testing.T) {
+	t.Parallel()
+	ctxUC := &fixedContext{view: inboxusecase.ConversationContextView{
+		Channel:         "whatsapp",
+		FunnelStageKey:  "negociacao",
+		FunnelStageName: "Negociação",
+	}}
+	_, body := renderView(t, ctxUC)
+	frag := contextFragment(t, body)
+	for _, want := range []string{
+		`class="conversation-context__funnel-pill"`,
+		`data-stage-key="negociacao"`,
+		"Negociação",
+	} {
+		if !strings.Contains(frag, want) {
+			t.Errorf("funnel pill missing %q\nfragment=%s", want, frag)
+		}
+	}
+	// The old plain-paragraph funnel classes are replaced by the pill.
+	for _, gone := range []string{
+		`class="conversation-context__funnel-stage"`,
+		`class="conversation-context__funnel-empty"`,
+	} {
+		if strings.Contains(frag, gone) {
+			t.Errorf("stale funnel paragraph class %q still rendered\nfragment=%s", gone, frag)
+		}
+	}
+}
+
+// TestContextPanel_FunnelEmptyRendersAsMutedPill confirms the "no stage"
+// state reuses the same pill shape (constant strip height) with the muted
+// modifier rather than a differently-shaped paragraph.
+func TestContextPanel_FunnelEmptyRendersAsMutedPill(t *testing.T) {
+	t.Parallel()
+	ctxUC := &fixedContext{view: inboxusecase.ConversationContextView{Channel: "instagram"}}
+	_, body := renderView(t, ctxUC)
+	frag := contextFragment(t, body)
+	if !strings.Contains(frag, "conversation-context__funnel-pill--empty") {
+		t.Errorf("empty funnel missing muted pill modifier\nfragment=%s", frag)
+	}
+	if !strings.Contains(frag, "Sem etapa definida") {
+		t.Errorf("empty funnel missing copy\nfragment=%s", frag)
+	}
+}
+
+// TestContextPanel_AssignmentCollapsedInDetails is the SIN-65156 refinement:
+// the assignment editor (select + buttons) is collapsed behind a native
+// <details>/<summary> so the compact metadata strip is not dominated by the
+// form. The assignee chip + name stay visible above the disclosure, and the
+// SIN-64979 swap contract (section id + hx-target/hx-swap=outerHTML) MUST be
+// preserved exactly so the assign POST keeps swapping in place. The
+// disclosure is pure markup — no inline event handlers (CSP-strict).
+func TestContextPanel_AssignmentCollapsedInDetails(t *testing.T) {
+	t.Parallel()
+	tenant, conv := uuid.New(), uuid.New()
+	me, assigned := uuid.New(), uuid.New()
+	messages := &stubMessages{res: inboxusecase.ListMessagesResult{Items: []inboxusecase.MessageView{
+		{ID: uuid.New(), ConversationID: conv, Direction: "in", Body: "olá", Status: "delivered"},
+	}}}
+	h, err := webinbox.New(webinbox.Deps{
+		ListConversations: &stubLister{},
+		ListMessages:      messages,
+		SendOutbound:      &stubSender{},
+		GetMessage:        &stubGetMessage{},
+		ConversationContext: &fixedContext{view: inboxusecase.ConversationContextView{
+			Channel:        "whatsapp",
+			Assigned:       true,
+			AssignedUserID: &assigned,
+		}},
+		ListAssignable: &stubListAssignable{rows: []webinbox.AssignableRow{
+			{UserID: assigned, DisplayName: "Ana Lima"},
+			{UserID: me, DisplayName: "Eu Mesmo"},
+		}},
+		CSRFToken: func(*http.Request) string { return "tok" },
+		UserID:    func(*http.Request) uuid.UUID { return me },
+	})
+	if err != nil {
+		t.Fatalf("webinbox.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	r := httptest.NewRequest(http.MethodGet, "/inbox/conversations/"+conv.String(), nil)
+	r = r.WithContext(tenancy.WithContext(r.Context(), &tenancy.Tenant{ID: tenant}))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%q", rec.Code, rec.Body.String())
+	}
+	frag := contextFragment(t, rec.Body.String())
+	for _, want := range []string{
+		`<details class="conversation-context__assign-details"`,
+		`<summary class="conversation-context__assign-summary">Alterar</summary>`,
+		// SIN-64979 swap contract — must survive the <details> wrapping.
+		`id="conversation-context-assignment"`,
+		`hx-target="#conversation-context-assignment"`,
+		`hx-swap="outerHTML"`,
+		// The assignee identity stays visible above the disclosure.
+		"Ana Lima",
+	} {
+		if !strings.Contains(frag, want) {
+			t.Errorf("collapsed assignment missing %q\nfragment=%s", want, frag)
+		}
+	}
+	// CSP-strict: the disclosure is pure server markup — no inline handlers.
+	for _, banned := range []string{"hx-on", " onclick", " ontoggle="} {
+		if strings.Contains(frag, banned) {
+			t.Errorf("assignment disclosure leaked inline handler %q\nfragment=%s", banned, frag)
+		}
+	}
+}
+
 // TestContextPanel_AssistEnabledRendersFunctionally is the deliverable-3
 // confirmation: with AssistDeps.Summarizer wired (+ policy enabled) the
 // view renders the assist button, the #ai-assist-panel swap target, and

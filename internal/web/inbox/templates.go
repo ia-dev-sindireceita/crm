@@ -567,9 +567,9 @@ var conversationContextTmpl = template.Must(template.New("conversation_context")
   <section class="conversation-context__section conversation-context__funnel" aria-label="Etapa do funil" data-testid="conversation-context-funnel">
     <h3 class="conversation-context__subtitle">Etapa do funil</h3>
     {{- if .FunnelStageName}}
-    <p class="conversation-context__funnel-stage" data-stage-key="{{.FunnelStageKey}}">{{.FunnelStageName}}</p>
+    <span class="conversation-context__funnel-pill" data-stage-key="{{.FunnelStageKey}}">{{.FunnelStageName}}</span>
     {{- else}}
-    <p class="conversation-context__funnel-empty">Sem etapa definida</p>
+    <span class="conversation-context__funnel-pill conversation-context__funnel-pill--empty">Sem etapa definida</span>
     {{- end}}
   </section>
   {{template "conversation_assignment" .}}
@@ -610,27 +610,30 @@ var conversationAssignmentTmpl = template.Must(template.New("conversation_assign
     <span class="conversation-context__assignment-label conversation-context__assignment-label--unassigned">Não atribuída</span>
     {{- end}}
   </p>
-  <form class="conversation-context__assign-form"
-        hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
-        hx-target="#conversation-context-assignment"
-        hx-swap="outerHTML">
-    <label for="assign-target-{{.ConversationIDStr}}" class="visually-hidden">Atribuir a</label>
-    <select id="assign-target-{{.ConversationIDStr}}" name="targetUserID" class="conversation-context__assign-select">
-      {{- range .Assignees}}
-      <option value="{{.UserID}}">{{.DisplayName}}</option>
-      {{- end}}
-    </select>
-    <button type="submit" class="conversation-context__assign-btn">Atribuir</button>
-  </form>
-  {{- if .CurrentUserID}}
-  <form class="conversation-context__assign-me-form"
-        hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
-        hx-target="#conversation-context-assignment"
-        hx-swap="outerHTML">
-    <input type="hidden" name="targetUserID" value="{{.CurrentUserID}}">
-    <button type="submit" class="conversation-context__assign-me-btn">Atribuir a mim</button>
-  </form>
-  {{- end}}
+  <details class="conversation-context__assign-details">
+    <summary class="conversation-context__assign-summary">Alterar</summary>
+    <form class="conversation-context__assign-form"
+          hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
+          hx-target="#conversation-context-assignment"
+          hx-swap="outerHTML">
+      <label for="assign-target-{{.ConversationIDStr}}" class="visually-hidden">Atribuir a</label>
+      <select id="assign-target-{{.ConversationIDStr}}" name="targetUserID" class="conversation-context__assign-select">
+        {{- range .Assignees}}
+        <option value="{{.UserID}}">{{.DisplayName}}</option>
+        {{- end}}
+      </select>
+      <button type="submit" class="conversation-context__assign-btn">Atribuir</button>
+    </form>
+    {{- if .CurrentUserID}}
+    <form class="conversation-context__assign-me-form"
+          hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
+          hx-target="#conversation-context-assignment"
+          hx-swap="outerHTML">
+      <input type="hidden" name="targetUserID" value="{{.CurrentUserID}}">
+      <button type="submit" class="conversation-context__assign-me-btn">Atribuir a mim</button>
+    </form>
+    {{- end}}
+  </details>
 {{- else}}
   {{- if .Assigned}}
   <p class="conversation-context__assignment-value conversation-context__assignment-value--assigned">Atribuída</p>
