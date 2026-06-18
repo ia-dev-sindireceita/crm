@@ -542,6 +542,22 @@
   font-weight: var(--font-regular);
 }
 
+/* The funnel stage reads as a pill chip so it scans as a status token
+   rather than a sentence (SIN-65156). Color, when present via
+   data-stage-key, only reinforces — the stage name text is always
+   rendered, so the chip is WCAG color-independent. "Sem etapa definida"
+   uses the same chip shape with the muted foreground inherited above. */
+.conversation-context__funnel-stage,
+.conversation-context__funnel-empty {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+}
+
 .conversation-context__channel-value,
 .conversation-context__assignment-current,
 .conversation-context__assignment-value {
@@ -551,14 +567,15 @@
   margin: 0;
 }
 
+/* The linked identities are already surfaced (with the split control) in
+   the 360px customer rail, so repeating them in the compact center strip
+   is redundant and re-inflates the bar (SIN-65156). Hide the duplicate
+   here — display:none also drops it from the a11y tree so the identity
+   list is announced once, by the customer panel, not twice. The markup
+   stays server-rendered so the right rail and any future surface that
+   reuses this partial keep the data. */
 .conversation-context__identities {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  display: none;
 }
 
 .conversation-context__identity {
@@ -572,8 +589,50 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Assignment facet keeps its interactive widget (SIN-64979) but wraps
-   onto its own row on narrow viewports rather than stretching tall. */
+/* Assignment facet keeps its interactive widget (SIN-64979) but the
+   reassign select + buttons are volumosos for a one-line strip, so they
+   live inside a native <details> (SIN-65156): the assignee chip is the
+   always-visible <summary>, the controls reveal on demand. CSP-safe — no
+   JS, the disclosure is the browser's own. After an assign the partial
+   re-renders with the <details> reset closed; the new assignee shows in
+   the summary, which is the accepted post-action state. */
+.conversation-context__assign {
+  margin: 0;
+}
+
+.conversation-context__assign-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--hit-target-min);
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.conversation-context__assign-summary:focus-visible {
+  outline: 2px solid transparent;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+/* "Alterar" affordance: muted until the row is hovered/focused so it
+   doesn't compete with the assignee name, but always present for
+   recognition (the disclosure triangle alone is easy to miss). */
+.conversation-context__assign-toggle {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.conversation-context__assign-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
 .conversation-context__assign-form,
 .conversation-context__assign-me-form {
   display: inline-flex;
