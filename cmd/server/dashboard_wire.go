@@ -38,8 +38,10 @@ func buildDashboardHandler(uc *metricsusecase.GetDashboard) http.Handler {
 		return nil
 	}
 	h, err := webdashboard.New(webdashboard.Deps{
-		Snapshot: uc,
-		Logger:   slog.Default(),
+		Snapshot:  uc,
+		Logger:    slog.Default(),
+		CSRFToken: csrfTokenFromSessionContext,
+		UserID:    userIDFromSessionContext,
 	})
 	if err != nil {
 		// New only errors on a nil Snapshot, which the guard above rules

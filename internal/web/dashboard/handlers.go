@@ -29,6 +29,7 @@ import (
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/metrics"
 	"github.com/pericles-luz/crm/internal/tenancy"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // SnapshotUseCase is the read port the dashboard depends on. The concrete
@@ -39,11 +40,27 @@ type SnapshotUseCase interface {
 	Execute(ctx context.Context, tenantID uuid.UUID, since time.Time) (metrics.DashboardMetrics, error)
 }
 
+// CSRFTokenFn returns the request's CSRF token (sourced from the session
+// by the auth middleware). The dashboard has no forms of its own, but the
+// shared app-shell renders the logout form, which needs the token; an
+// empty token degrades to a logout form without the hidden field rather
+// than failing the read-only page.
+type CSRFTokenFn func(*http.Request) string
+
+// UserIDFn returns the authenticated user id for the app-shell user-menu
+// label. Returning uuid.Nil renders the "Conta" placeholder.
+type UserIDFn func(*http.Request) uuid.UUID
+
 // Deps bundles the handler's collaborators. Snapshot is required; Logger
-// defaults to slog.Default() when nil.
+// defaults to slog.Default() when nil. CSRFToken and UserID are optional
+// app-shell chrome collaborators (SIN-65122): when nil the page still
+// renders, with the logout form omitting its CSRF hidden field and the
+// user-menu showing the "Conta" placeholder.
 type Deps struct {
-	Snapshot SnapshotUseCase
-	Logger   *slog.Logger
+	Snapshot  SnapshotUseCase
+	Logger    *slog.Logger
+	CSRFToken CSRFTokenFn
+	UserID    UserIDFn
 }
 
 // Handler is the dashboard front controller. It is mounted on the
@@ -89,10 +106,74 @@ func (h *Handler) page(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	data := newPageData(snap, r)
+	data.TenantName = tenant.Name
+	data.UserDisplayName = displayNameForUser(h.userID(r))
+	data.NavItems = buildDashboardNavItems()
+	data.UserMenuItems = buildDashboardUserMenu()
+	data.CSRFToken = h.csrfToken(r)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := dashboardLayoutTmpl.Execute(w, newPageData(snap, r)); err != nil {
+	if err := dashboardLayoutTmpl.Execute(w, data); err != nil {
 		h.deps.Logger.Error("web/dashboard: render page", "err", err)
 	}
+}
+
+// userID resolves the session user id through the optional UserID dep,
+// returning uuid.Nil (→ "Conta" in the shell) when it is not wired.
+func (h *Handler) userID(r *http.Request) uuid.UUID {
+	if h.deps.UserID == nil {
+		return uuid.Nil
+	}
+	return h.deps.UserID(r)
+}
+
+// csrfToken resolves the session CSRF token through the optional CSRFToken
+// dep, returning "" (logout form renders without the hidden field) when it
+// is not wired.
+func (h *Handler) csrfToken(r *http.Request) string {
+	if h.deps.CSRFToken == nil {
+		return ""
+	}
+	return h.deps.CSRFToken(r)
+}
+
+// buildDashboardNavItems returns the SidebarNav primary nav for the
+// dashboard page (SIN-65122). It mirrors the inbox/funnel/contacts set so
+// the seed-role (atendente) post-login surfaces share one persistent nav,
+// with "Painel" marked active so the shell stamps aria-current="page".
+// The brand link back to /hello-tenant is owned by the shell layout.
+func buildDashboardNavItems() []shell.NavItem {
+	return []shell.NavItem{
+		{Label: "Inbox", Path: "/inbox"},
+		{Label: "Funil", Path: "/funnel"},
+		{Label: "Contatos", Path: "/contacts"},
+		{Label: "Painel", Path: "/dashboard", Active: true},
+	}
+}
+
+// buildDashboardUserMenu returns the user-menu dropdown entries common to
+// authenticated dashboard sessions (logout only, matching inbox/funnel).
+func buildDashboardUserMenu() []shell.UserMenuItem {
+	return []shell.UserMenuItem{
+		{Label: "Sair", Path: "/logout", Form: true},
+	}
+}
+
+// displayNameForUser is the placeholder display formatter for the
+// user-menu button. The session does not (yet) carry a human label, so we
+// render the uuid prefix — replace once a user-name resolver lands.
+// Mirrors internal/web/inbox.displayNameForUser; kept local because the
+// two web packages do not share a helper module.
+func displayNameForUser(userID uuid.UUID) string {
+	if userID == uuid.Nil {
+		return "Conta"
+	}
+	s := userID.String()
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
 }
 
 // exportCSV streams the channel-volume + conversation-counter report as a
@@ -183,6 +264,16 @@ type pageData struct {
 	HasStates            bool
 	TenantThemeStyle     template.CSS
 	CSPNonce             string
+
+	// shell.Data chrome fields (SIN-65122) — read by shell.Layout's
+	// reflection helpers (shellTenantName, shellNavItems, …) so the
+	// dashboard renders inside the global SidebarNav app-shell.
+	TenantName      string
+	TenantLogo      string
+	UserDisplayName string
+	NavItems        []shell.NavItem
+	UserMenuItems   []shell.UserMenuItem
+	CSRFToken       string
 }
 
 // newPageData projects a read-model snapshot + request onto the template

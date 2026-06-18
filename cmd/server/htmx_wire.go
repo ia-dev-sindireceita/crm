@@ -144,6 +144,7 @@ func assembleWebContactsHandlerWith(
 		LoadIdentity: loadUC,
 		SplitLink:    splitUC,
 		CSRFToken:    csrfTokenFromSessionContext,
+		UserID:       userIDFromSessionContext,
 		Logger:       slog.Default(),
 	}
 	if contactsRepo != nil {
