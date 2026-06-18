@@ -416,3 +416,22 @@
   white-space: nowrap;
   border: 0;
 }
+
+/*
+ * htmx default indicator styles (SIN-65143). htmx is loaded with
+ * {"includeIndicatorStyles":false} so it does NOT inject its own inline
+ * <style> block at init — that inline tag has no CSP nonce and is blocked
+ * by the strict `style-src 'self' 'nonce-…'` policy (no 'unsafe-inline').
+ * We restate htmx's defaults here, served from 'self', so any element
+ * using the stock `.htmx-indicator` class still toggles correctly.
+ * Mirrors the inbox fix (SIN-65046, web/static/css/inbox.css).
+ */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 0.2s ease-in;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}

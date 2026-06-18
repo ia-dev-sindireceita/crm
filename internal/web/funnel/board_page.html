@@ -1,8 +1,9 @@
 {{define "title"}}Funil{{end}}
 {{define "head_extra"}}
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
 <link rel="stylesheet" href="/static/css/funnel.css">
-<script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
-<script src="/static/js/funnel-board.js" defer></script>
+<script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{shellCSPNonce .}}" defer></script>
+<script src="/static/js/funnel-board.js" nonce="{{shellCSPNonce .}}" defer></script>
 {{end}}
 {{define "content"}}
 <section class="funnel-shell" aria-label="Funil de vendas" data-testid="funnel-page">
