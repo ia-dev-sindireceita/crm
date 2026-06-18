@@ -3,6 +3,8 @@ package rules
 import (
 	"html/template"
 	"io"
+
+	"github.com/pericles-luz/crm/internal/web/icon"
 )
 
 // funcs is the shared funcmap every template in this package parses
@@ -10,9 +12,21 @@ import (
 // rejects unknown function names at Parse time when invoked via the
 // pipeline syntax `{{template "x" mkY .}}`. Hence the helpers are
 // declared here as package-level variables wired into the FuncMap.
-var funcs = template.FuncMap{
-	"mkTriggerFieldsViewFromForm": mkTriggerFieldsViewFromForm,
-	"mkActionFieldsViewFromForm":  mkActionFieldsViewFromForm,
+//
+// SIN-65098 / Peitho Tranche C3 — merges the {{icon}} helper so the
+// editor chrome (new-rule / back buttons) renders inline Lucide SVGs
+// instead of typographic glyphs.
+var funcs = buildFuncs()
+
+func buildFuncs() template.FuncMap {
+	f := template.FuncMap{
+		"mkTriggerFieldsViewFromForm": mkTriggerFieldsViewFromForm,
+		"mkActionFieldsViewFromForm":  mkActionFieldsViewFromForm,
+	}
+	for k, v := range icon.FuncMap() {
+		f[k] = v
+	}
+	return f
 }
 
 // listLayoutTmpl is the editor shell. The table body lives in its own
@@ -24,6 +38,8 @@ var listLayoutTmpl = template.Must(template.New("funnelrules.list").Funcs(funcs)
   <meta charset="utf-8">
   <title>Regras de funil</title>
   {{.CSRFMeta}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/funnel-rules.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -32,11 +48,11 @@ var listLayoutTmpl = template.Must(template.New("funnelrules.list").Funcs(funcs)
     <header class="funnel-rules-shell__header">
       <h1>Regras de funil</h1>
       <nav class="funnel-rules-shell__actions" aria-label="Ações de regra">
-        <a class="funnel-rules-shell__new"
+        <a class="funnel-rules-shell__new btn btn--primary"
            hx-get="/funnel/rules/new"
            hx-target="#funnel-rules-table"
            hx-swap="innerHTML"
-           href="/funnel/rules/new">+ nova regra</a>
+           href="/funnel/rules/new">{{icon "plus" 16}} Nova regra</a>
       </nav>
     </header>
     <section class="funnel-rules-filter" aria-label="Filtrar por escopo">
@@ -129,19 +145,19 @@ var rowTmpl = template.Must(template.New("rule-row").Funcs(funcs).Parse(`<tr id=
       <td><span class="funnel-rules-row__enabled funnel-rules-row__enabled--{{if .Enabled}}on{{else}}off{{end}}">{{.EnabledLabel}}</span></td>
       <td class="funnel-rules-row__actions">
         <button type="button"
-                class="funnel-rules-row__toggle"
+                class="funnel-rules-row__toggle btn btn--sm"
                 hx-patch="/funnel/rules/{{.ID}}/toggle"
                 hx-target="#rule-row-{{.ID}}"
                 hx-swap="outerHTML"
                 aria-label="Alternar regra {{.Name}}">{{if .Enabled}}desativar{{else}}ativar{{end}}</button>
-        <a class="funnel-rules-row__edit"
+        <a class="funnel-rules-row__edit btn btn--sm btn--ghost"
            hx-get="/funnel/rules/{{.ID}}/edit"
            hx-target="#funnel-rules-table"
            hx-swap="innerHTML"
            href="/funnel/rules/{{.ID}}/edit"
            aria-label="Editar regra {{.Name}}">editar</a>
         <button type="button"
-                class="funnel-rules-row__delete"
+                class="funnel-rules-row__delete btn btn--sm btn--danger"
                 hx-delete="/funnel/rules/{{.ID}}"
                 hx-target="#rule-row-{{.ID}}"
                 hx-swap="outerHTML"
@@ -160,6 +176,8 @@ var formLayoutTmpl = template.Must(template.New("funnelrules.form").Funcs(funcs)
   <meta charset="utf-8">
   <title>{{if eq (printf "%s" .Mode) "edit"}}Editar regra{{else}}Nova regra{{end}}</title>
   {{.CSRFMeta}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/funnel-rules.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -168,7 +186,7 @@ var formLayoutTmpl = template.Must(template.New("funnelrules.form").Funcs(funcs)
     <header class="funnel-rules-shell__header">
       <h1>{{if eq (printf "%s" .Mode) "edit"}}Editar regra{{else}}Nova regra{{end}}</h1>
       <nav class="funnel-rules-shell__actions">
-        <a href="/funnel/rules" hx-get="/funnel/rules" hx-target="body" hx-swap="outerHTML">← voltar</a>
+        <a class="funnel-rules-shell__back btn btn--sm btn--ghost" href="/funnel/rules" hx-get="/funnel/rules" hx-target="body" hx-swap="outerHTML">{{icon "chevron-left" 16}} Voltar</a>
       </nav>
     </header>
     <form class="funnel-rules-form"
@@ -176,7 +194,7 @@ var formLayoutTmpl = template.Must(template.New("funnelrules.form").Funcs(funcs)
           hx-target="#funnel-rules-table"
           hx-swap="innerHTML">
       {{- if not .Error.IsZero}}
-      <div class="funnel-rules-form__alert" role="alert">{{.Error.Message}}</div>
+      <div class="funnel-rules-form__alert alert alert--danger" role="alert">{{.Error.Message}}</div>
       {{- end}}
       <label>
         Nome
@@ -242,7 +260,7 @@ var formLayoutTmpl = template.Must(template.New("funnelrules.form").Funcs(funcs)
         Ativa
       </label>
       <div class="funnel-rules-form__actions">
-        <button type="submit">{{if eq (printf "%s" .Mode) "edit"}}Salvar alterações{{else}}Criar regra{{end}}</button>
+        <button type="submit" class="funnel-rules-form__submit btn btn--primary">{{if eq (printf "%s" .Mode) "edit"}}Salvar alterações{{else}}Criar regra{{end}}</button>
       </div>
     </form>
   </main>

@@ -22,7 +22,7 @@
              data-severity="{{.Balance.Severity}}"
              aria-labelledby="wallet-balance-title">
       <h2 id="wallet-balance-title" class="wallet-card__heading">
-        <span class="wallet-card__icon" aria-hidden="true">{{.Balance.Glyph}}</span>
+        <span class="wallet-card__icon" aria-hidden="true">{{icon .Balance.GlyphIcon 20}}</span>
         {{.Balance.SeverityLabel}}
       </h2>
       <p class="wallet-card__metric" data-testid="wallet-balance">

@@ -13,7 +13,7 @@
       <article class="funnel-column" aria-labelledby="col-{{.Stage.Key}}-title">
         <header class="funnel-column__header">
           <h2 id="col-{{.Stage.Key}}-title" class="funnel-column__title">
-            <span class="funnel-column__glyph" aria-hidden="true">{{stageGlyph .Stage.Key}}</span>
+            <span class="funnel-column__glyph" aria-hidden="true">{{stageIcon .Stage.Key}}</span>
             {{.Stage.Label}}
           </h2>
           <span class="funnel-column__count" aria-label="{{len .Cards}} conversas">({{len .Cards}})</span>

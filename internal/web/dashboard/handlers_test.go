@@ -129,6 +129,32 @@ func TestPage_OK(t *testing.T) {
 	}
 }
 
+func TestPage_RendersStatusBadges(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSnapshot{snap: sampleSnapshot()}
+	rec := serve(t, mustHandler(t, Deps{Snapshot: fake}), http.MethodGet, "/dashboard", uuid.New(), true)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// Conversation states render as canonical Peitho StatusBadge pills:
+	// open → accent tone, closed → neutral tone.
+	for _, want := range []string{
+		`status-badge--peitho badge--accent">Abertas`,
+		`status-badge--peitho badge--neutral">Fechadas`,
+		// Peitho design-system stylesheets are linked on the page.
+		`/static/css/components.css`,
+		`/static/css/dashboard.css`,
+		// Export affordance adopts the Peitho button primitive.
+		`class="btn btn--secondary"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page body missing %q", want)
+		}
+	}
+}
+
 func TestPage_EmptySnapshot_RendersEmptyState(t *testing.T) {
 	t.Parallel()
 	fake := &fakeSnapshot{snap: metrics.DashboardMetrics{Since: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)}}
@@ -234,6 +260,16 @@ func TestStateLabel(t *testing.T) {
 	for in, want := range cases {
 		if got := stateLabel(in); got != want {
 			t.Errorf("stateLabel(%q)=%q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestStateTone(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{"open": "accent", "closed": "neutral", "weird": "neutral"}
+	for in, want := range cases {
+		if got := stateTone(in); got != want {
+			t.Errorf("stateTone(%q)=%q, want %q", in, got, want)
 		}
 	}
 }

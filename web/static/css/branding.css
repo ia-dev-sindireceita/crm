@@ -1,0 +1,367 @@
+/* SIN-65112 / Peitho C6b — Branding (identidade visual) admin surface.
+   Served at /static/css/branding.css for the /branding page rendered by
+   internal/web/branding (templates.go, "branding.page").
+
+   This sheet was previously ABSENT — the page <head> linked no stylesheet
+   at all, so the shell, upload form, colour preview card, swatches and
+   action buttons rendered with user-agent defaults. It is introduced here
+   as a token-only stylesheet: every visual constant consumes a custom
+   property from tokens.css (--color-*, --space-*, --text-*, --radius-*,
+   --shadow-*, --motion-*) so the page renders correctly in both light and
+   dark (the token names re-bind under [data-theme="dark"]).
+
+   The page links tokens.css + components.css ahead of this sheet, and an
+   inline <style id="tenant-theme"> precedes both so the live colour
+   preview reflects the tenant palette over the Peitho defaults
+   (SIN-63084/63085; the OOB swap that refreshes it on save carries the CSP
+   nonce per SIN-63275). Consuming the --color-* tokens here is what makes
+   the action buttons and accents track the tenant palette in real time.
+
+   Plain CSS, no preprocessor, no framework, no @import.
+
+   Accessibility:
+     - body / heading text on --surface-0/--surface-1 keeps WCAG 2.1 AA
+       contrast (the token ramp is contrast-checked in tokens.css).
+     - the success / error flash pairs a feedback colour with role=status /
+       role=alert text, so the distinction is never colour-only (WCAG 1.4.1).
+     - controls expose a visible :focus-visible ring (--focus-ring).
+*/
+
+.branding-shell {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-4) var(--space-7);
+  font-family: var(--font-sans);
+  color: var(--text-default);
+  line-height: var(--text-base-line);
+}
+
+/* ----------------------------------------------------------- Header --- */
+
+.branding-header {
+  margin: 0 0 var(--space-5);
+}
+
+.branding-header h1 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.branding-header p {
+  margin: 0;
+  max-width: 64ch;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-muted);
+}
+
+/* --------------------------------------------------- Cards / sections --- */
+
+/* Upload + preview both sit on Peitho elevated card surfaces. */
+.branding-upload,
+.branding-preview {
+  margin-top: var(--space-5);
+  padding: var(--space-5);
+  background-color: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.branding-upload h2,
+.branding-preview-header h3 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+/* ------------------------------------------------------ Upload form --- */
+
+.branding-upload-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+.branding-upload-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 18rem;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-default);
+}
+
+.branding-upload-label input[type="file"] {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--text-default);
+  background-color: var(--surface-1);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  cursor: pointer;
+}
+
+.branding-upload-label input[type="file"]:hover {
+  border-color: var(--color-primary);
+  background-color: var(--surface-2);
+}
+
+.branding-upload-label input[type="file"]:focus-visible {
+  outline: 2px solid transparent;
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+}
+
+/* ------------------------------------------------------------ Preview --- */
+
+.branding-preview-header {
+  margin-bottom: var(--space-4);
+}
+
+.branding-preview-source {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+}
+
+.branding-preview-source small {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+}
+
+.branding-preview-sample {
+  margin-bottom: var(--space-5);
+}
+
+/* The plate's background / colour come from inline (tenant) values; this
+   only governs box geometry + legibility. */
+.branding-preview-plate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--space-8);
+  padding: var(--space-4) var(--space-5);
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  font-weight: var(--font-medium);
+  text-align: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-1);
+}
+
+/* --------------------------------------------------------- Swatches --- */
+
+.branding-swatches {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background-color: var(--surface-1);
+}
+
+.branding-swatches legend {
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.branding-swatch {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.branding-swatch:last-of-type {
+  border-bottom: 0;
+}
+
+.branding-swatch-label {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-default);
+}
+
+.branding-swatch-input {
+  width: var(--control-lg);
+  height: var(--control-md);
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-0);
+  cursor: pointer;
+}
+
+.branding-swatch-input:focus-visible {
+  outline: 2px solid transparent;
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+}
+
+.branding-swatch-hex {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------- Actions --- */
+
+.branding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* Shared Peitho button shell — mirrors components.css `.btn` so the
+   branding actions match the design system without a template rename. */
+.branding-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: var(--control-md);
+  padding: 0 var(--space-4);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: var(--font-medium);
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--text-default);
+  background-color: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color var(--motion-fast) var(--ease-out),
+              border-color var(--motion-fast) var(--ease-out),
+              box-shadow var(--motion-fast) var(--ease-out),
+              color var(--motion-fast) var(--ease-out),
+              transform var(--motion-fast) var(--ease-out);
+}
+
+.branding-action:hover {
+  background-color: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+.branding-action:active {
+  transform: translateY(0.5px) scale(0.985);
+}
+
+.branding-action:focus-visible {
+  outline: 2px solid transparent;
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+}
+
+/* Upload + save are the primary actions and track the tenant palette. */
+.branding-action--upload,
+.branding-action--save {
+  color: var(--text-on-primary);
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.branding-action--upload:hover,
+.branding-action--save:hover {
+  background-color: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.branding-action--upload:active,
+.branding-action--save:active {
+  background-color: var(--color-primary-active);
+  border-color: var(--color-primary-active);
+}
+
+/* Revert is a quiet, neutral secondary so the destructive intent reads
+   through the hx-confirm step, not through alarm colour. */
+.branding-action--revert {
+  color: var(--text-strong);
+  background-color: var(--surface-0);
+  border-color: var(--border-subtle);
+}
+
+.branding-action--revert:hover {
+  background-color: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+/* ------------------------------------------------------------ Flash --- */
+
+.branding-flash {
+  margin-top: var(--space-4);
+}
+
+.branding-flash:empty {
+  margin-top: 0;
+}
+
+.branding-flash--success,
+.branding-flash--error {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.branding-flash--success {
+  color: var(--text-strong);
+  background-color: var(--color-success-surface);
+  border-color: var(--color-success);
+}
+
+.branding-flash--error {
+  color: var(--text-strong);
+  background-color: var(--color-danger-surface);
+  border-color: var(--color-danger);
+}
+
+.branding-flash p {
+  margin: 0;
+}
+
+/* --------------------------------------------------------- Responsive --- */
+
+@media (max-width: 600px) {
+  .branding-swatch {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "label input"
+      "hex   hex";
+  }
+
+  .branding-swatch-label {
+    grid-area: label;
+  }
+
+  .branding-swatch-input {
+    grid-area: input;
+  }
+
+  .branding-swatch-hex {
+    grid-area: hex;
+  }
+
+  .branding-action {
+    flex: 1 1 100%;
+  }
+}

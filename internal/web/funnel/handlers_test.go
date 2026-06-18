@@ -573,13 +573,14 @@ func TestBoardSnapshot(t *testing.T) {
 	// which owns the page-level <main class="app-shell__main"> chrome
 	// (CTO ACK comment 87f0e262). The legacy <main class="funnel-shell">
 	// wrapper was nested inside the new shell-owned main and demoted to
-	// a <section>; the added topbar pin asserts the shell chrome is
+	// a <section>; the added sidebar pin asserts the shell chrome is
 	// actually wired so future careless refactors that drop the
 	// shell.MustParse composition still light up the snapshot.
+	// (SIN-65092: top-bar → SidebarNav.)
 	wantStable := []string{
 		`<title>Funil</title>`,
 		`<main class="app-shell__main"`,
-		`<header class="app-shell__topbar"`,
+		`class="app-shell__sidebar"`,
 		`<section class="funnel-columns"`,
 		`aria-label="Estágios do funil"`,
 		`hx-target="#funnel-modal"`,

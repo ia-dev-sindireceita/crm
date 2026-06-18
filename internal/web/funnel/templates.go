@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/pericles-luz/crm/internal/funnel"
+	"github.com/pericles-luz/crm/internal/web/icon"
 	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
@@ -37,7 +38,9 @@ var contentFS embed.FS
 var funcs = template.FuncMap{
 	"relativeTime": relativeTime,
 	"truncate":     truncate,
-	"stageGlyph":   stageGlyph,
+	"stageIcon":    stageIcon,
+	"stageLabel":   stageLabel,
+	"stageTone":    stageTone,
 	"itoa":         itoa,
 	"mulf":         func(a, b float64) float64 { return a * b },
 	"durFmt":       durFmt,
@@ -62,24 +65,62 @@ var funcs = template.FuncMap{
 	"funnelCSRFToken":   funnelViewString("CSRFToken"),
 }
 
-// stageGlyph returns a small emoji glyph for the column header. The
-// glyph keeps the column unambiguous when stage labels get long, but
-// it is purely decorative — aria-label on the column carries the
-// stable, machine-readable name.
-func stageGlyph(key string) string {
+// stageIcon returns the inline Lucide SVG for a stage column header
+// (SIN-65098: replaces the legacy emoji glyph — "no emoji in chrome").
+// The icon is purely decorative (rendered inside an aria-hidden span);
+// the column's aria-label carries the stable, machine-readable name.
+// Unknown keys fall back to a neutral circle.
+func stageIcon(key string) template.HTML {
+	name := "circle"
 	switch key {
 	case "novo":
-		return "🆕"
+		name = "sparkles"
 	case "qualificando":
-		return "🔍"
+		name = "search"
 	case "proposta":
-		return "📝"
+		name = "edit"
 	case "ganho":
-		return "🏆"
+		name = "check-circle"
 	case "perdido":
-		return "💤"
+		name = "x"
+	}
+	return icon.SVG(name, 16)
+}
+
+// stageLabel maps a stage key to its PT-BR sentence-case display label,
+// used by the per-card StatusBadge. Unknown keys echo the raw key.
+func stageLabel(key string) string {
+	switch key {
+	case "novo":
+		return "Novo"
+	case "qualificando":
+		return "Qualificando"
+	case "proposta":
+		return "Proposta"
+	case "ganho":
+		return "Ganho"
+	case "perdido":
+		return "Perdido"
 	default:
-		return "•"
+		return key
+	}
+}
+
+// stageTone maps a stage key to a `.badge--*` modifier so the per-card
+// StatusBadge picks up the canonical deal-stage tones from
+// components.css (won/lost/nego/accent/neutral).
+func stageTone(key string) string {
+	switch key {
+	case "ganho":
+		return "won"
+	case "perdido":
+		return "lost"
+	case "proposta":
+		return "accent"
+	case "qualificando":
+		return "nego"
+	default:
+		return "neutral"
 	}
 }
 
@@ -264,7 +305,7 @@ func durFmt(d time.Duration) string {
 // re-renders this template with the new StageKey / PrevKey / NextKey so
 // the keyboard buttons stay in sync with the card's new position.
 var cardTmpl = template.Must(template.New("card").Funcs(funcs).Parse(`<li id="card-{{.ConversationID}}"
-       class="funnel-card"
+       class="funnel-card card"
        role="listitem"
        data-conversation-id="{{.ConversationID}}"
        data-stage-key="{{.StageKey}}"
@@ -274,13 +315,16 @@ var cardTmpl = template.Must(template.New("card").Funcs(funcs).Parse(`<li id="ca
        aria-label="Conversa com {{.DisplayName}} ({{.Channel}}) em {{.StageKey}}">
     <header class="funnel-card__header">
       <span class="funnel-card__name">{{truncate .DisplayName 32}}</span>
-      <span class="funnel-card__channel">{{.Channel}}</span>
+      <span class="status-badge--peitho badge--{{stageTone .StageKey}} funnel-card__stage">{{stageLabel .StageKey}}</span>
     </header>
-    <time class="funnel-card__time" datetime="{{.LastMessageAt.Format "2006-01-02T15:04:05Z07:00"}}">{{relativeTime .LastMessageAt}}</time>
+    <div class="funnel-card__meta">
+      <span class="funnel-card__channel badge badge--neutral">{{.Channel}}</span>
+      <time class="funnel-card__time" datetime="{{.LastMessageAt.Format "2006-01-02T15:04:05Z07:00"}}">{{relativeTime .LastMessageAt}}</time>
+    </div>
     <nav class="funnel-card__actions" aria-label="Mover conversa">
 {{- if .PrevKey}}
       <button type="button"
-              class="funnel-card__action funnel-card__action--prev"
+              class="funnel-card__action funnel-card__action--prev btn btn--sm"
               hx-post="/funnel/transitions"
               hx-vals='{"conversation_id":"{{.ConversationID}}","to_stage_key":"{{.PrevKey}}"}'
               hx-target="#card-{{.ConversationID}}"
@@ -288,14 +332,14 @@ var cardTmpl = template.Must(template.New("card").Funcs(funcs).Parse(`<li id="ca
               aria-label="Mover para {{.PrevKey}}">← {{.PrevKey}}</button>
 {{- end}}
       <button type="button"
-              class="funnel-card__action funnel-card__action--history"
+              class="funnel-card__action funnel-card__action--history btn btn--sm btn--ghost"
               hx-get="/funnel/conversations/{{.ConversationID}}/history"
               hx-target="#funnel-modal"
               hx-swap="innerHTML"
               aria-label="Histórico">histórico</button>
 {{- if .NextKey}}
       <button type="button"
-              class="funnel-card__action funnel-card__action--next"
+              class="funnel-card__action funnel-card__action--next btn btn--sm"
               hx-post="/funnel/transitions"
               hx-vals='{"conversation_id":"{{.ConversationID}}","to_stage_key":"{{.NextKey}}"}'
               hx-target="#card-{{.ConversationID}}"

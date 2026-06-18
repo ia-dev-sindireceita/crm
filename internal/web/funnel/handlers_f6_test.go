@@ -208,9 +208,9 @@ func TestBoardPage_OwnerFilter_PreservedInForm(t *testing.T) {
 	}
 }
 
-// TestBoardPage_ShellChrome — confirms the shell.Layout top-bar wires
+// TestBoardPage_ShellChrome — confirms the shell.Layout sidebar wires
 // in. The brand link MUST point at /hello-tenant so AC #8's "volta para
-// landing via top-nav" holds.
+// landing via top-nav" holds. (SIN-65092: top-bar → SidebarNav.)
 func TestBoardPage_ShellChrome(t *testing.T) {
 	t.Parallel()
 	h := buildHandler(t, fullDeps())
@@ -219,7 +219,7 @@ func TestBoardPage_ShellChrome(t *testing.T) {
 	mux(h).ServeHTTP(w, r)
 	body := w.Body.String()
 	for _, want := range []string{
-		`<header class="app-shell__topbar"`,
+		`class="app-shell__sidebar"`,
 		`href="/hello-tenant"`, // brand link back to landing
 		`class="app-shell__nav"`,
 		`<main class="app-shell__main"`,

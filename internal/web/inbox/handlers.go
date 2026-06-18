@@ -17,6 +17,7 @@ import (
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	"github.com/pericles-luz/crm/internal/tenancy"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // maxBodyChars caps the textarea (matches the maxlength on the form).
@@ -296,12 +297,15 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := inboxLayoutTmpl.Execute(w, layoutData{
-		CSRFMeta:         csrf.MetaTag(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
-		List:             region,
-		Customer:         customerPanelData{HasConversation: false},
+		TenantName:       tenant.Name,
+		UserDisplayName:  displayNameForUser(h.deps.UserID(r)),
+		NavItems:         buildInboxNavItems(),
+		UserMenuItems:    buildInboxUserMenu(),
+		CSRFToken:        token,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
+		List:             region,
+		Customer:         customerPanelData{HasConversation: false},
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render layout", "err", err)
 	}
@@ -870,6 +874,42 @@ func assigneeDisplayName(assignees []AssignableRow, userID string) string {
 	return ""
 }
 
+// buildInboxNavItems returns the SidebarNav primary nav for the inbox
+// page (SIN-65104). It mirrors funnel's buildFunnelNavItems so the two
+// post-login surfaces share one nav, with "Inbox" marked active here so
+// the shell stamps aria-current="page" on it. The brand link back to
+// /hello-tenant is owned by the shell layout.
+func buildInboxNavItems() []shell.NavItem {
+	return []shell.NavItem{
+		{Label: "Inbox", Path: "/inbox", Active: true},
+		{Label: "Funil", Path: "/funnel"},
+	}
+}
+
+// buildInboxUserMenu returns the user-menu dropdown entries for an
+// authenticated inbox session (logout only, matching funnel).
+func buildInboxUserMenu() []shell.UserMenuItem {
+	return []shell.UserMenuItem{
+		{Label: "Sair", Path: "/logout", Form: true},
+	}
+}
+
+// displayNameForUser is the placeholder display formatter for the
+// user-menu button. The session does not (yet) carry a human label, so
+// we render the uuid prefix — replace once a user-name resolver lands.
+// Mirrors internal/web/funnel.displayNameForUser; kept local because the
+// two web packages do not share a helper module.
+func displayNameForUser(userID uuid.UUID) string {
+	if userID == uuid.Nil {
+		return "Conta"
+	}
+	s := userID.String()
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
+}
+
 // fail centralises the error reporting + log path. The response body
 // never carries the underlying error text — error detail goes to logs.
 func (h *Handler) fail(w http.ResponseWriter, status int, msg string, err error) {
@@ -908,17 +948,31 @@ type listRegionData struct {
 	FilterQuery string // "?state=…&channel=…&assigned=…" for row links
 }
 
-// layoutData drives the full-page inbox shell template.
+// layoutData drives the full-page inbox shell template. SIN-65104 wraps
+// the inbox in the global SidebarNav app-shell (internal/web/shell), so
+// the struct now carries the shell.Data chrome fields by name — the shell
+// layout's reflection helpers (shellTenantName, shellNavItems, …) read
+// them off this struct verbatim. The inbox content (list + customer
+// panes) rides alongside in List/Customer.
 type layoutData struct {
-	CSRFMeta         template.HTML
-	HXHeaders        template.HTMLAttr
-	List             listRegionData
-	Customer         customerPanelData
+	// shell.Data chrome fields (read by shell.Layout reflection helpers).
+	TenantName      string
+	TenantLogo      string
+	UserDisplayName string
+	NavItems        []shell.NavItem
+	UserMenuItems   []shell.UserMenuItem
+	// CSRFToken feeds the shell's <meta>, hx-headers, and form-hidden
+	// slots. Empty is a programming error the handler rejects as 500.
+	CSRFToken        string
 	TenantThemeStyle template.CSS
 	// CSPNonce carries the per-request CSP nonce (SIN-63275). Empty
 	// when csp.Middleware is absent — the template still emits the
 	// attribute so the browser blocks the inline tag (fail-closed).
 	CSPNonce string
+
+	// Inbox content panes.
+	List     listRegionData
+	Customer customerPanelData
 }
 
 // viewData drives the middle (conversation) pane template. The

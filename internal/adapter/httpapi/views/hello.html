@@ -1,10 +1,12 @@
 {{define "head_extra"}}
 <link rel="stylesheet" href="/static/css/auth.css" />
+<link rel="stylesheet" href="/static/css/hello-tenant.css" />
 {{end}}
-{{define "title"}}{{.TenantName}} — CRM{{end}}
+{{define "title"}}{{.TenantName}} — Peitho{{end}}
 {{define "content"}}
 <section class="hello-tenant">
   <header class="hello-tenant__greeting">
+    <span class="hello-tenant__brand" aria-hidden="true"><img class="peitho-logo peitho-logo--light" src="/static/brand/peitho-logo-light.svg" alt="Peitho" /><img class="peitho-logo peitho-logo--dark" src="/static/brand/peitho-logo-dark.svg" alt="Peitho" /></span>
     <h1>Olá, <strong>{{shellUserDisplayName .}}</strong></h1>
     <p>Você está em <strong data-testid="tenant-name">{{.TenantName}}</strong>.</p>
     <span hidden data-testid="user-id">{{.UserID}}</span>

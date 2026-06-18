@@ -49,6 +49,7 @@ var grantsTemplateFuncs = template.FuncMap{
 	"formatImpersonationISO":      formatImpersonationISO,
 	"truncateImpersonationReason": truncateImpersonationReason,
 	"csrfHiddenForToken":          csrfHiddenForToken,
+	"icon":                        iconSVG,
 }
 
 func formatGrantTime(t time.Time) string {
@@ -109,6 +110,7 @@ var grantsLayoutTmpl = template.Must(template.New("grants.layout").Funcs(grantsT
   <title>Master · Cortesias</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/master-grants.js" defer></script>

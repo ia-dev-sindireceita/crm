@@ -1,4 +1,4 @@
-{{define "title"}}{{with loginTenantName .}}{{.}} — Entrar{{else}}Entrar — CRM{{end}}{{end}}
+{{define "title"}}{{with loginTenantName .}}{{.}} — Entrar{{else}}Entrar — Peitho{{end}}{{end}}
 {{define "content"}}
 <main class="login-page">
   <section class="login-card" role="region" aria-labelledby="login-heading">
@@ -6,7 +6,7 @@
       {{- with loginTenantLogo .}}
       <img class="login-card__logo" src="{{.}}" alt="" data-testid="login-tenant-logo" />
       {{- else}}
-      <span class="login-card__wordmark" aria-hidden="true" data-testid="login-wordmark">CRM</span>
+      <span class="login-card__wordmark login-card__wordmark--brand" aria-hidden="true" data-testid="login-wordmark"><img class="peitho-logo peitho-logo--light" src="/static/brand/peitho-logo-light.svg" alt="Peitho" /><img class="peitho-logo peitho-logo--dark" src="/static/brand/peitho-logo-dark.svg" alt="Peitho" /></span>
       {{- end}}
       <h1 id="login-heading" class="login-card__title" data-testid="login-tenant-name">
         {{- with loginTenantName .}}{{.}}{{else}}Entrar{{end -}}
@@ -33,7 +33,7 @@
   </section>
   {{- if not (loginWhiteLabel .)}}
   <footer class="login-page__footer" data-testid="login-platform-footer">
-    <small>Powered by CRM Sindireceita</small>
+    <small>Powered by <a href="https://lmhost.com.br" target="_blank" rel="noopener noreferrer">LMHost</a></small>
   </footer>
   {{- end}}
 </main>

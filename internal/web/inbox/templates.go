@@ -24,23 +24,39 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/pericles-luz/crm/internal/web/icon"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // templateFuncs are the small set of helpers the templates use to render
 // timestamps, badge classes, and direction-dependent CSS classes. Keeping
 // them as funcs (rather than computing inside the handler) means the
 // template stays declarative.
-var templateFuncs = template.FuncMap{
+var templateFuncs = mergeIconFuncs(template.FuncMap{
 	"relativeTime":     relativeTime,
 	"relativeTimeLong": relativeTimeLong,
 	"messageClass":     messageClass,
 	"truncate":         truncate,
 	"isFinalStatus":    isFinalStatus,
-	"statusGlyph":      statusGlyph,
+	"statusIcon":       statusIcon,
 	"statusLabel":      statusLabel,
 	"channelLabel":     channelLabel,
 	"avatarInitial":    avatarInitial,
 	"initials":         initials,
+})
+
+// mergeIconFuncs overlays the Peitho {{icon}} helper (internal/web/icon)
+// onto fm so the inbox templates can render inline-SVG Lucide glyphs and
+// keep emoji out of the chrome (SIN-65118). The layout tree gets {{icon}}
+// for free via shell.BaseFuncs, but messageBubbleTmpl is parsed
+// standalone (template.New(...).Funcs(templateFuncs)) and is executed
+// directly by the status handler, so it needs the helper here too.
+func mergeIconFuncs(fm template.FuncMap) template.FuncMap {
+	for k, v := range icon.FuncMap() {
+		fm[k] = v
+	}
+	return fm
 }
 
 // finalStatuses are the terminal lifecycle states for outbound messages
@@ -61,23 +77,23 @@ func isFinalStatus(status string) bool {
 	return ok
 }
 
-// statusGlyph maps an outbound message status onto a WhatsApp-style
-// indicator glyph. Inbound messages return the empty string — the
-// status badge is conceptually about outbound delivery acks. Unknown
-// statuses also return empty so the bubble degrades to "no badge"
-// rather than dumping a raw label into the DOM.
-func statusGlyph(status string) string {
+// statusIcon maps an outbound message status onto the Peitho {{icon}}
+// (Lucide) name for its WhatsApp-style delivery indicator. Inbound
+// messages return the empty string — the status badge is conceptually
+// about outbound delivery acks. Unknown statuses also return empty so
+// the bubble degrades to "no badge" rather than emitting a broken icon.
+func statusIcon(status string) string {
 	switch status {
 	case "pending":
-		return "⏱"
+		return "clock"
 	case "sent":
-		return "✓"
+		return "check"
 	case "delivered":
-		return "✓✓"
+		return "check-check"
 	case "read":
-		return "✓✓"
+		return "check-check"
 	case "failed":
-		return "⚠"
+		return "triangle-alert"
 	default:
 		return ""
 	}
@@ -264,38 +280,66 @@ func truncate(s string, n int) string {
 // surfaces contact + IA-summary + tips + actions for the active
 // conversation. The CSRF token is rendered into both <meta> (for HTMX)
 // and the outbound form's hidden field.
-var inboxLayoutTmpl = template.Must(template.New("inbox.layout").Funcs(templateFuncs).Parse(`<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <title>Inbox</title>
-  {{.CSRFMeta}}
+// inboxLayoutTmpl is the full-page inbox shell. SIN-65104 migrates it onto
+// the global SidebarNav app-shell (internal/web/shell) the way funnel/
+// catalog did: the chrome (sidebar nav, brand, user menu, tenant theme,
+// CSP nonce, impersonation banner) is owned by shell.Layout, and the
+// inbox's full-viewport 3-pane surface lives in the layout's "content"
+// slot. The page's own assets (inbox.css, htmx, the htmx-config meta, and
+// the nonce'd AI-assist delegated listener) are injected via "head_extra"
+// + "content".
+//
+// It is exposed as the shell "layout" sub-tree (mirroring funnel's
+// boardLayoutTmpl) so the existing CSP/theme/listener unit tests that
+// call inboxLayoutTmpl.Execute(&buf, layoutData{…}) directly keep
+// rendering the chrome, and so init()'s AddParseTree wiring of the inbox
+// partials (inbox_list_region, customer_panel, …) lands in the shared
+// namespace the layout renders against.
+var inboxLayoutTmpl = func() *template.Template {
+	t := shell.MustParse(templateFuncs, nil)
+	template.Must(t.Parse(`
+{{define "title"}}Inbox{{end}}
+{{define "head_extra"}}
   <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
-  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
-  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/inbox.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{$.CSPNonce}}" defer></script>
-</head>
-<body {{.HXHeaders}}>
-  <main class="inbox-shell" role="main" data-testid="inbox-shell">
-    <nav class="inbox-list-pane" aria-label="Conversas" data-testid="inbox-list-pane">
-      {{template "inbox_list_region" .List}}
-    </nav>
-    <section id="inbox-conversation-pane" class="inbox-conversation-pane" aria-live="polite" aria-label="Conversa selecionada" data-testid="inbox-conversation-pane">
-      <div class="inbox-empty" role="status">
-        <p class="inbox-empty__title">Selecione uma conversa.</p>
-        <p class="inbox-empty__hint" aria-hidden="true">← lista à esquerda</p>
-      </div>
-    </section>
-    {{template "customer_panel" .Customer}}
-    <button type="button" class="inbox-customer-pane__toggle" aria-controls="inbox-customer-pane" aria-expanded="false" data-testid="customer-pane-toggle">
-      <span class="visually-hidden">Mostrar painel do cliente</span>
-      <span aria-hidden="true">ⓘ</span>
-    </button>
-  </main>
-</body>
-</html>
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{shellCSPNonce .}}" defer></script>
+{{end}}
+{{define "content"}}
+<div class="inbox-shell" data-testid="inbox-shell">
+  <nav class="inbox-list-pane" aria-label="Conversas" data-testid="inbox-list-pane">
+    {{template "inbox_list_region" .List}}
+  </nav>
+  <section id="inbox-conversation-pane" class="inbox-conversation-pane" aria-live="polite" aria-label="Conversa selecionada" data-testid="inbox-conversation-pane">
+    <div class="inbox-empty" role="status">
+      <p class="inbox-empty__title">Selecione uma conversa.</p>
+      <p class="inbox-empty__hint" aria-hidden="true">← lista à esquerda</p>
+    </div>
+  </section>
+  {{template "customer_panel" .Customer}}
+  <button type="button" class="inbox-customer-pane__toggle" aria-controls="inbox-customer-pane" aria-expanded="false" data-testid="customer-pane-toggle">
+    <span class="visually-hidden">Mostrar painel do cliente</span>
+    <span aria-hidden="true">ⓘ</span>
+  </button>
+</div>
+<script nonce="{{shellCSPNonce .}}">
+  // Single delegated listener for the AI-assist suggestion chips
+  // (SIN-63977/65097). The chips are HTMX-swapped into #ai-assist-panel
+  // and carry only data-suggestion — no inline hx-on/on* handler, which
+  // the strict CSP would block. Clicking a chip copies its text into the
+  // compose box and focuses it.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.ai-assist__suggestion-btn');
+    if (!btn) return;
+    var body = document.getElementById('compose-body');
+    if (!body) return;
+    body.value = btn.getAttribute('data-suggestion') || '';
+    body.focus();
+  });
+</script>
+{{end}}
 `))
+	return t.Lookup("layout")
+}()
 
 // inboxListRegionTmpl wraps the filter bar + the conversation list in a
 // single swap target (SIN-64968). Both the filter controls (hx-target
@@ -718,25 +762,25 @@ var messageBubbleTmpl = template.Must(template.New("message_bubble").Funcs(templ
   {{- if .Media}}
     {{- if eq .Media.ScanStatus "infected"}}
   <div class="message-bubble__media message-bubble__media--blocked" role="status" aria-label="Anexo bloqueado por segurança">
-    <span class="message-bubble__media-icon" aria-hidden="true">⛔</span>
+    <span class="message-bubble__media-icon" aria-hidden="true">{{icon "octagon-alert"}}</span>
     <span class="message-bubble__media-blocked-text">Conteúdo bloqueado por segurança</span>
   </div>
     {{- else if eq .Media.ScanStatus "clean"}}
   <a class="message-bubble__media message-bubble__media--clean" href="/t/{{.Media.Hash}}/m" data-format="{{.Media.Format}}">
-    <span class="message-bubble__media-icon" aria-hidden="true">📎</span>
+    <span class="message-bubble__media-icon" aria-hidden="true">{{icon "paperclip"}}</span>
     <span class="message-bubble__media-link-text">Anexo</span>
   </a>
     {{- else}}
   <div class="message-bubble__media message-bubble__media--pending" role="status" aria-label="Anexo aguardando verificação">
-    <span class="message-bubble__media-icon" aria-hidden="true">…</span>
+    <span class="message-bubble__media-icon" aria-hidden="true">{{icon "clock"}}</span>
     <span class="message-bubble__media-pending-text">Verificando anexo</span>
   </div>
     {{- end}}
   {{- end}}
   <time class="message-bubble__time" datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{relativeTime .CreatedAt}}</time>
   {{- if eq .Direction "out"}}
-  {{- $glyph := statusGlyph .Status}}{{if $glyph}}
-  <span class="message-bubble__status message-bubble__status--{{.Status}}" aria-label="{{statusLabel .Status}}" title="{{statusLabel .Status}}">{{$glyph}}</span>
+  {{- $statusIcon := statusIcon .Status}}{{if $statusIcon}}
+  <span class="message-bubble__status message-bubble__status--{{.Status}}" aria-label="{{statusLabel .Status}}" title="{{statusLabel .Status}}">{{icon $statusIcon}}</span>
   {{- end}}
   {{- end}}
 </li>

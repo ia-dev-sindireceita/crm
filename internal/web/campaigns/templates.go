@@ -23,6 +23,8 @@ var listLayoutTmpl = template.Must(template.New("campaigns.list").Funcs(funcs).P
   <title>Campanhas</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/campaigns.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/campaigns.js" defer></script>
@@ -97,6 +99,8 @@ var formLayoutTmpl = template.Must(template.New("campaigns.form").Funcs(funcs).P
   <title>Nova campanha</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/campaigns.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -164,6 +168,8 @@ var detailLayoutTmpl = template.Must(template.New("campaigns.detail").Funcs(func
   <title>Campanha · {{.Row.Name}}</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/campaigns.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/campaigns.js" defer></script>

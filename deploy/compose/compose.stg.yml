@@ -129,6 +129,14 @@ services:
     environment:
       HTTP_ADDR: ":8080"
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # SIN-65076 — operator-console hostname. Feeds httpapi.Deps.MasterHost
+      # so the /m/* master console is reachable on a dedicated host and that
+      # host joins the CSRF Origin/Referer allowlist. Sourced from .env.stg
+      # (compose runs with --env-file /opt/crm/stg/.env.stg). The `:-` default
+      # keeps it empty when unset — graceful degradation, console stays off.
+      # Value is a CEO/operator decision; provisioning its DNS + TLS is a
+      # separate operator action (see docs/deploy/staging.md §4).
+      MASTER_CONSOLE_HOST: ${MASTER_CONSOLE_HOST:-}
     # No in-container healthcheck: distroless ships no shell/curl/wget. The
     # external smoke check in cd-stg.yml (curl https://.../health) is the
     # authoritative liveness gate; Caddy + restart:unless-stopped recover from

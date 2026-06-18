@@ -639,8 +639,8 @@ func TestStatus_Returns200AndBubbleWhenStatusChanged(t *testing.T) {
 		`hx-get="/inbox/conversations/` + convID.String() + `/messages/` + msgID.String() + `/status?currentStatus=delivered"`,
 		`hx-trigger="every 3s"`,
 		`hx-swap="outerHTML"`,
-		// WhatsApp-style double check + Portuguese aria-label
-		`✓✓`,
+		// WhatsApp-style double check (Peitho check-check icon) + Portuguese aria-label
+		`<path d="m22 10-7.5 7.5L13 16"/>`,
 		`aria-label="Entregue"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -659,8 +659,8 @@ func TestStatus_FinalStatusStopsPolling(t *testing.T) {
 		glyph  string
 		label  string
 	}{
-		{status: "read", glyph: "✓✓", label: "Lida"},
-		{status: "failed", glyph: "⚠", label: "Falha ao enviar"},
+		{status: "read", glyph: `<path d="m22 10-7.5 7.5L13 16"/>`, label: "Lida"},
+		{status: "failed", glyph: `m21.73 18-8-14`, label: "Falha ao enviar"},
 	}
 	for _, tc := range cases {
 		tc := tc

@@ -6,8 +6,21 @@ import (
 	"time"
 
 	"github.com/pericles-luz/crm/internal/billing"
+	"github.com/pericles-luz/crm/internal/web/icon"
 	"github.com/pericles-luz/crm/internal/web/shell"
 )
+
+// iconSVG mirrors the {{icon "name" [size]}} helper the shell layout
+// exposes (internal/web/shell.BaseFuncs), made available to the
+// standalone master templates which build their own FuncMaps instead of
+// going through shell.MustParse. Rendering inline Lucide SVG keeps the
+// master chrome emoji-free and CSP-safe (no icon font, no external URL).
+func iconSVG(name string, size ...int) template.HTML {
+	if len(size) > 0 {
+		return icon.SVG(name, size[0])
+	}
+	return icon.SVG(name, 0)
+}
 
 // pageData drives the full layout AND the table-only partial. The
 // list view, the post-create swap, and the validation re-render all
@@ -74,6 +87,7 @@ var templateFuncs = template.FuncMap{
 	"formatImpersonationISO":      formatImpersonationISO,
 	"truncateImpersonationReason": truncateImpersonationReason,
 	"csrfHiddenForToken":          csrfHiddenForToken,
+	"icon":                        iconSVG,
 }
 
 func formatTime(t time.Time) string {
@@ -192,6 +206,7 @@ var masterLayoutTmpl = template.Must(template.New("master.layout").Funcs(templat
   <title>Master · Tenants</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -351,6 +366,7 @@ var tenantDetailLayoutTmpl = template.Must(template.New("tenant_detail.layout").
   <title>Master · Tenant {{.Tenant.Name}}</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

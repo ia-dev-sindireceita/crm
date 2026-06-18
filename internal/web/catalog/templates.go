@@ -485,6 +485,9 @@ var pageTmpl = mustParse("catalog.page", `<!doctype html>
 <title>Catálogo · {{.TenantName}}</title>
 {{.CSRFMeta}}
 {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/catalog.css">
 </head>
 <body {{.HXHeaders}}>
 <main class="catalog-shell">
@@ -516,9 +519,12 @@ var detailTmpl = mustParse("catalog.detail", `<!doctype html>
 <title>{{.Product.Name}} · Catálogo</title>
 {{.CSRFMeta}}
 {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/catalog.css">
 </head>
 <body {{.HXHeaders}}>
-<main>
+<main class="catalog-shell">
 <p><a href="/catalog">← Voltar ao catálogo</a></p>
 <h1>{{.Product.Name}}</h1>
 <dl>

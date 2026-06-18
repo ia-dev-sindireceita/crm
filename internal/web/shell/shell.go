@@ -9,6 +9,7 @@ import (
 	"time"
 
 	csrfhelpers "github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
+	"github.com/pericles-luz/crm/internal/web/icon"
 )
 
 //go:embed layout.html
@@ -127,7 +128,7 @@ type ImpersonationContext struct {
 // composing additional templates pass their own funcs into Parse — the
 // shell helpers are merged first, so caller funcs override on conflict.
 func BaseFuncs() template.FuncMap {
-	return template.FuncMap{
+	funcs := template.FuncMap{
 		"csrfMeta":                 csrfhelpers.MetaTag,
 		"csrfHXHeaders":            csrfhelpers.HXHeadersAttr,
 		"csrfFormHidden":           csrfhelpers.FormHidden,
@@ -143,6 +144,13 @@ func BaseFuncs() template.FuncMap {
 		"shellImpersonationISO":    shellImpersonationISO,
 		"shellImpersonationReason": shellImpersonationReason,
 	}
+	// Inline Lucide icon helper ({{icon "name" [size]}}) — used by the
+	// app-shell chrome (impersonation banner, user-menu caret) and
+	// available to every page composed on the shell layout.
+	for k, v := range icon.FuncMap() {
+		funcs[k] = v
+	}
+	return funcs
 }
 
 // Parse returns a fresh template tree composed of the shell layout
@@ -226,7 +234,7 @@ func stringField(data any, name, fallback string) string {
 	return fallback
 }
 
-func shellTenantName(data any) string      { return stringField(data, "TenantName", "CRM") }
+func shellTenantName(data any) string      { return stringField(data, "TenantName", "Peitho") }
 func shellTenantLogo(data any) string      { return stringField(data, "TenantLogo", "") }
 func shellUserDisplayName(data any) string { return stringField(data, "UserDisplayName", "Conta") }
 func shellCSRFToken(data any) string       { return stringField(data, "CSRFToken", "") }

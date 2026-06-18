@@ -75,7 +75,7 @@ func TestDesignSystemStylesheets_ServedAsCSS(t *testing.T) {
 		{
 			path: "/static/css/app-shell.css",
 			needles: []string{
-				".app-shell__topbar",
+				".app-shell__sidebar",
 				".app-shell__brand",
 				".app-shell__nav",
 				".app-shell__user-menu",
@@ -83,10 +83,10 @@ func TestDesignSystemStylesheets_ServedAsCSS(t *testing.T) {
 				".app-shell__main",
 				"var(--hit-target-min)",
 				`aria-current="page"`,
-				"@media (max-width: 599px)",
+				"@media (max-width: 899px)",
 			},
 			minSize:  500,
-			descript: "app-shell.css must contain top-bar + nav + user-menu + hamburger + mobile breakpoint",
+			descript: "app-shell.css must contain sidebar + nav + user-menu + hamburger + mobile breakpoint",
 		},
 	}
 

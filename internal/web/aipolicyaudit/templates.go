@@ -23,6 +23,8 @@ var pageTmpl = template.Must(template.New("aipolicyaudit.page").Parse(`<!doctype
   <meta charset="utf-8">
   <title>{{.Title}}</title>
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/aipolicyaudit.css">
 </head>
 <body>

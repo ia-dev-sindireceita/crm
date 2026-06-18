@@ -1,0 +1,163 @@
+/*
+ * SIN-65125 — post-login `/hello-tenant` index content surface.
+ *
+ * hello-tenant renders inside the Peitho app-shell (shell.Layout) but
+ * its head_extra also pulls the legacy auth.css (the pre-shell login
+ * baseline, pinned by hello_shell_test.go). auth.css hard-binds
+ *   body  → --color-foreground / --color-background  (legacy tenant
+ *           tokens that do NOT flip under data-theme="dark"), and
+ *   main  → a 28rem login-card width,
+ * neither of which is right for an authed app surface. Under dark mode
+ * that left the card copy + "Abrir" links rendering legacy-dark ink on
+ * the dark app surface — 30 axe color-contrast failures.
+ *
+ * This file loads AFTER auth.css (last link in head_extra) and rebinds
+ * the hello-tenant content to the theme-aware Peitho tokens
+ * (--surface-* / --text-* / --color-link) so the whole content area
+ * flips with data-theme="dark", matching dashboard / walletui. Every
+ * text/background pair below uses a documented-AA token combination in
+ * BOTH light and dark (see tokens.css contrast notes).
+ *
+ * Plain CSS, element/BEM selectors only, no preprocessor — same bar as
+ * app-shell.css / login.css.
+ */
+
+/* Undo the auth.css `main { max-width:28rem; margin:3rem auto }` login
+   constraint so the app-shell main column spans full width again. The
+   `.app-shell__main > *` centering from app-shell.css keeps content
+   readable on wide monitors. */
+.app-shell__main {
+  max-width: none;
+  margin: 0;
+}
+
+/* Rebind the document baseline auth.css froze to the legacy light
+   tokens back onto the theme-aware Peitho surface tokens. */
+body {
+  color: var(--text-default);
+  background-color: var(--surface-1);
+}
+
+.hello-tenant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  color: var(--text-default);
+}
+
+/* ---- Greeting ---------------------------------------------------- */
+.hello-tenant__greeting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.hello-tenant__greeting h1 {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: var(--text-xl-line);
+  color: var(--text-strong);
+}
+
+.hello-tenant__greeting p {
+  margin: 0;
+  color: var(--text-default);
+}
+
+.hello-tenant__greeting strong {
+  color: var(--text-strong);
+}
+
+/* ---- Card grid --------------------------------------------------- */
+.hello-tenant__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--space-4);
+  margin: 0;
+}
+
+.hello-tenant__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  background-color: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.hello-tenant__card h2 {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  color: var(--text-strong);
+}
+
+.hello-tenant__card p {
+  margin: 0;
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+  color: var(--text-muted);
+}
+
+.hello-tenant__card-link {
+  align-self: flex-start;
+  margin-top: var(--space-2);
+  font-weight: 600;
+  color: var(--color-link);
+  text-decoration: none;
+}
+
+.hello-tenant__card-link:hover {
+  text-decoration: underline;
+}
+
+.hello-tenant__card-link:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.hello-tenant__card-disabled {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+/* ---- "Áreas disponíveis" surfaces nav ---------------------------- */
+.hello-tenant nav h2 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  color: var(--text-strong);
+}
+
+.hello-tenant nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hello-tenant nav a {
+  color: var(--color-link);
+  text-decoration: none;
+}
+
+.hello-tenant nav a:hover {
+  text-decoration: underline;
+}
+
+.hello-tenant nav a:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.hello-tenant nav span[aria-disabled="true"] {
+  color: var(--text-muted);
+}

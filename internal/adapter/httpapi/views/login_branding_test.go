@@ -124,9 +124,11 @@ func TestLogin_RendersWordmarkWhenLogoAbsent(t *testing.T) {
 }
 
 // TestLogin_RendersPlatformFooterWhenNotWhiteLabel covers AC #1 +
-// task scope footer: the "Powered by CRM Sindireceita" line shows for
-// the default tenant so attribution survives, and helps unbranded
-// tenants discover the platform.
+// task scope footer (SIN-65075): the "Powered by LMHost" line shows
+// for the default tenant so attribution survives, and helps unbranded
+// tenants discover the platform. The credit links to lmhost.com.br via
+// a CSP-safe external anchor (href only, no inline handler) with
+// target="_blank" rel="noopener noreferrer" to block reverse-tabnabbing.
 func TestLogin_RendersPlatformFooterWhenNotWhiteLabel(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -137,8 +139,11 @@ func TestLogin_RendersPlatformFooterWhenNotWhiteLabel(t *testing.T) {
 	if !strings.Contains(got, `data-testid="login-platform-footer"`) {
 		t.Fatalf("platform footer missing for non-white-label tenant: %q", got)
 	}
-	if !strings.Contains(got, "Powered by CRM Sindireceita") {
-		t.Fatalf("platform attribution text missing: %q", got)
+	if !strings.Contains(got, "Powered by ") {
+		t.Fatalf("platform attribution prefix missing: %q", got)
+	}
+	if !strings.Contains(got, `<a href="https://lmhost.com.br" target="_blank" rel="noopener noreferrer">LMHost</a>`) {
+		t.Fatalf("LMHost attribution link missing or malformed: %q", got)
 	}
 }
 
@@ -158,7 +163,7 @@ func TestLogin_HidesPlatformFooterWhenWhiteLabel(t *testing.T) {
 	if strings.Contains(got, `data-testid="login-platform-footer"`) {
 		t.Fatalf("platform footer leaked on white-label tenant: %q", got)
 	}
-	if strings.Contains(got, "Powered by CRM Sindireceita") {
+	if strings.Contains(got, "LMHost") {
 		t.Fatalf("platform attribution text leaked on white-label tenant: %q", got)
 	}
 }

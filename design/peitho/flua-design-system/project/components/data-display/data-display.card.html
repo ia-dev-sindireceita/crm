@@ -1,0 +1,45 @@
+<!-- @dsCard group="Components" viewport="700x230" name="Badges, Tags & Avatars" subtitle="Status pills, deal stages, removable tags, avatars" -->
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>body{margin:0;padding:20px;background:var(--bg-app)}.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}.lbl{font-size:var(--text-2xs);text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary);width:64px;flex-shrink:0}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { Badge, StatusBadge, Tag, Avatar, AvatarGroup } = window.FluaDesignSystem_2587b4;
+function Demo(){
+  return (<div>
+    <div className="row"><span className="lbl">Estágio</span>
+      <StatusBadge status="won"/><StatusBadge status="lost"/><StatusBadge status="negotiating"/>
+      <StatusBadge status="qualified"/><StatusBadge status="new"/><StatusBadge status="open"/>
+    </div>
+    <div className="row"><span className="lbl">Badge</span>
+      <Badge tone="accent" icon="zap">IA</Badge>
+      <Badge tone="info" dot>Sincronizado</Badge>
+      <Badge tone="won" icon="check">Pago</Badge>
+      <Badge tone="neutral">v2.4</Badge>
+      <Badge tone="nego" dot>Pendente</Badge>
+    </div>
+    <div className="row"><span className="lbl">Tags</span>
+      <Tag color="var(--teal-500)">Enterprise</Tag>
+      <Tag icon="star">Prioritário</Tag>
+      <Tag onRemove={()=>{}}>Inbound</Tag>
+      <Tag onRemove={()=>{}}>São Paulo</Tag>
+    </div>
+    <div className="row"><span className="lbl">Avatar</span>
+      <Avatar name="Marina Costa" status="online"/>
+      <Avatar name="Rafael Lima" status="busy"/>
+      <Avatar name="Júlia Souza"/>
+      <span style={{width:12}}/>
+      <AvatarGroup max={4} people={[{name:"Ana Reis"},{name:"Beto Cruz"},{name:"Caio Melo"},{name:"Duda Sá"},{name:"Edu Pires"},{name:"Fê Lopes"}]}/>
+    </div>
+  </div>);
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script>
+</body></html>

@@ -1,0 +1,18 @@
+<!-- @dsCard group="Colors" viewport="700x170" name="Status colors" subtitle="Muted semantic tones — never alarming. fg + soft bg pairs" -->
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{margin:0;padding:18px;background:var(--bg-app);font-family:var(--font-sans)}
+.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.col{display:flex;flex-direction:column;gap:6px}
+.pill{display:inline-flex;align-items:center;gap:5px;align-self:flex-start;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:500}
+.dot{width:6px;height:6px;border-radius:50%}
+.swrow{display:flex;gap:5px}
+.fg,.bg{height:30px;flex:1;border-radius:var(--radius-sm);box-shadow:inset 0 0 0 1px rgba(0,0,0,.05)}
+.lbl{font-size:10px;color:var(--text-secondary);font-weight:600}</style></head>
+<body><div class="grid">
+<div class="col"><span class="pill" style="color:var(--green-600);background:var(--green-50)"><i class="dot" style="background:var(--green-600)"></i>Ganho</span><div class="swrow"><div class="fg" style="background:var(--green-500)"></div><div class="bg" style="background:var(--green-50)"></div></div><span class="lbl">Won</span></div>
+<div class="col"><span class="pill" style="color:var(--rose-600);background:var(--rose-50)"><i class="dot" style="background:var(--rose-600)"></i>Perdido</span><div class="swrow"><div class="fg" style="background:var(--rose-500)"></div><div class="bg" style="background:var(--rose-50)"></div></div><span class="lbl">Lost</span></div>
+<div class="col"><span class="pill" style="color:var(--amber-600);background:var(--amber-50)"><i class="dot" style="background:var(--amber-600)"></i>Negociação</span><div class="swrow"><div class="fg" style="background:var(--amber-500)"></div><div class="bg" style="background:var(--amber-50)"></div></div><span class="lbl">Warning</span></div>
+<div class="col"><span class="pill" style="color:var(--blue-600);background:var(--blue-50)"><i class="dot" style="background:var(--blue-600)"></i>Novo</span><div class="swrow"><div class="fg" style="background:var(--blue-500)"></div><div class="bg" style="background:var(--blue-50)"></div></div><span class="lbl">Info</span></div>
+<div class="col"><span class="pill" style="color:var(--teal-500);background:var(--teal-50)"><i class="dot" style="background:var(--teal-500)"></i>Tag</span><div class="swrow"><div class="fg" style="background:var(--teal-500)"></div><div class="bg" style="background:var(--teal-50)"></div></div><span class="lbl">Secondary</span></div>
+</div></body></html>

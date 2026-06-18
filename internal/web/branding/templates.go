@@ -12,6 +12,18 @@ type pageData struct {
 	CSRFMeta   template.HTML
 	HXHeaders  template.HTMLAttr
 	Preview    previewData
+	// ThemeStyle is the pre-rendered :root{…} declaration for the
+	// current palette. It seeds the document-level <style id="tenant-theme">
+	// so the whole page (action buttons, accents) reflects the tenant
+	// palette over the Peitho defaults, and gives the save/revert OOB swap
+	// (saveSrc) a live target to replace (SIN-63084/63085).
+	ThemeStyle template.CSS
+	// CSPNonce stamps that inline <style> so the strict
+	// `style-src 'self' 'nonce-…'` policy accepts it (SIN-63275). Empty
+	// when csp.Middleware is absent — the tag still emits the attribute so
+	// the browser blocks the inline stylesheet (fail-closed) and the page
+	// degrades to the neutral tokens.css defaults.
+	CSPNonce string
 }
 
 // previewData is the form + swatches fragment the upload, override,
@@ -187,8 +199,13 @@ const pageSrc = `
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Identidade visual — {{.TenantName}}</title>
   {{.CSRFMeta}}
+  <style id="tenant-theme" nonce="{{.CSPNonce}}">{{.ThemeStyle}}</style>
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/branding.css">
 </head>
 <body {{.HXHeaders}}>
   <main class="branding-shell">

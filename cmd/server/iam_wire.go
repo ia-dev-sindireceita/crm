@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,6 +42,30 @@ import (
 )
 
 const envSlackWebhook = "SLACK_WEBHOOK_URL"
+
+// envMasterConsoleHost names the operator-console hostname env var
+// (SIN-65076). When set, its value flows into httpapi.Deps.MasterHost,
+// which adds the host to the CSRF Origin/Referer allowlist (router.go
+// csrfAllowedHosts) so the /m/* master console is reachable on a
+// dedicated host. Unset is the safe default: the allowlist falls back
+// to the resolved tenant host alone ("no master host configured").
+const envMasterConsoleHost = "MASTER_CONSOLE_HOST"
+
+// masterConsoleHost reads MASTER_CONSOLE_HOST and returns it for
+// httpapi.Deps.MasterHost. An empty value is a graceful degradation,
+// not an error: the CSRF allowlist falls back to the tenant host alone
+// (router.go:191 "no master host configured"). We log the disabled
+// state at boot — same nil-safe wire-log pattern as the other optional
+// surfaces in buildIAMHandler — so an operator can tell from the logs
+// whether the console host was provisioned. DNS/TLS for the host is a
+// separate operator action (see docs/deploy/staging.md).
+func masterConsoleHost(getenv func(string) string) string {
+	host := strings.TrimSpace(getenv(envMasterConsoleHost))
+	if host == "" {
+		log.Printf("crm: master console host unset (%s) — CSRF allowlist uses tenant host only", envMasterConsoleHost)
+	}
+	return host
+}
 
 // iamRoutes lists the path patterns the chi router handles on the public mux.
 // Registering them explicitly keeps the stdlib mux in control of dispatch
@@ -521,6 +546,11 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		},
 		TenantResolver: tenants,
 		Logger:         logger,
+		// SIN-65076 — operator-console hostname. Empty when
+		// MASTER_CONSOLE_HOST is unset (graceful: CSRF allowlist falls
+		// back to the tenant host alone). Previously never assigned, so
+		// the master console host was unreachable in every deploy.
+		MasterHost: masterConsoleHost(getenv),
 		// SIN-63146 — surface the build SHA on /health so cd-stg can
 		// detect a stale `docker compose pull`. The value comes from
 		// the -ldflags="-X .../internal/version.commitSHA=…" injected

@@ -288,7 +288,7 @@ type dashboardView struct {
 type balanceCard struct {
 	Severity       string // "ok" / "warn" / "critical" / "blocked"
 	SeverityLabel  string
-	Glyph          string
+	GlyphIcon      string // Peitho icon name (see internal/web/icon); rendered via {{icon}}
 	Hint           string
 	AvailableLabel string
 	BalanceLabel   string
@@ -365,14 +365,14 @@ func balanceFrom(snap DashboardSnapshot) balanceCard {
 	case "suspended_outbound", "suspended_full":
 		card.Severity = "blocked"
 		card.SeverityLabel = "Saldo bloqueado"
-		card.Glyph = "⛔"
+		card.GlyphIcon = "octagon-alert"
 		card.Hint = "Pagamento em atraso bloqueou novas operações até regularização."
 		return card
 	}
 	if snap.AvgDailyConsume <= 0 {
 		card.Severity = "ok"
 		card.SeverityLabel = "Saldo confortável"
-		card.Glyph = "✅"
+		card.GlyphIcon = "check-circle"
 		card.Hint = "Consumo ainda não registrado nos últimos 14 dias."
 		return card
 	}
@@ -385,17 +385,17 @@ func balanceFrom(snap DashboardSnapshot) balanceCard {
 	case snap.Available <= 0 || ratio < 0.05:
 		card.Severity = "critical"
 		card.SeverityLabel = "Saldo crítico"
-		card.Glyph = "⚠️"
+		card.GlyphIcon = "octagon-alert"
 		card.Hint = "Saldo abaixo de 5% do consumo mensal projetado — recarregue para evitar interrupção."
 	case ratio < 0.20:
 		card.Severity = "warn"
 		card.SeverityLabel = "Saldo baixo"
-		card.Glyph = "⚠"
+		card.GlyphIcon = "octagon-alert"
 		card.Hint = "Saldo abaixo de 20% do consumo mensal projetado — planeje a próxima recarga."
 	default:
 		card.Severity = "ok"
 		card.SeverityLabel = "Saldo confortável"
-		card.Glyph = "✅"
+		card.GlyphIcon = "check-circle"
 		card.Hint = "Saldo dentro da margem confortável para o consumo recente."
 	}
 	return card

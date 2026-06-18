@@ -131,6 +131,8 @@ func (h *Handler) page(w http.ResponseWriter, r *http.Request) {
 		CSRFMeta:   csrf.MetaTag(token),
 		HXHeaders:  csrf.HXHeadersAttr(token),
 		Preview:    previewFromPalette(pal),
+		ThemeStyle: branding.ThemeStyleFromPalette(pal),
+		CSPNonce:   csp.Nonce(r.Context()),
 	})
 }
 
