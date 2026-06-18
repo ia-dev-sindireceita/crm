@@ -13,9 +13,12 @@ var listLayoutTmpl = template.Must(template.New("billing.invoices.list").Parse(`
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Faturas</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/billing-invoices.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/billing-invoices.js" defer></script>
@@ -74,9 +77,12 @@ var detailLayoutTmpl = template.Must(template.New("billing.invoices.detail").Par
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fatura · {{.Invoice.Period}}</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/billing-invoices.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/billing-invoices.js" defer></script>
