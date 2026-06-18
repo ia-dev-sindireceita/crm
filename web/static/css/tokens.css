@@ -11,12 +11,19 @@
  * The token NAMES are stable — only their values changed in A2 — so every
  * feature stylesheet that already consumes them keeps working unchanged.
  *
- * Per-tenant branding overrides happen at a strictly higher specificity
- * via `branding.ThemeStyleFromPalette` (see internal/branding); the
- * inline `<style id="tenant-theme">` injected by app-shell wins because
- * it lands later in the cascade and also targets :root. Tokens declared
- * here are the Peitho neutral fallback when no tenant palette is bound;
- * the per-tenant palette still overrides --color-primary et al.
+ * Per-tenant branding overrides come from `branding.ThemeStyleFromPalette`
+ * (see internal/branding) as an inline `<style id="tenant-theme">` that
+ * app-shell injects in <head> BEFORE this stylesheet's <link> (see
+ * internal/web/shell/layout.html L7-8). Because the inline block lands
+ * EARLIER in source order at EQUAL :root specificity, a plain :root
+ * default here would win the cascade and shadow the tenant palette
+ * app-wide (SIN-65115). To prevent that, the default token blocks below
+ * (light :root + the dark [data-theme="dark"] re-bind) are wrapped in
+ * `@layer tokens`: unlayered normal declarations ALWAYS beat layered ones
+ * regardless of source order or specificity, so the unlayered inline
+ * tenant override wins --color-primary et al. in both light and dark,
+ * while these layered blocks remain the Peitho neutral fallback when no
+ * tenant palette is bound. Keep the inline tenant <style> UNLAYERED.
  *
  * Dark mode: add `data-theme="dark"` to a root element; the
  * [data-theme="dark"] block below re-binds the same token names.
@@ -70,6 +77,10 @@
     U+A720-A7FF;
 }
 
+/* The default token blocks (light :root + dark [data-theme="dark"]) live in
+ * the `tokens` cascade layer so the unlayered inline tenant override always
+ * wins --color-primary et al. — see header note (SIN-65115). */
+@layer tokens {
 :root {
   /* ---- Color: neutral surfaces (Peitho cool-grey ramp, light) ------ */
   --surface-0: #ffffff;   /* cards / panels — white                   */
@@ -252,6 +263,7 @@
   --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.40), 0 6px 16px rgba(0, 0, 0, 0.30);
   --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.50), 0 2px 8px rgba(0, 0, 0, 0.35);
 }
+} /* @layer tokens */
 
 /*
  * prefers-reduced-motion: drop all motion to zero while keeping the
