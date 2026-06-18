@@ -598,39 +598,44 @@ var conversationContextTmpl = template.Must(template.New("conversation_context")
 var conversationAssignmentTmpl = template.Must(template.New("conversation_assignment").Funcs(templateFuncs).Parse(`<section id="conversation-context-assignment" class="conversation-context__section conversation-context__assignment" aria-label="Atribuição" data-testid="conversation-context-assignment">
   <h3 class="conversation-context__subtitle">Atribuição</h3>
 {{- if .Assignees}}
-  <p class="conversation-context__assignment-current">
-    {{- if .AssignedDisplayName}}
-    <span class="assignee-chip" title="{{.AssignedDisplayName}}"><span aria-hidden="true">{{initials .AssignedDisplayName}}</span></span>
-    <span class="conversation-context__assignment-label">{{.AssignedDisplayName}}</span>
-    {{- else if .Assigned}}
-    <span class="assignee-chip assignee-chip--unknown"><span aria-hidden="true">?</span></span>
-    <span class="conversation-context__assignment-label">Atribuída</span>
-    {{- else}}
-    <span class="assignee-chip assignee-chip--unassigned" aria-hidden="true">—</span>
-    <span class="conversation-context__assignment-label conversation-context__assignment-label--unassigned">Não atribuída</span>
-    {{- end}}
-  </p>
-  <form class="conversation-context__assign-form"
-        hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
-        hx-target="#conversation-context-assignment"
-        hx-swap="outerHTML">
-    <label for="assign-target-{{.ConversationIDStr}}" class="visually-hidden">Atribuir a</label>
-    <select id="assign-target-{{.ConversationIDStr}}" name="targetUserID" class="conversation-context__assign-select">
-      {{- range .Assignees}}
-      <option value="{{.UserID}}">{{.DisplayName}}</option>
+  <details class="conversation-context__assign">
+    <summary class="conversation-context__assign-summary">
+      {{- if .AssignedDisplayName}}
+      <span class="assignee-chip" title="{{.AssignedDisplayName}}"><span aria-hidden="true">{{initials .AssignedDisplayName}}</span></span>
+      <span class="conversation-context__assignment-label">{{.AssignedDisplayName}}</span>
+      {{- else if .Assigned}}
+      <span class="assignee-chip assignee-chip--unknown"><span aria-hidden="true">?</span></span>
+      <span class="conversation-context__assignment-label">Atribuída</span>
+      {{- else}}
+      <span class="assignee-chip assignee-chip--unassigned" aria-hidden="true">—</span>
+      <span class="conversation-context__assignment-label conversation-context__assignment-label--unassigned">Não atribuída</span>
       {{- end}}
-    </select>
-    <button type="submit" class="conversation-context__assign-btn">Atribuir</button>
-  </form>
-  {{- if .CurrentUserID}}
-  <form class="conversation-context__assign-me-form"
-        hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
-        hx-target="#conversation-context-assignment"
-        hx-swap="outerHTML">
-    <input type="hidden" name="targetUserID" value="{{.CurrentUserID}}">
-    <button type="submit" class="conversation-context__assign-me-btn">Atribuir a mim</button>
-  </form>
-  {{- end}}
+      <span class="conversation-context__assign-toggle">Alterar</span>
+    </summary>
+    <div class="conversation-context__assign-controls">
+      <form class="conversation-context__assign-form"
+            hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
+            hx-target="#conversation-context-assignment"
+            hx-swap="outerHTML">
+        <label for="assign-target-{{.ConversationIDStr}}" class="visually-hidden">Atribuir a</label>
+        <select id="assign-target-{{.ConversationIDStr}}" name="targetUserID" class="conversation-context__assign-select">
+          {{- range .Assignees}}
+          <option value="{{.UserID}}">{{.DisplayName}}</option>
+          {{- end}}
+        </select>
+        <button type="submit" class="conversation-context__assign-btn">Atribuir</button>
+      </form>
+      {{- if .CurrentUserID}}
+      <form class="conversation-context__assign-me-form"
+            hx-post="/inbox/conversations/{{.ConversationIDStr}}/assign"
+            hx-target="#conversation-context-assignment"
+            hx-swap="outerHTML">
+        <input type="hidden" name="targetUserID" value="{{.CurrentUserID}}">
+        <button type="submit" class="conversation-context__assign-me-btn">Atribuir a mim</button>
+      </form>
+      {{- end}}
+    </div>
+  </details>
 {{- else}}
   {{- if .Assigned}}
   <p class="conversation-context__assignment-value conversation-context__assignment-value--assigned">Atribuída</p>
