@@ -24,6 +24,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // templateFuncs are the small set of helpers the templates use to render
@@ -264,53 +266,66 @@ func truncate(s string, n int) string {
 // surfaces contact + IA-summary + tips + actions for the active
 // conversation. The CSRF token is rendered into both <meta> (for HTMX)
 // and the outbound form's hidden field.
-var inboxLayoutTmpl = template.Must(template.New("inbox.layout").Funcs(templateFuncs).Parse(`<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <title>Inbox</title>
-  {{.CSRFMeta}}
+// inboxLayoutTmpl is the full-page inbox shell. SIN-65104 migrates it onto
+// the global SidebarNav app-shell (internal/web/shell) the way funnel/
+// catalog did: the chrome (sidebar nav, brand, user menu, tenant theme,
+// CSP nonce, impersonation banner) is owned by shell.Layout, and the
+// inbox's full-viewport 3-pane surface lives in the layout's "content"
+// slot. The page's own assets (inbox.css, htmx, the htmx-config meta, and
+// the nonce'd AI-assist delegated listener) are injected via "head_extra"
+// + "content".
+//
+// It is exposed as the shell "layout" sub-tree (mirroring funnel's
+// boardLayoutTmpl) so the existing CSP/theme/listener unit tests that
+// call inboxLayoutTmpl.Execute(&buf, layoutData{…}) directly keep
+// rendering the chrome, and so init()'s AddParseTree wiring of the inbox
+// partials (inbox_list_region, customer_panel, …) lands in the shared
+// namespace the layout renders against.
+var inboxLayoutTmpl = func() *template.Template {
+	t := shell.MustParse(templateFuncs, nil)
+	template.Must(t.Parse(`
+{{define "title"}}Inbox{{end}}
+{{define "head_extra"}}
   <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
-  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
-  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/inbox.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{$.CSPNonce}}" defer></script>
-</head>
-<body {{.HXHeaders}}>
-  <main class="inbox-shell" role="main" data-testid="inbox-shell">
-    <nav class="inbox-list-pane" aria-label="Conversas" data-testid="inbox-list-pane">
-      {{template "inbox_list_region" .List}}
-    </nav>
-    <section id="inbox-conversation-pane" class="inbox-conversation-pane" aria-live="polite" aria-label="Conversa selecionada" data-testid="inbox-conversation-pane">
-      <div class="inbox-empty" role="status">
-        <p class="inbox-empty__title">Selecione uma conversa.</p>
-        <p class="inbox-empty__hint" aria-hidden="true">← lista à esquerda</p>
-      </div>
-    </section>
-    {{template "customer_panel" .Customer}}
-    <button type="button" class="inbox-customer-pane__toggle" aria-controls="inbox-customer-pane" aria-expanded="false" data-testid="customer-pane-toggle">
-      <span class="visually-hidden">Mostrar painel do cliente</span>
-      <span aria-hidden="true">ⓘ</span>
-    </button>
-  </main>
-  <script nonce="{{$.CSPNonce}}">
-    // Single delegated listener for the AI-assist suggestion chips
-    // (SIN-63977/65097). The chips are HTMX-swapped into #ai-assist-panel
-    // and carry only data-suggestion — no inline hx-on/on* handler, which
-    // the strict CSP would block. Clicking a chip copies its text into the
-    // compose box and focuses it.
-    document.addEventListener('click', function (e) {
-      var btn = e.target.closest('.ai-assist__suggestion-btn');
-      if (!btn) return;
-      var body = document.getElementById('compose-body');
-      if (!body) return;
-      body.value = btn.getAttribute('data-suggestion') || '';
-      body.focus();
-    });
-  </script>
-</body>
-</html>
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{shellCSPNonce .}}" defer></script>
+{{end}}
+{{define "content"}}
+<div class="inbox-shell" data-testid="inbox-shell">
+  <nav class="inbox-list-pane" aria-label="Conversas" data-testid="inbox-list-pane">
+    {{template "inbox_list_region" .List}}
+  </nav>
+  <section id="inbox-conversation-pane" class="inbox-conversation-pane" aria-live="polite" aria-label="Conversa selecionada" data-testid="inbox-conversation-pane">
+    <div class="inbox-empty" role="status">
+      <p class="inbox-empty__title">Selecione uma conversa.</p>
+      <p class="inbox-empty__hint" aria-hidden="true">← lista à esquerda</p>
+    </div>
+  </section>
+  {{template "customer_panel" .Customer}}
+  <button type="button" class="inbox-customer-pane__toggle" aria-controls="inbox-customer-pane" aria-expanded="false" data-testid="customer-pane-toggle">
+    <span class="visually-hidden">Mostrar painel do cliente</span>
+    <span aria-hidden="true">ⓘ</span>
+  </button>
+</div>
+<script nonce="{{shellCSPNonce .}}">
+  // Single delegated listener for the AI-assist suggestion chips
+  // (SIN-63977/65097). The chips are HTMX-swapped into #ai-assist-panel
+  // and carry only data-suggestion — no inline hx-on/on* handler, which
+  // the strict CSP would block. Clicking a chip copies its text into the
+  // compose box and focuses it.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.ai-assist__suggestion-btn');
+    if (!btn) return;
+    var body = document.getElementById('compose-body');
+    if (!body) return;
+    body.value = btn.getAttribute('data-suggestion') || '';
+    body.focus();
+  });
+</script>
+{{end}}
 `))
+	return t.Lookup("layout")
+}()
 
 // inboxListRegionTmpl wraps the filter bar + the conversation list in a
 // single swap target (SIN-64968). Both the filter controls (hx-target
