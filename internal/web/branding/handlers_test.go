@@ -697,3 +697,49 @@ func TestFullFlow_UploadSaveRender(t *testing.T) {
 		t.Fatalf("page did not render persisted primary %s", rig.extr.pal.Primary.Hex())
 	}
 }
+
+// TestPage_HeadWiresPeithoStylesheets pins SIN-65112: the /branding page
+// <head> must link the design-system sheets so the page is no longer
+// rendered with user-agent defaults, and must keep the load-bearing
+// per-tenant theme injection. The canonical order (per app-shell
+// layout.html and the C4–C6 Peitho pages) is: inline tenant-theme <style>
+// FIRST, then tokens.css → components.css → branding.css.
+func TestPage_HeadWiresPeithoStylesheets(t *testing.T) {
+	t.Parallel()
+	rig := newTestRig(t)
+	rec := httptest.NewRecorder()
+	rig.mux(t).ServeHTTP(rec, rig.request(http.MethodGet, "/branding", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		`<style id="tenant-theme" nonce="">`,
+		`<link rel="stylesheet" href="/static/css/tokens.css">`,
+		`<link rel="stylesheet" href="/static/css/components.css">`,
+		`<link rel="stylesheet" href="/static/css/branding.css">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("page head missing %q\n%s", want, body)
+		}
+	}
+
+	// The tenant-theme block carries the current palette's :root{…} so the
+	// preview reflects the tenant colours over the Peitho defaults, and the
+	// save/revert OOB swap has a live target to replace.
+	if !strings.Contains(body, ":root{--color-primary:") {
+		t.Fatalf("tenant-theme <style> missing :root palette declaration\n%s", body)
+	}
+
+	// Cascade order: tenant-theme <style> precedes the token links, which
+	// precede the page sheet. A reorder would silently break the override.
+	themeAt := strings.Index(body, `id="tenant-theme"`)
+	tokensAt := strings.Index(body, "tokens.css")
+	componentsAt := strings.Index(body, "components.css")
+	brandingAt := strings.Index(body, "branding.css")
+	if !(themeAt >= 0 && themeAt < tokensAt && tokensAt < componentsAt && componentsAt < brandingAt) {
+		t.Fatalf("head order wrong: theme=%d tokens=%d components=%d branding=%d",
+			themeAt, tokensAt, componentsAt, brandingAt)
+	}
+}
