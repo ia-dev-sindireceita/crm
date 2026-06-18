@@ -514,14 +514,27 @@
   min-width: 0;
 }
 
+/* The per-facet uppercase subtitles (CONTATO / CANAL / ETAPA DO FUNIL /
+   ATRIBUIÇÃO) plus their values overflow the real 760px conversation
+   column at the default 1440 3-pane layout (inbox-shell 320px 1fr 360px),
+   pushing the 4th facet (Atribuição) onto a 2nd row (~91px strip, AC is
+   ≤64px / 4 facetas numa linha — SIN-65180). The channel badge, funnel
+   pill chip, and assignee chip are already self-evident signifiers, so
+   the labels are redundant horizontally — Recognition over Recall is
+   carried by those affordances. Move the subtitle into the screen-reader
+   layer (same clip treatment as .conversation-context__title): each
+   <section> keeps its own aria-label, so no SR context is lost and the
+   four values now fit one ≈44–48px row. Mobile may still wrap; acceptable. */
 .conversation-context__subtitle {
-  margin: 0;
-  font-size: var(--text-xs);
-  line-height: var(--text-xs-line);
-  font-weight: var(--font-medium);
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
 }
 
