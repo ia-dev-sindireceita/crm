@@ -85,6 +85,15 @@ var paths = map[string]string{
 	// lock: replaces the 🔒 padlock emoji on the master grant-request
 	// "SOLICITANTE" sigil — a closed padlock framing the 4-eyes column.
 	"lock": `<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>`,
+	// paperclip: replaces the 📎 attachment emoji on the inbox
+	// clean-media message bubble (SIN-65118).
+	"paperclip": `<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>`,
+	// check-check: replaces the ✓✓ double-check delivery glyph on the
+	// inbox outbound status badge (delivered/read) — SIN-65118.
+	"check-check": `<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>`,
+	// triangle-alert: replaces the ⚠ warning glyph on the inbox
+	// outbound status badge (failed delivery) — SIN-65118.
+	"triangle-alert": `<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>`,
 }
 
 // filledIcons lists icons rendered as a solid fill rather than a stroke
