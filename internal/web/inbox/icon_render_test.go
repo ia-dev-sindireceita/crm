@@ -112,6 +112,34 @@ func TestMessageBubble_StatusBadge_UsesPeithoSVG(t *testing.T) {
 	}
 }
 
+// SIN-65158: aria-label on a bare <span> is an aria-prohibited-attr
+// violation — assistive tech ignores the name, so the delivery status
+// ("Lida"/"Enviada"/"Entregue") goes silent. role="img" is a role that
+// admits aria-label and matches the decorative SVG glyph, giving the
+// badge a valid accessible name. Pin role and label on the same element.
+func TestMessageBubble_StatusBadge_HasImgRole(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		status string
+		label  string
+	}{
+		{"pending", "Aguardando envio"},
+		{"sent", "Enviada"},
+		{"delivered", "Entregue"},
+		{"read", "Lida"},
+		{"failed", "Falha ao enviar"},
+	} {
+		tc := tc
+		t.Run(tc.status, func(t *testing.T) {
+			t.Parallel()
+			got := renderBubble(t, baseOutbound(tc.status))
+			if !strings.Contains(got, `role="img" aria-label="`+tc.label+`"`) {
+				t.Errorf("status %q badge must carry role=\"img\" alongside aria-label %q so the name is not aria-prohibited; got: %s", tc.status, tc.label, got)
+			}
+		})
+	}
+}
+
 // Inbound bubbles never carry an outbound delivery badge — the status
 // icon mapping must stay outbound-only after the sweep.
 func TestMessageBubble_Inbound_HasNoStatusIcon(t *testing.T) {

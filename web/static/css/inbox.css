@@ -673,6 +673,22 @@
   background: var(--color-accent);
 }
 
+/* SIN-65158: in dark, --color-primary (#6970dd) yields only 4.23:1 white
+   text on fill, below WCAG AA 4.5:1 for the 13px "Enviar" label, and the
+   hover --color-accent (#7c84e8) is lighter still. Pin the compose Send
+   button to the AA-clean brand indigo (light-mode --color-primary #5b63d3
+   = 5.0:1; hover indigo-600 #4a51c0 = 6.5:1) so the button passes in both
+   themes. The --text-on-primary white pairing is unchanged. The global
+   dark-primary re-bind (which would fix every primary surface at once)
+   stays the Peitho AA tokens track's call — SIN-65116. */
+[data-theme="dark"] .conversation__compose-submit {
+  background: #5b63d3;
+}
+
+[data-theme="dark"] .conversation__compose-submit:hover {
+  background: #4a51c0;
+}
+
 .conversation__compose-indicator {
   grid-area: indicator;
   font-size: var(--text-xs);

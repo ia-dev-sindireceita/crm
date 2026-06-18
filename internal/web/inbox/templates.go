@@ -780,7 +780,7 @@ var messageBubbleTmpl = template.Must(template.New("message_bubble").Funcs(templ
   <time class="message-bubble__time" datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{relativeTime .CreatedAt}}</time>
   {{- if eq .Direction "out"}}
   {{- $statusIcon := statusIcon .Status}}{{if $statusIcon}}
-  <span class="message-bubble__status message-bubble__status--{{.Status}}" aria-label="{{statusLabel .Status}}" title="{{statusLabel .Status}}">{{icon $statusIcon}}</span>
+  <span class="message-bubble__status message-bubble__status--{{.Status}}" role="img" aria-label="{{statusLabel .Status}}" title="{{statusLabel .Status}}">{{icon $statusIcon}}</span>
   {{- end}}
   {{- end}}
 </li>
