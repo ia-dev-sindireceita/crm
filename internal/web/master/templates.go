@@ -206,6 +206,7 @@ var masterLayoutTmpl = template.Must(template.New("master.layout").Funcs(templat
   <title>Master · Tenants</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -365,6 +366,7 @@ var tenantDetailLayoutTmpl = template.Must(template.New("tenant_detail.layout").
   <title>Master · Tenant {{.Tenant.Name}}</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

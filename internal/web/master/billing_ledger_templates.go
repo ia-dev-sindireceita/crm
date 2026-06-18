@@ -194,6 +194,7 @@ var billingLayoutTmpl = template.Must(template.New("billing.layout").Funcs(billi
   <title>Master · Histórico de cobrança</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -341,6 +342,7 @@ var ledgerLayoutTmpl = template.Must(template.New("ledger.layout").Funcs(billing
   <title>Master · Ledger de tokens</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>

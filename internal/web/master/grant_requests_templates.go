@@ -106,6 +106,7 @@ var grantRequestsLayoutTmpl = template.Must(template.New("grant_requests.layout"
   <title>Master · Aprovações 4-eyes</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
@@ -200,6 +201,7 @@ var grantRequestDetailLayoutTmpl = template.Must(template.New("grant_request_det
   <title>Master · Revisão 4-eyes</title>
   {{.CSRFMeta}}
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+  <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
 </head>
