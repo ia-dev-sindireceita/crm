@@ -244,7 +244,7 @@
 }
 
 .funnel-modal__event--funnel .funnel-modal__event-text {
-  color: var(--color-success);
+  color: var(--color-success-strong);
 }
 
 .funnel-modal__event--empty {
@@ -307,7 +307,7 @@
 }
 
 .funnel-stats-header__kpis strong {
-  color: var(--color-success);
+  color: var(--color-success-strong);
   font-weight: var(--font-semibold);
   font-variant-numeric: tabular-nums;
 }
@@ -321,7 +321,7 @@
 }
 
 .funnel-column__conv {
-  color: var(--color-success);
+  color: var(--color-success-strong);
 }
 
 .funnel-drawer {

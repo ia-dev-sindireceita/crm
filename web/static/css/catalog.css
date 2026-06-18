@@ -98,7 +98,7 @@
 
 .catalog-sidebar__categories a[aria-current="page"] {
   background: var(--color-primary-soft);
-  color: var(--color-primary);
+  color: var(--color-on-primary-soft);
   font-weight: var(--font-semibold);
 }
 
@@ -333,7 +333,7 @@
 
 .catalog-prompt-preview__segment--argument .catalog-prompt-preview__role {
   background: var(--color-primary-soft);
-  color: var(--color-primary);
+  color: var(--color-on-primary-soft);
 }
 
 .catalog-prompt-preview__text {

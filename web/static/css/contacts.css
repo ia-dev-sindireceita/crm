@@ -387,7 +387,7 @@
 }
 
 .contact-edit-panel__saved {
-  color: var(--color-success);
+  color: var(--color-success-strong);
   font-size: var(--text-sm);
 }
 

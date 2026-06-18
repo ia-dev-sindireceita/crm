@@ -125,7 +125,7 @@
 }
 
 .funnel-rules-row__enabled--on {
-  color: var(--color-success);
+  color: var(--color-success-strong);
   font-weight: var(--font-semibold);
 }
 
@@ -220,7 +220,7 @@
 
 .funnel-rules-preview__scope {
   font-weight: var(--font-semibold);
-  color: var(--color-success);
+  color: var(--color-success-strong);
   background: var(--color-success-surface);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-pill);

@@ -253,7 +253,7 @@
 }
 
 .wallet-amount--credit {
-  color: var(--color-success);
+  color: var(--color-success-strong);
 }
 
 .wallet-empty {

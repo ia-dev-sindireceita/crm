@@ -120,7 +120,7 @@
 
 /* Active = accent-soft background + accent text (Peitho SidebarNav). */
 .app-shell__nav a[aria-current="page"] {
-  color: var(--color-primary);
+  color: var(--color-on-primary-soft);
   background-color: var(--color-primary-soft);
   font-weight: var(--font-medium);
 }

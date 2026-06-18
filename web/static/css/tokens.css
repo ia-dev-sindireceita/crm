@@ -80,7 +80,7 @@
   /* ---- Color: text (Peitho ink; contrast checked on --surface-1) --- */
   --text-strong: #1a1a2e;   /* ink — headings, 14.9:1 on --surface-1  */
   --text-default: #242833;  /* body (gray-800), 12.6:1 on --surface-1 */
-  --text-muted: #6b7280;    /* secondary (gray-500), 4.6:1 AA         */
+  --text-muted: #586575;    /* secondary, 5.4:1 AA on --surface-1     */
   --text-on-primary: #ffffff;
 
   /* ---- Color: borders --------------------------------------------- */
@@ -90,7 +90,7 @@
   /* ---- Color: brand — single Peitho indigo accent ------------------ */
   /* (also the per-tenant branding override targets — keep these names) */
   --color-primary: #5b63d3;    /* indigo-500 — primary action / focus  */
-  --color-secondary: #6b7280;  /* gray-500 — neutral secondary         */
+  --color-secondary: #586575;  /* neutral secondary, 5.4:1 AA on bg     */
   --color-accent: #7c85e0;     /* indigo-400 — soft accent             */
 
   /* Indigo accent states (hover / active / soft) per Peitho spec. */
@@ -98,14 +98,20 @@
   --color-primary-active: #3c43a2;  /* indigo-700 */
   --color-primary-soft: #eeeffb;    /* indigo-50  */
 
+  /* Text color for use ON --color-primary-soft (selected nav, accent
+     badges/tags). --color-primary (#5b63d3) is only 4.4:1 on the soft
+     tint — sub-AA — so accent text uses this darker indigo instead. */
+  --color-on-primary-soft: #4a51c0;  /* indigo-600, 5.7:1 on --color-primary-soft */
+
   /* Texto-link. Indigo-600 for AA (>=4.5:1) on surfaces 0-3.
      --color-primary fica reservado a fill/border/focus. */
   --color-link: #4a51c0;   /* indigo-600, 6.6:1 on white */
 
   /* ---- Color: feedback — muted Peitho semantics ------------------- */
   /* Each band carries a foreground (AA) + a soft surface tint.        */
-  --color-success: #268560;          /* green-600 */
-  --color-success-text: #ffffff;
+  --color-success: #268560;          /* green-600 — fill / border */
+  --color-success-text: #ffffff;     /* text ON the success fill  */
+  --color-success-strong: #16794d;   /* success-colored TEXT on light surfaces, 4.97:1 AA on --surface-1 */
   --color-success-surface: #e5f4ec;  /* green-50  */
 
   --color-warning: #ac7420;          /* amber-600 */
@@ -226,6 +232,11 @@
   --color-primary-active: #8990ed;
   --color-primary-soft: #1e2236;
 
+  /* Dark accent text on --color-primary-soft (#1e2236); lifted indigo
+     so it clears AA — the base --color-primary (#6970dd) is only
+     3.71:1 on the dark soft tint. */
+  --color-on-primary-soft: #8990ed;  /* 5.4:1 on dark --color-primary-soft */
+
   --color-link: #9098ec;
 
   /* Dark-mode focus glow — lifted opacity so it reads on #0F1117. */
@@ -233,6 +244,7 @@
 
   --color-success: #5fc79b;
   --color-success-text: #0f1117;
+  --color-success-strong: #5fc79b;   /* light-on-dark already AA as text */
   --color-success-surface: #14271f;
 
   --color-warning: #e0b468;

@@ -123,7 +123,7 @@
 .campaign-copy--ok {
   background: var(--color-success-surface);
   border-color: var(--color-success);
-  color: var(--color-success);
+  color: var(--color-success-strong);
 }
 
 .campaign-copy--err {

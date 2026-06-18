@@ -227,7 +227,7 @@
 }
 
 .lgpd-badge--completed {
-  color: var(--color-success);
+  color: var(--color-success-strong);
   background: var(--color-success-surface);
 }
 

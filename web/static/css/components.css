@@ -156,8 +156,8 @@
 /* Peitho tonal badges — softer surface tints for inline status pills.
    neutral · accent · won · lost · nego (canonical StatusBadge tones). */
 .badge--neutral { color: var(--text-default);    background-color: var(--surface-2); }
-.badge--accent  { color: var(--color-primary);   background-color: var(--color-primary-soft); }
-.badge--won     { color: var(--color-success);   background-color: var(--color-success-surface); }
+.badge--accent  { color: var(--color-on-primary-soft); background-color: var(--color-primary-soft); }
+.badge--won     { color: var(--color-success-strong);   background-color: var(--color-success-surface); }
 .badge--lost    { color: var(--color-danger);    background-color: var(--color-danger-surface); }
 .badge--nego    { color: var(--color-warning);   background-color: var(--color-warning-surface); }
 
@@ -725,7 +725,7 @@
 }
 
 .tag--accent {
-  color: var(--color-primary);
+  color: var(--color-on-primary-soft);
   background-color: var(--color-primary-soft);
   border-color: transparent;
 }
