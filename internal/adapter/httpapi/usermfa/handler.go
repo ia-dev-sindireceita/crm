@@ -16,6 +16,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
+	"github.com/pericles-luz/crm/internal/branding"
+	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
 
@@ -442,9 +444,11 @@ func (h *Handler) renderVerifyForm(w http.ResponseWriter, r *http.Request, pendi
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	data := verifyViewData{
-		ErrorMessage: errMsg,
-		NextPath:     pending.NextPath,
-		CSRFToken:    "",
+		ErrorMessage:     errMsg,
+		NextPath:         pending.NextPath,
+		CSRFToken:        "",
+		CSPNonce:         csp.Nonce(r.Context()),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "verify.html", data); err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: verify template render failed",
@@ -493,9 +497,11 @@ type setupViewData struct {
 }
 
 type verifyViewData struct {
-	ErrorMessage string
-	NextPath     string
-	CSRFToken    string
+	ErrorMessage     string
+	NextPath         string
+	CSRFToken        string
+	CSPNonce         string
+	TenantThemeStyle template.CSS
 }
 
 type regenerateViewData struct {

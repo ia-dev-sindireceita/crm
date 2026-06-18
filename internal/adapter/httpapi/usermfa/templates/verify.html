@@ -2,19 +2,37 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<title>Confirmar 2FA</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+{{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/login.css">
+<link rel="stylesheet" href="/static/css/brand.css">
+<link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+<title>Confirmar código — Peitho</title>
 </head>
 <body>
-<h1>Confirmar 2FA</h1>
-{{ if .ErrorMessage }}<p class="error">{{ .ErrorMessage }}</p>{{ end }}
-<form method="POST" action="/admin/2fa/verify" hx-post="/admin/2fa/verify">
-  <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
-  <input type="hidden" name="next" value="{{ .NextPath }}">
-  <label>Código TOTP ou de recuperação:
-    <input type="text" name="code" autocomplete="one-time-code" required>
-  </label>
-  <button type="submit">Entrar</button>
-</form>
+<main class="login-page">
+  <section class="login-card" role="region" aria-labelledby="verify-heading">
+    <header class="login-card__header">
+      <span class="login-card__wordmark login-card__wordmark--brand" aria-hidden="true" data-testid="login-wordmark"><img class="peitho-logo peitho-logo--light" src="/static/brand/peitho-logo-light.svg" alt="Peitho" /><img class="peitho-logo peitho-logo--dark" src="/static/brand/peitho-logo-dark.svg" alt="Peitho" /></span>
+      <h1 id="verify-heading" class="login-card__title">Confirmar código</h1>
+      <p class="login-card__subtitle">Verificação em duas etapas</p>
+    </header>
+    {{ if .ErrorMessage }}<p role="alert" class="alert alert--danger login-card__error" data-testid="login-error">{{ .ErrorMessage }}</p>{{ end }}
+    <form method="POST" action="/admin/2fa/verify" hx-post="/admin/2fa/verify">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <input type="hidden" name="next" value="{{ .NextPath }}">
+      <div class="login-card__field">
+        <label for="verify-code">Código TOTP ou de recuperação</label>
+        <input id="verify-code" type="text" name="code" autocomplete="one-time-code" aria-describedby="verify-code-help" autofocus required>
+        <p id="verify-code-help" class="login-card__help">Use o app autenticador ou um código de recuperação.</p>
+      </div>
+      <button type="submit" class="btn btn--primary login-card__submit">Entrar</button>
+    </form>
+  </section>
+</main>
 </body>
 </html>
 {{ end }}
