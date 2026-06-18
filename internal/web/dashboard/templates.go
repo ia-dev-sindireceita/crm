@@ -2,7 +2,10 @@ package dashboard
 
 import (
 	"html/template"
+	"io"
 	"time"
+
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // templateFuncs are the small formatting helpers the dashboard template
@@ -63,25 +66,29 @@ func durationLabel(d time.Duration) string {
 	return d.Round(time.Second).String()
 }
 
-// dashboardLayoutTmpl is the full dashboard page. It is a self-contained
-// document (mirroring the inbox layout precedent) so SIN-65008 does not
-// introduce a build pipeline. The per-tenant theme is applied via a
-// nonce'd <style> block (the only inline style the strict CSP allows);
-// every interactive affordance is a plain GET link, so there are no
-// inline on*= handlers for the CSP to silently strip.
-var dashboardLayoutTmpl = template.Must(template.New("dashboard.layout").Funcs(templateFuncs).Parse(`<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Painel / relatórios</title>
-  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
-  <link rel="stylesheet" href="/static/css/tokens.css">
-  <link rel="stylesheet" href="/static/css/components.css">
+// dashboardLayoutTmpl is the full dashboard page. SIN-65122 migrates it
+// onto the global SidebarNav app-shell (internal/web/shell) the way
+// inbox/funnel did: the chrome (sidebar nav, brand, user menu, tenant
+// theme, CSP nonce, impersonation banner) is owned by shell.Layout, and
+// the dashboard's grid lives in the layout's "content" slot. The page's
+// own stylesheet (dashboard.css) is injected via "head_extra"; tokens.css
+// and components.css are already linked by the shell head. Every
+// interactive affordance is a plain GET link, so there are no inline
+// on*= handlers for the strict CSP to silently strip.
+//
+// It is exposed as the shell "layout" sub-tree so the handler can keep
+// executing dashboardLayoutTmpl.Execute(w, data) against page data that
+// carries the shell.Data chrome fields by name (the shell reflection
+// helpers read them off the struct verbatim).
+var dashboardLayoutTmpl = func() *template.Template {
+	t := shell.MustParse(templateFuncs, nil)
+	template.Must(t.Parse(`
+{{define "title"}}Painel / relatórios{{end}}
+{{define "head_extra"}}
   <link rel="stylesheet" href="/static/css/dashboard.css">
-</head>
-<body>
-  <main class="dashboard" role="main" data-testid="dashboard">
+{{end}}
+{{define "content"}}
+  <div class="dashboard" data-testid="dashboard">
     <header class="dashboard__header">
       <h1>Painel / relatórios</h1>
       <p class="dashboard__period">Período: últimos 30 dias (desde {{.Since}}).</p>
@@ -158,7 +165,11 @@ var dashboardLayoutTmpl = template.Must(template.New("dashboard.layout").Funcs(t
       {{- end}}
     </section>
     </div>
-  </main>
-</body>
-</html>
+  </div>
+{{end}}
 `))
+	// Prime html/template's lazy escaper before any concurrent request can
+	// race on the first Execute (mirrors the inbox/funnel precedent).
+	_ = t.Execute(io.Discard, nil)
+	return t.Lookup("layout")
+}()

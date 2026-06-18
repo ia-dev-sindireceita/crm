@@ -27,6 +27,7 @@ import (
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // LoadIdentityForContactUseCase is the read-side dependency: returns the
@@ -65,6 +66,11 @@ type UpdateContactUseCase interface {
 // empty token as a 500 because RequireAuth guarantees a session.
 type CSRFTokenFn func(*http.Request) string
 
+// UserIDFn returns the authenticated user id for the app-shell user-menu
+// label (SIN-65122). Optional on Deps — when nil the user-menu shows the
+// "Conta" placeholder.
+type UserIDFn func(*http.Request) uuid.UUID
+
 // Deps bundles the handler collaborators. LoadIdentity, SplitLink and
 // CSRFToken are required (New rejects nil). ListContacts, GetDetail and
 // UpdateContact are the SIN-64977 management-surface use cases and are
@@ -76,6 +82,10 @@ type Deps struct {
 	SplitLink    SplitIdentityLinkUseCase
 	CSRFToken    CSRFTokenFn
 	Logger       *slog.Logger
+
+	// UserID is the optional app-shell user-menu label source (SIN-65122).
+	// When nil the user-menu renders the "Conta" placeholder.
+	UserID UserIDFn
 
 	// ListContacts backs GET /contacts. When nil the list route is not
 	// mounted.
@@ -175,8 +185,11 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := contactsListTmpl.Execute(w, listLayoutData{
-		CSRFMeta:         csrf.MetaTag(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantName:       tenant.Name,
+		UserDisplayName:  h.displayName(r),
+		NavItems:         buildContactsNavItems(),
+		UserMenuItems:    buildContactsUserMenu(),
+		CSRFToken:        token,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 		Results:          results,
@@ -227,8 +240,11 @@ func (h *Handler) editForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := contactEditPageTmpl.Execute(w, editLayoutData{
-		CSRFMeta:         csrf.MetaTag(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantName:       tenant.Name,
+		UserDisplayName:  h.displayName(r),
+		NavItems:         buildContactsNavItems(),
+		UserMenuItems:    buildContactsUserMenu(),
+		CSRFToken:        token,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 		Form:             form,
@@ -378,8 +394,11 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := contactLayoutTmpl.Execute(w, layoutData{
-		CSRFMeta:         csrf.MetaTag(token),
-		HXHeaders:        csrf.HXHeadersAttr(token),
+		TenantName:       tenant.Name,
+		UserDisplayName:  h.displayName(r),
+		NavItems:         buildContactsNavItems(),
+		UserMenuItems:    buildContactsUserMenu(),
+		CSRFToken:        token,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 		Detail:           detail,
@@ -456,14 +475,26 @@ type panelData struct {
 	CSRFInput template.HTML
 }
 
-// layoutData drives the full-page contact view.
+// layoutData drives the full-page contact view. SIN-65122 wraps the page
+// in the global SidebarNav app-shell (internal/web/shell), so the struct
+// now carries the shell.Data chrome fields by name — the shell layout's
+// reflection helpers (shellTenantName, shellNavItems, …) read them off
+// this struct verbatim. CSRFToken feeds the shell's <meta name="csrf-token">,
+// the body hx-headers attribute, and the logout form's hidden field.
 type layoutData struct {
-	CSRFMeta         template.HTML
-	HXHeaders        template.HTMLAttr
-	Panel            panelData
+	// shell.Data chrome fields (read by shell.Layout reflection helpers).
+	TenantName      string
+	TenantLogo      string
+	UserDisplayName string
+	NavItems        []shell.NavItem
+	UserMenuItems   []shell.UserMenuItem
+	CSRFToken       string
+	// TenantThemeStyle + CSPNonce drive the shell's nonce'd tenant-theme
+	// <style> block (SIN-63092 / SIN-63275).
 	TenantThemeStyle template.CSS
-	// CSPNonce carries the per-request CSP nonce (SIN-63275).
-	CSPNonce string
+	CSPNonce         string
+
+	Panel panelData
 	// Detail carries the SIN-64977 enrichment (channels + conversation
 	// history + edit affordance). Nil when GetDetail is not wired, in
 	// which case the detail block is omitted entirely.
@@ -488,10 +519,15 @@ type resultsData struct {
 	To   int
 }
 
-// listLayoutData drives the full-page contacts list shell.
+// listLayoutData drives the full-page contacts list (SIN-65122: wrapped
+// in the SidebarNav app-shell — see layoutData for the chrome fields).
 type listLayoutData struct {
-	CSRFMeta         template.HTML
-	HXHeaders        template.HTMLAttr
+	TenantName       string
+	TenantLogo       string
+	UserDisplayName  string
+	NavItems         []shell.NavItem
+	UserMenuItems    []shell.UserMenuItem
+	CSRFToken        string
 	TenantThemeStyle template.CSS
 	CSPNonce         string
 	Results          resultsData
@@ -506,10 +542,15 @@ type editFormData struct {
 	Error       string
 }
 
-// editLayoutData drives the full-page edit shell.
+// editLayoutData drives the full-page edit surface (SIN-65122: wrapped in
+// the SidebarNav app-shell — see layoutData for the chrome fields).
 type editLayoutData struct {
-	CSRFMeta         template.HTML
-	HXHeaders        template.HTMLAttr
+	TenantName       string
+	TenantLogo       string
+	UserDisplayName  string
+	NavItems         []shell.NavItem
+	UserMenuItems    []shell.UserMenuItem
+	CSRFToken        string
 	TenantThemeStyle template.CSS
 	CSPNonce         string
 	Form             editFormData
@@ -565,4 +606,53 @@ func atoiOrZero(s string) int {
 // full page shell.
 func isHXRequest(r *http.Request) bool {
 	return r.Header.Get("HX-Request") == "true"
+}
+
+// displayName resolves the session user id through the optional UserID dep
+// and formats it for the app-shell user-menu, falling back to "Conta" when
+// the dep is not wired or the session carries no user claim (SIN-65122).
+func (h *Handler) displayName(r *http.Request) string {
+	if h.deps.UserID == nil {
+		return "Conta"
+	}
+	return displayNameForUser(h.deps.UserID(r))
+}
+
+// buildContactsNavItems returns the SidebarNav primary nav for the
+// contacts surfaces (SIN-65122). It mirrors the inbox/funnel/dashboard set
+// so the seed-role (atendente) post-login surfaces share one persistent
+// nav, with "Contatos" marked active so the shell stamps
+// aria-current="page". The brand link back to /hello-tenant is owned by
+// the shell layout.
+func buildContactsNavItems() []shell.NavItem {
+	return []shell.NavItem{
+		{Label: "Inbox", Path: "/inbox"},
+		{Label: "Funil", Path: "/funnel"},
+		{Label: "Contatos", Path: "/contacts", Active: true},
+		{Label: "Painel", Path: "/dashboard"},
+	}
+}
+
+// buildContactsUserMenu returns the user-menu dropdown entries common to
+// authenticated contacts sessions (logout only, matching inbox/funnel).
+func buildContactsUserMenu() []shell.UserMenuItem {
+	return []shell.UserMenuItem{
+		{Label: "Sair", Path: "/logout", Form: true},
+	}
+}
+
+// displayNameForUser is the placeholder display formatter for the
+// user-menu button. The session does not (yet) carry a human label, so we
+// render the uuid prefix — replace once a user-name resolver lands.
+// Mirrors internal/web/inbox.displayNameForUser; kept local because the
+// two web packages do not share a helper module.
+func displayNameForUser(userID uuid.UUID) string {
+	if userID == uuid.Nil {
+		return "Conta"
+	}
+	s := userID.String()
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
 }

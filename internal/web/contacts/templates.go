@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pericles-luz/crm/internal/contacts"
+	"github.com/pericles-luz/crm/internal/web/shell"
 )
 
 // templateFuncs are the small helper set the templates use. Keeping
@@ -62,23 +63,30 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02 15:04 UTC")
 }
 
-// contactLayoutTmpl is the full-page shell. The identity panel renders
-// inside #identity-panel so the POST /contacts/identity/split fragment
-// can target #identity-panel via hx-swap=outerHTML.
-var contactLayoutTmpl = template.Must(template.New("contact.layout").Funcs(templateFuncs).Parse(`<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <title>Identidade do contato</title>
-  {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
-  <link rel="stylesheet" href="/static/css/tokens.css">
-  <link rel="stylesheet" href="/static/css/components.css">
+// contactLayoutTmpl is the full-page contact-identity view. SIN-65122
+// migrates it onto the global SidebarNav app-shell (internal/web/shell)
+// the way inbox/funnel did: the chrome (sidebar nav, brand, user menu,
+// tenant theme, CSP nonce, CSRF meta + hx-headers, impersonation banner)
+// is owned by shell.Layout, and the contact-detail surface lives in the
+// layout's "content" slot. The page's own assets (contacts.css + htmx)
+// ride in via "head_extra"; tokens.css / components.css are linked by the
+// shell head. The identity panel renders inside #identity-panel so the
+// POST /contacts/identity/split fragment can target it via
+// hx-swap=outerHTML.
+//
+// It is exposed as the shell "layout" sub-tree so the existing
+// theme/CSP-nonce unit tests that call contactLayoutTmpl.Execute(&buf,
+// layoutData{…}) directly keep rendering the chrome.
+var contactLayoutTmpl = func() *template.Template {
+	t := shell.MustParse(templateFuncs, nil)
+	template.Must(t.Parse(`
+{{define "title"}}Identidade do contato{{end}}
+{{define "head_extra"}}
   <link rel="stylesheet" href="/static/css/contacts.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
-</head>
-<body {{.HXHeaders}}>
-  <main class="contact-shell" role="main">
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{shellCSPNonce .}}" defer></script>
+{{end}}
+{{define "content"}}
+  <div class="contact-shell" data-testid="contact-shell">
     <header class="contact-shell__header">
       <h1>Identidade do contato</h1>
       <p class="contact-shell__hint">
@@ -132,10 +140,18 @@ var contactLayoutTmpl = template.Must(template.New("contact.layout").Funcs(templ
     </section>
     {{end}}
     {{template "identity_panel" .Panel}}
-  </main>
-</body>
-</html>
+  </div>
+{{end}}
 `))
+	// Re-parse the partial source into the layout's OWN namespace rather
+	// than AddParseTree-ing the standalone partial's *parse.Tree. Sharing
+	// one tree across two html/template namespaces lets the lazy escaper
+	// mutate the same nodes from two goroutines on first Execute — the
+	// SIN-62774 data race. A fresh parse gives this namespace its own tree.
+	template.Must(t.New("identity_panel").Parse(identityPanelSrc))
+	_ = t.Execute(io.Discard, nil)
+	return t.Lookup("layout")
+}()
 
 // identityPanelTmpl is the swap unit: one row per IdentityLink. The
 // "Separar este contato" button POSTs to /contacts/identity/split with
@@ -146,7 +162,12 @@ var contactLayoutTmpl = template.Must(template.New("contact.layout").Funcs(templ
 // built-in modal — so no extra JS is needed (AC #3 "Confirmação
 // obrigatória (modal HTMX) antes do POST"). The data-link-reason
 // attribute lets a tenant-customised stylesheet style by reason.
-var identityPanelTmpl = template.Must(template.New("identity_panel").Funcs(templateFuncs).Parse(`<section id="identity-panel" class="identity-panel" aria-label="Contatos vinculados à identidade">
+//
+// The source is held in identityPanelSrc so each shell layout that embeds
+// this partial can parse its OWN copy of the tree (see contactLayoutTmpl).
+var identityPanelTmpl = template.Must(template.New("identity_panel").Funcs(templateFuncs).Parse(identityPanelSrc))
+
+const identityPanelSrc = `<section id="identity-panel" class="identity-panel" aria-label="Contatos vinculados à identidade">
   <header class="identity-panel__header">
     <h2 class="identity-panel__title">Identidade</h2>
     <span class="identity-panel__id" data-identity-id="{{.Identity.ID}}">{{.Identity.ID}}</span>
@@ -179,7 +200,7 @@ var identityPanelTmpl = template.Must(template.New("identity_panel").Funcs(templ
   <p class="identity-panel__empty">Nenhum contato vinculado a esta identidade.</p>
   {{end}}
 </section>
-`))
+`
 
 // contactsResultsTmpl is the swap unit for the list pane: the table rows
 // plus the pager. Search (keyup-debounced hx-get) and the pager links
@@ -189,7 +210,12 @@ var identityPanelTmpl = template.Must(template.New("identity_panel").Funcs(templ
 // interaction is an hx-* attribute, which HTMX's own (nonce-allowed)
 // script reads. The search input fires on keyup (debounced) and on the
 // native "search" event (clearing the box).
-var contactsResultsTmpl = template.Must(template.New("contacts_results").Funcs(templateFuncs).Parse(`<div id="contacts-results" class="contacts-results">
+//
+// The source is held in contactsResultsSrc so the list layout can parse
+// its OWN copy of the tree (see contactsListTmpl).
+var contactsResultsTmpl = template.Must(template.New("contacts_results").Funcs(templateFuncs).Parse(contactsResultsSrc))
+
+const contactsResultsSrc = `<div id="contacts-results" class="contacts-results">
   <p class="contacts-results__summary" role="status">
     {{if .Total}}Exibindo {{.From}}–{{.To}} de {{.Total}}{{else}}Nenhum contato encontrado{{end}}{{if .Query}} para “{{.Query}}”{{end}}
   </p>
@@ -214,25 +240,23 @@ var contactsResultsTmpl = template.Must(template.New("contacts_results").Funcs(t
     {{if .HasNext}}<a class="contacts-pager__next" href="/contacts?q={{.Query}}&amp;offset={{.NextOff}}&amp;limit={{.Limit}}" hx-get="/contacts?q={{.Query}}&amp;offset={{.NextOff}}&amp;limit={{.Limit}}" hx-target="#contacts-results" hx-swap="outerHTML" rel="next">Próximos →</a>{{end}}
   </nav>
 </div>
-`))
+`
 
-// contactsListTmpl is the full-page list shell. It embeds
+// contactsListTmpl is the full-page contacts list. SIN-65122 migrates it
+// onto the global SidebarNav app-shell (see contactLayoutTmpl). It embeds
 // contacts_results for the initial render; subsequent searches/pages swap
-// just that fragment.
-var contactsListTmpl = template.Must(template.New("contacts.list").Funcs(templateFuncs).Parse(`<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <title>Contatos</title>
-  {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
-  <link rel="stylesheet" href="/static/css/tokens.css">
-  <link rel="stylesheet" href="/static/css/components.css">
+// just that fragment (the HX-Request branch in the handler renders
+// contacts_results content-only, so the partial never carries the shell).
+var contactsListTmpl = func() *template.Template {
+	t := shell.MustParse(templateFuncs, nil)
+	template.Must(t.Parse(`
+{{define "title"}}Contatos{{end}}
+{{define "head_extra"}}
   <link rel="stylesheet" href="/static/css/contacts.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
-</head>
-<body {{.HXHeaders}}>
-  <main class="contacts-shell" role="main">
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{shellCSPNonce .}}" defer></script>
+{{end}}
+{{define "content"}}
+  <div class="contacts-shell" data-testid="contacts-shell">
     <header class="contacts-shell__header">
       <h1>Contatos</h1>
     </header>
@@ -251,15 +275,25 @@ var contactsListTmpl = template.Must(template.New("contacts.list").Funcs(templat
              hx-swap="outerHTML">
     </form>
     {{template "contacts_results" .Results}}
-  </main>
-</body>
-</html>
+  </div>
+{{end}}
 `))
+	// Own-namespace parse (not AddParseTree) — see contactLayoutTmpl for why
+	// sharing the partial's *parse.Tree triggers the SIN-62774 escaper race.
+	template.Must(t.New("contacts_results").Parse(contactsResultsSrc))
+	_ = t.Execute(io.Discard, nil)
+	return t.Lookup("layout")
+}()
 
 // contactEditPanelTmpl is the edit form fragment (swap unit for
 // #contact-edit-panel). It is reused as the 422 re-render with an inline
 // error. CSP-safe: hx-post drives the submit, no inline handlers.
-var contactEditPanelTmpl = template.Must(template.New("contact_edit_panel").Funcs(templateFuncs).Parse(`<section id="contact-edit-panel" class="contact-edit-panel">
+//
+// The source is held in contactEditPanelSrc so the edit page layout can
+// parse its OWN copy of the tree (see contactEditPageTmpl).
+var contactEditPanelTmpl = template.Must(template.New("contact_edit_panel").Funcs(templateFuncs).Parse(contactEditPanelSrc))
+
+const contactEditPanelSrc = `<section id="contact-edit-panel" class="contact-edit-panel">
   <form class="contact-edit-form"
         hx-post="/contacts/{{.ContactID}}/edit"
         hx-target="#contact-edit-panel"
@@ -274,7 +308,7 @@ var contactEditPanelTmpl = template.Must(template.New("contact_edit_panel").Func
     </div>
   </form>
 </section>
-`))
+`
 
 // contactSavedPanelTmpl replaces the form after a successful HTMX save:
 // the new name + an affordance to edit again. It keeps the
@@ -290,54 +324,47 @@ var contactSavedPanelTmpl = template.Must(template.New("contact_saved_panel").Fu
 </section>
 `))
 
-// contactEditPageTmpl is the full-page edit shell for a direct navigation
-// to /contacts/{id}/edit (progressive enhancement: the form works without
-// HTMX). It embeds contact_edit_panel.
-var contactEditPageTmpl = template.Must(template.New("contact.edit").Funcs(templateFuncs).Parse(`<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <title>Editar contato</title>
-  {{.CSRFMeta}}
-  {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
-  <link rel="stylesheet" href="/static/css/tokens.css">
-  <link rel="stylesheet" href="/static/css/components.css">
+// contactEditPageTmpl is the full-page edit surface for a direct
+// navigation to /contacts/{id}/edit (progressive enhancement: the form
+// works without HTMX). SIN-65122 migrates it onto the global SidebarNav
+// app-shell (see contactLayoutTmpl). It embeds contact_edit_panel; an
+// HTMX request returns that fragment content-only (handler branch).
+var contactEditPageTmpl = func() *template.Template {
+	t := shell.MustParse(templateFuncs, nil)
+	template.Must(t.Parse(`
+{{define "title"}}Editar contato{{end}}
+{{define "head_extra"}}
   <link rel="stylesheet" href="/static/css/contacts.css">
-  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
-</head>
-<body {{.HXHeaders}}>
-  <main class="contact-shell" role="main">
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{shellCSPNonce .}}" defer></script>
+{{end}}
+{{define "content"}}
+  <div class="contact-shell" data-testid="contact-shell">
     <header class="contact-shell__header">
       <h1>Editar contato</h1>
       <p class="contact-shell__hint"><a href="/contacts/{{.Form.ContactID}}">← Voltar ao contato</a></p>
     </header>
     {{template "contact_edit_panel" .Form}}
-  </main>
-</body>
-</html>
+  </div>
+{{end}}
 `))
+	// Own-namespace parse (not AddParseTree) — see contactLayoutTmpl for why
+	// sharing the partial's *parse.Tree triggers the SIN-62774 escaper race.
+	template.Must(t.New("contact_edit_panel").Parse(contactEditPanelSrc))
+	_ = t.Execute(io.Discard, nil)
+	return t.Lookup("layout")
+}()
 
 func init() {
-	// Cross-register so the layout can {{template "identity_panel" .Panel}}.
-	// Errors here are programmer errors — surface them at process start.
-	if _, err := contactLayoutTmpl.AddParseTree(identityPanelTmpl.Name(), identityPanelTmpl.Tree); err != nil {
-		panic("web/contacts: register identity_panel in layout: " + err.Error())
-	}
-	// The list shell embeds contacts_results; the edit page embeds
-	// contact_edit_panel. Cross-register both so {{template}} resolves.
-	if _, err := contactsListTmpl.AddParseTree(contactsResultsTmpl.Name(), contactsResultsTmpl.Tree); err != nil {
-		panic("web/contacts: register contacts_results in list: " + err.Error())
-	}
-	if _, err := contactEditPageTmpl.AddParseTree(contactEditPanelTmpl.Name(), contactEditPanelTmpl.Tree); err != nil {
-		panic("web/contacts: register contact_edit_panel in edit page: " + err.Error())
-	}
-	// Prime html/template's lazy escaper on every template now, before any
-	// concurrent goroutine can race on the first Execute call (the same
-	// fix internal/web/inbox carries from SIN-62774).
+	// The three full-page surfaces are composed on the shell layout and
+	// cross-register their embedded partials inside their own initialiser
+	// closures (above). Here we only prime html/template's lazy escaper on
+	// the standalone partials — the ones executed directly for HTMX
+	// fragments — before any concurrent goroutine can race on the first
+	// Execute call (the same fix internal/web/inbox carries from
+	// SIN-62774). The shell-composed layouts are primed in their closures.
 	for _, t := range []*template.Template{
-		identityPanelTmpl, contactLayoutTmpl,
-		contactsResultsTmpl, contactsListTmpl,
-		contactEditPanelTmpl, contactSavedPanelTmpl, contactEditPageTmpl,
+		identityPanelTmpl, contactsResultsTmpl,
+		contactEditPanelTmpl, contactSavedPanelTmpl,
 	} {
 		_ = t.Execute(io.Discard, nil)
 	}
