@@ -138,6 +138,10 @@ func TestTokenContrastLightAA(t *testing.T) {
 		// A2 — success-colored text variant on app bg + on the won-badge tint.
 		{"A2 success-strong on surface-1", "color-success-strong", "surface-1"},
 		{"A2 success-strong on success-surface", "color-success-strong", "color-success-surface"},
+		// SIN-65127 — warning-colored text variant (inbox waiting badge) on
+		// app bg + on the amber waiting-badge tint.
+		{"warning-strong on surface-1", "color-warning-strong", "surface-1"},
+		{"warning-strong on warning-surface", "color-warning-strong", "color-warning-surface"},
 		// A3 — accent text on the primary-soft tint (selected nav / badges).
 		{"A3 on-primary-soft on primary-soft", "color-on-primary-soft", "color-primary-soft"},
 		// Sanity guards for the existing text/link tokens we rely on.
@@ -155,6 +159,8 @@ func TestTokenContrastDarkAA(t *testing.T) {
 		{"A4 on-primary-soft on primary-soft (dark)", "color-on-primary-soft", "color-primary-soft"},
 		// success-as-text + muted text still clear AA on the dark app bg.
 		{"success-strong on surface-1 (dark)", "color-success-strong", "surface-1"},
+		{"warning-strong on surface-1 (dark)", "color-warning-strong", "surface-1"},
+		{"warning-strong on warning-surface (dark)", "color-warning-strong", "color-warning-surface"},
 		{"text-muted on surface-1 (dark)", "text-muted", "surface-1"},
 		{"color-link on surface-1 (dark)", "color-link", "surface-1"},
 		{"text-default on surface-1 (dark)", "text-default", "surface-1"},

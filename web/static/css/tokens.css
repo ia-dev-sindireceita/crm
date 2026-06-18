@@ -127,6 +127,7 @@
 
   --color-warning: #ac7420;          /* amber-600 */
   --color-warning-text: #ffffff;
+  --color-warning-strong: #8a5a00;   /* warning-colored TEXT on light surfaces: 5.43:1 on --surface-1, 5.33:1 on --color-warning-surface (AA) */
   --color-warning-surface: #fbf2df;  /* amber-50  */
 
   --color-danger: #b14257;           /* rose-600 (desaturated) */
@@ -260,6 +261,7 @@
 
   --color-warning: #e0b468;
   --color-warning-text: #0f1117;
+  --color-warning-strong: #e0b468;   /* light-on-dark already AA as text: 9.79:1 on --surface-1, 8.22:1 on --color-warning-surface */
   --color-warning-surface: #2a2113;
 
   --color-danger: #e08197;

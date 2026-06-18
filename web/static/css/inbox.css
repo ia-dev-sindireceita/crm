@@ -367,7 +367,7 @@
   padding: 0 var(--space-2);
   border-radius: var(--radius-pill);
   background: var(--color-warning-surface);
-  color: var(--color-warning);
+  color: var(--color-warning-strong); /* SIN-65127: amber TEXT needs AA-strong variant (was --color-warning #ac7420 = 3.57:1) */
   font-size: var(--text-xs);
   line-height: var(--text-xs-line);
   font-weight: 600;
