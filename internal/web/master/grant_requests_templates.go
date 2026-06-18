@@ -348,7 +348,7 @@ var grantRequestDetailPanelTmpl = template.Must(template.New("grant_request_deta
                   hx-target="#grant-request-detail"
                   hx-swap="outerHTML"
                   aria-label="Rejeitar solicitação"
-                  onsubmit="return confirm('Confirmar rejeição da solicitação?');">
+                  hx-confirm="Confirmar rejeição da solicitação?">
               {{.CSRFInput}}
               <button type="submit"
                       class="master-grant-request-detail__reject-submit">Rejeitar</button>
