@@ -11,6 +11,7 @@ import (
 // handler thin.
 var templateFuncs = template.FuncMap{
 	"stateLabel": stateLabel,
+	"stateTone":  stateTone,
 	"duration":   durationLabel,
 	"channelLabel": func(c string) string {
 		if c == "" {
@@ -32,6 +33,22 @@ func stateLabel(state string) string {
 		return "Fechadas"
 	default:
 		return state
+	}
+}
+
+// stateTone maps the raw lifecycle column value onto the canonical
+// Peitho StatusBadge tone modifier (`.badge--*`). Open conversations
+// read as the active/accent tone; closed read neutral. Unknown states
+// fall back to neutral so a newly added state still renders a valid
+// pill rather than an unstyled chip.
+func stateTone(state string) string {
+	switch state {
+	case "open":
+		return "accent"
+	case "closed":
+		return "neutral"
+	default:
+		return "neutral"
 	}
 }
 
@@ -60,6 +77,8 @@ var dashboardLayoutTmpl = template.Must(template.New("dashboard.layout").Funcs(t
   <title>Painel / relatórios</title>
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
   <main class="dashboard" role="main" data-testid="dashboard">
@@ -67,18 +86,19 @@ var dashboardLayoutTmpl = template.Must(template.New("dashboard.layout").Funcs(t
       <h1>Painel / relatórios</h1>
       <p class="dashboard__period">Período: últimos 30 dias (desde {{.Since}}).</p>
       <p class="dashboard__actions">
-        <a href="/dashboard/export.csv" download data-testid="dashboard-export-csv">Exportar CSV (volume por canal)</a>
+        <a class="btn btn--secondary" href="/dashboard/export.csv" download data-testid="dashboard-export-csv">Exportar CSV (volume por canal)</a>
       </p>
     </header>
 
-    <section class="dashboard__section" aria-labelledby="dash-counters" data-testid="dashboard-counters">
+    <div class="dashboard__grid">
+    <section class="dashboard__section card" aria-labelledby="dash-counters" data-testid="dashboard-counters">
       <h2 id="dash-counters">Conversas</h2>
       {{- if .HasStates}}
       <table class="dashboard__table">
         <thead><tr><th scope="col">Estado</th><th scope="col">Total</th></tr></thead>
         <tbody>
         {{- range .ConversationsByState}}
-          <tr><td>{{stateLabel .State}}</td><td>{{.Count}}</td></tr>
+          <tr><td><span class="status-badge--peitho badge--{{stateTone .State}}">{{stateLabel .State}}</span></td><td>{{.Count}}</td></tr>
         {{- end}}
         </tbody>
       </table>
@@ -87,7 +107,7 @@ var dashboardLayoutTmpl = template.Must(template.New("dashboard.layout").Funcs(t
       {{- end}}
     </section>
 
-    <section class="dashboard__section" aria-labelledby="dash-sla" data-testid="dashboard-sla">
+    <section class="dashboard__section card" aria-labelledby="dash-sla" data-testid="dashboard-sla">
       <h2 id="dash-sla">Tempos de atendimento</h2>
       <table class="dashboard__table">
         <thead><tr><th scope="col">Indicador</th><th scope="col">p50</th><th scope="col">p90</th></tr></thead>
@@ -106,7 +126,7 @@ var dashboardLayoutTmpl = template.Must(template.New("dashboard.layout").Funcs(t
       </table>
     </section>
 
-    <section class="dashboard__section" aria-labelledby="dash-channels" data-testid="dashboard-channels">
+    <section class="dashboard__section card" aria-labelledby="dash-channels" data-testid="dashboard-channels">
       <h2 id="dash-channels">Volume por canal</h2>
       {{- if .HasChannels}}
       <table class="dashboard__table">
@@ -122,7 +142,7 @@ var dashboardLayoutTmpl = template.Must(template.New("dashboard.layout").Funcs(t
       {{- end}}
     </section>
 
-    <section class="dashboard__section" aria-labelledby="dash-funnel" data-testid="dashboard-funnel">
+    <section class="dashboard__section card" aria-labelledby="dash-funnel" data-testid="dashboard-funnel">
       <h2 id="dash-funnel">Conversões por estágio do funil</h2>
       {{- if .HasFunnel}}
       <table class="dashboard__table">
@@ -137,6 +157,7 @@ var dashboardLayoutTmpl = template.Must(template.New("dashboard.layout").Funcs(t
       <p class="dashboard__empty">Sem estágios de funil configurados.</p>
       {{- end}}
     </section>
+    </div>
   </main>
 </body>
 </html>

@@ -1,0 +1,122 @@
+/* dashboard.css — Peitho visual port of the managerial dashboard
+ * (SIN-65096 / Tranche C · C1). Tokens only, no raw hex; dark-aware via
+ * the [data-theme="dark"] re-bind in tokens.css. Pairs with
+ * components.css (.btn / .card / .status-badge--peitho) which the
+ * dashboard template links alongside this sheet.
+ *
+ * The dashboard is a read-only, GET-only page rendered standalone (not
+ * through the app shell, which would need session/nav data the handler
+ * deliberately does not carry). It therefore styles its own page chrome
+ * here while consuming the shared component primitives for cards, the
+ * export button and the status pills. */
+
+.dashboard {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5) var(--space-8);
+  font-family: var(--font-sans);
+  color: var(--text-default);
+}
+
+/* ---- Header -------------------------------------------------------- */
+
+.dashboard__header {
+  margin-bottom: var(--space-5);
+}
+
+.dashboard__header h1 {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-line);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.dashboard__period {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-muted);
+}
+
+.dashboard__actions {
+  margin: var(--space-4) 0 0;
+}
+
+/* ---- Sections (rendered as Peitho cards in a responsive grid) ------ */
+
+.dashboard__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+@media (max-width: 720px) {
+  .dashboard__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dashboard__section {
+  margin: 0;
+}
+
+.dashboard__section h2 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+/* ---- Tables -------------------------------------------------------- */
+
+.dashboard__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.dashboard__table th,
+.dashboard__table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.dashboard__table thead th {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.dashboard__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Numeric columns sit after the first label column: right-align and
+ * lock to tabular numerals so digits line up across rows. */
+.dashboard__table th + th,
+.dashboard__table td + td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard__table small {
+  color: var(--text-muted);
+  font-weight: var(--font-regular);
+}
+
+/* ---- Empty state --------------------------------------------------- */
+
+.dashboard__empty {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-muted);
+}
