@@ -1,0 +1,223 @@
+/* SIN-65101 / Peitho C6 — styles for the AI-policy audit log page served
+   by internal/web/aipolicyaudit at /settings/ai-policy/audit (tenant) and
+   /admin/audit (master).
+
+   This sheet was previously absent — the template linked a 404, so the
+   audit page rendered with user-agent defaults ("tela sem formatação").
+   It is introduced here as a token-only stylesheet: every visual constant
+   consumes a custom property from tokens.css (--color-*, --surface-*,
+   --text-*, --border-*, --space-*, --radius-*) so the page renders in both
+   light and dark (the names re-bind under [data-theme="dark"]) and
+   inherits any per-tenant branding override. The page links tokens.css +
+   components.css ahead of this sheet; .visually-hidden comes from
+   tokens.css and is not redefined here.
+
+   Plain CSS, no preprocessor, no framework, no @import — boring tech.
+
+   Accessibility / load-bearing visual:
+     - the `audit-row--master` red tint (decisão #10/#16) flags changes
+       made under master impersonation. It is NOT colour-only: each such
+       row also carries the textual `master` pill, so the distinction
+       survives for colour-blind operators and in print (WCAG 1.4.1).
+     - the audit table uses tabular numerals so the UTC timestamps and
+       IDs align column-wise for scanning.
+*/
+
+.audit-shell {
+  max-width: var(--bp-lg);
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-4) var(--space-7);
+  font-family: var(--font-sans);
+  color: var(--text-default);
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.audit-header h1 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-line);
+  color: var(--text-strong);
+}
+
+.audit-lede {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-base);
+  color: var(--text-default);
+}
+
+.audit-meta {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Filter bar — labels wrap into a responsive row; each label is a small
+   stacked field so the control sits under its caption. */
+.audit-filters__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.audit-filters__form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-default);
+}
+
+.audit-filters__form select,
+.audit-filters__form input[type="text"],
+.audit-filters__form input[type="date"] {
+  height: var(--control-md);
+  padding: 0 var(--space-2);
+  font: inherit;
+  color: var(--text-default);
+  background: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.audit-filters__form select:focus-visible,
+.audit-filters__form input:focus-visible,
+.audit-filters__form button:focus-visible,
+.audit-pager__next:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.audit-filters__form button[type="submit"] {
+  height: var(--control-md);
+  padding: 0 var(--space-4);
+  background-color: var(--color-primary);
+  color: var(--text-on-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+}
+
+.audit-filters__form button[type="submit"]:hover {
+  background-color: var(--color-primary-hover);
+}
+
+/* Audit table */
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-table thead {
+  background: var(--surface-2);
+}
+
+.audit-table th,
+.audit-table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+}
+
+.audit-table th {
+  font-weight: var(--font-semibold);
+  color: var(--text-default);
+  white-space: nowrap;
+}
+
+.audit-table code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-strong);
+}
+
+.audit-table time {
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+/* Load-bearing: changes made in a master impersonation session are tinted
+   so tenant admins can spot them at a glance (decisão #10/#16). Paired
+   with the textual `master` pill, never colour-only. */
+.audit-row--master td {
+  background: var(--color-danger-surface);
+}
+
+.audit-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  line-height: var(--text-xs-line);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-default);
+}
+
+.audit-pill--master {
+  background: var(--color-danger-surface);
+  color: var(--color-danger-text);
+}
+
+.audit-empty {
+  margin: 0;
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.audit-pager {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.audit-pager__next {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+  font-weight: var(--font-medium);
+  color: var(--color-link);
+  text-decoration: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.audit-pager__next:hover {
+  background: var(--surface-2);
+}
+
+@media (max-width: 600px) {
+  .audit-filters__form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* The audit table is horizontally dense; let it scroll inside its
+     section on narrow viewports rather than wrapping the value cells. */
+  .audit-list {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .audit-table {
+    min-width: 640px;
+  }
+}
