@@ -545,7 +545,11 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 			pool:     pool,
 		},
 		TenantResolver: tenants,
-		Logger:         logger,
+		// SIN-63963 / UX-F4 — the TenantResolver also implements
+		// tenancy.BrandingReader (LoadBranding), so the same adapter feeds
+		// the pre-auth /login white-label surface.
+		LoginBranding: tenants,
+		Logger:        logger,
 		// SIN-65076 — operator-console hostname. Empty when
 		// MASTER_CONSOLE_HOST is unset (graceful: CSRF allowlist falls
 		// back to the tenant host alone). Previously never assigned, so
@@ -660,6 +664,15 @@ func (a iamAdapter) Login(ctx context.Context, host, email, password string, ipA
 		LoginPolicy: a.policies["login"],
 	}
 	return svc.Login(ctx, host, email, password, ipAddr, userAgent, route)
+}
+
+// LoadBranding lets iamAdapter double as a tenancy.BrandingReader so the
+// usermfa wire layer can pick it up via an optional interface assertion
+// (SIN-63963 / UX-F4) without growing buildUserMFAStack's signature. It
+// delegates to the shared TenantResolver, which owns the single-row
+// branding lookup.
+func (a iamAdapter) LoadBranding(ctx context.Context, tenantID uuid.UUID) (tenancy.TenantBranding, error) {
+	return a.tenants.LoadBranding(ctx, tenantID)
 }
 
 func (a iamAdapter) Logout(ctx context.Context, tenantID, sessionID uuid.UUID) error {
