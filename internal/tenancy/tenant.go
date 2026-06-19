@@ -58,3 +58,27 @@ type PrivacySettings struct {
 type PrivacySettingsReader interface {
 	LoadPrivacySettings(ctx context.Context, tenantID uuid.UUID) (PrivacySettings, error)
 }
+
+// TenantBranding is the white-label surface the pre-auth /login page
+// reads to brand the credential card before a principal authenticates
+// (SIN-63963 / UX-F4). Both fields are optional:
+//
+//   - LogoURL empty → the template falls back to the platform word-mark.
+//   - WhiteLabel false → the "Powered by LMHost" platform footer renders.
+//
+// The handler decides per-field how to degrade; this struct just carries
+// the raw values out of storage. It mirrors PrivacySettings: a pure
+// value type with no infrastructure coupling.
+type TenantBranding struct {
+	LogoURL    string
+	WhiteLabel bool
+}
+
+// BrandingReader is the read port the /login handler depends on to fill
+// TenantLogo + WhiteLabel. Implementations live in
+// internal/adapter/db/postgres. Like PrivacySettingsReader this is a
+// read-only single-row lookup keyed by tenant id, served outside
+// WithTenant because /login runs before a session exists.
+type BrandingReader interface {
+	LoadBranding(ctx context.Context, tenantID uuid.UUID) (TenantBranding, error)
+}

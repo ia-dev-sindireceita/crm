@@ -80,6 +80,46 @@ const tenantPrivacySettingsSQL = `
 	 WHERE id = $1
 `
 
+// tenantBrandingSQL serves the SIN-63963 pre-auth /login white-label
+// surface. Lives separately from the canonical tenant SELECT (same
+// rationale as tenantPrivacySettingsSQL / tenantDefaultLeadSQL) so the
+// host/id lookup consumed by tenant-resolution middleware does not
+// depend on migration 0121 — keeping bootstrap-only harnesses that
+// apply only 0004 green. logo_url is nullable so COALESCE flattens a
+// missing logo to ""; white_label is NOT NULL DEFAULT false so it
+// scans straight into a bool.
+const tenantBrandingSQL = `
+	SELECT COALESCE(logo_url, ''), white_label
+	  FROM tenants
+	 WHERE id = $1
+`
+
+// LoadBranding returns the white-label columns from the tenants row for
+// tenantID. uuid.Nil and a missing row both collapse to
+// tenancy.ErrTenantNotFound. An empty LogoURL is valid (no logo
+// configured); the handler falls back to the platform word-mark.
+// SIN-63963 / UX-F4.
+func (r *TenantResolver) LoadBranding(ctx context.Context, tenantID uuid.UUID) (tenancy.TenantBranding, error) {
+	if r == nil || r.db == nil {
+		return tenancy.TenantBranding{}, ErrNilPool
+	}
+	if tenantID == uuid.Nil {
+		return tenancy.TenantBranding{}, tenancy.ErrTenantNotFound
+	}
+	var (
+		logoURL    string
+		whiteLabel bool
+	)
+	row := r.db.QueryRow(ctx, tenantBrandingSQL, tenantID)
+	if err := row.Scan(&logoURL, &whiteLabel); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tenancy.TenantBranding{}, tenancy.ErrTenantNotFound
+		}
+		return tenancy.TenantBranding{}, fmt.Errorf("postgres: tenant branding: %w", err)
+	}
+	return tenancy.TenantBranding{LogoURL: logoURL, WhiteLabel: whiteLabel}, nil
+}
+
 // ResolveByHost runs the host lookup. Misses become tenancy.ErrTenantNotFound
 // so the middleware can render the secure-by-default 404.
 func (r *TenantResolver) ResolveByHost(ctx context.Context, host string) (*tenancy.Tenant, error) {

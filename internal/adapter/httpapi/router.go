@@ -114,7 +114,15 @@ type MasterDeps struct {
 type Deps struct {
 	IAM            IAMService
 	TenantResolver tenancy.Resolver
-	Logger         *slog.Logger
+	// LoginBranding is the optional tenant-settings read port (SIN-63963 /
+	// UX-F4) the pre-auth /login surface uses to fill TenantLogo +
+	// WhiteLabel. Nil keeps the word-mark + platform-footer fallback, so
+	// router tests and deploys that haven't wired the port render exactly
+	// as before. The same reader feeds the legacy handler.LoginPost
+	// credential-failure re-render and the MFA-aware wrapper (the latter
+	// is wired in cmd/server's usermfa stack).
+	LoginBranding tenancy.BrandingReader
+	Logger        *slog.Logger
 	// CommitSHA is the build-time identifier injected at link time via
 	// the internal/version package (SIN-63146). It is surfaced verbatim
 	// by the /health handler so cd-stg.yml's smoke gate can detect a
@@ -827,7 +835,13 @@ func NewRouter(deps Deps) http.Handler {
 			tenanted.Use(deps.Theme.Handler)
 		}
 
-		tenanted.Get("/login", handler.LoginGet)
+		// SIN-63963 / UX-F4 — GET /login renders the tenant-branded card.
+		// LoginGetHandler fills TenantLogo + WhiteLabel from the
+		// tenant-settings read port when deps.LoginBranding is wired; nil
+		// degrades to the platform word-mark + footer (LoginGet behaviour).
+		tenanted.Get("/login", handler.LoginGetHandler(handler.LoginConfig{
+			Branding: deps.LoginBranding,
+		}))
 
 		// SIN-62959 — public campaign redirect (GET /c/{slug}). Mounted
 		// inside the tenanted group so middleware.TenantScope resolves
@@ -887,7 +901,8 @@ func NewRouter(deps Deps) http.Handler {
 			loginPost = deps.UserMFA.LoginPost
 		} else {
 			loginPost = handler.LoginPost(handler.LoginConfig{
-				IAM: deps.IAM,
+				IAM:      deps.IAM,
+				Branding: deps.LoginBranding,
 			})
 		}
 		if mw := buildLoginRateLimit(deps); mw != nil {
@@ -1560,7 +1575,11 @@ func NewRouter(deps Deps) http.Handler {
 			// Bootstrap routes — no session required.
 			m.Method(http.MethodGet, "/login", deps.Master.Login)
 			m.Method(http.MethodPost, "/login", deps.Master.Login)
-			m.Method(http.MethodGet, "/logout", deps.Master.Logout)
+			// /m/logout is POST-only (SIN-65232): a GET-able logout lets any
+			// cross-site <img>/link force-log-out a master operator (CSRF).
+			// Matches the tenant POST /logout shape above. The handler stays
+			// method-tolerant for reuse, but this is the only mounted verb.
+			m.Method(http.MethodPost, "/logout", deps.Master.Logout)
 
 			// All remaining routes require a valid master session.
 			m.Group(func(authed chi.Router) {
