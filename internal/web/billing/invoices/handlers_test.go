@@ -645,9 +645,10 @@ func TestBannerFragment_PerSeverity(t *testing.T) {
 		severity string
 		label    string
 	}{
-		{"warn", dunning.StateWarn, "dunning-banner--warn", "Pagamento pendente"},
-		{"outbound", dunning.StateSuspendedOutbound, "dunning-banner--outbound", "Envios suspensos"},
-		{"full", dunning.StateSuspendedFull, "dunning-banner--full", "Conta em modo leitura"},
+		// D1 4-state copy updated in SIN-63944 (task spec = CTO auth per rule 3).
+		{"warn", dunning.StateWarn, "dunning-banner--warn", "Fatura próxima do vencimento"},
+		{"outbound", dunning.StateSuspendedOutbound, "dunning-banner--outbound", "Fatura em atraso"},
+		{"full", dunning.StateSuspendedFull, "dunning-banner--full", "Acesso restrito"},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -715,5 +716,240 @@ func TestBannerFragment_5xxOnMissingTenant(t *testing.T) {
 	mux(h).ServeHTTP(w, r)
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D1 4-state dunning banner — new states (SIN-63944)
+// ---------------------------------------------------------------------------
+
+func TestBannerFragment_BloqueioState(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	tenant := newTenant()
+	// 15 days since entering StateSuspendedFull → "bloqueio" (>14d)
+	enteredAt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	now := enteredAt.AddDate(0, 0, 15)
+	seedDunning(t, repo, tenant.ID, dunning.StateSuspendedFull, enteredAt)
+	h := buildHandler(t, fullDeps(repo, uuid.New(), now))
+	r := reqWithTenant(http.MethodGet, "/billing/dunning-banner", tenant)
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"dunning-banner--bloqueio",
+		"alert--danger",
+		"Conta bloqueada",
+		"regularizar agora",
+		`role="alert"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("bloqueio banner missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+func TestBannerFragment_RestricaoState(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	tenant := newTenant()
+	// 10 days since entering StateSuspendedFull → "restricao" (≤14d)
+	enteredAt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	now := enteredAt.AddDate(0, 0, 10)
+	seedDunning(t, repo, tenant.ID, dunning.StateSuspendedFull, enteredAt)
+	h := buildHandler(t, fullDeps(repo, uuid.New(), now))
+	r := reqWithTenant(http.MethodGet, "/billing/dunning-banner", tenant)
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"dunning-banner--full",
+		"alert--danger",
+		"Acesso restrito",
+		`role="alert"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("restricao banner missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "regularizar agora") {
+		t.Errorf("restricao banner must not show 'regularizar agora' CTA")
+	}
+}
+
+func TestBannerFragment_AlertClassesPresent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		state     dunning.State
+		wantClass string
+	}{
+		{"warn→info", dunning.StateWarn, "alert--info"},
+		{"outbound→warning", dunning.StateSuspendedOutbound, "alert--warning"},
+		{"full→danger", dunning.StateSuspendedFull, "alert--danger"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repo := newFakeRepo()
+			tenant := newTenant()
+			now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+			seedDunning(t, repo, tenant.ID, tc.state, now)
+			h := buildHandler(t, fullDeps(repo, uuid.New(), now))
+			r := reqWithTenant(http.MethodGet, "/billing/dunning-banner", tenant)
+			w := httptest.NewRecorder()
+			mux(h).ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d", w.Code)
+			}
+			if !strings.Contains(w.Body.String(), tc.wantClass) {
+				t.Errorf("missing F1 alert class %q in: %s", tc.wantClass, w.Body.String())
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Invoice list filters (SIN-63944 AC #3)
+// ---------------------------------------------------------------------------
+
+func TestList_FilterByStatus(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	tenant := newTenant()
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	pendingInv := seedInvoice(t, repo, tenant.ID, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), 4990)
+	paidInv := seedInvoice(t, repo, tenant.ID, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), 4990)
+	if err := paidInv.MarkPaid(now); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+
+	h := buildHandler(t, fullDeps(repo, uuid.New(), now))
+	r := reqWithTenant(http.MethodGet, "/billing/invoices?status=pending", tenant)
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, pendingInv.ID().String()) {
+		t.Errorf("pending invoice missing from filter result")
+	}
+	if strings.Contains(body, paidInv.ID().String()) {
+		t.Errorf("paid invoice should be excluded when filtering by pending")
+	}
+}
+
+func TestList_FilterByPeriod(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	tenant := newTenant()
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	mayInv := seedInvoice(t, repo, tenant.ID, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), 4990)
+	aprInv := seedInvoice(t, repo, tenant.ID, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), 4990)
+
+	h := buildHandler(t, fullDeps(repo, uuid.New(), now))
+	r := reqWithTenant(http.MethodGet, "/billing/invoices?period=2026-05", tenant)
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, mayInv.ID().String()) {
+		t.Errorf("May invoice missing from period=2026-05 filter")
+	}
+	if strings.Contains(body, aprInv.ID().String()) {
+		t.Errorf("April invoice should be excluded from period=2026-05 filter")
+	}
+}
+
+func TestList_HTMXPartialSwapReturnsTbodyOnly(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	tenant := newTenant()
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	seedInvoice(t, repo, tenant.ID, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), 4990)
+
+	h := buildHandler(t, fullDeps(repo, uuid.New(), now))
+	r := reqWithTenant(http.MethodGet, "/billing/invoices", tenant)
+	r.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "<html") {
+		t.Errorf("HTMX partial should not return full HTML page; got: %s", body)
+	}
+	if !strings.Contains(body, "invoice-row") {
+		t.Errorf("HTMX partial missing invoice row: %s", body)
+	}
+}
+
+func TestList_EmptyStateWithNextBillingDate(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	tenant := newTenant()
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	nextBilling := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	deps := fullDeps(repo, uuid.New(), now)
+	deps.NextBillingDate = func(_ context.Context, _ uuid.UUID) (time.Time, error) {
+		return nextBilling, nil
+	}
+	h := buildHandler(t, deps)
+
+	r := reqWithTenant(http.MethodGet, "/billing/invoices", tenant)
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Nenhuma fatura emitida") {
+		t.Errorf("empty-state missing: %s", body)
+	}
+	if !strings.Contains(body, "01/06/2026") {
+		t.Errorf("next billing date missing (want 01/06/2026): %s", body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mobile PIX markup (SIN-63944 AC #2)
+// ---------------------------------------------------------------------------
+
+func TestDetail_MobilePIXMarkup(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	tenant := newTenant()
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	inv := seedInvoice(t, repo, tenant.ID, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), 4990)
+	seedCharge(t, repo, tenant.ID, inv.ID(), "PHN2Zy8+", "pix-code", now)
+
+	h := buildHandler(t, fullDeps(repo, uuid.New(), now))
+	r := reqWithTenant(http.MethodGet, "/billing/invoices/"+inv.ID().String(), tenant)
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`class="invoice-pix__copy-btn"`,
+		`billing-invoices.css`,
+		`width="240"`,
+		`height="240"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("mobile PIX markup missing %q\n--- body ---\n%s", want, body)
+		}
 	}
 }
