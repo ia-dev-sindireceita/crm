@@ -398,7 +398,6 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	}
 	limiter := rlredis.New(rdb, "auth:rl:")
 	notifier := slackadapter.New(getenv(envSlackWebhook))
-	_ = notifier // available for future alert wiring
 
 	tenants, err := postgresadapter.NewTenantResolver(pool)
 	if err != nil {
@@ -545,19 +544,32 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		masterTenantsCleanup = stack.Cleanup
 	}
 
+	// SIN-65254 — master-operator login. The master surface is tenant-less:
+	// the seeded operator (master@crm.local) is is_master=true /
+	// tenant_id=NULL, so the previous wire (iamSvc.Login, tenant-scoped)
+	// could never resolve it and /m/login returned 401 for every operator.
+	// buildMasterLogin resolves the GLOBAL operator by
+	// (email, is_master=true, tenant_id IS NULL) over the app_master_ops
+	// pool (MASTER_OPS_DATABASE_URL) with the m_login lockout + Slack alert
+	// posture (ADR 0074 §6). It ALSO returns that master-ops pool: the rest
+	// of the master /m/* stack (sessions, directory, seed repo) runs under
+	// WithMasterOps, which the tenant-scoped IAM runtime pool (app_runtime)
+	// cannot satisfy — so the whole stack must be built on the master-ops
+	// pool, not `pool`. Nil login fn / nil pool → buildMasterMFAStack noop.
+	masterLoginFn, masterOpsPool, masterLoginCleanup := buildMasterLogin(ctx, limiter, policies, notifier, logger, getenv)
+
 	// SIN-65223 (Child B) — master /m/* console deps. Child A
 	// (buildMasterMFAStack) assembles the concrete adapters into the
 	// mastermfa ports; buildMasterDeps turns that stack into the five
-	// handlers + two middlewares httpapi.MasterDeps needs. masterLogin is
-	// iamSvc.Login (per-request tenant-scoped iam.Service.Login). The
-	// logout handler is handed logoutAudit — the SAME audit.SplitLogger
-	// the tenant POST /logout uses — so a master logout appends a
-	// SecurityEventLogout (audience="master") row to the security ledger
-	// (closes SIN-63216 AC #1). A missing master seed key / actor id (or
-	// any nil input) yields the noop stack → buildMasterDeps returns the
-	// zero MasterDeps and router.go leaves /m/* unmounted, the same
-	// fail-soft contract as the surfaces above.
-	masterMFA := buildMasterMFAStack(ctx, pool, iamSvc.Login, logoutAudit, getenv)
+	// handlers + two middlewares httpapi.MasterDeps needs. The logout
+	// handler is handed logoutAudit — the SAME audit.SplitLogger the tenant
+	// POST /logout uses — so a master logout appends a SecurityEventLogout
+	// (audience="master") row to the security ledger (closes SIN-63216
+	// AC #1). A missing master seed key / actor id / DSN (or any nil input)
+	// yields the noop stack → buildMasterDeps returns the zero MasterDeps
+	// and router.go leaves /m/* unmounted, the same fail-soft contract as
+	// the surfaces above.
+	masterMFA := buildMasterMFAStack(ctx, masterOpsPool, masterLoginFn, logoutAudit, getenv)
 	masterDeps := buildMasterDeps(masterMFA, logoutAudit, logger)
 
 	routerDeps := httpapi.Deps{
@@ -626,6 +638,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	h := httpapi.NewRouter(routerDeps)
 
 	fullCleanup := func() {
+		masterLoginCleanup()
 		masterTenantsCleanup()
 		impersonationCleanup()
 		userMFACleanup()
