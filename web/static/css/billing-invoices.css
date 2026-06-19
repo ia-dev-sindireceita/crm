@@ -1,4 +1,24 @@
-/* billing-invoices.css — invoice list + PIX detail surface styles (SIN-63944) */
+/*
+ * billing-invoices.css — invoice list + PIX detail surface styles.
+ *
+ * SIN-65228 (Peitho hygiene) — restores the SIN-65123 "tokens-only"
+ * discipline that the SIN-63944 rewrite (#365) regressed. This sheet is
+ * loaded after tokens.css + components.css and consumes ONLY design tokens
+ * for colour / size / spacing / radius — no bare hex, and no bare rem/px
+ * except where the design scale genuinely has no token (the decorative
+ * empty-state glyph), justified inline. A future token tweak therefore
+ * ripples here without edits, and light + dark both come from tokens.css.
+ *
+ * Accessibility:
+ *   - status pills pair colour with a text label, so state is never
+ *     colour-only (WCAG 1.4.1).
+ *   - pill TEXT uses the AA text-on-surface tokens (--color-*-strong /
+ *     --text-muted). NB: --color-*-text is white/near-black "text ON the
+ *     fill" and is NOT legible on the pale --color-*-surface backgrounds —
+ *     the #365 rewrite mispaired them (white-on-pale in light mode); this
+ *     sheet uses --color-*-strong instead (5.3:1+ AA on the surfaces).
+ *   - the R$ value column uses tabular-nums so amounts align.
+ */
 
 /* ---- Invoice table ---- */
 .invoices-table-wrap {
@@ -9,21 +29,23 @@
 .invoices-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.9375rem;
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
 }
 
 .invoices-table th,
 .invoices-table td {
   padding: var(--space-2) var(--space-3);
   text-align: left;
-  border-bottom: 1px solid var(--border-subtle, #e2e8f0);
+  border-bottom: 1px solid var(--border-subtle);
   vertical-align: middle;
 }
 
 .invoices-table thead th {
-  font-weight: 600;
-  color: var(--text-muted, #64748b);
-  font-size: 0.8125rem;
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -31,19 +53,19 @@
 
 .invoices-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 
-.invoice-row:hover { background: var(--surface-2, #f8fafc); }
+.invoice-row:hover { background: var(--surface-2); }
 
 /* ---- Invoice status badge ---- */
 .invoice-status {
   display: inline-block;
-  padding: 0.125rem 0.5rem;
-  border-radius: 9999px;
-  font-size: 0.8125rem;
-  font-weight: 500;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
 }
-.invoice-status--pending  { background: var(--color-warning-surface, #fef3c7); color: var(--color-warning-text, #92400e); }
-.invoice-status--paid     { background: var(--color-success-surface, #d1fae5); color: var(--color-success-text, #065f46); }
-.invoice-status--cancelled_by_master { background: var(--surface-2, #f1f5f9); color: var(--text-muted, #64748b); }
+.invoice-status--pending  { background: var(--color-warning-surface); color: var(--color-warning-strong); }
+.invoice-status--paid     { background: var(--color-success-surface); color: var(--color-success-strong); }
+.invoice-status--cancelled_by_master { background: var(--surface-2); color: var(--text-muted); }
 
 /* ---- PIX charge section ---- */
 .invoice-pix__header {
@@ -61,8 +83,8 @@
 }
 
 .invoice-pix__qr img {
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle, #e2e8f0);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
 }
 
 .invoice-pix__copy {
@@ -75,52 +97,53 @@
 
 .invoice-pix__copy label {
   grid-column: 1 / -1;
-  font-size: 0.875rem;
-  color: var(--text-muted, #64748b);
+  font-size: var(--text-base);
+  color: var(--text-muted);
 }
 
 .invoice-pix__copy textarea {
-  font-family: ui-monospace, monospace;
-  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   padding: var(--space-2);
-  border: 1px solid var(--border-subtle, #e2e8f0);
-  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   resize: none;
-  background: var(--surface-2, #f8fafc);
+  background: var(--surface-2);
   word-break: break-all;
 }
 
 .invoice-pix__copy-btn {
   padding: var(--space-2) var(--space-3);
-  background: var(--color-primary, #3b82f6);
-  color: var(--text-on-primary, #fff);
+  background: var(--color-primary);
+  color: var(--text-on-primary);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 0.875rem;
-  font-weight: 500;
-  min-height: 44px; /* WCAG touch target */
+  font-size: var(--text-base);
+  font-weight: var(--font-medium);
+  min-height: var(--hit-target-min); /* WCAG touch target */
   white-space: nowrap;
   align-self: end;
 }
 
-.invoice-pix__copy-btn:hover { background: var(--color-primary-hover, #2563eb); }
+.invoice-pix__copy-btn:hover { background: var(--color-primary-hover); }
 
-/* Copied feedback state */
+/* Copied feedback state — AA text-on-surface pair (not white-on-fill). */
 .invoice-pix__copy-btn.is-copied {
-  background: var(--color-success, #10b981);
+  background: var(--color-success-surface);
+  color: var(--color-success-strong);
 }
 
 .invoice-pix__expiry {
-  font-size: 0.875rem;
-  color: var(--text-muted, #64748b);
+  font-size: var(--text-base);
+  color: var(--text-muted);
   margin-bottom: var(--space-3);
 }
 
 .invoice-pix__check { margin-top: var(--space-3); }
 
 .invoice-pix__pending {
-  color: var(--text-muted, #64748b);
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -129,17 +152,18 @@
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: var(--space-1) var(--space-4);
-  font-size: 0.9375rem;
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
   margin-bottom: var(--space-5);
 }
-.invoice-meta dt { color: var(--text-muted, #64748b); font-weight: 500; }
+.invoice-meta dt { color: var(--text-muted); font-weight: var(--font-medium); }
 
 /* ---- PIX status badge ---- */
-.invoice-pix-status { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.8125rem; }
-.invoice-pix-status--pending   { background: var(--color-warning-surface, #fef3c7); color: var(--color-warning-text, #92400e); }
-.invoice-pix-status--paid      { background: var(--color-success-surface, #d1fae5); color: var(--color-success-text, #065f46); }
-.invoice-pix-status--expired   { background: var(--surface-2, #f1f5f9); color: var(--text-muted, #64748b); }
-.invoice-pix-status--cancelled { background: var(--surface-2, #f1f5f9); color: var(--text-muted, #64748b); }
+.invoice-pix-status { display: inline-block; padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill); font-size: var(--text-sm); }
+.invoice-pix-status--pending   { background: var(--color-warning-surface); color: var(--color-warning-strong); }
+.invoice-pix-status--paid      { background: var(--color-success-surface); color: var(--color-success-strong); }
+.invoice-pix-status--expired   { background: var(--surface-2); color: var(--text-muted); }
+.invoice-pix-status--cancelled { background: var(--surface-2); color: var(--text-muted); }
 
 /* ---- Invoice filter form ---- */
 .invoices-filter {
@@ -157,49 +181,50 @@
 }
 
 .invoices-filter__group label {
-  font-size: 0.8125rem;
-  color: var(--text-muted, #64748b);
-  font-weight: 500;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-weight: var(--font-medium);
 }
 
 .invoices-filter__group select,
 .invoices-filter__group input[type="month"] {
   padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-subtle, #e2e8f0);
-  border-radius: 6px;
-  font-size: 0.9375rem;
-  min-height: 38px;
-  background: var(--surface-1, #fff);
-  color: var(--text-default, #1e293b);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  min-height: var(--control-lg);
+  background: var(--surface-1);
+  color: var(--text-default);
 }
 
 /* ---- Empty state ---- */
 .invoices-empty {
   text-align: center;
   padding: var(--space-8) var(--space-4);
-  color: var(--text-muted, #64748b);
+  color: var(--text-muted);
 }
 
 .invoices-empty__icon {
-  font-size: 2.5rem;
+  font-size: 2.5rem; /* decorative glyph — above the --text-* type scale, no token */
   margin-bottom: var(--space-3);
 }
 
 .invoices-empty__title {
-  font-size: 1.0625rem;
-  font-weight: 600;
-  color: var(--text-default, #1e293b);
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-default);
   margin-bottom: var(--space-2);
 }
 
 .invoices-empty__hint {
-  font-size: 0.9375rem;
+  font-size: var(--text-base);
 }
 
 /* ---- Footer ---- */
 .invoices-shell__footer small {
-  font-size: 0.8125rem;
-  color: var(--text-muted, #64748b);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
 }
 
 /* ---- Dunning banner (legacy class + alert override) ---- */
@@ -217,7 +242,8 @@
 
   .invoice-pix__copy-btn {
     width: 100%;
-    min-height: 48px; /* larger touch target on mobile */
+    /* min-height inherits --hit-target-min (44px) from the base rule,
+       already above the WCAG 2.5.5 floor — no separate mobile bump. */
   }
 
   .invoice-pix__qr {
