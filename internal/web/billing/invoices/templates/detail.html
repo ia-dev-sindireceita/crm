@@ -1,0 +1,61 @@
+{{define "title"}}Fatura · {{.Invoice.Period}}{{end}}
+{{define "head_extra"}}<link rel="stylesheet" href="/static/css/billing-invoices.css">
+<script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+<script src="/static/js/billing-invoices.js" defer></script>
+{{end}}
+{{define "content"}}
+  {{template "dunning-banner" .Banner}}
+  <nav class="invoices-shell__actions" style="margin-bottom:var(--space-4)">
+    <a href="/billing/invoices" hx-get="/billing/invoices" hx-target="body" hx-swap="outerHTML">← voltar</a>
+  </nav>
+
+  <h1 style="margin-bottom:var(--space-4)">Fatura {{.Invoice.Period}}</h1>
+
+  <section class="invoice-meta" aria-label="Dados da fatura">
+    <dl>
+      <dt>Período</dt><dd>{{.Invoice.Period}}</dd>
+      <dt>Valor</dt><dd>{{.Invoice.Amount}}</dd>
+      <dt>Status da fatura</dt>
+      <dd><span class="invoice-status invoice-status--{{.Invoice.State}}">{{.Invoice.StateLabel}}</span></dd>
+    </dl>
+  </section>
+
+  <section class="invoice-pix" aria-label="Cobrança PIX">
+    <div class="invoice-pix__header">
+      <h2>Pague via PIX</h2>
+      {{template "invoice-status" .Status}}
+    </div>
+    {{- if .Charge.HasCharge}}
+    <div class="invoice-pix__qr">
+      <img src="{{.Charge.QRDataURI}}" alt="QR code PIX para pagamento" width="240" height="240">
+    </div>
+    <div class="invoice-pix__copy">
+      <label for="invoice-copy-paste">PIX copia-e-cola</label>
+      <textarea id="invoice-copy-paste" readonly rows="3" aria-readonly="true">{{.Charge.CopyPaste}}</textarea>
+      <button type="button"
+              class="invoice-pix__copy-btn"
+              data-copy-target="#invoice-copy-paste"
+              aria-label="Copiar código PIX">copiar</button>
+    </div>
+    <p class="invoice-pix__expiry">Expira em {{.Charge.ExpiresAt}}.</p>
+    <div class="invoice-pix__check">
+      <button type="button"
+              hx-get="/billing/invoices/{{.Invoice.ID}}/status"
+              hx-target="#invoice-status"
+              hx-swap="outerHTML">verificar pagamento</button>
+    </div>
+    {{- else}}
+    <p class="invoice-pix__pending">Cobrança PIX em processamento. Atualize em alguns instantes.</p>
+    <div class="invoice-pix__check">
+      <button type="button"
+              hx-get="/billing/invoices/{{.Invoice.ID}}/status"
+              hx-target="#invoice-status"
+              hx-swap="outerHTML">verificar pagamento</button>
+    </div>
+    {{- end}}
+  </section>
+
+  <footer class="invoices-shell__footer" style="margin-top:var(--space-6)">
+    <small>Atualizado em {{.GeneratedAt}}</small>
+  </footer>
+{{end}}

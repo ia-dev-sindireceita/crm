@@ -1,0 +1,56 @@
+{{define "title"}}Faturas{{end}}
+{{define "head_extra"}}<link rel="stylesheet" href="/static/css/billing-invoices.css">
+<script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+<script src="/static/js/billing-invoices.js" defer></script>
+{{end}}
+{{define "content"}}
+  {{template "dunning-banner" .Banner}}
+  <section class="invoices-filter" aria-label="Filtros">
+    <div class="invoices-filter__group">
+      <label for="inv-filter-period">Período</label>
+      <input id="inv-filter-period"
+             type="month"
+             name="period"
+             value="{{.Filter.Period}}"
+             hx-get="/billing/invoices"
+             hx-trigger="change"
+             hx-include="[name='status']"
+             hx-target="#invoices-tbody"
+             hx-swap="innerHTML">
+    </div>
+    <div class="invoices-filter__group">
+      <label for="inv-filter-status">Status</label>
+      <select id="inv-filter-status"
+              name="status"
+              hx-get="/billing/invoices"
+              hx-trigger="change"
+              hx-include="[name='period']"
+              hx-target="#invoices-tbody"
+              hx-swap="innerHTML">
+        <option value="" {{if eq .Filter.Status ""}}selected{{end}}>Todos</option>
+        <option value="pending"              {{if eq .Filter.Status "pending"}}selected{{end}}>Pendente</option>
+        <option value="paid"                 {{if eq .Filter.Status "paid"}}selected{{end}}>Paga</option>
+        <option value="overdue"              {{if eq .Filter.Status "overdue"}}selected{{end}}>Vencida</option>
+        <option value="cancelled_by_master"  {{if eq .Filter.Status "cancelled_by_master"}}selected{{end}}>Cancelada</option>
+      </select>
+    </div>
+  </section>
+  <section class="invoices-table-wrap" aria-live="polite">
+    <table class="invoices-table" role="grid" aria-label="Lista de faturas">
+      <thead>
+        <tr>
+          <th scope="col">Período</th>
+          <th scope="col" class="num">Valor</th>
+          <th scope="col">Status</th>
+          <th scope="col">Detalhe</th>
+        </tr>
+      </thead>
+      <tbody id="invoices-tbody">
+        {{template "invoices-tbody" .}}
+      </tbody>
+    </table>
+  </section>
+  <footer class="invoices-shell__footer">
+    <small>Atualizado em {{.GeneratedAt}}</small>
+  </footer>
+{{end}}
