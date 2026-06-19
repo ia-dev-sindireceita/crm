@@ -103,6 +103,14 @@ type inboxLLMCustomerDeps struct {
 	// ReplyDelay overrides llmcustomerReplyDelay. Tests set 0 so the
 	// integration loop finishes in milliseconds.
 	ReplyDelay time.Duration
+	// AIAssist carries the optional operator AI-assist collaborators
+	// (SIN-65244). When AIAssist.Summarizer is nil the inbox handler
+	// does not register POST /inbox/conversations/{id}/ai-assist and
+	// does not render the "Resumir" button — the soft-degrade posture.
+	// The production path fills Summarizer from buildAIAssistSummarizer
+	// FromPool; the in-memory test path may leave it zero or inject a
+	// fake to exercise route registration.
+	AIAssist webinbox.AssistDeps
 	// Logger receives the bootstrap audit lines. nil falls back to
 	// slog.Default with a "wire=inbox_llmcustomer" attribute.
 	Logger *slog.Logger
@@ -254,6 +262,7 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		ConversationContext: ctxUC,
 		AssignConversation:  assignUC,
 		ListAssignable:      listAssignableUC,
+		AIAssist:            deps.AIAssist,
 		CSRFToken:           csrfTokenFromSessionContext,
 		UserID:              userIDFromSessionContext,
 		Logger:              logger,
@@ -329,6 +338,15 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 	if err != nil {
 		return nil, nil, fmt.Errorf("persona-llm: %w", err)
 	}
+	// Operator AI-assist (SIN-65244). Soft-degrade: a construction
+	// fault disables the feature (Summarizer stays nil → route + button
+	// off) but never downs the inbox. The (nil, nil) "key unset" case
+	// is logged inside the builder.
+	summarizer, err := buildAIAssistSummarizerFromPool(pool, getenv)
+	if err != nil {
+		log.Printf("crm: ai-assist operator summarizer disabled — assemble: %v; inbox continues without ai-assist", err)
+		summarizer = nil
+	}
 	mux, cleanup, _, err := assembleInboxLLMCustomerHandler(inboxLLMCustomerDeps{
 		Repo: inboxStore,
 		// *pginbox.Store satisfies inbox.ConversationReadModel too, so the
@@ -342,6 +360,7 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 		Contacts:   contactsStore,
 		LLM:        personaLLM,
 		ReplyDelay: llmcustomerReplyDelay,
+		AIAssist:   webinbox.AssistDeps{Summarizer: summarizer},
 		// Logger left at the production default (slog.Default).
 	})
 	if err != nil {
@@ -369,14 +388,18 @@ func buildPersonaLLM(getenv func(string) string) (llmcustomer.PersonaLLM, error)
 		return canned.NewDefault(), nil
 	case PersonaLLMProviderOpenRouter:
 		key := ""
-		model := ""
 		if getenv != nil {
 			key = getenv(envOpenRouterAPIKey)
-			model = getenv(envPersonaLLMModel)
 		}
+		// Model resolves through the unified knob (SIN-65244):
+		// PERSONA_LLM_MODEL → OPENROUTER_MODEL → defaultLLMModel. The
+		// persona client also falls back to its own DefaultModel const
+		// when handed an empty string, but ReadPersonaModel never
+		// returns empty, so the env-unset path now routes the persona
+		// to the same shared default both LLM points use.
 		return openrouterpersona.New(openrouterpersona.Config{
 			APIKey: key,
-			Model:  model,
+			Model:  ReadPersonaModel(getenv),
 		})
 	default:
 		return nil, fmt.Errorf("unknown PERSONA_LLM_PROVIDER %q", provider)
