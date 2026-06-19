@@ -1587,6 +1587,21 @@ func NewRouter(deps Deps) http.Handler {
 	// existing tests and health-only mode are unaffected.
 	if deps.Master.Login != nil {
 		r.Route("/m", func(m chi.Router) {
+			// CSRF-6 (SIN-65269) — the master auth/bootstrap POSTs
+			// (/m/login, /m/logout, /m/2fa/verify, /m/2fa/enroll mint,
+			// /m/2fa/recovery/regenerate) had NO CSRF control. Front the
+			// whole /m/* group with the Option-B Origin/Referer gate so a
+			// forged same-site POST from a tenant subdomain is rejected
+			// (the master and tenant hosts share a registrable domain, so
+			// SameSite=Strict does not isolate them). Safe methods
+			// short-circuit inside the middleware, so GET /m/login and the
+			// GET 2FA pages are unaffected. Empty MasterHost fails closed
+			// (CSRF-3) — the operator console is unusable without
+			// MASTER_CONSOLE_HOST set, which is the intended posture.
+			m.Use(mastermfa.RequireMasterOriginCSRF(mastermfa.RequireMasterOriginCSRFConfig{
+				MasterHost: deps.MasterHost,
+				Logger:     deps.Logger,
+			}))
 			// Bootstrap routes — no session required.
 			m.Method(http.MethodGet, "/login", deps.Master.Login)
 			m.Method(http.MethodPost, "/login", deps.Master.Login)
