@@ -30,7 +30,6 @@
         <option value="" {{if eq .Filter.Status ""}}selected{{end}}>Todos</option>
         <option value="pending"              {{if eq .Filter.Status "pending"}}selected{{end}}>Pendente</option>
         <option value="paid"                 {{if eq .Filter.Status "paid"}}selected{{end}}>Paga</option>
-        <option value="overdue"              {{if eq .Filter.Status "overdue"}}selected{{end}}>Vencida</option>
         <option value="cancelled_by_master"  {{if eq .Filter.Status "cancelled_by_master"}}selected{{end}}>Cancelada</option>
       </select>
     </div>
