@@ -52,16 +52,42 @@ type loginViewData struct {
 // empty branding rather than panicking. branding.ThemeStyleFromContext
 // returns the platform default palette on miss, so the inline
 // <style id="tenant-theme"> always lands with readable contrast.
-func buildLoginViewData(r *http.Request, next, errMsg string) loginViewData {
+//
+// SIN-63963 / UX-F4 — when reader is non-nil and the tenant resolves,
+// TenantLogo + WhiteLabel are filled from tenant-settings storage. A nil
+// reader (router tests, bootstrap deploys that haven't wired the port)
+// or any read failure degrades silently to the platform word-mark +
+// footer: the surface must never 500 on a branding lookup.
+func buildLoginViewData(r *http.Request, next, errMsg string, reader tenancy.BrandingReader) loginViewData {
 	d := loginViewData{
 		Next:             next,
 		Error:            errMsg,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 	}
-	if t, err := tenancy.FromContext(r.Context()); err == nil && t != nil {
-		d.TenantName = t.Name
+	t, err := tenancy.FromContext(r.Context())
+	if err != nil || t == nil {
+		return d
 	}
+	d.TenantName = t.Name
+	if reader == nil {
+		return d
+	}
+	b, err := reader.LoadBranding(r.Context(), t.ID)
+	if err != nil {
+		// ErrTenantNotFound is expected for a tenant with no row yet;
+		// anything else is a real storage fault worth surfacing. Either
+		// way we keep the word-mark fallback rather than failing the page.
+		if !errors.Is(err, tenancy.ErrTenantNotFound) {
+			slog.WarnContext(r.Context(), "handler: load login branding failed",
+				slog.String("tenant_id", t.ID.String()),
+				slog.String("err", err.Error()),
+			)
+		}
+		return d
+	}
+	d.TenantLogo = b.LogoURL
+	d.WhiteLabel = b.WhiteLabel
 	return d
 }
 
@@ -92,13 +118,38 @@ type LoginAuthenticator interface {
 // internal/http/middleware/ratelimit/FormFieldKey for the upstream gotcha.
 type LoginConfig struct {
 	IAM LoginAuthenticator
+	// Branding is the optional tenant-settings read port (SIN-63963 /
+	// UX-F4). When non-nil the GET /login and credential-failure renders
+	// fill TenantLogo + WhiteLabel from storage; nil keeps the legacy
+	// word-mark + platform-footer fallback so router tests and deploys
+	// that haven't wired the port behave exactly as before.
+	Branding tenancy.BrandingReader
 }
 
-// LoginGet renders the GET /login form. The optional `next` query param is
-// preserved on the form so a successful POST bounces the user back to the
-// originally-requested URL.
+// LoginGet renders the GET /login form with no tenant-settings branding
+// reader wired — the word-mark + platform-footer fallback. Retained as a
+// bare http.HandlerFunc so callers (and tests) that do not need the
+// white-label read can mount it directly. Production wires the branded
+// variant via LoginGetHandler.
 func LoginGet(w http.ResponseWriter, r *http.Request) {
-	data := buildLoginViewData(r, SanitizeNext(r.URL.Query().Get("next")), "")
+	renderLoginPage(w, r, SanitizeNext(r.URL.Query().Get("next")), "", nil)
+}
+
+// LoginGetHandler returns a GET /login handler bound to cfg so the
+// production router can supply the tenant-settings BrandingReader. A nil
+// cfg.Branding behaves identically to the bare LoginGet.
+func LoginGetHandler(cfg LoginConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		renderLoginPage(w, r, SanitizeNext(r.URL.Query().Get("next")), "", cfg.Branding)
+	}
+}
+
+// renderLoginPage is the shared GET-render path: it composes the view
+// data (optionally branded via reader) and writes the 200 response. The
+// credential-failure 401 path uses renderLoginError, which sets its own
+// status before delegating the body here.
+func renderLoginPage(w http.ResponseWriter, r *http.Request, next, errMsg string, reader tenancy.BrandingReader) {
+	data := buildLoginViewData(r, next, errMsg, reader)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := views.Login.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
@@ -128,7 +179,7 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 		sess, err := cfg.IAM.Login(r.Context(), r.Host, email, password, ipAddr, r.UserAgent(), r.URL.Path)
 		if err != nil {
 			if errors.Is(err, iam.ErrInvalidCredentials) {
-				renderLoginError(w, r, next)
+				renderLoginError(w, r, next, cfg.Branding)
 				return
 			}
 			// *iam.AccountLockedError → 429 + Retry-After; any other
@@ -161,10 +212,10 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 	}
 }
 
-func renderLoginError(w http.ResponseWriter, r *http.Request, next string) {
+func renderLoginError(w http.ResponseWriter, r *http.Request, next string, reader tenancy.BrandingReader) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
-	data := buildLoginViewData(r, next, "Email ou senha inválidos.")
+	data := buildLoginViewData(r, next, "Email ou senha inválidos.", reader)
 	_ = views.Login.ExecuteTemplate(w, "layout", data)
 }
 
