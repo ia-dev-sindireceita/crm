@@ -87,6 +87,15 @@ type Service struct {
 	Sessions SessionStore
 	TTL      time.Duration
 
+	// MasterUsers is the tenant-less credential reader the master console
+	// login (Service.MasterLogin) resolves the GLOBAL master operator
+	// against — keyed on (email, is_master=true, tenant_id IS NULL). It is
+	// SEPARATE from Users (the tenant-scoped reader) because the master
+	// surface is not bound to a tenant FQDN, so a host→tenant lookup can
+	// never find the NULL-tenant master row (SIN-65254). nil disables
+	// MasterLogin; the tenant Login path never touches it.
+	MasterUsers MasterCredentialReader
+
 	// PasswordVerifier is the ADR 0070 verifier used by Login to match
 	// plaintext against user.password_hash. When nil, Login falls back to
 	// the legacy iam.VerifyPassword path so existing tests/wirings keep
