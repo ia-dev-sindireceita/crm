@@ -1531,7 +1531,7 @@ func NewRouter(deps Deps) http.Handler {
 		deps.Master.RequirePrincipalFromMaster != nil &&
 		deps.Authorizer != nil {
 		r.Group(func(mo chi.Router) {
-			mo.Use(mastermfa.MasterHostOnly(deps.MasterHost, deps.Logger, nil))
+			mo.Use(mastermfa.MasterHostOnly(deps.MasterHost, deps.Logger, deps.MasterAccessDeniedAuditor))
 			mo.Use(mastermfa.RequireMasterOriginCSRF(mastermfa.RequireMasterOriginCSRFConfig{
 				MasterHost: deps.MasterHost,
 				Logger:     deps.Logger,

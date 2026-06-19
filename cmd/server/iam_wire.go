@@ -570,7 +570,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	// and router.go leaves /m/* unmounted, the same fail-soft contract as
 	// the surfaces above.
 	masterMFA := buildMasterMFAStack(ctx, masterOpsPool, masterLoginFn, logoutAudit, getenv)
-	masterDeps := buildMasterDeps(masterMFA, logoutAudit, logger)
+	masterDeps, masterDeniedAuditor := buildMasterDeps(masterMFA, logoutAudit, logger, masterConsoleHost(getenv))
 
 	routerDeps := httpapi.Deps{
 		IAM:            iamSvc,
@@ -602,7 +602,8 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		// MASTERMFA_SEED_KEY / MASTER_OPS_ACTOR_ID unset), so router.go
 		// leaves the /m/* group unmounted in that case (deps.Master.Login
 		// nil → 404), exactly as before this child landed.
-		Master:              masterDeps,
+		Master:                    masterDeps,
+		MasterAccessDeniedAuditor: masterDeniedAuditor,
 		WebContacts:         opts.WebContacts,
 		WebFunnel:           opts.WebFunnel,
 		WebPrivacy:          opts.WebPrivacy,

@@ -24,6 +24,7 @@ package main
 
 import (
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
@@ -34,17 +35,20 @@ import (
 // buildMasterDeps constructs the /m/* handlers + middlewares from the
 // Child A masterMFAStack. splitLogger is the shared audit_log_security
 // writer (the same value wired into httpapi.Deps.AuditLogger for the
-// tenant /logout); logger is the process slog.Logger.
+// tenant /logout); logger is the process slog.Logger; masterHost is
+// the MASTER_CONSOLE_HOST value used to pin the /master/* bridge
+// (RequirePrincipalFromMaster; SecEng C2 SIN-65266). Empty masterHost
+// leaves the bridge dep nil so the /master/* surface stays unmounted.
 //
 // Returns the zero httpapi.MasterDeps{} when stack is the noop (Login
 // nil), so cmd/server boots without the /m/* surface in health-only
 // mode — the router skips a group whose Login handler is nil.
-func buildMasterDeps(stack masterMFAStack, splitLogger audit.SplitLogger, logger *slog.Logger) httpapi.MasterDeps {
+func buildMasterDeps(stack masterMFAStack, splitLogger audit.SplitLogger, logger *slog.Logger, masterHost string) (httpapi.MasterDeps, mastermfa.MasterAccessDeniedAuditor) {
 	// Noop stack (DB-less boot, missing master seed key / actor id, …)
 	// → empty MasterDeps so router.go leaves /m/* unmounted. Guarding on
 	// Login mirrors the router's own `deps.Master.Login != nil` gate.
 	if stack.Login == nil {
-		return httpapi.MasterDeps{}
+		return httpapi.MasterDeps{}, nil
 	}
 
 	// One master-context audit logger satisfies the MFARequiredAuditor
@@ -53,12 +57,19 @@ func buildMasterDeps(stack masterMFAStack, splitLogger audit.SplitLogger, logger
 	// shared SplitLogger — the same ledger the logout row lands on.
 	mfaAuditor := newMasterMFAAuditLogger(splitLogger)
 
+	// CTO guardrail (SIN-65264 comment 22cda00b): Enrollment MUST be non-nil
+	// so a first-time operator is routed to /m/2fa/enroll, not stuck at
+	// /m/2fa/verify with no seed. stack.Enrollment is the SeedReader from the
+	// master-ops pool; it is only nil when the pool itself is nil (noop boot),
+	// which is already guarded above (Login nil → early return).
 	login := mastermfa.NewLoginHandler(mastermfa.LoginHandlerConfig{
 		Login:      stack.Login,
 		Sessions:   stack.Sessions,
 		HardTTL:    mastermfa.DefaultMasterHardTTL,
 		Logger:     logger,
 		VerifyPath: "/m/2fa/verify",
+		Enrollment: stack.Enrollment,
+		EnrollPath: "/m/2fa/enroll",
 	})
 
 	// AuditLogger == the shared SplitLogger → master logout appends a
@@ -104,14 +115,21 @@ func buildMasterDeps(stack masterMFAStack, splitLogger audit.SplitLogger, logger
 	// SAME shared SplitLogger the logout/MFA-required rows land on. The two
 	// controls are independent (defense in depth): an audit-write failure
 	// never blocks the session teardown. Idle bump = DefaultMasterIdleTTL.
+	// SIN-65269 R2: every redirect-to-login rejection at the auth boundary
+	// emits a master-access-denied security row (path, reason, host; never
+	// a cookie value). The same auditor is threaded into MasterHostOnly via
+	// httpapi.Deps.MasterAccessDeniedAuditor (returned as the second value).
+	deniedAuditor := newMasterAccessDeniedAuditor(splitLogger)
+
 	requireAuth := mastermfa.RequireMasterAuth(mastermfa.RequireMasterAuthConfig{
-		Sessions:  stack.Sessions,
-		Directory: stack.Directory,
-		Auditor:   newMasterSessionHardCapAuditor(splitLogger),
-		Logger:    logger,
-		LoginPath: "/m/login",
-		IdleTTL:   mastermfa.DefaultMasterIdleTTL,
-		Now:       time.Now,
+		Sessions:      stack.Sessions,
+		Directory:     stack.Directory,
+		Auditor:       newMasterSessionHardCapAuditor(splitLogger),
+		DeniedAuditor: deniedAuditor,
+		Logger:        logger,
+		LoginPath:     "/m/login",
+		IdleTTL:       mastermfa.DefaultMasterIdleTTL,
+		Now:           time.Now,
 	})
 
 	// RequireMasterMFA gates the MFA-only subtree (enroll + recovery
@@ -126,13 +144,29 @@ func buildMasterDeps(stack masterMFAStack, splitLogger audit.SplitLogger, logger
 		VerifyPath: "/m/2fa/verify",
 	})
 
-	return httpapi.MasterDeps{
-		Login:             login,
-		Logout:            logout,
-		Enroll:            enroll,
-		Verify:            verify,
-		Regenerate:        regenerate,
-		RequireMasterAuth: requireAuth,
-		RequireMasterMFA:  requireMFA,
+	// GET /m/2fa/enroll start page (SIN-65264 Bug 2b).
+	enrollStart := mastermfa.NewEnrollStartHandler(logger)
+
+	// Cross-tenant principal bridge (SIN-65264 Gap 3 / SecEng C2). Empty
+	// masterHost leaves this nil so the /master/* group stays unmounted
+	// when MASTER_CONSOLE_HOST is not configured.
+	var requirePrincipal func(http.Handler) http.Handler
+	if masterHost != "" {
+		requirePrincipal = mastermfa.RequirePrincipalFromMaster(mastermfa.RequirePrincipalFromMasterConfig{
+			MasterHost: masterHost,
+			Logger:     logger,
+		})
 	}
+
+	return httpapi.MasterDeps{
+		Login:                      login,
+		Logout:                     logout,
+		Enroll:                     enroll,
+		EnrollStart:                enrollStart,
+		Verify:                     verify,
+		Regenerate:                 regenerate,
+		RequireMasterAuth:          requireAuth,
+		RequireMasterMFA:           requireMFA,
+		RequirePrincipalFromMaster: requirePrincipal,
+	}, deniedAuditor
 }
