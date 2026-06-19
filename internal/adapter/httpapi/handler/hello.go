@@ -226,9 +226,27 @@ func buildHelloCards(rows []helloSurfaceRow) []views.Surface {
 // destinations only; configuration and compliance surfaces stay body-
 // only so the bar stays scannable on narrow viewports.
 func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
+	// SIN-63951 — the bands below MUST mirror the route gates in
+	// router.go, not an aspirational role model: a surface only appears
+	// in the nav for a role that can actually reach it, so the operator
+	// is never teased with a link that 403s.
+	//
+	// RoleTenantLider (team lead, added after SIN-63940) is intentionally
+	// present ONLY in everyTenantRole. The líder-reachable surfaces are
+	// exactly the ones gated by RequireAuth alone or by an all-role
+	// action: GET /funnel is RequireAuth-only (líder reaches the board)
+	// and /settings/privacy is the all-role DPA page. líder is NOT in
+	// atendenteOrAbove because ActionTenantInboxRead = {atendente,
+	// gerente} (SIN-63821 / CEO ACK SIN-63808) denies líder the inbox,
+	// nor in gerenteOnly, and /funnel/rules is gated on
+	// ActionTenantFunnelRuleManage = {gerente} — so líder is denied the
+	// rules editor at the route too. Granting líder inbox / funnel-rules
+	// would be an iam RBAC-matrix change (defaultRolesByAction has no
+	// líder entry today) and is out of scope for this nav ticket; that
+	// authz-policy decision is flagged back to the CTO on SIN-63951.
 	atendenteOrAbove := []iam.Role{iam.RoleTenantAtendente, iam.RoleTenantGerente}
 	gerenteOnly := []iam.Role{iam.RoleTenantGerente}
-	everyTenantRole := []iam.Role{iam.RoleTenantCommon, iam.RoleTenantAtendente, iam.RoleTenantGerente}
+	everyTenantRole := []iam.Role{iam.RoleTenantCommon, iam.RoleTenantAtendente, iam.RoleTenantLider, iam.RoleTenantGerente}
 
 	all := make([]helloSurfaceRow, 0, 14)
 
