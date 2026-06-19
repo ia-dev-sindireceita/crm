@@ -228,6 +228,15 @@ type Deps struct {
 	// nil = no-op.
 	MasterAccessDeniedAuditor mastermfa.MasterAccessDeniedAuditor
 
+	// MasterCSRFRejection, when non-nil, is invoked once per master
+	// Origin/Referer CSRF rejection with the cause (OriginCSRFReason).
+	// cmd/server wires it to a Prometheus counter so rejections surface
+	// on /metrics — backing a CSRF-probe alert on the master operator
+	// surface — instead of only the master_csrf_rejected slog event
+	// (SIN-65276). The same hook fronts both the /m/* bootstrap gate and
+	// the relocated /master/* surface gate. nil = logging only.
+	MasterCSRFRejection func(*http.Request, mastermfa.OriginCSRFReason)
+
 	// TrustedProxyMiddleware overrides the chimw.RealIP wrapper that
 	// NewRouter installs as the second middleware in the chain
 	// (RequestID → RealIP → …). Production wires it via
@@ -1468,6 +1477,7 @@ func NewRouter(deps Deps) http.Handler {
 			m.Use(mastermfa.RequireMasterOriginCSRF(mastermfa.RequireMasterOriginCSRFConfig{
 				MasterHost: deps.MasterHost,
 				Logger:     deps.Logger,
+				OnReject:   deps.MasterCSRFRejection,
 			}))
 			// Bootstrap routes — no session required.
 			m.Method(http.MethodGet, "/login", deps.Master.Login)
@@ -1535,6 +1545,7 @@ func NewRouter(deps Deps) http.Handler {
 			mo.Use(mastermfa.RequireMasterOriginCSRF(mastermfa.RequireMasterOriginCSRFConfig{
 				MasterHost: deps.MasterHost,
 				Logger:     deps.Logger,
+				OnReject:   deps.MasterCSRFRejection,
 			}))
 			mo.Use(deps.Master.RequireMasterAuth)
 			mo.Use(deps.Master.RequireMasterMFA)
