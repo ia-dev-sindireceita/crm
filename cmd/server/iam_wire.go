@@ -6,9 +6,12 @@ package main
 // (Postgres + Redis + IAM) and returns the chi router as an http.Handler.
 // The returned handler serves /login, /logout, /hello-tenant, and /m/*.
 //
-// MasterDeps is intentionally left empty (zero value) in this batch;
-// /m/* routes are enabled when the mastermfa batch (SIN-62526 / batch 17)
-// lands and provides RequireMasterAuth + RequireMasterMFA.
+// SIN-65223 (Child B) wires deps.Master: buildMasterMFAStack assembles
+// the master adapters into mastermfa ports and buildMasterDeps turns them
+// into the /m/* handlers + RequireMasterAuth/RequireMasterMFA middlewares.
+// The stack is the noop fallback (deps.Master stays zero, /m/* unmounted)
+// when the master seed key / actor id is unset, so health-only boots are
+// unaffected.
 //
 // Returns (nil, no-op) when DATABASE_URL or REDIS_URL is unset so
 // cmd/server boots cleanly in health-only / custom-domain-only mode.
@@ -409,6 +412,22 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	sessions := postgresadapter.NewSessionStore(pool)
 	logger := slog.Default()
 
+	// Single iamAdapter shared across the user-MFA stack, the router's
+	// IAM slot, and the master login fn (SIN-65223). iamSvc.Login is the
+	// per-request tenant-scoped iam.Service.Login the master /m/login
+	// handler delegates the credential check to — its signature matches
+	// mastermfa.MasterLoginFunc verbatim, so it assigns straight into
+	// buildMasterMFAStack's masterLogin parameter.
+	iamSvc := iamAdapter{
+		tenants:  tenants,
+		users:    users,
+		sessions: sessions,
+		logger:   logger,
+		limiter:  limiter,
+		policies: policies,
+		pool:     pool,
+	}
+
 	// SIN-62765 — wrap the RBAC inner authorizer with the audit
 	// decorator so every recorded Decision lands in audit_log_security
 	// + the authz_* Prometheus counters. Failure to build the wrapper
@@ -495,15 +514,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	userMFARoutes := opts.WebUserMFA
 	userMFACleanup := func() {}
 	if userMFARoutes.LoginPost == nil {
-		stack := buildUserMFAStack(ctx, pool, iamAdapter{
-			tenants:  tenants,
-			users:    users,
-			sessions: sessions,
-			logger:   logger,
-			limiter:  limiter,
-			policies: policies,
-			pool:     pool,
-		}, logoutAudit, getenv)
+		stack := buildUserMFAStack(ctx, pool, iamSvc, logoutAudit, getenv)
 		userMFARoutes = stack.Routes
 		userMFACleanup = stack.Cleanup
 	}
@@ -534,16 +545,23 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		masterTenantsCleanup = stack.Cleanup
 	}
 
+	// SIN-65223 (Child B) — master /m/* console deps. Child A
+	// (buildMasterMFAStack) assembles the concrete adapters into the
+	// mastermfa ports; buildMasterDeps turns that stack into the five
+	// handlers + two middlewares httpapi.MasterDeps needs. masterLogin is
+	// iamSvc.Login (per-request tenant-scoped iam.Service.Login). The
+	// logout handler is handed logoutAudit — the SAME audit.SplitLogger
+	// the tenant POST /logout uses — so a master logout appends a
+	// SecurityEventLogout (audience="master") row to the security ledger
+	// (closes SIN-63216 AC #1). A missing master seed key / actor id (or
+	// any nil input) yields the noop stack → buildMasterDeps returns the
+	// zero MasterDeps and router.go leaves /m/* unmounted, the same
+	// fail-soft contract as the surfaces above.
+	masterMFA := buildMasterMFAStack(ctx, pool, iamSvc.Login, logoutAudit, getenv)
+	masterDeps := buildMasterDeps(masterMFA, logoutAudit, logger)
+
 	routerDeps := httpapi.Deps{
-		IAM: iamAdapter{
-			tenants:  tenants,
-			users:    users,
-			sessions: sessions,
-			logger:   logger,
-			limiter:  limiter,
-			policies: policies,
-			pool:     pool,
-		},
+		IAM:            iamSvc,
 		TenantResolver: tenants,
 		// SIN-63963 / UX-F4 — the TenantResolver also implements
 		// tenancy.BrandingReader (LoadBranding), so the same adapter feeds
@@ -567,7 +585,12 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		AuditLogger: logoutAudit,
 		// SessionToucher is nil — Activity middleware deferred to batch
 		// that lands the session role/last_activity DB columns (0077).
-		// Master MFA deps deferred to batch 17 (SIN-62526).
+		// SIN-65223 — master /m/* deps. buildMasterDeps returns the zero
+		// MasterDeps when the master MFA stack is the noop (DB-less boot,
+		// MASTERMFA_SEED_KEY / MASTER_OPS_ACTOR_ID unset), so router.go
+		// leaves the /m/* group unmounted in that case (deps.Master.Login
+		// nil → 404), exactly as before this child landed.
+		Master:              masterDeps,
 		WebContacts:         opts.WebContacts,
 		WebFunnel:           opts.WebFunnel,
 		WebPrivacy:          opts.WebPrivacy,
