@@ -176,11 +176,17 @@ func buildMasterTenantsStack(
 	// slots come from `h` and the 5 grant-request slots come from the
 	// helper. See master_grant_requests_wire.go:95.
 	webDeps := masterweb.Deps{
-		Tenants:         tenantStore,
-		Creator:         tenantStore,
-		Plans:           planLister,
-		Assigner:        tenantStore,
-		CSRFToken:       csrfTokenFromSessionContext,
+		Tenants:  tenantStore,
+		Creator:  tenantStore,
+		Plans:    planLister,
+		Assigner: tenantStore,
+		// SIN-65289: the relocated /master/* surface runs on the master-
+		// host chain, which installs no tenant session, so the tenant
+		// provider (csrfTokenFromSessionContext) returned "" → every GET
+		// 500'd ("csrf token missing"). Read the master operator from the
+		// master-session context instead. Origin CSRF (SIN-65269) remains
+		// THE control for the POSTs; this token only renders the form.
+		CSRFToken:       mastermfa.CSRFTokenFromContext,
 		Logger:          logger,
 		Grants:          grantPort,
 		TenantsResolver: tenantsResolver,
@@ -217,9 +223,11 @@ func buildMasterTenantsStack(
 		MasterOpsPool:     masterOpsPool,
 		ActorID:           actorID,
 		RecentMFASessions: recentReader,
-		CSRFToken:         csrfTokenFromSessionContext,
-		Logger:            logger,
-		WebMasterDeps:     webDeps,
+		// SIN-65289: master-host chain has no tenant session — read the
+		// master operator from the master-session context (see above).
+		CSRFToken:     mastermfa.CSRFTokenFromContext,
+		Logger:        logger,
+		WebMasterDeps: webDeps,
 	})
 	if err != nil {
 		cleanup()
