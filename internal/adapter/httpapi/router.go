@@ -1575,7 +1575,11 @@ func NewRouter(deps Deps) http.Handler {
 			// Bootstrap routes — no session required.
 			m.Method(http.MethodGet, "/login", deps.Master.Login)
 			m.Method(http.MethodPost, "/login", deps.Master.Login)
-			m.Method(http.MethodGet, "/logout", deps.Master.Logout)
+			// /m/logout is POST-only (SIN-65232): a GET-able logout lets any
+			// cross-site <img>/link force-log-out a master operator (CSRF).
+			// Matches the tenant POST /logout shape above. The handler stays
+			// method-tolerant for reuse, but this is the only mounted verb.
+			m.Method(http.MethodPost, "/logout", deps.Master.Logout)
 
 			// All remaining routes require a valid master session.
 			m.Group(func(authed chi.Router) {

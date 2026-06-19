@@ -66,7 +66,8 @@ func TestMasterRoutes_LoginAndLogoutMounted(t *testing.T) {
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, "/m/login"},
 		{http.MethodPost, "/m/login"},
-		{http.MethodGet, "/m/logout"},
+		// SIN-65232: /m/logout is POST-only (forced-logout CSRF fix).
+		{http.MethodPost, "/m/logout"},
 	} {
 		authCalls = nil
 		rec := httptest.NewRecorder()

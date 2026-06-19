@@ -22,7 +22,8 @@ func TestPublicRoutes_Allowlist(t *testing.T) {
 		{http.MethodPost, "/login"},
 		{http.MethodGet, "/m/login"},
 		{http.MethodPost, "/m/login"},
-		{http.MethodGet, "/m/logout"},
+		// SIN-65232: /m/logout is POST-only (forced-logout CSRF fix).
+		{http.MethodPost, "/m/logout"},
 	}
 	got := httpapi.PublicRoutes()
 	if len(got) != len(want) {

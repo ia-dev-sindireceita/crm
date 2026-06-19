@@ -44,7 +44,7 @@ var publicRoutes = []PublicRoute{
 	{Method: http.MethodPost, Pattern: "/login", Reason: "credential submit (mints the session)"},
 	{Method: http.MethodGet, Pattern: "/m/login", Reason: "master login form (no session yet)"},
 	{Method: http.MethodPost, Pattern: "/m/login", Reason: "master credential submit (mints the master session)"},
-	{Method: http.MethodGet, Pattern: "/m/logout", Reason: "master logout link (clears cookie)"},
+	{Method: http.MethodPost, Pattern: "/m/logout", Reason: "master logout submit (clears cookie); POST-only to defeat forced-logout CSRF — SIN-65232"},
 }
 
 // PublicRoutes returns a copy of the declarative allowlist. Callers

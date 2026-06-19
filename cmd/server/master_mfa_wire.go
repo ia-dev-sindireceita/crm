@@ -96,16 +96,18 @@ func buildMasterDeps(stack masterMFAStack, splitLogger audit.SplitLogger, logger
 	})
 
 	// RequireMasterAuth gates every /m/* route except /m/login + /m/logout
-	// on a valid __Host-sess-master session. Auditor (optional hard-cap-hit
-	// sink, LogHardCapHit) is left nil: there is no dedicated security-event
-	// constant for master.session.hard_cap_hit on the SplitLogger allowlist
-	// yet, so emitting it is a separate slice (filed as a follow-up). The
-	// gate itself still clears the cookie + redirects on the hard cap; only
-	// the audit row is deferred. Idle bump = DefaultMasterIdleTTL (15m).
+	// on a valid __Host-sess-master session. Auditor is the master hard-cap
+	// sink (SIN-65232): when a session crosses created_at + hard TTL the
+	// storage layer reports ErrSessionHardCap and the middleware (a) clears
+	// the cookie + 303s to /m/login AND (b) appends one
+	// master.session.hard_cap_hit row (audience="master", nil tenant) to the
+	// SAME shared SplitLogger the logout/MFA-required rows land on. The two
+	// controls are independent (defense in depth): an audit-write failure
+	// never blocks the session teardown. Idle bump = DefaultMasterIdleTTL.
 	requireAuth := mastermfa.RequireMasterAuth(mastermfa.RequireMasterAuthConfig{
 		Sessions:  stack.Sessions,
 		Directory: stack.Directory,
-		Auditor:   nil,
+		Auditor:   newMasterSessionHardCapAuditor(splitLogger),
 		Logger:    logger,
 		LoginPath: "/m/login",
 		IdleTTL:   mastermfa.DefaultMasterIdleTTL,
