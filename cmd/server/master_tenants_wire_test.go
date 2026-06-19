@@ -113,16 +113,36 @@ func fillAllMasterTenantsSlots() httpapi.MasterTenantsRoutes {
 // reference_crm_router_nil_dep_silent_skip names.
 func TestRouter_AllMasterRoutesMountedWithPopulatedSlots(t *testing.T) {
 	t.Parallel()
-	host := "acme.crm.local"
+	// After Leg 5b (SIN-65264) the /master/* surface is host-pinned:
+	// requests must arrive on the MASTER_CONSOLE_HOST, not the tenant host.
+	// MasterHost + Master.Login must be non-empty for the group to mount.
+	// The assertion ("non-404") is unchanged; routes return 303→/m/login
+	// for unauthenticated requests, which is not 404.
+	const masterHost = "master.crm.local"
 	tenantID := uuid.New()
 	resolver := &stubMasterTenantResolver{
-		tenant: &tenancy.Tenant{ID: tenantID, Name: "acme", Host: host},
+		tenant: &tenancy.Tenant{ID: tenantID, Name: "acme", Host: "acme.crm.local"},
 	}
+	noop := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/m/login", http.StatusSeeOther)
+	})
+	noopMW := func(next http.Handler) http.Handler { return next }
 	router := httpapi.NewRouter(httpapi.Deps{
 		IAM:            stubIAMService{},
 		TenantResolver: resolver,
 		Authorizer:     stubAuthorizer{},
-		MasterTenants:  fillAllMasterTenantsSlots(),
+		MasterHost:     masterHost,
+		Master: httpapi.MasterDeps{
+			Login:                      noop,
+			Logout:                     noop,
+			Enroll:                     noop,
+			Verify:                     noop,
+			Regenerate:                 noop,
+			RequireMasterAuth:          noopMW,
+			RequireMasterMFA:           noopMW,
+			RequirePrincipalFromMaster: noopMW,
+		},
+		MasterTenants: fillAllMasterTenantsSlots(),
 	})
 	idPlaceholder := uuid.New().String()
 	for _, tc := range masterRouteMounts {
@@ -135,8 +155,9 @@ func TestRouter_AllMasterRoutesMountedWithPopulatedSlots(t *testing.T) {
 			// extractor at the handler edge would return its own error
 			// shape; here we just want chi dispatch to reach the slot.
 			path = substitutePathID(path, idPlaceholder)
-			req := httptest.NewRequest(tc.method, "http://"+host+path, nil)
-			req.Host = host
+			req := httptest.NewRequest(tc.method, "http://"+masterHost+path, nil)
+			req.Host = masterHost
+			req.Header.Set("Origin", "https://"+masterHost)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			if rec.Code == http.StatusNotFound {

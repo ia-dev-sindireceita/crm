@@ -100,6 +100,19 @@ func RequireMasterMFA(cfg RequireMasterMFAConfig) func(http.Handler) http.Handle
 			// Step 2: enrolment check.
 			_, err := cfg.Enrollment.LoadSeed(r.Context(), master.ID)
 			if errors.Is(err, mfa.ErrNotEnrolled) {
+				// Self-exclusion (SIN-65264 Bug 2): the enrol route is the
+				// ONE place a not-enrolled master must be allowed through —
+				// it is the bootstrap that mints the seed. Redirecting it to
+				// itself is the infinite loop (303 → enrollPath → 303 …).
+				// The auth gate is NOT skipped: RequireMasterAuth already ran
+				// (MasterFromContext succeeded above), so only an
+				// authenticated master session reaches the enrol handler.
+				// CTO decision 2026-06-19 + ADR 0074 §1 (GET /m/2fa/enroll is
+				// the server-rendered bootstrap surface).
+				if r.URL.Path == enrollPath {
+					next.ServeHTTP(w, r)
+					return
+				}
 				_ = cfg.Audit.LogMFARequired(r.Context(), master.ID, r.URL.Path, ReasonNotEnrolled)
 				redirectWithReturn(w, r, enrollPath)
 				return
