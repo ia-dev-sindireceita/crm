@@ -9,6 +9,9 @@ package handler_test
 //     LGPD, custom-domain),
 //   - common (the legacy browse role) sees only the inbox-less subset
 //     (funnel + privacy + 2FA setup),
+//   - líder (team lead) sees the same subset as common — the inbox and
+//     funnel-rules editor both 403 a líder at the route gate, so the nav
+//     drops them (SIN-63951),
 //   - gerente sees every tenant-scope surface,
 //   - master is short-circuited and sees the same superset as gerente
 //     plus, transitively, every master-only Future link.
@@ -123,6 +126,33 @@ var roleMatrix = []rolePaths{
 		},
 		hidden: []string{
 			"/inbox", // SIN-63808 — common cannot read the inbox
+			"/funnel/rules",
+			"/catalog",
+			"/campaigns",
+			"/settings/ai-policy",
+			"/consent/cookies-banner",
+			"/branding",
+			"/billing/invoices",
+			"/admin/lgpd/requests",
+			"/tenant/custom-domains",
+		},
+	},
+	{
+		// SIN-63951 — líder (team lead) reaches only the RequireAuth-only
+		// funnel board, the all-role privacy/DPA page, and the all-role
+		// 2FA setup. The inbox (ActionTenantInboxRead = atendente+gerente)
+		// and the funnel-rules editor (ActionTenantFunnelRuleManage =
+		// gerente) both 403 a líder at the route gate, so the nav MUST NOT
+		// surface them. Granting líder those surfaces is an iam RBAC-matrix
+		// change tracked separately — see the helloIndexRows comment.
+		role: iam.RoleTenantLider,
+		visible: []string{
+			"/funnel",
+			"/settings/privacy",
+			"/admin/2fa/setup",
+		},
+		hidden: []string{
+			"/inbox",
 			"/funnel/rules",
 			"/catalog",
 			"/campaigns",
