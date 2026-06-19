@@ -1096,6 +1096,56 @@ ssh-keyscan -t ed25519 "${STG_HOST}" | tee stg.host_key
 
 Paste the output of that file into the `STG_HOST_KEY` GitHub Actions secret.
 
+## Diagnostics & secret-redaction hygiene (SIN-65292)
+
+This section exists because of a real incident: the password for the
+`app_master_ops` (BYPASSRLS) role leaked **in clear text** inside a diagnostic
+paste on an issue thread (root-cause of SIN-65290). The credential then had to
+be rotated under owner gate. The class of mistake — pasting a live secret into a
+comment, log dump, or chat while debugging — is entirely preventable. Treat this
+as a hard rule, not a suggestion.
+
+**Rule: never paste a live secret in clear text — anywhere.**
+Comments, issue threads, chat, screenshots, PR descriptions, and commit messages
+are all "anywhere". The safe path is to reference the *name* of the secret (e.g.
+`POSTGRES_PASSWORD` in `/opt/crm/stg/.env.stg`) or redact the value to `***`,
+never the value itself. A secret that touched a paste is a leaked secret and must
+be rotated — there is no "but I deleted the comment".
+
+**Checklist — redact BEFORE you paste a log/diagnostic.** Run your text through
+this before hitting send:
+
+- [ ] **DSNs / connection strings** — `postgres://user:PASSWORD@host/db`. Redact
+      the `user:password@` segment to `***:***@`, or reference the env var name.
+- [ ] **`docker inspect` / `env` / `printenv` output** — these dump every
+      `environment:` value in clear text. Never paste raw; grep to the one line
+      you need and redact its value.
+- [ ] **`.env*` file contents** — `POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD`,
+      `AWS_SECRET_ACCESS_KEY`, `MAILGUN_API_KEY`, `SLACK_ALERTS_WEBHOOK_URL`
+      (the webhook URL is itself a bearer secret), any `*_KEY` / `*_TOKEN` /
+      `*_PASSWORD` / `*_SECRET` / `*_DSN`.
+- [ ] **`psql` / app error pages** — connection errors often echo the DSN back,
+      password included. Trim it.
+- [ ] **Authorization headers / cookies / JWTs** in `curl -v` output.
+- [ ] **PII (LGPD)** — customer names, e-mails, phones, message bodies from the
+      inbox. Mask before sharing outside the ticket.
+
+Quick one-liner to scrub a DSN before pasting (redacts the credential segment):
+
+```bash
+# Turns postgres://user:pass@host:5432/db?... into postgres://***:***@host:5432/db?...
+sed -E 's#(postgres(ql)?://)[^:/@]+:[^@]+@#\1***:***@#g'
+```
+
+**`sslmode` policy — reduce in-transit exposure.** Any DSN that crosses the
+network to a **remote or managed** Postgres MUST use `sslmode=require` at minimum
+(prefer `verify-full` when a CA bundle is available). `sslmode=disable` is
+acceptable **only** for the bundled, same-host in-network `postgres` container
+(traffic never leaves the Docker bridge on the VPS) — that is why the in-network
+migrate/compose DSNs in this runbook and in `deploy/compose/*.yml` use `disable`.
+The moment a DSN points at a host you don't control end-to-end, `require` is the
+floor. See `deploy/compose/.env.example` for the template.
+
 ## Reading logs
 
 `docker compose` parses `compose.stg.yml` even for read-only operations like
