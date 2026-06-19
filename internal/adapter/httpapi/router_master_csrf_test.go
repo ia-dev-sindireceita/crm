@@ -3,9 +3,11 @@ package httpapi_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
 )
 
 // SIN-65269 CSRF-7 #4 — off-origin + positive pair for the /m/* master
@@ -110,6 +112,42 @@ func TestRouter_MasterTenants_CSRF(t *testing.T) {
 			t.Fatalf("CSRF-7 #3: status = 403, CSRF gate must not block canonical master-host Origin; body=%q", w.Body.String())
 		}
 	})
+}
+
+// SIN-65277 — the router must thread Deps.MasterCSRFOnReject into the
+// RequireMasterOriginCSRF gate so cmd/server can hang a Prometheus counter
+// off the rejection path. This pins the Deps→router→gate plumbing: a forged
+// cross-tenant POST to /m/login must fire the hook with the mismatch reason
+// before the 403 is written.
+func TestRouter_MasterCSRF_OnRejectHookFires(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotReasons []mastermfa.OriginCSRFReason
+	h := httpapi.NewRouter(httpapi.Deps{
+		IAM:            &inmemIAM{},
+		TenantResolver: &fakeResolver{},
+		Master:         stubMasterDeps(),
+		MasterHost:     masterRouterHost,
+		MasterCSRFOnReject: func(_ *http.Request, reason mastermfa.OriginCSRFReason) {
+			mu.Lock()
+			defer mu.Unlock()
+			gotReasons = append(gotReasons, reason)
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, mintEnrollReq("https://acme.crm.local")) // POST /m/2fa/enroll, forged Origin
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (forged Origin)", rec.Code)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotReasons) != 1 || gotReasons[0] != mastermfa.OriginCSRFReasonMismatch {
+		t.Fatalf("OnReject reasons = %v, want exactly [%s] — Deps.MasterCSRFOnReject not threaded into the gate",
+			gotReasons, mastermfa.OriginCSRFReasonMismatch)
+	}
 }
 
 // Guard: the gate must not be mounted (and therefore must not 403) when
