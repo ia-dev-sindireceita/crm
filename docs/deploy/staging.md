@@ -683,6 +683,13 @@ STG_TENANT_HOSTS=acme.crm.REPLACE_WITH_BASE, globex.crm.REPLACE_WITH_BASE
 #   2) add an A record for it pointing at the VPS public IP,
 #   3) add it to STG_TENANT_HOSTS above so Caddy provisions a TLS cert.
 # MASTER_CONSOLE_HOST=master.crm.REPLACE_WITH_BASE
+# Master-ops service-account user UUID. Read by cmd/server/master_tenants_wire.go
+# at boot — unset = master surface stays unmounted = /master/tenants returns 404
+# instead of 302. The value below is the master@crm.local seed user from
+# migrations/seed/stg.sql; it is NOT a secret. Disaster-recovery rebuilds MUST
+# keep this line (cd-stg.yml runs a /master/tenants smoke gate that will fail
+# red if it is missing).
+MASTER_OPS_ACTOR_ID=00000000-0000-0000-0000-0000000a57e7
 # APP_IMAGE is rewritten by the deploy wrapper on every push. Bootstrap with
 # the digest you discover in §5 below — full ref like
 # ghcr.io/pericles-luz/crm@sha256:6b8f…f730ba.

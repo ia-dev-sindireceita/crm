@@ -572,3 +572,51 @@ jobs:
           set -euo pipefail
           set +x
           bash scripts/ci/stg-smoke-inbox.sh
+
+      # SIN-64032 — master-tenants surface smoke gate. cmd/server/master_tenants_wire.go
+      # (noopMasterTenantsStack, lines 99-103) silently mounts a 404 stack when
+      # MASTER_OPS_ACTOR_ID is unset, so /master/tenants returns 404 instead of the
+      # auth-gate 302 and the deploy still closes green. This step fails the job red
+      # when the surface is unmounted, naming the env var + runbook so a disaster-
+      # recovery rebuild that drops the line is caught here, not by an operator.
+      # Unauthenticated request: the auth gate must redirect (302) to a login page.
+      # No new secrets — reuses STG_SMOKE_URL like the /login + /inbox smokes.
+      - name: smoke check /master/tenants
+        timeout-minutes: 1
+        env:
+          STG_BASE: ${{ secrets.STG_SMOKE_URL }}
+        run: |
+          set -euo pipefail
+          set +x
+
+          smoke_master_tenants() {
+            local code
+            code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" \
+              "${STG_BASE}/master/tenants")
+            case "$code" in
+              301|302)
+                echo "master-tenants smoke OK — /master/tenants returned ${code} (auth gate redirect)"
+                return 0
+                ;;
+              404)
+                echo "::error::SIN-64032 regression — /master/tenants returned 404 (master surface unmounted). Root cause: MASTER_OPS_ACTOR_ID missing from /opt/crm/stg/.env.stg. Remediation: add the line per docs/deploy/staging.md §4 and re-run cd-stg."
+                return 1
+                ;;
+              *)
+                echo "::error::/master/tenants expected 302 (auth gate), got ${code}. 200 means the master surface mounted without an auth gate; investigate before shipping."
+                return 1
+                ;;
+            esac
+          }
+
+          # Up to 3 attempts with 5s backoff, mirroring the /login + /inbox
+          # smokes — covers first-request warmup without hiding a regression.
+          for attempt in 1 2 3; do
+            if smoke_master_tenants; then
+              exit 0
+            fi
+            echo "master-tenants smoke attempt ${attempt} failed, retrying…"
+            sleep 5
+          done
+          echo "master-tenants smoke FAILED — see docs/deploy/staging.md §4 (MASTER_OPS_ACTOR_ID)"
+          exit 1
