@@ -45,6 +45,13 @@ func MasterHostOnly(masterHost string, logger *slog.Logger) func(http.Handler) h
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if want == "" || normalizeHost(r.Host) != want {
+				// Observability for off-host probes of the operator
+				// surface (debug — these can be frequent and carry no
+				// principal, so they stay below the info threshold).
+				logger.DebugContext(r.Context(), "mastermfa: off-host master surface probe 404",
+					slog.String("event", "master_host_pin_reject"),
+					slog.String("route", r.URL.Path),
+				)
 				http.NotFound(w, r)
 				return
 			}
