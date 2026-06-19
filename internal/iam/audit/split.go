@@ -76,6 +76,20 @@ const (
 	// migration 0110 mirrors this literal — extending the constant
 	// requires extending that migration first.
 	SecurityEventLogout SecurityEvent = "logout"
+
+	// SIN-65232 (follow-up from SIN-65223 / PR #368): master session
+	// hard-cap breach. Emitted by the RequireMasterAuth middleware when a
+	// master operator's session crosses created_at + hard TTL (4h, ADR
+	// 0073 §D3) and the storage layer reports ErrSessionHardCap. The
+	// middleware then clears the __Host-sess-master cookie and 303s to
+	// /m/login; this row is the SLI for forced master-session expiry so
+	// dashboards can split a breach attempt from a benign idle timeout.
+	// Target jsonb carries {session_id, audience: "master", route,
+	// created_at}. The dotted name matches the SIN-62418 / ADR 0073
+	// session vocabulary. The CHECK clause in migration 0122 mirrors this
+	// literal — extending the constant requires extending that migration
+	// first.
+	SecurityEventMasterSessionHardCapHit SecurityEvent = "master.session.hard_cap_hit"
 )
 
 // DataEvent is the controlled vocabulary of audit_log_data rows.
@@ -118,6 +132,7 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEvent2FARecoveryUsed:          {},
 	SecurityEvent2FARecoveryRegenerated:   {},
 	SecurityEventLogout:                   {},
+	SecurityEventMasterSessionHardCapHit:  {},
 }
 
 var allDataEvents = map[DataEvent]struct{}{

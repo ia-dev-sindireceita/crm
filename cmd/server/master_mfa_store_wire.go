@@ -52,6 +52,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -308,6 +309,53 @@ func (l *masterMFAAuditLogger) write(ctx context.Context, evt audit.SecurityEven
 	})
 }
 
+// masterSessionHardCapAuditor satisfies mastermfa.MasterSessionAuditor
+// for the master /m/* auth middleware (RequireMasterAuth) by routing the
+// single master.session.hard_cap_hit event into audit_log_security via
+// audit.SplitLogger with TenantID = nil — the same tenant-less,
+// master-context contract as masterMFAAuditLogger. It is the hard-cap
+// analogue of the master logout / MFA-required auditors: exactly one row
+// per hard-cap breach, audience="master", appended immediately before
+// the cookie clear + redirect (SIN-65232, follow-up from SIN-65223).
+//
+// LogHardCapHit returns the write error to the middleware, which logs it
+// and proceeds — the cookie clear + 303 to /m/login are never blocked by
+// an audit-write failure (SIN-62418 / ADR 0073 §D3 defense-in-depth: the
+// session teardown and the audit row are independent controls).
+type masterSessionHardCapAuditor struct {
+	writer audit.SplitLogger
+}
+
+func newMasterSessionHardCapAuditor(writer audit.SplitLogger) *masterSessionHardCapAuditor {
+	return &masterSessionHardCapAuditor{writer: writer}
+}
+
+// LogHardCapHit appends the master.session.hard_cap_hit row. now is the
+// breach-detection clock the middleware threads in (the persisted row
+// also carries its own DB timestamp); createdAt is the session birth so
+// an operator can read the elapsed lifetime straight off the ledger.
+func (l *masterSessionHardCapAuditor) LogHardCapHit(ctx context.Context, userID, sessionID uuid.UUID, createdAt, now time.Time, route string) error {
+	target := map[string]any{
+		"session_id": sessionID.String(),
+		"audience":   "master",
+	}
+	if route != "" {
+		target["route"] = route
+	}
+	if !createdAt.IsZero() {
+		target["created_at"] = createdAt.UTC().Format(time.RFC3339)
+	}
+	if !now.IsZero() {
+		target["detected_at"] = now.UTC().Format(time.RFC3339)
+	}
+	return l.writer.WriteSecurity(ctx, audit.SecurityAuditEvent{
+		Event:       audit.SecurityEventMasterSessionHardCapHit,
+		ActorUserID: userID,
+		TenantID:    nil,
+		Target:      target,
+	})
+}
+
 // Compile-time assertions: each concrete adapter satisfies the mastermfa
 // (or mfa) port it is wired into. A future port-signature change surfaces
 // here at build time instead of at runtime on the first /m/* request.
@@ -330,4 +378,7 @@ var (
 	_ mfa.RecoveryStore  = (*postgresadapter.MasterRecoveryCodes)(nil)
 	_ mfa.AuditLogger    = (*masterMFAAuditLogger)(nil)
 	_ mfa.Alerter        = (*slackadapter.MFAAlerter)(nil)
+
+	// SIN-65232: the hard-cap auditor satisfies the master-auth port.
+	_ mastermfa.MasterSessionAuditor = (*masterSessionHardCapAuditor)(nil)
 )

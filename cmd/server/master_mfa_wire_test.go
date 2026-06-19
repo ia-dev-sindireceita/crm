@@ -67,6 +67,7 @@ func (r *recordingSplitLogger) WriteData(_ context.Context, _ audit.DataAuditEve
 type stubMasterSessions struct {
 	session  mastermfa.Session
 	getErr   error
+	touchErr error
 	createID uuid.UUID
 	deleted  []uuid.UUID
 }
@@ -92,7 +93,7 @@ func (s *stubMasterSessions) MarkVerified(_ context.Context, _ uuid.UUID) (time.
 }
 
 func (s *stubMasterSessions) Touch(_ context.Context, _ uuid.UUID, _ time.Duration) error {
-	return nil
+	return s.touchErr
 }
 
 func (s *stubMasterSessions) RotateID(_ context.Context, _ uuid.UUID) (mastermfa.Session, error) {
@@ -259,16 +260,18 @@ func TestBuildMasterDeps_LogoutAppendsMasterAudienceRow(t *testing.T) {
 	deps := buildMasterDeps(stack, rec, slogTestLogger())
 	h := mountMaster(t, deps)
 
-	req := httptest.NewRequest(http.MethodGet, "/m/logout", nil)
+	// SIN-65232: /m/logout is POST-only (forced-logout CSRF fix), so the
+	// wire test drives it via POST.
+	req := httptest.NewRequest(http.MethodPost, "/m/logout", nil)
 	req.AddCookie(&http.Cookie{Name: "__Host-sess-master", Value: sessionID.String()})
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
 	if w.Code != http.StatusSeeOther {
-		t.Fatalf("GET /m/logout: status = %d, want 303", w.Code)
+		t.Fatalf("POST /m/logout: status = %d, want 303", w.Code)
 	}
 	if loc := w.Header().Get("Location"); loc != "/m/login" {
-		t.Fatalf("GET /m/logout: Location = %q, want /m/login", loc)
+		t.Fatalf("POST /m/logout: Location = %q, want /m/login", loc)
 	}
 
 	// Exactly one SecurityEventLogout row, audience="master", nil tenant.
@@ -290,6 +293,104 @@ func TestBuildMasterDeps_LogoutAppendsMasterAudienceRow(t *testing.T) {
 	}
 	if got.ActorUserID != userID {
 		t.Errorf("audit ActorUserID = %v, want %v", got.ActorUserID, userID)
+	}
+}
+
+// TestBuildMasterDeps_HardCapHitAuditsAndClearsCookie proves the
+// SIN-65232 wireup: a master session past the hard TTL (SessionStore.Touch
+// reports ErrSessionHardCap) hitting an /m/* route appends EXACTLY ONE
+// master.session.hard_cap_hit row — audience="master", nil tenant — to the
+// SAME shared SplitLogger, AND still clears the __Host-sess-master cookie
+// and 303s to /m/login. Both controls fire (defense in depth): the audit
+// row and the session teardown are independent.
+func TestBuildMasterDeps_HardCapHitAuditsAndClearsCookie(t *testing.T) {
+	t.Parallel()
+
+	sessionID := uuid.New()
+	userID := uuid.New()
+	sessions := &stubMasterSessions{
+		session:  mastermfa.Session{ID: sessionID, UserID: userID, ExpiresAt: time.Now().Add(time.Hour)},
+		touchErr: mastermfa.ErrSessionHardCap,
+	}
+	stack := newTestStack(sessions, stubEnrollment{seed: []byte("seed")}, stubDirectory{email: "op@example.com"})
+	rec := &recordingSplitLogger{}
+	deps := buildMasterDeps(stack, rec, slogTestLogger())
+	h := mountMaster(t, deps)
+
+	// /m/2fa/verify is the cheapest route behind RequireMasterAuth (auth
+	// only, no MFA gate). The valid Get + hard-cap Touch drives the breach
+	// path inside the middleware before the handler runs.
+	req := httptest.NewRequest(http.MethodGet, "/m/2fa/verify", nil)
+	req.AddCookie(&http.Cookie{Name: "__Host-sess-master", Value: sessionID.String()})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	// Defense-in-depth control #1: cookie cleared + redirect to login.
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("hard-cap GET /m/2fa/verify: status = %d, want 303", w.Code)
+	}
+	if loc := w.Header().Get("Location"); !strings.HasPrefix(loc, "/m/login") {
+		t.Fatalf("hard-cap redirect Location = %q, want /m/login*", loc)
+	}
+	sc := w.Header().Get("Set-Cookie")
+	if !strings.Contains(sc, "__Host-sess-master") || !strings.Contains(sc, "Max-Age=0") {
+		t.Fatalf("hard-cap must clear the master cookie; Set-Cookie = %q", sc)
+	}
+
+	// Defense-in-depth control #2: exactly one hard-cap-hit audit row,
+	// audience="master", nil tenant, attributed to the session operator.
+	var hits []audit.SecurityAuditEvent
+	for _, e := range rec.security {
+		if e.Event == audit.SecurityEventMasterSessionHardCapHit {
+			hits = append(hits, e)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hard-cap audit rows = %d, want exactly 1", len(hits))
+	}
+	got := hits[0]
+	if got.Target["audience"] != "master" {
+		t.Errorf("hard-cap audience = %v, want master", got.Target["audience"])
+	}
+	if got.TenantID != nil {
+		t.Errorf("hard-cap TenantID = %v, want nil (master rows are tenant-less)", got.TenantID)
+	}
+	if got.ActorUserID != userID {
+		t.Errorf("hard-cap ActorUserID = %v, want %v", got.ActorUserID, userID)
+	}
+	if got.Target["route"] != "/m/2fa/verify" {
+		t.Errorf("hard-cap route = %v, want /m/2fa/verify", got.Target["route"])
+	}
+}
+
+// TestBuildMasterDeps_LogoutIsPostOnly locks in the SIN-65232 CSRF fix: a
+// GET to /m/logout (the cross-site <img>/link forced-logout vector) is
+// rejected at the router with 405 and never reaches the handler, so no
+// session is torn down. The POST path is exercised by
+// TestBuildMasterDeps_LogoutAppendsMasterAudienceRow.
+func TestBuildMasterDeps_LogoutIsPostOnly(t *testing.T) {
+	t.Parallel()
+
+	sessionID := uuid.New()
+	userID := uuid.New()
+	sessions := &stubMasterSessions{
+		session: mastermfa.Session{ID: sessionID, UserID: userID},
+	}
+	stack := newTestStack(sessions, stubEnrollment{seed: []byte("seed")}, stubDirectory{email: "op@example.com"})
+	deps := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger())
+	h := mountMaster(t, deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/m/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "__Host-sess-master", Value: sessionID.String()})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /m/logout: status = %d, want 405 (POST-only)", w.Code)
+	}
+	// The forced GET must NOT have deleted the session.
+	if len(sessions.deleted) != 0 {
+		t.Fatalf("GET /m/logout deleted %d sessions, want 0 (handler must be unreachable)", len(sessions.deleted))
 	}
 }
 

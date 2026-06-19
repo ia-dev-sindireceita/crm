@@ -16,6 +16,7 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -224,5 +225,77 @@ func TestMasterMFAAuditLogger_MFARequiredTargetFields(t *testing.T) {
 	}
 	if got := w.last.Target["reason"]; got != "missing_session" {
 		t.Errorf("target reason=%v want missing_session", got)
+	}
+}
+
+// TestMasterSessionHardCapAuditor_WritesMasterContextRow exercises the
+// SIN-65232 adapter directly: the master.session.hard_cap_hit event lands
+// on the shared SplitLogger with audience="master", a nil tenant, the
+// operator id, and the session-lifetime + route target fields.
+func TestMasterSessionHardCapAuditor_WritesMasterContextRow(t *testing.T) {
+	t.Parallel()
+	w := &recordingSplit{}
+	l := newMasterSessionHardCapAuditor(w)
+
+	userID := uuid.New()
+	sessionID := uuid.New()
+	createdAt := time.Date(2026, 6, 19, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 6, 19, 14, 1, 0, 0, time.UTC)
+
+	if err := l.LogHardCapHit(context.Background(), userID, sessionID, createdAt, now, "/m/2fa/verify"); err != nil {
+		t.Fatalf("LogHardCapHit: %v", err)
+	}
+	if !w.called {
+		t.Fatal("expected WriteSecurity to be invoked")
+	}
+	if w.last.Event != audit.SecurityEventMasterSessionHardCapHit {
+		t.Errorf("event=%q want %q", w.last.Event, audit.SecurityEventMasterSessionHardCapHit)
+	}
+	if w.last.TenantID != nil {
+		t.Errorf("master events must carry a nil TenantID, got %v", *w.last.TenantID)
+	}
+	if w.last.ActorUserID != userID {
+		t.Errorf("ActorUserID=%s want %s", w.last.ActorUserID, userID)
+	}
+	if got := w.last.Target["audience"]; got != "master" {
+		t.Errorf("target audience=%v want master", got)
+	}
+	if got := w.last.Target["session_id"]; got != sessionID.String() {
+		t.Errorf("target session_id=%v want %s", got, sessionID)
+	}
+	if got := w.last.Target["route"]; got != "/m/2fa/verify" {
+		t.Errorf("target route=%v want /m/2fa/verify", got)
+	}
+	if got := w.last.Target["created_at"]; got != "2026-06-19T10:00:00Z" {
+		t.Errorf("target created_at=%v want 2026-06-19T10:00:00Z", got)
+	}
+	if got := w.last.Target["detected_at"]; got != "2026-06-19T14:01:00Z" {
+		t.Errorf("target detected_at=%v want 2026-06-19T14:01:00Z", got)
+	}
+}
+
+// TestMasterSessionHardCapAuditor_OmitsEmptyOptionalFields proves the
+// adapter does not emit blank route / zero-time keys (so a row never
+// carries a misleading empty created_at).
+func TestMasterSessionHardCapAuditor_OmitsEmptyOptionalFields(t *testing.T) {
+	t.Parallel()
+	w := &recordingSplit{}
+	l := newMasterSessionHardCapAuditor(w)
+
+	if err := l.LogHardCapHit(context.Background(), uuid.New(), uuid.New(), time.Time{}, time.Time{}, ""); err != nil {
+		t.Fatalf("LogHardCapHit: %v", err)
+	}
+	if _, ok := w.last.Target["route"]; ok {
+		t.Error("empty route must be omitted from target")
+	}
+	if _, ok := w.last.Target["created_at"]; ok {
+		t.Error("zero createdAt must be omitted from target")
+	}
+	if _, ok := w.last.Target["detected_at"]; ok {
+		t.Error("zero now must be omitted from target")
+	}
+	// audience + session_id are always present.
+	if w.last.Target["audience"] != "master" {
+		t.Errorf("audience=%v want master", w.last.Target["audience"])
 	}
 }

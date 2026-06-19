@@ -28,10 +28,13 @@ type LogoutHandlerConfig struct {
 	LoginPath   string
 }
 
-// LogoutHandler renders /m/logout. Unlike POST-only flows, the
-// handler accepts both GET and POST so a stale-session operator who
-// hits /m/logout from an idle browser can clear without a redirect
-// loop (parallel to the tenant Logout shape — middleware/auth.go).
+// LogoutHandler renders /m/logout. The handler itself is method-tolerant
+// (GET + POST) so it can be reused / unit-tested without a route, but the
+// PRODUCTION route is mounted POST-only (SIN-65232, router.go) to defeat
+// forced-logout CSRF: a GET-able logout lets any cross-site <img>/link
+// sign a master operator out. Any logout control in the master UI MUST
+// therefore submit a POST form, not an anchor. The GET branch below is
+// retained as defense-in-depth for non-router callers only.
 //
 // On every request:
 //  1. Reads __Host-sess-master via sessioncookie.Read.
