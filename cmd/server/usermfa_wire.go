@@ -182,14 +182,24 @@ func buildUserMFAStack(_ context.Context, pool *pgxpool.Pool, iamSvc usermfa.Log
 		return noopUserMFAStack()
 	}
 
-	loginPost := usermfa.LoginPost(usermfa.LoginConfig{
+	loginCfg := usermfa.LoginConfig{
 		IAM:          iamSvc,
 		Sessions:     sessions,
 		Pendings:     pendings,
 		Requirements: requirements,
 		PendingTTL:   readUserMFAPendingTTL(getenv),
 		Logger:       logger,
-	})
+	}
+	// SIN-63963 / UX-F4 — the production iamSvc (iamAdapter) also
+	// implements tenancy.BrandingReader, so the MFA-aware
+	// credential-failure re-render brands the card to match GET /login.
+	// Detected via an optional assertion so test doubles that don't
+	// implement the reader keep the word-mark + footer fallback and the
+	// buildUserMFAStack signature stays unchanged.
+	if br, ok := iamSvc.(tenancy.BrandingReader); ok {
+		loginCfg.Branding = br
+	}
+	loginPost := usermfa.LoginPost(loginCfg)
 
 	routes := httpapi.UserMFARoutes{
 		LoginPost:  loginPost,

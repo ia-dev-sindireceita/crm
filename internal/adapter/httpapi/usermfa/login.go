@@ -76,6 +76,10 @@ type LoginConfig struct {
 	SetupPath    string
 	FallbackOK   string
 	Logger       *slog.Logger
+	// Branding is the optional tenant-settings read port (SIN-63963 /
+	// UX-F4) used by the credential-failure re-render to brand the card
+	// after a bad password. Nil keeps the word-mark + footer fallback.
+	Branding tenancy.BrandingReader
 }
 
 // LoginPost returns the POST /login handler. Behaviour:
@@ -132,7 +136,7 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 		sess, err := cfg.IAM.Login(r.Context(), r.Host, email, password, ipAddr, r.UserAgent(), r.URL.Path)
 		if err != nil {
 			if errors.Is(err, iam.ErrInvalidCredentials) {
-				renderLoginError(w, r, next)
+				renderLoginError(w, r, next, cfg.Branding)
 				return
 			}
 			loginhandler.WriteLoginError(w, r, err, cfg.Logger)
@@ -184,16 +188,17 @@ func LoginPost(cfg LoginConfig) http.HandlerFunc {
 	}
 }
 
-func renderLoginError(w http.ResponseWriter, r *http.Request, next string) {
+func renderLoginError(w http.ResponseWriter, r *http.Request, next string, reader tenancy.BrandingReader) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
 	// SIN-63941 / UX-F4 — the MFA-aware credential-failure path renders
 	// the same views.Login template as the legacy handler, so the data
-	// struct grew TenantName/TenantLogo/WhiteLabel/TenantThemeStyle to
+	// struct carries TenantName/TenantLogo/WhiteLabel/TenantThemeStyle to
 	// keep the card branded after a bad-password attempt. tenancy is
-	// already on the request via middleware.TenantScope; logo and
-	// white-label remain placeholders until the tenant-settings read
-	// port (follow-up issue) is wired here too.
+	// already on the request via middleware.TenantScope. SIN-63963 wires
+	// the tenant-settings read port here so logo + white-label match the
+	// GET /login render; a nil reader or any read failure degrades to the
+	// word-mark + platform footer rather than failing the page.
 	data := struct {
 		Next             string
 		Error            string
@@ -211,6 +216,18 @@ func renderLoginError(w http.ResponseWriter, r *http.Request, next string) {
 	}
 	if t, err := tenancy.FromContext(r.Context()); err == nil && t != nil {
 		data.TenantName = t.Name
+		if reader != nil {
+			if b, lerr := reader.LoadBranding(r.Context(), t.ID); lerr == nil {
+				data.TenantLogo = b.LogoURL
+				data.WhiteLabel = b.WhiteLabel
+			} else if !errors.Is(lerr, tenancy.ErrTenantNotFound) {
+				logger := slog.Default()
+				logger.WarnContext(r.Context(), "usermfa: load login branding failed",
+					slog.String("tenant_id", t.ID.String()),
+					slog.String("err", lerr.Error()),
+				)
+			}
+		}
 	}
 	_ = views.Login.ExecuteTemplate(w, "layout", data)
 }
