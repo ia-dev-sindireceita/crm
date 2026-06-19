@@ -690,6 +690,18 @@ STG_TENANT_HOSTS=acme.crm.REPLACE_WITH_BASE, globex.crm.REPLACE_WITH_BASE
 # keep this line (cd-stg.yml runs a /master/tenants smoke gate that will fail
 # red if it is missing).
 MASTER_OPS_ACTOR_ID=00000000-0000-0000-0000-0000000a57e7
+# Master-ops Postgres DSN. Read by cmd/server/master_tenants_wire.go at boot —
+# this is the FIRST pre-condition checked (before MASTER_OPS_ACTOR_ID): unset
+# OR a DSN that fails to connect ⇒ master surface stays unmounted = /master/tenants
+# returns 404 instead of 302, and the cd-stg smoke gate fails red. SETTING
+# MASTER_OPS_ACTOR_ID ALONE IS NOT ENOUGH — this DSN must also exist and
+# authenticate. SECRET (contains a password): never commit the real value; store
+# it in the password manager alongside POSTGRES_PASSWORD. It authenticates as the
+# least-privilege `app_master_ops` role (migrations/0001_roles.up.sql), which is
+# created WITHOUT a password — you MUST provision one first; see §5e below. Once
+# the password is set, the value is:
+#   postgres://app_master_ops:REPLACE_WITH_APP_MASTER_OPS_PASSWORD@postgres:5432/crm?sslmode=disable
+# MASTER_OPS_DATABASE_URL=REPLACE_WITH_MASTER_OPS_DSN
 # APP_IMAGE is rewritten by the deploy wrapper on every push. Bootstrap with
 # the digest you discover in §5 below — full ref like
 # ghcr.io/pericles-luz/crm@sha256:6b8f…f730ba.
@@ -1006,6 +1018,71 @@ substitution did not run (likely the operator forgot the `-v base_domain=`
 flag and Postgres errored with `psql:…: ERROR: syntax error at or near
 ":"`, in which case `ON_ERROR_STOP=1` already rolled back the
 transaction). Re-run with the correct `STG_BASE_DOMAIN` and re-validate.
+
+### 5e. Provision the `app_master_ops` login password (master-ops surface)
+
+The master operator console (`/master/tenants`, `/m/*`) connects to Postgres
+as the least-privilege `app_master_ops` role through `MASTER_OPS_DATABASE_URL`
+(documented in the `.env.stg` template in §4). `migrations/0001_roles.up.sql`
+creates that role `LOGIN … NOSUPERUSER NOBYPASSRLS` **without a password** — so
+right after §5c migrations apply, the role exists but cannot authenticate, and
+`cmd/server/master_tenants_wire.go` logs `master pg connect: …` and serves a
+404 on every `/master/*` path. Until this step runs, adding
+`MASTER_OPS_ACTOR_ID` alone leaves the surface unmounted (SIN-65286 / SIN-65264).
+
+This is the **first** pre-condition the boot check needs to pass, so do it
+before filling `MASTER_OPS_DATABASE_URL` in `.env.stg`. Generate a password the
+same way as the other infra secrets (alphanumeric — no `@:/?` that break DSN
+parsing) and store it in the password manager; it is a **secret** and MUST NOT
+be committed:
+
+```bash
+openssl rand -hex 32   # APP_MASTER_OPS_PASSWORD
+```
+
+Set it on the role (idempotent — re-running just rotates the password):
+
+```bash
+COMPOSE_ARGS="--env-file /opt/crm/stg/.env.stg -f /opt/crm/stg/compose.stg.yml"
+read_env() { sudo grep -E "^${1}=" /opt/crm/stg/.env.stg | tail -n1 | cut -d= -f2-; }
+POSTGRES_USER_VAL="$(read_env POSTGRES_USER)"
+POSTGRES_DB_VAL="$(read_env POSTGRES_DB)"
+
+# Paste the openssl output above. Passing it through a psql variable (:'pw')
+# keeps the literal out of the SQL text and quotes it safely. The superuser-tier
+# POSTGRES_USER runs the ALTER (app_admin/app_runtime lack CREATEROLE, by design
+# — see 0001_roles.up.sql).
+APP_MASTER_OPS_PASSWORD="REPLACE_WITH_HEX_FROM_OPENSSL_RAND"
+
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER_VAL}" -d "${POSTGRES_DB_VAL}" \
+       -v pw="${APP_MASTER_OPS_PASSWORD}" \
+  -c "ALTER ROLE app_master_ops LOGIN PASSWORD :'pw';"
+```
+
+Now build the DSN from that password and write it into `.env.stg` as
+`MASTER_OPS_DATABASE_URL` (the commented template line in §4 shows the exact
+shape):
+
+```
+postgres://app_master_ops:REPLACE_WITH_APP_MASTER_OPS_PASSWORD@postgres:5432/crm?sslmode=disable
+```
+
+**Validation.** Confirm the role can authenticate with the new password (a
+successful `SELECT 1` means the DSN will connect at boot):
+
+```bash
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
+  env PGPASSWORD="REPLACE_WITH_APP_MASTER_OPS_PASSWORD" \
+  psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_master_ops -d "${POSTGRES_DB_VAL}" \
+  -c "SELECT 1;"
+```
+
+After restarting the app with `MASTER_OPS_DATABASE_URL` set, the cd-stg
+`/master/tenants` smoke gate must return 302 (auth redirect), not 404. A
+lingering 404 means one of the three pre-conditions (DSN set + ACTOR_ID valid +
+DSN connects) is still failing — read the app boot log for
+`master tenants surface disabled` or `master pg connect` to see which.
 
 ### 6. Capturing the staging host key
 
