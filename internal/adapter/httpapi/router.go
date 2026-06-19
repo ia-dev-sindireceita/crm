@@ -100,6 +100,12 @@ type MasterDeps struct {
 	Verify     http.Handler
 	Regenerate http.Handler
 
+	// EnrollStart renders GET /m/2fa/enroll — the server-rendered
+	// bootstrap start page (SIN-65264). Split from Enroll so the mint
+	// stays POST-only; nil falls back to mounting Enroll on GET too
+	// (legacy behaviour for wireups that predate the split).
+	EnrollStart http.Handler
+
 	// RequireMasterAuth gates every /m/* route except /m/login and
 	// /m/logout on a valid master session cookie.
 	RequireMasterAuth func(http.Handler) http.Handler
@@ -107,6 +113,15 @@ type MasterDeps struct {
 	// RequireMasterMFA gates all authed /m/* routes except
 	// /m/2fa/verify on an enrolled + at-least-once-verified TOTP.
 	RequireMasterMFA func(http.Handler) http.Handler
+
+	// RequirePrincipalFromMaster synthesizes an iam.Principal{RoleMaster}
+	// from the verified master session so the relocated /master/* operator
+	// handlers (which read iam.PrincipalFromContext) work on the master
+	// host without a tenant session (SIN-65264 Gap 3 bridge; SecEng C1-C6,
+	// SIN-65266). Composed after RequireMasterAuth + RequireMasterMFA on
+	// the master-host operator group. nil leaves the operator surface
+	// un-mounted (fail closed).
+	RequirePrincipalFromMaster func(http.Handler) http.Handler
 }
 
 // Deps is the constructor-injected dependency bag for NewRouter. cmd/server
