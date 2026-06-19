@@ -1,7 +1,6 @@
 package mastermfa_test
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,10 +32,9 @@ func TestCSRFTokenFromContext_NoMaster_Empty(t *testing.T) {
 func TestCSRFTokenFromContext_NilUUID_Empty(t *testing.T) {
 	t.Parallel()
 	// A zero-value Master (ID == uuid.Nil) is treated as "no master" by
-	// MasterFromContext, so the token must be empty (fail closed).
-	r := httptest.NewRequest(http.MethodGet, "/master/tenants", nil)
-	r = r.WithContext(context.WithValue(r.Context(), struct{}{}, "noise"))
-	if got := mastermfa.CSRFTokenFromContext(r); got != "" {
+	// MasterFromContext, so the token must be empty (fail closed) even
+	// though a Master value IS present in the context.
+	if got := mastermfa.CSRFTokenFromContext(csrfTokReq(t, &mastermfa.Master{})); got != "" {
 		t.Fatalf("want empty token for nil-uuid master, got %q", got)
 	}
 }
