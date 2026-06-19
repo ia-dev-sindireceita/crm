@@ -31,12 +31,14 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/adapter/crypto/aesgcm"
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres/mastersession"
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres/testpg"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
+	usermfaadapter "github.com/pericles-luz/crm/internal/adapter/usermfa"
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 	"github.com/pericles-luz/crm/internal/tenancy"
@@ -55,6 +57,17 @@ type passthroughCipher struct{}
 
 func (passthroughCipher) Encrypt(b []byte) ([]byte, error) { return b, nil }
 func (passthroughCipher) Decrypt(b []byte) ([]byte, error) { return b, nil }
+
+// noopMFAAudit satisfies mfa.AuditLogger. The e2e test asserts HTTP
+// flow correctness; audit persistence is covered by the audit adapter
+// unit tests elsewhere.
+type noopMFAAudit struct{}
+
+func (noopMFAAudit) LogEnrolled(context.Context, uuid.UUID) error                    { return nil }
+func (noopMFAAudit) LogVerified(context.Context, uuid.UUID) error                    { return nil }
+func (noopMFAAudit) LogRecoveryUsed(context.Context, uuid.UUID) error                { return nil }
+func (noopMFAAudit) LogRecoveryRegenerated(context.Context, uuid.UUID) error         { return nil }
+func (noopMFAAudit) LogMFARequired(context.Context, uuid.UUID, string, string) error { return nil }
 
 // TestMasterConsole_E2E_FullFlow is the SIN-65264 end-to-end
 // regression: a freshly-seeded not-enrolled master operator completes
@@ -97,10 +110,13 @@ func TestMasterConsole_E2E_FullFlow(t *testing.T) {
 	// mfa.Service wraps the postgres adapters with a passthrough cipher so
 	// we can compute TOTP codes from the stored seed bytes directly.
 	mfaSvc, err := mfa.NewService(mfa.Config{
-		SeedCipher:    passthroughCipher{},
+		SeedCipher:     passthroughCipher{},
 		SeedRepository: mfaStorage,
-		RecoveryStore: recStore,
-		Issuer:        "CRM-E2E",
+		RecoveryStore:  recStore,
+		CodeHasher:     aesgcm.NewRecoveryHasher(),
+		Audit:          noopMFAAudit{},
+		Alerter:        usermfaadapter.NoopAlerter{},
+		Issuer:         "CRM-E2E",
 	})
 	if err != nil {
 		t.Fatalf("mfa.NewService: %v", err)
@@ -142,11 +158,11 @@ func TestMasterConsole_E2E_FullFlow(t *testing.T) {
 	enrollStartHandler := mastermfa.NewEnrollStartHandler(nil)
 	enrollHandler := mastermfa.NewEnrollHandler(mfaSvc, nil)
 	verifyHandler := mastermfa.NewVerifyHandler(mastermfa.VerifyHandlerConfig{
-		Verifier:    mfaSvc,
-		Consumer:    mfaSvc,
-		Sessions:    httpSession,
-		Rotator:     httpSession,
-		LoginPath:   "/m/login",
+		Verifier:  mfaSvc,
+		Consumer:  mfaSvc,
+		Sessions:  httpSession,
+		Rotator:   httpSession,
+		LoginPath: "/m/login",
 	})
 	requireAuth := mastermfa.RequireMasterAuth(mastermfa.RequireMasterAuthConfig{
 		Sessions:  sessions,
@@ -158,6 +174,7 @@ func TestMasterConsole_E2E_FullFlow(t *testing.T) {
 	requireMFA := mastermfa.RequireMasterMFA(mastermfa.RequireMasterMFAConfig{
 		Enrollment: mfaStorage,
 		Sessions:   httpSession,
+		Audit:      noopMFAAudit{},
 		EnrollPath: "/m/2fa/enroll",
 		VerifyPath: "/m/2fa/verify",
 	})
@@ -336,4 +353,3 @@ type e2eNoopResolver struct{}
 func (e2eNoopResolver) ResolveByHost(_ context.Context, _ string) (*tenancy.Tenant, error) {
 	return nil, tenancy.ErrTenantNotFound
 }
-
