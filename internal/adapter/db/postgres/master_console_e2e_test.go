@@ -29,6 +29,9 @@ import (
 	"testing"
 	"time"
 
+	"os"
+	"path/filepath"
+
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/crypto/aesgcm"
@@ -72,8 +75,30 @@ func (noopMFAAudit) LogMFARequired(context.Context, uuid.UUID, string, string) e
 // TestMasterConsole_E2E_FullFlow is the SIN-65264 end-to-end
 // regression: a freshly-seeded not-enrolled master operator completes
 // the full /m/login → enroll → verify → /master/tenants flow.
-func TestMasterConsole_E2E_FullFlow(t *testing.T) {
+// freshDBForMasterConsole extends freshDBWithMasterMFA with the
+// master_session migration (0087) required by the mastersession.Store.
+func freshDBForMasterConsole(t *testing.T) *testpg.DB {
+	t.Helper()
 	db := freshDBWithMasterMFA(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, name := range []string{
+		"0087_master_session.up.sql",
+	} {
+		path := filepath.Join(harness.MigrationsDir(), name)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("freshDBForMasterConsole read %s: %v", name, err)
+		}
+		if _, err := db.AdminPool().Exec(ctx, string(body)); err != nil {
+			t.Fatalf("freshDBForMasterConsole apply %s: %v", name, err)
+		}
+	}
+	return db
+}
+
+func TestMasterConsole_E2E_FullFlow(t *testing.T) {
+	db := freshDBForMasterConsole(t)
 	ctx := context.Background()
 
 	// Seed a master actor (used for master_ops_audit) and a separate
