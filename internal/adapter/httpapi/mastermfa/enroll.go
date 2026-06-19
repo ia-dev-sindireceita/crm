@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/google/uuid"
 
@@ -88,10 +89,22 @@ func (h *EnrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	// Thread the bootstrap ?return= (carried as a hidden field from the
+	// enroll start page) into the verify link so the post-verify redirect
+	// lands on the URL the operator originally requested. r.FormValue
+	// parses the POST body; ResolveReturn drops any unsafe/absolute value.
+	verifyHref := "/m/2fa/verify"
+	if ret := ResolveReturn(r.FormValue("return"), ""); ret != "" {
+		q := url.Values{}
+		q.Set("return", ret)
+		verifyHref = verifyHref + "?" + q.Encode()
+	}
+
 	data := enrollViewData{
 		OTPAuthURI:       res.OTPAuthURI,
 		SecretEncoded:    res.SecretEncoded,
 		RecoveryCodes:    formatRecoveryCodes(res.RecoveryCodes),
+		VerifyHref:       verifyHref,
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 	}
@@ -114,6 +127,10 @@ type enrollViewData struct {
 	OTPAuthURI    string
 	SecretEncoded string
 	RecoveryCodes []string
+	// VerifyHref is the link to /m/2fa/verify (with the bootstrap
+	// ?return= preserved when present) that completes the enroll → verify
+	// round-trip. SIN-65264.
+	VerifyHref string
 	// TenantThemeStyle carries the per-request runtime theming inline
 	// style (SIN-63085).
 	TenantThemeStyle template.CSS

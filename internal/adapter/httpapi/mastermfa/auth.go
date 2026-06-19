@@ -61,10 +61,16 @@ type RequireMasterAuthConfig struct {
 	Sessions  SessionStore
 	Directory MasterUserDirectory
 	Auditor   MasterSessionAuditor
-	Logger    *slog.Logger
-	LoginPath string
-	IdleTTL   time.Duration
-	Now       func() time.Time
+	// DeniedAuditor re-homes CA #2's deny-audit (SIN-65269 R2): every
+	// redirect-to-login rejection (missing / unparseable / expired
+	// __Host-sess-master) emits a master-access-denied security row, so a
+	// probe of the relocated /master/* surface still leaves a trail even
+	// though it is rejected before RequireAction ever runs. nil = no-op.
+	DeniedAuditor MasterAccessDeniedAuditor
+	Logger        *slog.Logger
+	LoginPath     string
+	IdleTTL       time.Duration
+	Now           func() time.Time
 }
 
 // DefaultMasterIdleTTL is the ADR 0073 §D3 master idle timeout. The
@@ -127,17 +133,21 @@ func RequireMasterAuth(cfg RequireMasterAuthConfig) func(http.Handler) http.Hand
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw, err := sessioncookie.Read(r, sessioncookie.NameMaster)
 			if err != nil {
+				// SIN-65269 R2 — re-homed CA #2 deny-audit.
+				auditMasterAccessDenied(r.Context(), cfg.DeniedAuditor, MasterDeniedReasonNoSession, r.URL.Path, r.Host)
 				redirectToMasterLogin(w, r, loginPath)
 				return
 			}
 			sessionID, err := uuid.Parse(raw)
 			if err != nil {
+				auditMasterAccessDenied(r.Context(), cfg.DeniedAuditor, MasterDeniedReasonSessionInvalid, r.URL.Path, r.Host)
 				redirectToMasterLogin(w, r, loginPath)
 				return
 			}
 			sess, err := cfg.Sessions.Get(r.Context(), sessionID)
 			if err != nil {
 				if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrSessionExpired) {
+					auditMasterAccessDenied(r.Context(), cfg.DeniedAuditor, MasterDeniedReasonSessionExpired, r.URL.Path, r.Host)
 					redirectToMasterLogin(w, r, loginPath)
 					return
 				}

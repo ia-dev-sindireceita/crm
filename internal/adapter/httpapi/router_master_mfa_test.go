@@ -43,6 +43,13 @@ func stubMasterDeps() httpapi.MasterDeps {
 	}
 }
 
+// masterRouterHost is the master-console host the /m/* router tests pin
+// against. SIN-65269 CSRF-6: the /m/* group is fronted by the Option-B
+// Origin gate, which fails closed without a MasterHost, so the test
+// router must set one and the POST request builders must carry a
+// matching Origin (see masterPost).
+const masterRouterHost = "master.crm.local"
+
 // newMasterRouter returns a router with master deps wired. It reuses
 // the fakeResolver and inmemIAM already defined in router_test.go
 // (same test package).
@@ -51,7 +58,18 @@ func newMasterRouter(md httpapi.MasterDeps) http.Handler {
 		IAM:            &inmemIAM{},
 		TenantResolver: &fakeResolver{},
 		Master:         md,
+		MasterHost:     masterRouterHost,
 	})
+}
+
+// masterReq builds an /m/* request. For unsafe methods it sets the
+// canonical master Origin so the SIN-65269 CSRF-6 gate admits the
+// request (setup-only: the gate's contract, not the route's behaviour,
+// is what changed). Safe methods carry the header harmlessly.
+func masterReq(method, path string) *http.Request {
+	r := httptest.NewRequest(method, path, nil)
+	r.Header.Set("Origin", "https://"+masterRouterHost)
+	return r
 }
 
 func TestMasterRoutes_LoginAndLogoutMounted(t *testing.T) {
@@ -71,7 +89,7 @@ func TestMasterRoutes_LoginAndLogoutMounted(t *testing.T) {
 	} {
 		authCalls = nil
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		h.ServeHTTP(rec, masterReq(tc.method, tc.path))
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s %s: status = %d, want 200", tc.method, tc.path, rec.Code)
 		}
@@ -95,7 +113,7 @@ func TestMasterRoutes_VerifyBehindAuthNotMFA(t *testing.T) {
 		authCalls = nil
 		mfaCalls = nil
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(method, "/m/2fa/verify", nil))
+		h.ServeHTTP(rec, masterReq(method, "/m/2fa/verify"))
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s /m/2fa/verify: status = %d, want 200", method, rec.Code)
 		}
@@ -128,7 +146,7 @@ func TestMasterRoutes_MFAGatedRoutesBehindBothMiddlewares(t *testing.T) {
 
 			h := newMasterRouter(md)
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			h.ServeHTTP(rec, masterReq(tc.method, tc.path))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rec.Code)
 			}
@@ -190,7 +208,7 @@ func TestMasterConvention_NonBootstrapRoutesBehindMFA(t *testing.T) {
 
 		mfaCalls = nil
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(method, route, nil))
+		h.ServeHTTP(rec, masterReq(method, route))
 		if len(mfaCalls) == 0 {
 			errs = append(errs, method+" "+route+": RequireMasterMFA not called")
 		}

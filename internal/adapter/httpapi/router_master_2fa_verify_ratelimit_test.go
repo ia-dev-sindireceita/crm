@@ -57,6 +57,7 @@ func newRateLimitedMasterRouter(t *testing.T, uid uuid.UUID, denyOn func(policy,
 		IAM:                 store,
 		TenantResolver:      &fakeResolver{byHost: tenants},
 		Master:              md,
+		MasterHost:          masterRouterHost,
 		Policies:            policies,
 		RateLimiter:         limiter,
 		RateLimitDenyMetric: denyOn,
@@ -69,6 +70,10 @@ func postVerifyRateLimited(t *testing.T, h http.Handler, sessionID string) *http
 	body := url.Values{"code": {"000000"}}
 	req := httptest.NewRequest(http.MethodPost, "/m/2fa/verify", strings.NewReader(body.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// SIN-65269 CSRF-6: the /m/* group is fronted by the Option-B Origin
+	// gate; the verify POST must carry the canonical master Origin so the
+	// gate admits it (the routers below set MasterHost to match).
+	req.Header.Set("Origin", "https://"+masterRouterHost)
 	req.AddCookie(&http.Cookie{Name: sessioncookie.NameMaster, Value: sessionID})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -196,6 +201,7 @@ func TestRouter_Master2FAVerify_NoRateLimitWhenDepsOmitted(t *testing.T) {
 		IAM:            store,
 		TenantResolver: &fakeResolver{byHost: tenants},
 		Master:         md,
+		MasterHost:     masterRouterHost,
 		// Policies / RateLimiter omitted — the verify route must remain
 		// un-throttled at the HTTP boundary.
 	})
@@ -234,6 +240,7 @@ func TestRouter_Master2FAVerify_NoRateLimitWhenPolicyMissing(t *testing.T) {
 		IAM:            store,
 		TenantResolver: &fakeResolver{byHost: tenants},
 		Master:         md,
+		MasterHost:     masterRouterHost,
 		Policies:       policies,
 		RateLimiter:    newInmemSlidingWindow(),
 	})

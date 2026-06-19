@@ -290,6 +290,83 @@ func TestRequireMasterAuth_NoCookie_RedirectsToLogin(t *testing.T) {
 	}
 }
 
+// TestRequireMasterAuth_DeniedAuditOnReject is the SIN-65269 R2 (re-homed
+// CA #2 deny-audit) regression: every redirect-to-login rejection emits a
+// master-access-denied security row carrying the reason + path, and the
+// downstream handler is never reached. This is the chokepoint that
+// preserves the detective half of CA #2 on the relocated /master/* surface
+// (which is denied before RequireAction can write an authz_deny row).
+func TestRequireMasterAuth_DeniedAuditOnReject(t *testing.T) {
+	cases := []struct {
+		name       string
+		cookie     *http.Cookie
+		seedRow    bool
+		wantReason string
+	}{
+		{
+			name:       "no cookie",
+			cookie:     nil,
+			wantReason: mastermfa.MasterDeniedReasonNoSession,
+		},
+		{
+			name:       "unparseable cookie",
+			cookie:     &http.Cookie{Name: sessioncookie.NameMaster, Value: "not-a-uuid"},
+			wantReason: mastermfa.MasterDeniedReasonSessionInvalid,
+		},
+		{
+			name:       "session not found",
+			cookie:     &http.Cookie{Name: sessioncookie.NameMaster, Value: uuid.New().String()},
+			wantReason: mastermfa.MasterDeniedReasonSessionExpired,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeSessionStore()
+			dir := newFakeDirectory()
+			auditor := &recordingDeniedAuditor{}
+			mw := mastermfa.RequireMasterAuth(mastermfa.RequireMasterAuthConfig{
+				Sessions: store, Directory: dir, Logger: silentLogger(),
+				DeniedAuditor: auditor,
+			})
+			d := &downstreamHandler{}
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/master/tenants", nil)
+			r.Host = "master.crm.local"
+			if tc.cookie != nil {
+				r.AddCookie(tc.cookie)
+			}
+			mw(d).ServeHTTP(w, r)
+
+			if w.Code != http.StatusSeeOther {
+				t.Fatalf("status: got %d want 303", w.Code)
+			}
+			if d.calls != 0 {
+				t.Fatal("downstream reached on a rejected request")
+			}
+			if len(auditor.reasons) != 1 || auditor.reasons[0] != tc.wantReason {
+				t.Fatalf("deny-audit reasons = %v, want one %q", auditor.reasons, tc.wantReason)
+			}
+			if auditor.paths[0] != "/master/tenants" || auditor.hosts[0] != "master.crm.local" {
+				t.Fatalf("deny-audit payload = path %q host %q, want /master/tenants + master.crm.local",
+					auditor.paths[0], auditor.hosts[0])
+			}
+		})
+	}
+}
+
+// TestRequireMasterAuth_NilDeniedAuditor guards the back-compat path: a
+// nil DeniedAuditor must not panic on a rejection.
+func TestRequireMasterAuth_NilDeniedAuditor(t *testing.T) {
+	mw := mastermfa.RequireMasterAuth(mastermfa.RequireMasterAuthConfig{
+		Sessions: newFakeSessionStore(), Directory: newFakeDirectory(), Logger: silentLogger(),
+	})
+	w := httptest.NewRecorder()
+	mw(&downstreamHandler{}).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/master/tenants", nil))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status: got %d want 303", w.Code)
+	}
+}
+
 func TestRequireMasterAuth_UnparseableCookie_RedirectsToLogin(t *testing.T) {
 	store := newFakeSessionStore()
 	dir := newFakeDirectory()

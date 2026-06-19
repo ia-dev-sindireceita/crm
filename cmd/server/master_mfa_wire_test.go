@@ -133,10 +133,18 @@ func (d stubDirectory) EmailFor(_ context.Context, _ uuid.UUID) (string, error) 
 }
 
 // stubEnrollment satisfies mastermfa.EnrollmentReader. seed != nil means
-// "enrolled" so RequireMasterMFA lets the operator through.
-type stubEnrollment struct{ seed []byte }
+// "enrolled" so RequireMasterMFA lets the operator through. loadErr, when
+// non-nil, is returned instead of the seed (use mfa.ErrNotEnrolled to
+// simulate a first-time operator).
+type stubEnrollment struct {
+	seed    []byte
+	loadErr error
+}
 
 func (e stubEnrollment) LoadSeed(_ context.Context, _ uuid.UUID) ([]byte, error) {
+	if e.loadErr != nil {
+		return nil, e.loadErr
+	}
 	return e.seed, nil
 }
 
@@ -168,24 +176,45 @@ func newTestStack(sessions *stubMasterSessions, enrollment stubEnrollment, dir s
 	}
 }
 
+// masterWireTestHost is the fake MASTER_CONSOLE_HOST used in wire tests.
+// It must match the value passed to buildMasterDeps so the CSRF-6 Origin
+// gate (RequireMasterOriginCSRF) and the bridge (RequirePrincipalFromMaster)
+// accept requests from the test harness.
+const masterWireTestHost = "master.crm.local"
+
 // mountMaster boots a real router with the deps under test mounted on
 // the Master slot. IAM + TenantResolver are the in-package fakes already
-// used by the other cmd/server router tests.
+// used by the other cmd/server router tests. MasterHost must be set so
+// the CSRF-6 gate (RequireMasterOriginCSRF) accepts test POSTs; callers
+// set matching Host + Origin headers via mReq.
 func mountMaster(t *testing.T, deps httpapi.MasterDeps) http.Handler {
 	t.Helper()
 	return httpapi.NewRouter(httpapi.Deps{
 		IAM:            stubIAMService{},
 		TenantResolver: &stubMasterTenantResolver{},
+		MasterHost:     masterWireTestHost,
 		Master:         deps,
 	})
 }
+
+// mReq builds a request targeted at the master-console surface with the
+// Host and Origin headers the CSRF-6 gate requires.
+func mReq(method, path string, body io.Reader) *http.Request {
+	r := httptest.NewRequest(method, path, body)
+	r.Host = masterWireTestHost
+	r.Header.Set("Origin", "https://"+masterWireTestHost)
+	return r
+}
+
+// mPost is a convenience wrapper for POST requests.
+func mPost(path string, body io.Reader) *http.Request { return mReq(http.MethodPost, path, body) }
 
 // ---- tests ----------------------------------------------------------
 
 func TestBuildMasterDeps_NoopStackLeavesGroupUnmounted(t *testing.T) {
 	t.Parallel()
 
-	deps := buildMasterDeps(noopMasterMFAStack(), &recordingSplitLogger{}, slogTestLogger())
+	deps, _ := buildMasterDeps(noopMasterMFAStack(), &recordingSplitLogger{}, slogTestLogger(), "master.crm.local")
 	if deps.Login != nil {
 		t.Fatalf("noop stack must yield zero MasterDeps (Login nil), got non-nil")
 	}
@@ -202,7 +231,7 @@ func TestBuildMasterDeps_DenyByDefault_EnrollRedirectsToLogin(t *testing.T) {
 	t.Parallel()
 
 	stack := newTestStack(&stubMasterSessions{}, stubEnrollment{seed: []byte("seed")}, stubDirectory{email: "op@example.com"})
-	deps := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger())
+	deps, _ := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger(), "master.crm.local")
 	h := mountMaster(t, deps)
 
 	// No __Host-sess-master cookie → RequireMasterAuth must redirect.
@@ -213,6 +242,36 @@ func TestBuildMasterDeps_DenyByDefault_EnrollRedirectsToLogin(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/m/login") {
 		t.Fatalf("unauth GET /m/2fa/enroll: Location = %q, want /m/login*", loc)
+	}
+}
+
+// TestBuildMasterDeps_LoginEnrollmentNonNil is the CTO guardrail from
+// SIN-65264 (comment 22cda00b): the Login handler MUST have Enrollment
+// wired non-nil so a not-yet-enrolled master is routed to /m/2fa/enroll
+// instead of getting stuck at /m/2fa/verify with no seed. A nil Enrollment
+// silently falls back to always-verify — that is the old broken behaviour.
+func TestBuildMasterDeps_LoginEnrollmentNonNil(t *testing.T) {
+	t.Parallel()
+
+	stack := newTestStack(&stubMasterSessions{}, stubEnrollment{loadErr: mfa.ErrNotEnrolled}, stubDirectory{email: "op@example.com"})
+	stack.Login = func(_ context.Context, _, _, _ string, _ net.IP, _, _ string) (iam.Session, error) {
+		return iam.Session{UserID: uuid.New()}, nil
+	}
+	deps, _ := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger(), masterWireTestHost)
+	h := mountMaster(t, deps)
+
+	form := url.Values{"email": {"op@example.com"}, "password": {"hunter2"}}
+	req := mPost("/m/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("POST /m/login (not-enrolled): status = %d, want 303", w.Code)
+	}
+	// Not-enrolled → must route to /m/2fa/enroll, NOT /m/2fa/verify.
+	if loc := w.Header().Get("Location"); loc != "/m/2fa/enroll" {
+		t.Fatalf("not-enrolled login Location = %q, want /m/2fa/enroll (Enrollment wired non-nil)", loc)
 	}
 }
 
@@ -227,11 +286,11 @@ func TestBuildMasterDeps_LoginMintsCookieAndRedirectsToVerify(t *testing.T) {
 	stack.Login = func(_ context.Context, _, _, _ string, _ net.IP, _, _ string) (iam.Session, error) {
 		return iam.Session{UserID: userID}, nil
 	}
-	deps := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger())
+	deps, _ := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger(), "master.crm.local")
 	h := mountMaster(t, deps)
 
 	form := url.Values{"email": {"op@example.com"}, "password": {"hunter2"}}
-	req := httptest.NewRequest(http.MethodPost, "/m/login", strings.NewReader(form.Encode()))
+	req := mPost("/m/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -257,12 +316,12 @@ func TestBuildMasterDeps_LogoutAppendsMasterAudienceRow(t *testing.T) {
 	}
 	stack := newTestStack(sessions, stubEnrollment{seed: []byte("seed")}, stubDirectory{email: "op@example.com"})
 	rec := &recordingSplitLogger{}
-	deps := buildMasterDeps(stack, rec, slogTestLogger())
+	deps, _ := buildMasterDeps(stack, rec, slogTestLogger(), "master.crm.local")
 	h := mountMaster(t, deps)
 
 	// SIN-65232: /m/logout is POST-only (forced-logout CSRF fix), so the
 	// wire test drives it via POST.
-	req := httptest.NewRequest(http.MethodPost, "/m/logout", nil)
+	req := mPost("/m/logout", nil)
 	req.AddCookie(&http.Cookie{Name: "__Host-sess-master", Value: sessionID.String()})
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -314,7 +373,7 @@ func TestBuildMasterDeps_HardCapHitAuditsAndClearsCookie(t *testing.T) {
 	}
 	stack := newTestStack(sessions, stubEnrollment{seed: []byte("seed")}, stubDirectory{email: "op@example.com"})
 	rec := &recordingSplitLogger{}
-	deps := buildMasterDeps(stack, rec, slogTestLogger())
+	deps, _ := buildMasterDeps(stack, rec, slogTestLogger(), "master.crm.local")
 	h := mountMaster(t, deps)
 
 	// /m/2fa/verify is the cheapest route behind RequireMasterAuth (auth
@@ -377,7 +436,7 @@ func TestBuildMasterDeps_LogoutIsPostOnly(t *testing.T) {
 		session: mastermfa.Session{ID: sessionID, UserID: userID},
 	}
 	stack := newTestStack(sessions, stubEnrollment{seed: []byte("seed")}, stubDirectory{email: "op@example.com"})
-	deps := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger())
+	deps, _ := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger(), "master.crm.local")
 	h := mountMaster(t, deps)
 
 	req := httptest.NewRequest(http.MethodGet, "/m/logout", nil)
@@ -404,11 +463,11 @@ func TestBuildMasterDeps_AuthedVerifiedOperatorCanEnroll(t *testing.T) {
 		session: mastermfa.Session{ID: sessionID, UserID: userID, MFAVerifiedAt: &verifiedAt, ExpiresAt: time.Now().Add(time.Hour)},
 	}
 	stack := newTestStack(sessions, stubEnrollment{seed: []byte("seed")}, stubDirectory{email: "op@example.com"})
-	deps := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger())
+	deps, _ := buildMasterDeps(stack, &recordingSplitLogger{}, slogTestLogger(), "master.crm.local")
 	h := mountMaster(t, deps)
 
 	// POST because the enrol handler is POST-only (it mints fresh codes).
-	req := httptest.NewRequest(http.MethodPost, "/m/2fa/enroll", nil)
+	req := mPost("/m/2fa/enroll", nil)
 	req.AddCookie(&http.Cookie{Name: "__Host-sess-master", Value: sessionID.String()})
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

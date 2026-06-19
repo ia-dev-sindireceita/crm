@@ -356,6 +356,35 @@ func (l *masterSessionHardCapAuditor) LogHardCapHit(ctx context.Context, userID,
 	})
 }
 
+// masterAccessDeniedAuditor satisfies mastermfa.MasterAccessDeniedAuditor
+// (SIN-65269 R2) by routing every master-surface access-denied event into
+// audit_log_security as a SecurityEventAuthzDeny row. The port carries
+// only reason, path, and host — never a cookie or session value. ActorUserID
+// is uuid.Nil for pre-auth probes (the actor is unknown at the host-pin
+// and session-validation boundary; this matches the login_fail sentinel
+// pattern in audit.SplitLogger's documented contract).
+type masterAccessDeniedAuditor struct {
+	writer audit.SplitLogger
+}
+
+func newMasterAccessDeniedAuditor(writer audit.SplitLogger) *masterAccessDeniedAuditor {
+	return &masterAccessDeniedAuditor{writer: writer}
+}
+
+func (a *masterAccessDeniedAuditor) LogMasterAccessDenied(ctx context.Context, reason, path, host string) error {
+	return a.writer.WriteSecurity(ctx, audit.SecurityAuditEvent{
+		Event:       audit.SecurityEventAuthzDeny,
+		ActorUserID: uuid.Nil,
+		TenantID:    nil,
+		Target: map[string]any{
+			"audience": "master",
+			"reason":   reason,
+			"path":     path,
+			"host":     host,
+		},
+	})
+}
+
 // Compile-time assertions: each concrete adapter satisfies the mastermfa
 // (or mfa) port it is wired into. A future port-signature change surfaces
 // here at build time instead of at runtime on the first /m/* request.
@@ -381,4 +410,7 @@ var (
 
 	// SIN-65232: the hard-cap auditor satisfies the master-auth port.
 	_ mastermfa.MasterSessionAuditor = (*masterSessionHardCapAuditor)(nil)
+
+	// SIN-65269 R2: the access-denied auditor satisfies the MasterAccessDeniedAuditor port.
+	_ mastermfa.MasterAccessDeniedAuditor = (*masterAccessDeniedAuditor)(nil)
 )

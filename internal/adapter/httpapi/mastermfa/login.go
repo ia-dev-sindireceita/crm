@@ -16,6 +16,7 @@ import (
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam"
+	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
 
 // MasterLoginFunc is the slice of iam.Service.Login the master login
@@ -39,6 +40,17 @@ type LoginHandlerConfig struct {
 	Logger          *slog.Logger
 	VerifyPath      string
 	GenericErrorMsg string
+
+	// Enrollment, when non-nil, makes the post-login redirect
+	// enrollment-aware (SIN-65264 Bug 2c): a not-enrolled master is sent
+	// to EnrollPath instead of VerifyPath so the bootstrap is reachable.
+	// nil preserves the legacy always-VerifyPath behaviour. Production
+	// wires the mfa SeedReader; router tests may leave it nil.
+	Enrollment EnrollmentReader
+	// EnrollPath is the bootstrap destination for a not-enrolled master.
+	// Defaults to "/m/2fa/enroll" (ADR 0074 §3). Only consulted when
+	// Enrollment is non-nil.
+	EnrollPath string
 }
 
 // LoginHandler renders GET /m/login (form) and POST /m/login (submit).
@@ -101,6 +113,9 @@ func NewLoginHandler(cfg LoginHandlerConfig) *LoginHandler {
 	}
 	if cfg.VerifyPath == "" {
 		cfg.VerifyPath = "/m/2fa/verify"
+	}
+	if cfg.EnrollPath == "" {
+		cfg.EnrollPath = "/m/2fa/enroll"
 	}
 	if cfg.GenericErrorMsg == "" {
 		cfg.GenericErrorMsg = DefaultGenericLoginError
@@ -181,16 +196,41 @@ func (h *LoginHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 	w.Header().Set("Pragma", "no-cache")
 
-	target := ResolveReturn(r.URL.Query().Get("next"), h.cfg.VerifyPath)
+	// SIN-65264 Bug 2c — bootstrap entry. A first-time master has no TOTP
+	// seed: routing it straight to /m/2fa/verify (the legacy behaviour)
+	// dead-ends on a verify form it can never satisfy. When the
+	// enrollment reader is wired, a not-enrolled master is sent to the
+	// enroll bootstrap instead; an enrolled master still goes to verify.
+	// A nil Enrollment preserves the legacy always-verify path so router
+	// tests that don't wire it keep their behaviour. CTO decision
+	// 2026-06-19 (option A: route in login.go).
+	destPath := h.cfg.VerifyPath
+	if h.cfg.Enrollment != nil {
+		_, err := h.cfg.Enrollment.LoadSeed(r.Context(), sess.UserID)
+		if errors.Is(err, mfa.ErrNotEnrolled) {
+			destPath = h.cfg.EnrollPath
+		} else if err != nil {
+			// Storage failure: do NOT silently re-route. Fall back to
+			// verify (the RequireMasterMFA gate re-evaluates enrolment on
+			// the next protected hop with its own deny-by-default error
+			// handling) and log so a pg blip is visible.
+			h.cfg.Logger.ErrorContext(r.Context(), "mastermfa: login: enrolment read failed",
+				slog.String("user_id", sess.UserID.String()),
+				slog.String("err", err.Error()),
+			)
+		}
+	}
+
+	target := ResolveReturn(r.URL.Query().Get("next"), destPath)
 	// URL-encode the value (matching middleware.redirectWithReturn) so
 	// embedded query characters in the next path (e.g.
 	// /m/users?filter=active&page=2) survive the round trip — bare
 	// concat would let r.URL.Query().Get("return") on the verify side
 	// silently drop everything after the first '&'.
-	if target != h.cfg.VerifyPath {
+	if target != destPath {
 		q := url.Values{}
 		q.Set("return", target)
-		target = h.cfg.VerifyPath + "?" + q.Encode()
+		target = destPath + "?" + q.Encode()
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
 
