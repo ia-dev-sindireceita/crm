@@ -100,6 +100,12 @@ type MasterDeps struct {
 	Verify     http.Handler
 	Regenerate http.Handler
 
+	// EnrollStart renders GET /m/2fa/enroll — the server-rendered
+	// bootstrap start page (SIN-65264). Split from Enroll so the mint
+	// stays POST-only; nil falls back to mounting Enroll on GET too
+	// (legacy behaviour for wireups that predate the split).
+	EnrollStart http.Handler
+
 	// RequireMasterAuth gates every /m/* route except /m/login and
 	// /m/logout on a valid master session cookie.
 	RequireMasterAuth func(http.Handler) http.Handler
@@ -107,6 +113,15 @@ type MasterDeps struct {
 	// RequireMasterMFA gates all authed /m/* routes except
 	// /m/2fa/verify on an enrolled + at-least-once-verified TOTP.
 	RequireMasterMFA func(http.Handler) http.Handler
+
+	// RequirePrincipalFromMaster synthesizes an iam.Principal{RoleMaster}
+	// from the verified master session so the relocated /master/* operator
+	// handlers (which read iam.PrincipalFromContext) work on the master
+	// host without a tenant session (SIN-65264 Gap 3 bridge; SecEng C1-C6,
+	// SIN-65266). Composed after RequireMasterAuth + RequireMasterMFA on
+	// the master-host operator group. nil leaves the operator surface
+	// un-mounted (fail closed).
+	RequirePrincipalFromMaster func(http.Handler) http.Handler
 }
 
 // Deps is the constructor-injected dependency bag for NewRouter. cmd/server
@@ -200,8 +215,18 @@ type Deps struct {
 	// added to the CSRF Origin/Referer allowlist alongside the resolved
 	// tenant host (ADR 0073 §D1). Empty means "no master host configured"
 	// — the allowlist falls back to the tenant host alone, which is the
-	// minimum-viable safe value.
+	// minimum-viable safe value. It also pins the relocated /master/*
+	// operator surface (SIN-65264): the surface mounts only when MasterHost
+	// is set and is served exclusively on that host.
 	MasterHost string
+
+	// MasterAccessDeniedAuditor re-homes CA #2's deny-audit for the
+	// relocated /master/* surface (SIN-65269 R2): the router hands it to
+	// the MasterHostOnly host pin so an off-host probe (404) leaves an
+	// audit_log_security row. RequireMasterAuth's matching rejection-audit
+	// is wired separately on deps.Master.RequireMasterAuth in cmd/server.
+	// nil = no-op.
+	MasterAccessDeniedAuditor mastermfa.MasterAccessDeniedAuditor
 
 	// TrustedProxyMiddleware overrides the chimw.RealIP wrapper that
 	// NewRouter installs as the second middleware in the chain
@@ -1414,157 +1439,14 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/billing/dunning-banner", webInvoices)
 			}
 
-			// SIN-62882 — HTMX master/tenants UI (Fase 2.5 C9). Each
-			// of the three routes goes through RequireAuth (lifts
-			// session → Principal) and a per-route RequireAction gate
-			// using the master-* action constants added in SIN-62880.
-			// The Authorizer is the SIN-62765 AuditingAuthorizer, so a
-			// tenant-role user hitting /master/* receives a 403 and an
-			// audit_log_security row in one motion (CA #2). Per-route
-			// gating (rather than a single group middleware) is what
-			// gives master.tenant.create / master.subscription.
-			// assign_plan distinct audit rows.
-			if deps.Authorizer != nil {
-				if deps.MasterTenants.List != nil {
-					listH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantRead, nil)(deps.MasterTenants.List),
-					)
-					authed.Method(http.MethodGet, "/master/tenants", listH)
-				}
-				if deps.MasterTenants.Create != nil {
-					createH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantCreate, nil)(deps.MasterTenants.Create),
-					)
-					authed.Method(http.MethodPost, "/master/tenants", createH)
-				}
-				if deps.MasterTenants.AssignPlan != nil {
-					assignH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterSubscriptionAssignPlan, nil)(deps.MasterTenants.AssignPlan),
-					)
-					authed.Method(http.MethodPatch, "/master/tenants/{id}/plan", assignH)
-				}
-				// SIN-63956 — tenant detail page (spec §9.5). Same
-				// gating as the list page (ActionMasterTenantRead).
-				if deps.MasterTenants.Detail != nil {
-					detailH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantRead, nil)(deps.MasterTenants.Detail),
-					)
-					authed.Method(http.MethodGet, "/master/tenants/{id}", detailH)
-				}
-				// SIN-62884 — HTMX master/grants UI (Fase 2.5 C10).
-				// Same gating envelope as the tenants surface. The
-				// GET form gates on the free-period action (master-
-				// only, same RBAC band as the POST). The two POST
-				// routes are pre-wrapped with
-				// mastermfa.RequireRecentMFA at the wire layer so the
-				// router only needs to add RequireAction here. The
-				// audit row is written twice on a successful POST:
-				// once by RequireAction (the authorization event) and
-				// once by the C8 AuditedMasterGrantRepository
-				// decorator (the master.grant.issued business event)
-				// — see ADR-0098 §D3.
-				if deps.MasterTenants.GrantsNew != nil {
-					gNew := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, nil)(deps.MasterTenants.GrantsNew),
-					)
-					authed.Method(http.MethodGet, "/master/tenants/{id}/grants/new", gNew)
-				}
-				if deps.MasterTenants.GrantsCreate != nil {
-					gCreate := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, nil)(deps.MasterTenants.GrantsCreate),
-					)
-					authed.Method(http.MethodPost, "/master/tenants/{id}/grants", gCreate)
-				}
-				if deps.MasterTenants.GrantsRevoke != nil {
-					gRevoke := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyRevoke, nil)(deps.MasterTenants.GrantsRevoke),
-					)
-					authed.Method(http.MethodPost, "/master/grants/{id}/revoke", gRevoke)
-				}
-				// SIN-63605 — 4-eyes approval surface. Same gating
-				// envelope as the C10 grants routes: RequireAuth →
-				// RequireAction → handler. The wire layer wraps the
-				// POST verbs with mastermfa.RequireRecentMFA before
-				// installing them on the slot, mirroring the
-				// GrantsCreate/GrantsRevoke pattern.
-				if deps.MasterTenants.GrantRequestsCreate != nil {
-					grqCreate := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestCreate, nil)(deps.MasterTenants.GrantRequestsCreate),
-					)
-					authed.Method(http.MethodPost, "/master/tenants/{id}/grants/requests", grqCreate)
-				}
-				if deps.MasterTenants.GrantRequestsList != nil {
-					grqList := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsList),
-					)
-					authed.Method(http.MethodGet, "/master/grants/requests", grqList)
-				}
-				if deps.MasterTenants.GrantRequestsShow != nil {
-					grqShow := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsShow),
-					)
-					authed.Method(http.MethodGet, "/master/grants/requests/{id}", grqShow)
-				}
-				if deps.MasterTenants.GrantRequestsApprove != nil {
-					grqApprove := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsApprove),
-					)
-					authed.Method(http.MethodPost, "/master/grants/requests/{id}/approve", grqApprove)
-				}
-				if deps.MasterTenants.GrantRequestsReject != nil {
-					grqReject := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestReject, nil)(deps.MasterTenants.GrantRequestsReject),
-					)
-					authed.Method(http.MethodPost, "/master/grants/requests/{id}/reject", grqReject)
-				}
-
-				// SIN-63958 / master-impersonation-spec §1.4 — session-
-				// bound impersonation envelope. Three master routes
-				// with heterogeneous gating:
-				//
-				//   POST /master/tenants/{id}/impersonate
-				//     RequireAuth → RequireAction(ActionMasterTenantImpersonate)
-				//     → FromSession → handler. The FromSession wrapper
-				//     before the handler lets Start fire its audit row
-				//     with the freshly-minted envelope id already on
-				//     ctx for any inner authz event.
-				//
-				//   POST /master/impersonation/end
-				//     RequireAuth → RequireRoleMaster → handler. NO
-				//     FromSession wrapper so an expired or already-
-				//     ended envelope can still exit cleanly.
-				//
-				//   GET /master/impersonation/feed
-				//     RequireAuth → RequireRoleMaster → FromSession →
-				//     handler. The handler enforces the owner check
-				//     (master_user_id == principal.UserID).
-				if deps.Impersonation.Start != nil {
-					inner := deps.Impersonation.Start
-					if deps.Impersonation.FromSession != nil {
-						inner = deps.Impersonation.FromSession(inner)
-					}
-					startH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantImpersonate, nil)(inner),
-					)
-					authed.Method(http.MethodPost, "/master/tenants/{id}/impersonate", startH)
-				}
-				if deps.Impersonation.End != nil {
-					endH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireRoleMaster()(deps.Impersonation.End),
-					)
-					authed.Method(http.MethodPost, "/master/impersonation/end", endH)
-				}
-				if deps.Impersonation.Feed != nil {
-					inner := deps.Impersonation.Feed
-					if deps.Impersonation.FromSession != nil {
-						inner = deps.Impersonation.FromSession(inner)
-					}
-					feedH := middleware.RequireAuth(middleware.RequireAuthDeps{})(
-						middleware.RequireRoleMaster()(inner),
-					)
-					authed.Method(http.MethodGet, "/master/impersonation/feed", feedH)
-				}
-			}
+			// SIN-65264 — the /master/* operator surface was RELOCATED off
+			// this tenant-host authed group onto the master-console host
+			// (see the master-operator group below, mounted on r directly).
+			// A tenant session can no longer reach it: it is served only on
+			// MasterHost behind the master session + MFA + principal bridge.
+			// SecEng C2 (SIN-65266) requires removing this mount — chi is
+			// not host-aware, so leaving it here would double-register the
+			// /master/* paths and panic.
 		})
 	})
 
@@ -1572,6 +1454,21 @@ func NewRouter(deps Deps) http.Handler {
 	// existing tests and health-only mode are unaffected.
 	if deps.Master.Login != nil {
 		r.Route("/m", func(m chi.Router) {
+			// CSRF-6 (SIN-65269) — the master auth/bootstrap POSTs
+			// (/m/login, /m/logout, /m/2fa/verify, /m/2fa/enroll mint,
+			// /m/2fa/recovery/regenerate) had NO CSRF control. Front the
+			// whole /m/* group with the Option-B Origin/Referer gate so a
+			// forged same-site POST from a tenant subdomain is rejected
+			// (the master and tenant hosts share a registrable domain, so
+			// SameSite=Strict does not isolate them). Safe methods
+			// short-circuit inside the middleware, so GET /m/login and the
+			// GET 2FA pages are unaffected. Empty MasterHost fails closed
+			// (CSRF-3) — the operator console is unusable without
+			// MASTER_CONSOLE_HOST set, which is the intended posture.
+			m.Use(mastermfa.RequireMasterOriginCSRF(mastermfa.RequireMasterOriginCSRFConfig{
+				MasterHost: deps.MasterHost,
+				Logger:     deps.Logger,
+			}))
 			// Bootstrap routes — no session required.
 			m.Method(http.MethodGet, "/login", deps.Master.Login)
 			m.Method(http.MethodPost, "/login", deps.Master.Login)
@@ -1600,11 +1497,122 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Group(func(mfa chi.Router) {
 					mfa.Use(deps.Master.RequireMasterMFA)
 
-					mfa.Method(http.MethodGet, "/2fa/enroll", deps.Master.Enroll)
+					// GET start page (SIN-65264 Bug 2b): serve the
+					// enroll-start HTML (which posts to the mint endpoint).
+					// Falls back to Enroll if EnrollStart is not wired.
+					enrollStart := http.Handler(deps.Master.Enroll)
+					if deps.Master.EnrollStart != nil {
+						enrollStart = deps.Master.EnrollStart
+					}
+					mfa.Method(http.MethodGet, "/2fa/enroll", enrollStart)
 					mfa.Method(http.MethodPost, "/2fa/enroll", deps.Master.Enroll)
 					mfa.Method(http.MethodPost, "/2fa/recovery/regenerate", deps.Master.Regenerate)
 				})
 			})
+		})
+	}
+
+	// /master/* operator surface — master-session chain (SIN-65264 Leg 5b).
+	// Mounted directly on r (NOT inside tenanted) so no tenant session or
+	// TenantScope context is required. A tenant host receives 404 from
+	// MasterHostOnly before any auth or session logic runs (SecEng C2).
+	//
+	// Chain: MasterHostOnly → RequireMasterOriginCSRF → RequireMasterAuth →
+	// RequireMasterMFA → RequirePrincipalFromMaster → RequireAction → handler.
+	// RequireAuth is intentionally absent (SecEng C3: it 401s on a missing
+	// *tenant* session; the master principal is synthesised by the bridge).
+	//
+	// Gating: all five deps must be present. A missing Authorizer keeps the
+	// surface dark (deny-by-default; no un-audited action gate).
+	if deps.Master.Login != nil &&
+		deps.MasterHost != "" &&
+		deps.Master.RequireMasterAuth != nil &&
+		deps.Master.RequireMasterMFA != nil &&
+		deps.Master.RequirePrincipalFromMaster != nil &&
+		deps.Authorizer != nil {
+		r.Group(func(mo chi.Router) {
+			mo.Use(mastermfa.MasterHostOnly(deps.MasterHost, deps.Logger, deps.MasterAccessDeniedAuditor))
+			mo.Use(mastermfa.RequireMasterOriginCSRF(mastermfa.RequireMasterOriginCSRFConfig{
+				MasterHost: deps.MasterHost,
+				Logger:     deps.Logger,
+			}))
+			mo.Use(deps.Master.RequireMasterAuth)
+			mo.Use(deps.Master.RequireMasterMFA)
+			mo.Use(deps.Master.RequirePrincipalFromMaster)
+
+			// MasterTenants surface (SIN-62882).
+			if deps.MasterTenants.List != nil {
+				mo.Method(http.MethodGet, "/master/tenants",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantRead, nil)(deps.MasterTenants.List))
+			}
+			if deps.MasterTenants.Create != nil {
+				mo.Method(http.MethodPost, "/master/tenants",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantCreate, nil)(deps.MasterTenants.Create))
+			}
+			if deps.MasterTenants.AssignPlan != nil {
+				mo.Method(http.MethodPatch, "/master/tenants/{id}/plan",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterSubscriptionAssignPlan, nil)(deps.MasterTenants.AssignPlan))
+			}
+			if deps.MasterTenants.Detail != nil {
+				mo.Method(http.MethodGet, "/master/tenants/{id}",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantRead, nil)(deps.MasterTenants.Detail))
+			}
+			// Grants surface (SIN-62884).
+			if deps.MasterTenants.GrantsNew != nil {
+				mo.Method(http.MethodGet, "/master/tenants/{id}/grants/new",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, nil)(deps.MasterTenants.GrantsNew))
+			}
+			if deps.MasterTenants.GrantsCreate != nil {
+				mo.Method(http.MethodPost, "/master/tenants/{id}/grants",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, nil)(deps.MasterTenants.GrantsCreate))
+			}
+			if deps.MasterTenants.GrantsRevoke != nil {
+				mo.Method(http.MethodPost, "/master/grants/{id}/revoke",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyRevoke, nil)(deps.MasterTenants.GrantsRevoke))
+			}
+			// Grant-requests surface (SIN-63605).
+			if deps.MasterTenants.GrantRequestsCreate != nil {
+				mo.Method(http.MethodPost, "/master/tenants/{id}/grants/requests",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestCreate, nil)(deps.MasterTenants.GrantRequestsCreate))
+			}
+			if deps.MasterTenants.GrantRequestsList != nil {
+				mo.Method(http.MethodGet, "/master/grants/requests",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsList))
+			}
+			if deps.MasterTenants.GrantRequestsShow != nil {
+				mo.Method(http.MethodGet, "/master/grants/requests/{id}",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsShow))
+			}
+			if deps.MasterTenants.GrantRequestsApprove != nil {
+				mo.Method(http.MethodPost, "/master/grants/requests/{id}/approve",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsApprove))
+			}
+			if deps.MasterTenants.GrantRequestsReject != nil {
+				mo.Method(http.MethodPost, "/master/grants/requests/{id}/reject",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestReject, nil)(deps.MasterTenants.GrantRequestsReject))
+			}
+			// Impersonation surface (SIN-63958). RequireRoleMaster instead
+			// of RequireAction for End/Feed (see original mount comment).
+			if deps.Impersonation.Start != nil {
+				inner := deps.Impersonation.Start
+				if deps.Impersonation.FromSession != nil {
+					inner = deps.Impersonation.FromSession(inner)
+				}
+				mo.Method(http.MethodPost, "/master/tenants/{id}/impersonate",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantImpersonate, nil)(inner))
+			}
+			if deps.Impersonation.End != nil {
+				mo.Method(http.MethodPost, "/master/impersonation/end",
+					middleware.RequireRoleMaster()(deps.Impersonation.End))
+			}
+			if deps.Impersonation.Feed != nil {
+				inner := deps.Impersonation.Feed
+				if deps.Impersonation.FromSession != nil {
+					inner = deps.Impersonation.FromSession(inner)
+				}
+				mo.Method(http.MethodGet, "/master/impersonation/feed",
+					middleware.RequireRoleMaster()(inner))
+			}
 		})
 	}
 

@@ -570,7 +570,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	// and router.go leaves /m/* unmounted, the same fail-soft contract as
 	// the surfaces above.
 	masterMFA := buildMasterMFAStack(ctx, masterOpsPool, masterLoginFn, logoutAudit, getenv)
-	masterDeps := buildMasterDeps(masterMFA, logoutAudit, logger)
+	masterDeps, masterDeniedAuditor := buildMasterDeps(masterMFA, logoutAudit, logger, masterConsoleHost(getenv))
 
 	routerDeps := httpapi.Deps{
 		IAM:            iamSvc,
@@ -602,30 +602,31 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		// MASTERMFA_SEED_KEY / MASTER_OPS_ACTOR_ID unset), so router.go
 		// leaves the /m/* group unmounted in that case (deps.Master.Login
 		// nil → 404), exactly as before this child landed.
-		Master:              masterDeps,
-		WebContacts:         opts.WebContacts,
-		WebFunnel:           opts.WebFunnel,
-		WebPrivacy:          opts.WebPrivacy,
-		WebAIPolicy:         opts.WebAIPolicy,
-		WebCatalog:          opts.WebCatalog,
-		WebCampaigns:        opts.WebCampaigns,
-		WebFunnelRules:      opts.WebFunnelRules,
-		WebCampaignPublic:   webCampaignPublic,
-		WebChat:             webChat,
-		WebBranding:         opts.WebBranding,
-		WebLGPD:             lgpdRoutes,
-		WebPublicPrivacy:    opts.WebPublicPrivacy,
-		WebConsent:          opts.WebConsent,
-		WebBillingInvoices:  opts.WebBillingInvoices,
-		WebInbox:            opts.WebInbox,
-		WebDashboard:        opts.WebDashboard,
-		WebWallet:           opts.WebWallet,
-		Theme:               opts.Theme,
-		Metrics:             opts.Metrics,
-		UserMFA:             userMFARoutes,
-		CustomDomainEnabled: opts.CustomDomainEnabled,
-		Impersonation:       impersonationRoutes,
-		MasterTenants:       masterTenantsRoutes,
+		Master:                    masterDeps,
+		MasterAccessDeniedAuditor: masterDeniedAuditor,
+		WebContacts:               opts.WebContacts,
+		WebFunnel:                 opts.WebFunnel,
+		WebPrivacy:                opts.WebPrivacy,
+		WebAIPolicy:               opts.WebAIPolicy,
+		WebCatalog:                opts.WebCatalog,
+		WebCampaigns:              opts.WebCampaigns,
+		WebFunnelRules:            opts.WebFunnelRules,
+		WebCampaignPublic:         webCampaignPublic,
+		WebChat:                   webChat,
+		WebBranding:               opts.WebBranding,
+		WebLGPD:                   lgpdRoutes,
+		WebPublicPrivacy:          opts.WebPublicPrivacy,
+		WebConsent:                opts.WebConsent,
+		WebBillingInvoices:        opts.WebBillingInvoices,
+		WebInbox:                  opts.WebInbox,
+		WebDashboard:              opts.WebDashboard,
+		WebWallet:                 opts.WebWallet,
+		Theme:                     opts.Theme,
+		Metrics:                   opts.Metrics,
+		UserMFA:                   userMFARoutes,
+		CustomDomainEnabled:       opts.CustomDomainEnabled,
+		Impersonation:             impersonationRoutes,
+		MasterTenants:             masterTenantsRoutes,
 	}
 
 	// SIN-64985 — publish the web-surface mounted/not map (booleans only)
