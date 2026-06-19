@@ -1,6 +1,7 @@
 package mastermfa_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -125,6 +126,21 @@ func TestRequirePrincipalFromMaster_NoMaster_401_NoSynthesis(t *testing.T) {
 
 // --- MasterHostOnly outer gate ---
 
+// recordingDeniedAuditor captures master-access-denied emissions for the
+// SIN-65269 R2 (re-homed CA #2 deny-audit) regression assertions.
+type recordingDeniedAuditor struct {
+	reasons []string
+	paths   []string
+	hosts   []string
+}
+
+func (a *recordingDeniedAuditor) LogMasterAccessDenied(_ context.Context, reason, path, host string) error {
+	a.reasons = append(a.reasons, reason)
+	a.paths = append(a.paths, path)
+	a.hosts = append(a.hosts, host)
+	return nil
+}
+
 func TestMasterHostOnly(t *testing.T) {
 	reached := false
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true })
@@ -143,7 +159,8 @@ func TestMasterHostOnly(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reached = false
-			mw := mastermfa.MasterHostOnly(tc.masterHost, nil)
+			auditor := &recordingDeniedAuditor{}
+			mw := mastermfa.MasterHostOnly(tc.masterHost, nil, auditor)
 			r := httptest.NewRequest(http.MethodGet, "/master/tenants", nil)
 			r.Host = tc.reqHost
 			w := httptest.NewRecorder()
@@ -152,11 +169,35 @@ func TestMasterHostOnly(t *testing.T) {
 				if w.Code != http.StatusNotFound || reached {
 					t.Fatalf("want 404 + not reached: code=%d reached=%v", w.Code, reached)
 				}
+				// R2: the host-pin 404 path MUST emit one off_host
+				// deny-audit carrying the path + source host (never a cookie).
+				if len(auditor.reasons) != 1 || auditor.reasons[0] != mastermfa.MasterDeniedReasonOffHost {
+					t.Fatalf("want one off_host deny-audit, got %v", auditor.reasons)
+				}
+				if auditor.paths[0] != "/master/tenants" || auditor.hosts[0] != tc.reqHost {
+					t.Fatalf("audit row payload = path %q host %q, want /master/tenants + %q", auditor.paths[0], auditor.hosts[0], tc.reqHost)
+				}
 			} else {
 				if !reached {
 					t.Fatalf("want reached on matching host: code=%d", w.Code)
 				}
+				if len(auditor.reasons) != 0 {
+					t.Fatalf("on-host request must not emit a deny-audit, got %v", auditor.reasons)
+				}
 			}
 		})
+	}
+}
+
+// TestMasterHostOnly_NilAuditor is the back-compat guard: a nil auditor
+// must be a no-op, not a panic.
+func TestMasterHostOnly_NilAuditor(t *testing.T) {
+	mw := mastermfa.MasterHostOnly(testMasterHost, nil, nil)
+	r := httptest.NewRequest(http.MethodGet, "/master/tenants", nil)
+	r.Host = "acme.crm.local"
+	w := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", w.Code)
 	}
 }

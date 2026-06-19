@@ -37,7 +37,7 @@ func normalizeHost(h string) string {
 //
 // 404 (not 403/redirect) is deliberate: it does not confirm the route
 // exists to a caller on the wrong host.
-func MasterHostOnly(masterHost string, logger *slog.Logger) func(http.Handler) http.Handler {
+func MasterHostOnly(masterHost string, logger *slog.Logger, auditor MasterAccessDeniedAuditor) func(http.Handler) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -52,6 +52,11 @@ func MasterHostOnly(masterHost string, logger *slog.Logger) func(http.Handler) h
 					slog.String("event", "master_host_pin_reject"),
 					slog.String("route", r.URL.Path),
 				)
+				// SIN-65269 R2 — re-home CA #2's deny-audit: a probe of
+				// the master surface on the wrong host is a high-signal
+				// security event (the surface includes impersonate). Emit
+				// the source host + path only (never a cookie).
+				auditMasterAccessDenied(r.Context(), auditor, MasterDeniedReasonOffHost, r.URL.Path, r.Host)
 				http.NotFound(w, r)
 				return
 			}
