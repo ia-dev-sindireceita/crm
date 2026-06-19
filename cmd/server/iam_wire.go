@@ -572,6 +572,12 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	masterMFA := buildMasterMFAStack(ctx, masterOpsPool, masterLoginFn, logoutAudit, getenv)
 	masterDeps, masterDeniedAuditor := buildMasterDeps(masterMFA, logoutAudit, logger, masterConsoleHost(getenv))
 
+	// SIN-65277 — master CSRF rejection counter, registered on the shared
+	// Prometheus registry the /metrics endpoint scrapes. The CounterVec is
+	// discarded here (the gate only needs the OnReject closure); it stays
+	// reachable through the registry for scraping.
+	_, masterCSRFOnReject := newMasterCSRFRejectMetric(prometheus.DefaultRegisterer)
+
 	routerDeps := httpapi.Deps{
 		IAM:            iamSvc,
 		TenantResolver: tenants,
@@ -604,29 +610,35 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		// nil → 404), exactly as before this child landed.
 		Master:                    masterDeps,
 		MasterAccessDeniedAuditor: masterDeniedAuditor,
-		WebContacts:               opts.WebContacts,
-		WebFunnel:                 opts.WebFunnel,
-		WebPrivacy:                opts.WebPrivacy,
-		WebAIPolicy:               opts.WebAIPolicy,
-		WebCatalog:                opts.WebCatalog,
-		WebCampaigns:              opts.WebCampaigns,
-		WebFunnelRules:            opts.WebFunnelRules,
-		WebCampaignPublic:         webCampaignPublic,
-		WebChat:                   webChat,
-		WebBranding:               opts.WebBranding,
-		WebLGPD:                   lgpdRoutes,
-		WebPublicPrivacy:          opts.WebPublicPrivacy,
-		WebConsent:                opts.WebConsent,
-		WebBillingInvoices:        opts.WebBillingInvoices,
-		WebInbox:                  opts.WebInbox,
-		WebDashboard:              opts.WebDashboard,
-		WebWallet:                 opts.WebWallet,
-		Theme:                     opts.Theme,
-		Metrics:                   opts.Metrics,
-		UserMFA:                   userMFARoutes,
-		CustomDomainEnabled:       opts.CustomDomainEnabled,
-		Impersonation:             impersonationRoutes,
-		MasterTenants:             masterTenantsRoutes,
+		// SIN-65277 — count RequireMasterOriginCSRF rejections by reason on
+		// the shared registry so the existing /metrics scrape exposes
+		// master_csrf_rejected_total{reason} alongside authz_decisions_total
+		// et al. Previously the gate's OnReject hook was nil, so CSRF
+		// rejections were logged but never counted.
+		MasterCSRFOnReject:  masterCSRFOnReject,
+		WebContacts:         opts.WebContacts,
+		WebFunnel:           opts.WebFunnel,
+		WebPrivacy:          opts.WebPrivacy,
+		WebAIPolicy:         opts.WebAIPolicy,
+		WebCatalog:          opts.WebCatalog,
+		WebCampaigns:        opts.WebCampaigns,
+		WebFunnelRules:      opts.WebFunnelRules,
+		WebCampaignPublic:   webCampaignPublic,
+		WebChat:             webChat,
+		WebBranding:         opts.WebBranding,
+		WebLGPD:             lgpdRoutes,
+		WebPublicPrivacy:    opts.WebPublicPrivacy,
+		WebConsent:          opts.WebConsent,
+		WebBillingInvoices:  opts.WebBillingInvoices,
+		WebInbox:            opts.WebInbox,
+		WebDashboard:        opts.WebDashboard,
+		WebWallet:           opts.WebWallet,
+		Theme:               opts.Theme,
+		Metrics:             opts.Metrics,
+		UserMFA:             userMFARoutes,
+		CustomDomainEnabled: opts.CustomDomainEnabled,
+		Impersonation:       impersonationRoutes,
+		MasterTenants:       masterTenantsRoutes,
 	}
 
 	// SIN-64985 — publish the web-surface mounted/not map (booleans only)
