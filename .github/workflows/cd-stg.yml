@@ -574,11 +574,15 @@ jobs:
           bash scripts/ci/stg-smoke-inbox.sh
 
       # SIN-64032 — master-tenants surface smoke gate. cmd/server/master_tenants_wire.go
-      # (noopMasterTenantsStack, lines 99-103) silently mounts a 404 stack when
-      # MASTER_OPS_ACTOR_ID is unset, so /master/tenants returns 404 instead of the
-      # auth-gate 302 and the deploy still closes green. This step fails the job red
-      # when the surface is unmounted, naming the env var + runbook so a disaster-
-      # recovery rebuild that drops the line is caught here, not by an operator.
+      # (buildMasterTenantsStack) silently returns a 404 noop stack when ANY of
+      # three boot pre-conditions fail, checked in this order: (1) MASTER_OPS_DATABASE_URL
+      # is set; (2) MASTER_OPS_ACTOR_ID is set AND a valid UUID; (3) the master-ops
+      # pgxpool actually connects to that DSN. Any miss → /master/tenants returns 404
+      # instead of the auth-gate 302 and the deploy still closes green. This step fails
+      # the job red when the surface is unmounted, naming all three pre-conditions +
+      # runbook so a disaster-recovery rebuild that drops one is caught here, not by an
+      # operator burning a deploy cycle (SIN-65286: the old message blamed only the
+      # ACTOR_ID, sending operators down a partial fix).
       # Unauthenticated request: the auth gate must redirect (302) to a login page.
       # No new secrets — reuses STG_SMOKE_URL like the /login + /inbox smokes.
       - name: smoke check /master/tenants
@@ -599,7 +603,7 @@ jobs:
                 return 0
                 ;;
               404)
-                echo "::error::SIN-64032 regression — /master/tenants returned 404 (master surface unmounted). Root cause: MASTER_OPS_ACTOR_ID missing from /opt/crm/stg/.env.stg. Remediation: add the line per docs/deploy/staging.md §4 and re-run cd-stg."
+                echo "::error::SIN-64032 regression — /master/tenants returned 404 (master surface unmounted). buildMasterTenantsStack (cmd/server/master_tenants_wire.go) returns a 404 noop stack if ANY of three boot pre-conditions fail, in this order: (1) MASTER_OPS_DATABASE_URL set; (2) MASTER_OPS_ACTOR_ID set AND a valid UUID; (3) the master-ops pgxpool actually connects to that DSN. Adding only MASTER_OPS_ACTOR_ID is NOT enough — the DSN must also be present AND authenticate (the app_master_ops role is created WITHOUT a password by migrations/0001_roles.up.sql, so the DSN fails to connect until you ALTER ROLE ... PASSWORD). The runner cannot read the container boot log; on the VPS check it for 'master tenants surface disabled' (which pre-condition) or 'master pg connect' (DSN auth/connect failed). Remediation: docs/deploy/staging.md §4 covers all three (MASTER_OPS_DATABASE_URL + MASTER_OPS_ACTOR_ID + app_master_ops password), then re-run cd-stg."
                 return 1
                 ;;
               *)
@@ -618,5 +622,5 @@ jobs:
             echo "master-tenants smoke attempt ${attempt} failed, retrying…"
             sleep 5
           done
-          echo "master-tenants smoke FAILED — see docs/deploy/staging.md §4 (MASTER_OPS_ACTOR_ID)"
+          echo "master-tenants smoke FAILED — see docs/deploy/staging.md §4 (all three: MASTER_OPS_DATABASE_URL + MASTER_OPS_ACTOR_ID + app_master_ops password)"
           exit 1
