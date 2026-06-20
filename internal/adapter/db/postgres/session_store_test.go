@@ -44,6 +44,7 @@ func freshDBWithIAM(t *testing.T) *testpg.DB {
 		"0077_session_activity.up.sql",
 		"0083_split_audit_log.up.sql",
 		"0087_master_session.up.sql",
+		"0098_ai_policy_ai_summary_product_argument.up.sql",
 		"0111_sessions_csrf_token.up.sql",
 		"0112_user_mfa.up.sql",
 		"0116_master_impersonation_session.up.sql",
