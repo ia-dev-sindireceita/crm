@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/mastermfa"
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -62,6 +63,89 @@ func TestRequirePrincipalFromMaster_OnHost_SynthesizesRoleMaster(t *testing.T) {
 	}
 	if d.p.MasterImpersonating {
 		t.Errorf("principal MasterImpersonating must be false on the direct operator surface")
+	}
+}
+
+// SIN-65321 — alongside the principal, RequirePrincipalFromMaster must also
+// seed an iam.Session via middleware.WithSession so the downstream
+// ImpersonationFromSession middleware does not 503 "impersonation requires
+// session" for an authenticated master operator. The synthesized session
+// carries UserID=master.ID, Role=RoleMaster, TenantID=Nil and a zero ID/expiry
+// (it is NOT a persisted session — the impersonation envelope keys off the
+// master cookie, not iam.Session.ID).
+func TestRequirePrincipalFromMaster_OnHost_SynthesizesSession(t *testing.T) {
+	mw := mastermfa.RequirePrincipalFromMaster(mastermfa.RequirePrincipalFromMasterConfig{MasterHost: testMasterHost})
+	var (
+		reached bool
+		sess    iam.Session
+		hadSess bool
+	)
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		reached = true
+		sess, hadSess = middleware.SessionFromContext(r.Context())
+	})
+	r, uid := masterReq(testMasterHost, "/master/tenants", true)
+	w := httptest.NewRecorder()
+	mw(next).ServeHTTP(w, r)
+
+	if !reached {
+		t.Fatalf("downstream not reached on master host with valid master")
+	}
+	if !hadSess {
+		t.Fatalf("no session synthesized — ImpersonationFromSession would 503")
+	}
+	if sess.UserID != uid {
+		t.Errorf("session UserID: got %v want %v", sess.UserID, uid)
+	}
+	if sess.Role != iam.RoleMaster {
+		t.Errorf("session Role: got %q want %q", sess.Role, iam.RoleMaster)
+	}
+	if sess.TenantID != uuid.Nil {
+		t.Errorf("session carries a TenantID (%v) — must be zero (C4, no tenant-scope leak)", sess.TenantID)
+	}
+	if sess.ID != uuid.Nil {
+		t.Errorf("session ID must be zero (not a persisted session), got %v", sess.ID)
+	}
+	if !sess.ExpiresAt.IsZero() {
+		t.Errorf("session ExpiresAt must be zero (not a persisted session), got %v", sess.ExpiresAt)
+	}
+}
+
+// SIN-65321 — fail-closed paths must NOT seed a session. Off-host (host-pin
+// 404) and master-miss (401) both short-circuit before synthesis, so no
+// iam.Session may leak onto the context.
+func TestRequirePrincipalFromMaster_FailClosed_NoSession(t *testing.T) {
+	cases := []struct {
+		name       string
+		reqHost    string
+		withMaster bool
+		wantCode   int
+	}{
+		{"off host", "acme.crm.local", true, http.StatusNotFound},
+		{"no master", testMasterHost, false, http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mw := mastermfa.RequirePrincipalFromMaster(mastermfa.RequirePrincipalFromMasterConfig{MasterHost: testMasterHost})
+			reached := false
+			hadSess := false
+			next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				reached = true
+				_, hadSess = middleware.SessionFromContext(r.Context())
+			})
+			r, _ := masterReq(tc.reqHost, "/master/tenants", tc.withMaster)
+			w := httptest.NewRecorder()
+			mw(next).ServeHTTP(w, r)
+			if w.Code != tc.wantCode {
+				t.Fatalf("status: got %d want %d", w.Code, tc.wantCode)
+			}
+			if reached {
+				t.Fatalf("handler reached on fail-closed path")
+			}
+			if hadSess {
+				t.Fatalf("session leaked onto context on fail-closed path")
+			}
+		})
 	}
 }
 
