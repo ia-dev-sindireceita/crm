@@ -88,6 +88,18 @@ type AssignConversationUseCase interface {
 	Execute(ctx context.Context, in inboxusecase.AssignConversationInput) (inboxusecase.AssignConversationResult, error)
 }
 
+// ResetConversationUseCase is the write-side port for the fakellm
+// training-conversation reset (SIN-65392): it deletes the conversation's
+// messages and clears the channel adapter's in-memory state. It is
+// optional on Deps — when nil the reset route is not registered and the
+// "Apagar mensagens" button is not rendered, so deployments without the
+// fake channel keep the read/send-only surface. The use case itself
+// rejects any non-fakellm conversation, so the route stays at the
+// ordinary inbox role level (the channel guard, not RBAC, confines it).
+type ResetConversationUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.ResetConversationInput) (inboxusecase.ResetConversationResult, error)
+}
+
 // AssignableRow is the web-local projection of inbox.AssignableAttendant.
 // Kept here (instead of importing the domain root) because the
 // forbidwebboundary lint forbids web/* from importing internal/inbox
@@ -167,6 +179,14 @@ type Deps struct {
 	// tenant's eligible attendants and passes them to the context panel so
 	// the dropdown is pre-populated; when nil the form is not rendered.
 	ListAssignable ListAssignableUseCase
+	// ResetConversation is the optional write-side for the fakellm
+	// training-conversation reset (SIN-65392). When wired, POST
+	// /inbox/conversations/{id}/reset is registered and the conversation
+	// view renders the "Apagar mensagens" button for fakellm threads; when
+	// nil the route is absent and the button never renders. The use case
+	// rejects any non-fakellm conversation, so the reach is confined to
+	// the synthetic training thread regardless of caller role.
+	ResetConversation ResetConversationUseCase
 }
 
 // CustomerInfoLoader is the read-side port that hydrates the customer
@@ -257,6 +277,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	}
 	if h.deps.AssignConversation != nil {
 		mux.HandleFunc("POST /inbox/conversations/{id}/assign", h.assign)
+	}
+	if h.deps.ResetConversation != nil {
+		mux.HandleFunc("POST /inbox/conversations/{id}/reset", h.reset)
 	}
 }
 
@@ -628,6 +651,11 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		CSRFInput:      csrf.FormHidden(token),
 		CustomerPanel:  customerHTML,
 		Context:        contextPanel,
+		// Show the destructive "Apagar mensagens" action only for the
+		// fakellm training thread and only when the reset use case is
+		// wired (SIN-65392). Both conditions resolve server-side so the
+		// button is absent — not merely hidden — on real conversations.
+		ShowReset: h.deps.ResetConversation != nil && channel == inboxusecase.TrainingChannel,
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render view", "err", err)
 		return
@@ -834,6 +862,58 @@ func (h *Handler) assign(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// reset handles POST /inbox/conversations/{id}/reset (SIN-65392). It
+// deletes every message of a fakellm training conversation and clears the
+// channel adapter's in-memory state, then returns the now-empty thread
+// partial so HTMX swaps it in place (hx-target="#conversation-thread",
+// hx-swap="outerHTML").
+//
+// Security: the underlying use case rejects any conversation whose
+// channel is not the fakellm training channel with
+// ErrConversationNotResettable, which the handler maps to 404 — identical
+// to the unknown-conversation response — so the endpoint leaks no signal
+// about real customer conversations. A missing/RLS-hidden id is likewise
+// 404. The operation is idempotent: resetting an already-empty thread
+// returns 200 with the empty partial.
+//
+// CSRF: the request rides the same protections as POST .../messages — the
+// chi stack applies the CSRF middleware to the whole /inbox subtree and
+// the form carries the hidden token field — so no extra check is needed
+// here.
+func (h *Handler) reset(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.deps.ResetConversation.Execute(r.Context(), inboxusecase.ResetConversationInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+	}); err != nil {
+		switch {
+		case errors.Is(err, inboxusecase.ErrNotFound),
+			errors.Is(err, inboxusecase.ErrConversationNotResettable):
+			// Both collapse to 404 so the endpoint never confirms the
+			// existence of a non-training conversation.
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		default:
+			h.fail(w, http.StatusInternalServerError, "reset conversation", err)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Render the thread template with no messages → an empty
+	// <ol id="conversation-thread"> that HTMX swaps in via outerHTML.
+	if err := conversationThreadTmpl.Execute(w, nil); err != nil {
+		h.deps.Logger.Error("web/inbox: render empty thread", "err", err)
+	}
+}
+
 // buildAssignPanel assembles the contextPanelData subset the assignment
 // partial needs. It calls ListAssignable (when wired) to populate the
 // dropdown and resolves the new assignee's display name from the list.
@@ -984,6 +1064,12 @@ type viewData struct {
 	Messages       []inboxusecase.MessageView
 	CSRFInput      template.HTML
 	CustomerPanel  template.HTML
+	// ShowReset gates the destructive "Apagar mensagens" button
+	// (SIN-65392). It is true only for the fakellm training channel with
+	// the reset use case wired; the template renders the button solely on
+	// this flag so the destructive action is structurally absent from
+	// every real conversation.
+	ShowReset bool
 	// Context drives the conversation context side panel (SIN-64970):
 	// contact identity, channel, funnel stage, and assignment state. Its
 	// zero value (HasContext=false) renders the panel's degraded

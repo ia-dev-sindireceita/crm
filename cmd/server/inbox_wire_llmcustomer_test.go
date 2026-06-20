@@ -615,6 +615,26 @@ func (r *inMemoryInboxRepo) UpdateMessage(_ context.Context, m *inbox.Message) e
 	return nil
 }
 
+// DeleteMessagesByConversation satisfies the inbox.Repository extension
+// from SIN-65392 so this wire-test fake still implements the port. It
+// removes the conversation's messages and resets LastMessageAt, matching
+// the Postgres adapter's behaviour.
+func (r *inMemoryInboxRepo) DeleteMessagesByConversation(_ context.Context, tenantID, conversationID uuid.UUID) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	deleted := 0
+	for id, m := range r.messages {
+		if m.TenantID == tenantID && m.ConversationID == conversationID {
+			delete(r.messages, id)
+			deleted++
+		}
+	}
+	if conv, ok := r.conversations[conversationID]; ok && conv.TenantID == tenantID {
+		conv.LastMessageAt = time.Time{}
+	}
+	return deleted, nil
+}
+
 func (r *inMemoryInboxRepo) FindMessageByChannelExternalID(_ context.Context, tenantID uuid.UUID, channel, channelExternalID string) (*inbox.Message, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

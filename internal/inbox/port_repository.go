@@ -93,6 +93,22 @@ type Repository interface {
 	// not distinguish those modes to avoid leaking cross-tenant existence
 	// signals.
 	GetMessage(ctx context.Context, tenantID, conversationID, messageID uuid.UUID) (*Message, error)
+
+	// DeleteMessagesByConversation hard-deletes every message row of the
+	// conversation under the tenant scope and returns the number of rows
+	// removed. It is tenant-scoped: the adapter MUST pin both the tenant
+	// GUC (RLS) and an explicit tenant_id predicate so a delete can never
+	// reach across tenants. Deleting a conversation that has no messages
+	// (or does not exist under the tenant) is a no-op that returns
+	// (0, nil) — the operation is idempotent.
+	//
+	// This is the storage half of the fakellm training-conversation reset
+	// (SIN-65392): the caller (usecase.ResetConversation) gates the call
+	// on conversation.Channel == "fakellm" BEFORE invoking it, so the
+	// blast radius is confined to the synthetic training thread by
+	// construction. The adapter itself stays channel-agnostic — it deletes
+	// exactly the rows it is told to, nothing more.
+	DeleteMessagesByConversation(ctx context.Context, tenantID, conversationID uuid.UUID) (int, error)
 }
 
 // InboundDedupRepository is the global idempotency ledger backing the

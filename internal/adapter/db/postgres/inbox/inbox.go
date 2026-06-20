@@ -608,6 +608,64 @@ func (s *Store) GetMessage(ctx context.Context, tenantID, conversationID, messag
 	return m, nil
 }
 
+// DeleteMessagesByConversation hard-deletes every message row of the
+// conversation under the tenant scope and returns the count removed.
+// Both the delete and the conversation-pointer reset run in the SAME
+// tenant-scoped transaction so a crash between them cannot leave the
+// inbox list pointing at a now-deleted last message.
+//
+// Tenant scope is belt-and-suspenders: WithTenant pins the app.tenant_id
+// GUC (so RLS filters the message + conversation tables) AND the DELETE
+// carries an explicit `tenant_id = $2` predicate, so even a future RLS
+// misconfiguration cannot widen the blast radius beyond the caller's
+// tenant.
+//
+// last_message_at handling: once the thread is empty the conversation's
+// pointer is set back to NULL so the inbox list falls back to ordering by
+// created_at and the "awaiting reply" / snippet projection (which reads
+// the latest message) degrades cleanly to the empty state. The row stays
+// open — reset wipes the messages, not the conversation — so the operator
+// can immediately compose a fresh training turn.
+//
+// Idempotent: deleting an empty or RLS-hidden conversation affects zero
+// rows and returns (0, nil).
+func (s *Store) DeleteMessagesByConversation(ctx context.Context, tenantID, conversationID uuid.UUID) (int, error) {
+	if tenantID == uuid.Nil {
+		return 0, fmt.Errorf("inbox/postgres: DeleteMessagesByConversation: tenant id is nil")
+	}
+	if conversationID == uuid.Nil {
+		return 0, nil
+	}
+	var deleted int64
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx, `
+			DELETE FROM message
+			 WHERE conversation_id = $1
+			   AND tenant_id = $2
+		`, conversationID, tenantID)
+		if err != nil {
+			return fmt.Errorf("delete messages: %w", err)
+		}
+		deleted = ct.RowsAffected()
+		// Reset the parent pointer so the empty thread sorts and projects
+		// as "no messages yet". Scoped by tenant_id for the same
+		// defense-in-depth reason as the delete above.
+		if _, err := tx.Exec(ctx, `
+			UPDATE conversation
+			   SET last_message_at = NULL
+			 WHERE id = $1
+			   AND tenant_id = $2
+		`, conversationID, tenantID); err != nil {
+			return fmt.Errorf("reset conversation pointer: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("inbox/postgres: DeleteMessagesByConversation: %w", err)
+	}
+	return int(deleted), nil
+}
+
 // Claim is the dedup-ledger half: insert the (channel, channelExternalID)
 // row, translating a UNIQUE violation to ErrInboundAlreadyProcessed.
 // NOT tenant-scoped — the receiver runs before tenant context exists.

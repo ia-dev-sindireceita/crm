@@ -502,13 +502,19 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
   <header class="conversation__header">
     <h1 class="conversation__title">Conversa</h1>
     {{template "channel_badge" .Channel}}
+    {{- if .ShowReset}}
+    <form class="conversation__reset"
+          hx-post="/inbox/conversations/{{.ConversationID}}/reset"
+          hx-target="#conversation-thread"
+          hx-swap="outerHTML"
+          hx-confirm="Apagar todas as mensagens desta conversa de treino? Isso não pode ser desfeito.">
+      {{.CSRFInput}}
+      <button type="submit" class="conversation__reset-submit" data-testid="conversation-reset">Apagar mensagens</button>
+    </form>
+    {{- end}}
   </header>
   {{template "conversation_context" .Context}}
-  <ol id="conversation-thread" class="conversation__thread" role="list">
-    {{range .Messages}}
-      {{template "message_bubble" .}}
-    {{end}}
-  </ol>
+  {{template "conversation_thread" .Messages}}
   <form class="conversation__compose"
         hx-post="/inbox/conversations/{{.ConversationID}}/messages"
         hx-target="#conversation-thread"
@@ -791,6 +797,21 @@ var messageBubbleTmpl = template.Must(template.New("message_bubble").Funcs(templ
 </li>
 `))
 
+// conversationThreadTmpl renders the message thread container — the
+// <ol id="conversation-thread"> that holds the message_bubble list. It is
+// the shared swap unit for the whole thread: the conversation view embeds
+// it ({{template "conversation_thread" .Messages}}), and the reset
+// handler (SIN-65392) executes it standalone with no messages to replace
+// the thread with its empty state (hx-target="#conversation-thread",
+// hx-swap="outerHTML"). The dot is the []MessageView slice; nil/empty
+// renders an empty <ol> so a reset leaves a clean, still-valid thread the
+// operator can immediately compose into.
+var conversationThreadTmpl = template.Must(template.New("conversation_thread").Funcs(templateFuncs).Parse(`<ol id="conversation-thread" class="conversation__thread" role="list">
+    {{- range .}}
+      {{template "message_bubble" .}}
+    {{- end}}
+</ol>`))
+
 // composeTextareaTmpl is the single source of truth for the outbound
 // compose <textarea>. It renders in two places that MUST stay identical:
 //
@@ -815,7 +836,7 @@ func init() {
 	// {{template "conversation_list" …}} and so on with one template
 	// tree. Errors here are programmer errors (typos in the template
 	// source) — surface them at process start, not at request time.
-	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
+	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
 		if _, err := inboxLayoutTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + ": " + err.Error())
 		}
@@ -828,9 +849,17 @@ func init() {
 			panic("inbox/web: register " + child.Name() + " in list region: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl, composeTextareaTmpl} {
+	for _, child := range []*template.Template{conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl, composeTextareaTmpl} {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
+		}
+	}
+	// conversationThreadTmpl is executed standalone by the reset handler
+	// (POST .../reset returns the empty thread), so it needs message_bubble
+	// on its own tree.
+	for _, child := range []*template.Template{messageBubbleTmpl} {
+		if _, err := conversationThreadTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
+			panic("inbox/web: register " + child.Name() + " in thread: " + err.Error())
 		}
 	}
 	for _, child := range []*template.Template{channelBadgeTmpl, conversationAssignmentTmpl} {
@@ -855,6 +884,7 @@ func init() {
 	// goroutine init) makes all subsequent concurrent executions read-only.
 	for _, t := range []*template.Template{
 		messageBubbleTmpl,
+		conversationThreadTmpl,
 		composeTextareaTmpl,
 		conversationListTmpl,
 		inboxFiltersTmpl,
