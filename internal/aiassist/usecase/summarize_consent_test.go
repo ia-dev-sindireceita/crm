@@ -93,6 +93,12 @@ func (a *fakeAnonymizer) Anonymize(_ context.Context, in string) (string, error)
 }
 
 func defaultGatePolicy() aiassist.Policy {
+	// ConsentRequired:true is the precondition for the gate to fire at
+	// all after SIN-65363 (the gate is opt-in by config, off by
+	// default). Every test using this fixture asserts the gate fires,
+	// so the fixture carries the flag; the assertions themselves are
+	// unchanged. The off-by-default path is covered by the dedicated
+	// table-driven test in summarize_consent_flag_test.go.
 	return aiassist.Policy{
 		AIEnabled:       true,
 		OptIn:           true,
@@ -100,6 +106,7 @@ func defaultGatePolicy() aiassist.Policy {
 		Model:           "google/gemini-2.0-flash",
 		MaxOutputTokens: 256,
 		PromptVersion:   "prompt-v1",
+		ConsentRequired: true,
 	}
 }
 

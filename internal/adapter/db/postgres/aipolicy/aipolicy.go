@@ -70,7 +70,7 @@ func (s *Store) Get(ctx context.Context, tenantID uuid.UUID, scopeType domain.Sc
 			SELECT tenant_id, scope_type, scope_id,
 			       model, prompt_version, tone, language,
 			       ai_enabled, anonymize, opt_in, structured_fields,
-			       created_at, updated_at
+			       consent_required, created_at, updated_at
 			  FROM ai_policy
 			 WHERE scope_type = $1
 			   AND scope_id   = $2
@@ -89,6 +89,7 @@ func (s *Store) Get(ctx context.Context, tenantID uuid.UUID, scopeType domain.Sc
 			&policy.Anonymize,
 			&policy.OptIn,
 			&fields,
+			&policy.ConsentRequired,
 			&policy.CreatedAt,
 			&policy.UpdatedAt,
 		); err != nil {
@@ -137,8 +138,9 @@ func (s *Store) Upsert(ctx context.Context, p domain.Policy) error {
 			INSERT INTO ai_policy
 			  (tenant_id, scope_type, scope_id,
 			   model, prompt_version, tone, language,
-			   ai_enabled, anonymize, opt_in, structured_fields)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			   ai_enabled, anonymize, opt_in, structured_fields,
+			   consent_required)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 			ON CONFLICT (tenant_id, scope_type, scope_id)
 			DO UPDATE SET
 			   model             = EXCLUDED.model,
@@ -149,6 +151,7 @@ func (s *Store) Upsert(ctx context.Context, p domain.Policy) error {
 			   anonymize         = EXCLUDED.anonymize,
 			   opt_in            = EXCLUDED.opt_in,
 			   structured_fields = EXCLUDED.structured_fields,
+			   consent_required  = EXCLUDED.consent_required,
 			   updated_at        = now()
 		`,
 			p.TenantID,
@@ -162,6 +165,7 @@ func (s *Store) Upsert(ctx context.Context, p domain.Policy) error {
 			p.Anonymize,
 			p.OptIn,
 			fields,
+			p.ConsentRequired,
 		)
 		if err != nil {
 			return fmt.Errorf("aipolicy/postgres: Upsert: %w", err)
@@ -185,7 +189,7 @@ func (s *Store) List(ctx context.Context, tenantID uuid.UUID) ([]domain.Policy, 
 			SELECT tenant_id, scope_type, scope_id,
 			       model, prompt_version, tone, language,
 			       ai_enabled, anonymize, opt_in, structured_fields,
-			       created_at, updated_at
+			       consent_required, created_at, updated_at
 			  FROM ai_policy
 			 ORDER BY scope_type, scope_id
 		`)
@@ -209,6 +213,7 @@ func (s *Store) List(ctx context.Context, tenantID uuid.UUID) ([]domain.Policy, 
 				&p.Anonymize,
 				&p.OptIn,
 				&fields,
+				&p.ConsentRequired,
 				&p.CreatedAt,
 				&p.UpdatedAt,
 			); err != nil {

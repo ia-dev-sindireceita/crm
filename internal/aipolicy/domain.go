@@ -86,6 +86,16 @@ type Policy struct {
 	// are always sent and do not appear in this slice.
 	StructuredFields []string
 
+	// ConsentRequired toggles the LGPD per-prompt consent gate for this
+	// policy scope (SIN-65363). Persisted in migration 0123 as
+	// ai_policy.consent_required BOOLEAN NOT NULL DEFAULT false. The
+	// zero value (false) keeps the consent modal OFF — the documented,
+	// backward-compatible default decided by the board (SIN-65356).
+	// Cascades with the rest of the row: the first matching scope wins
+	// in full, so a channel row's consent_required overrides the
+	// tenant row exactly like every other field.
+	ConsentRequired bool
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

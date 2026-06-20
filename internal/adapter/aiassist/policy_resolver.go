@@ -87,5 +87,6 @@ func (r *PolicyResolver) Resolve(ctx context.Context, tenantID uuid.UUID, scope 
 		MaxOutputTokens:  0,
 		PromptVersion:    pol.PromptVersion,
 		StructuredFields: pol.StructuredFields,
+		ConsentRequired:  pol.ConsentRequired,
 	}, nil
 }

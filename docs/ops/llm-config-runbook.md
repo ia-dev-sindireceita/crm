@@ -94,5 +94,61 @@ next boot. Zero migrations, fully reversible.
   (`RequireAction(iam.ActionTenantInboxRead)` + tenant scope + CSRF) —
   same gate as the rest of `/inbox`.
 - The LGPD consent gate (anonymizer + per-tenant consent) is wired into
-  the production Summarizer, so the first AI-assist call for a tenant
-  surfaces the consent modal before any prompt reaches OpenRouter.
+  the production Summarizer but is **OFF by default** (SIN-65363, board
+  decision SIN-65356). With `ai_policy.consent_required = false` (the
+  column default) the first "Resumir" click dispatches straight through
+  — no consent modal. The PII anonymizer (`ai_policy.anonymize`) and the
+  LGPD field catalogue still run regardless; only the explicit
+  per-prompt consent modal is gated by the flag.
+
+## LGPD consent gate (opt-in by config — SIN-65363)
+
+The consent modal is opt-in per tenant. The effective firing condition
+is `consent_required = true` **AND** the consent deps are wired **AND**
+`prompt_version != ''`.
+
+**To ENABLE the consent gate for a tenant** (operator / DBA action,
+run against the target DB with the tenant's RLS context or the admin
+pool):
+
+```sql
+UPDATE ai_policy
+   SET consent_required = true
+ WHERE tenant_id = '<tenant-uuid>'
+   AND scope_type = 'tenant'
+   AND scope_id   = '<tenant-uuid>';
+-- (channel/team scopes override the tenant row in the cascade, exactly
+--  like every other ai_policy field.)
+```
+
+**To DISABLE** (the default): set `consent_required = false`. No restart
+needed — the resolver reads the column per request.
+
+> ⚠️ **Do NOT set `consent_required = true` in production yet.** Turning
+> the gate on today exposes the consent modal, whose route is not yet
+> mounted and which is broken under the strict CSP. Wait for the opt-in
+> completeness sister issue (tracked under parent SIN-65356) to close
+> before enabling in prod.
+
+### Staging workaround revert (SIN-65285 → SIN-65363)
+
+SIN-65285 disabled the gate on staging with a **data hack**:
+`UPDATE ai_policy SET prompt_version='' WHERE scope=acme`. That hack is
+no longer needed — the gate is now off by the `consent_required=false`
+default. After the 0123 migration is deployed to staging, restore the
+acme row's real prompt version (the seed value is `v1`):
+
+```sql
+UPDATE ai_policy
+   SET prompt_version = 'v1'
+ WHERE tenant_id = '00000000-0000-0000-0000-00000000ac01'
+   AND scope_type = 'tenant'
+   AND scope_id   = '00000000-0000-0000-0000-00000000ac01';
+```
+
+This is safe because the gate stays OFF via `consent_required=false`
+(default) regardless of `prompt_version`. `migrations/seed/stg.sql`
+already encodes `prompt_version='v1'` for acme, so a fresh re-seed
+restores the correct value automatically; the UPDATE above is only for
+an already-seeded staging DB that still carries the empty-string hack.
+Record the restored value in the deploy smoke comment.

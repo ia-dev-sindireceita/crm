@@ -109,6 +109,36 @@ func TestPolicyResolver_EmptyScopeBecomesNilPointers(t *testing.T) {
 	}
 }
 
+// TestPolicyResolver_TranslatesConsentRequired pins the SIN-65363
+// mapping: the aipolicy row's ConsentRequired flag must surface on the
+// aiassist.Policy the summarize use case consumes. Both true and false
+// are checked so the off-by-default zero value cannot silently strand
+// at the seam.
+func TestPolicyResolver_TranslatesConsentRequired(t *testing.T) {
+	t.Parallel()
+	for _, want := range []bool{false, true} {
+		want := want
+		t.Run(map[bool]string{false: "off", true: "on"}[want], func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeResolver{
+				policy: aipolicy.Policy{ConsentRequired: want},
+				source: aipolicy.SourceTenant,
+			}
+			bridge, err := NewPolicyResolver(fake)
+			if err != nil {
+				t.Fatalf("NewPolicyResolver: %v", err)
+			}
+			got, err := bridge.Resolve(context.Background(), uuid.New(), aiassist.Scope{})
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if got.ConsentRequired != want {
+				t.Fatalf("ConsentRequired = %v; want %v", got.ConsentRequired, want)
+			}
+		})
+	}
+}
+
 func TestPolicyResolver_PropagatesError(t *testing.T) {
 	t.Parallel()
 	sentinel := errors.New("resolve boom")

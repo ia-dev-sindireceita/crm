@@ -144,6 +144,21 @@ type Policy struct {
 	// case re-asserts the invariant with a typed sentinel
 	// (ErrLGPDBlocked) for defence in depth.
 	StructuredFields []string
+
+	// ConsentRequired gates whether the LGPD consent flow runs at all
+	// (SIN-65363). It is opt-in by configuration: the zero value
+	// (false) means the consent modal is NOT shown — the first
+	// "Resumir" click dispatches straight through. A tenant that wants
+	// the consent gate sets consent_required=true on its ai_policy row.
+	//
+	// This is a product decision (Pericles, SIN-65356): LGPD consent is
+	// optional-by-config, NOT a security weakening. The real PII defence
+	// — the anonymizer (Anonymize) plus the LGPD field catalogue — is
+	// unaffected by this flag; only the explicit per-prompt consent
+	// modal is. checkConsent keeps its deps-wired and PromptVersion!=""
+	// guards as defence in depth, so the effective condition is
+	// "ConsentRequired && depsWired && PromptVersion != ''".
+	ConsentRequired bool
 }
 
 // PolicyResolver is the port the use case calls to pick the effective
