@@ -345,6 +345,16 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	webInboxHandler, webInboxCleanup := buildInboxHandler(ctx, getenv)
 	defer webInboxCleanup()
 
+	// SIN-65364 — LGPD consent accept/cancel endpoints behind the inbox
+	// AI-assist gate. The consent modal (rendered by the inbox handler
+	// via aipanel.RenderConsentModal) POSTs here; without the mount,
+	// confirming the modal 404'd and the operator was stuck. Same
+	// fail-soft pattern: a nil handler leaves /aipanel/* unmounted when
+	// DATABASE_URL is unset. Passes the shared boot metrics so
+	// ai_consent_total reaches /metrics.
+	webAIPanelHandler, webAIPanelCleanup := buildAIPanelHandler(ctx, getenv, metrics)
+	defer webAIPanelCleanup()
+
 	// SIN-63942 / UX-F5 — gerente wallet UI. The wire owns its own
 	// pgxpool and returns nil when DATABASE_URL is unset, leaving the
 	// /wallet* routes unmounted. Same fail-soft pattern as the rest of
@@ -377,6 +387,7 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		WebConsent:         webConsentHandler,
 		WebBillingInvoices: webBillingInvoicesHandler,
 		WebInbox:           webInboxHandler,
+		WebAIPanel:         webAIPanelHandler,
 		WebDashboard:       webDashboardHandler,
 		WebWallet:          webWalletHandler,
 		Theme:              brandingStack.Theme,
