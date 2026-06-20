@@ -511,12 +511,16 @@ jobs:
             cat /tmp/login.body
             exit 1
           fi
-          if ! grep -q "Set-Cookie: __Host-sess-tenant" /tmp/login.headers; then
+          # Match Set-Cookie case-insensitively: staging serves HTTP/2, so
+          # response headers arrive lowercased (`set-cookie:`). A case-sensitive
+          # grep false-fails a successful login (SIN-63858, run 26724483191).
+          # The Location grep below is already -qi for the same reason.
+          if ! grep -qi "Set-Cookie: __Host-sess-tenant" /tmp/login.headers; then
             echo "::error::missing __Host-sess-tenant cookie"
             cat /tmp/login.headers
             exit 1
           fi
-          if ! grep -q "Set-Cookie: __Host-csrf" /tmp/login.headers; then
+          if ! grep -qi "Set-Cookie: __Host-csrf" /tmp/login.headers; then
             echo "::error::missing __Host-csrf cookie"
             cat /tmp/login.headers
             exit 1
