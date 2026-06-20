@@ -95,21 +95,8 @@ jobs:
           # SHA (i.e. `docker compose pull` was skipped on the VPS).
           build-args: |
             COMMIT_SHA=${{ github.event.workflow_run.head_sha }}
-          # SIN-64984 — ONE-SHOT cold rebuild. The registry buildcache poisoned
-          # a deploy: the image created 2026-06-17T01:05:51 was labelled
-          # commit_sha=ffef1045 (its source registers GET /settings/ai-policy on
-          # the authed chi group, proven ancestor + router test green) yet the
-          # running binary served every authed neighbour (/funnel /catalog
-          # /settings/privacy → 302) and only /settings/ai-policy → 404. A binary
-          # missing one same-commit route while serving its siblings can only be
-          # compiled from stale COPY layers — i.e. cache-from replayed a stale
-          # `COPY internal` despite the content hash differing. no-cache forces a
-          # cold compile so the deployed binary matches its commit label.
-          # cache-to is intentionally KEPT so this run REPOPULATES :buildcache
-          # with fresh layers; the follow-up revert (restoring cache-from) then
-          # gets correct inline caching again. Revert after staging re-probe
-          # confirms /settings/ai-policy → 302.
-          no-cache: true
+          # Inline cache keeps successive runs ~3 min faster than cold builds,
+          # which is what makes AC #2 (≤ 8 min wall) feasible on the standard runner.
           cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
           provenance: false
