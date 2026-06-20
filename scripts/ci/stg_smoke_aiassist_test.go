@@ -130,8 +130,17 @@ func newAIAssistFake(t *testing.T, opts aiassistFakeOptions) string {
 				status = http.StatusOK
 			}
 			if status != http.StatusOK {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(status)
-				_, _ = w.Write([]byte("error"))
+				// The policy-off path returns the graceful banner with a
+				// non-200 (403) status by design; emit AssistBody so the
+				// smoke can scan it. Fall back to a bare "error" body for
+				// the genuine-fault cases (5xx, marker-less 403).
+				body := opts.AssistBody
+				if body == "" {
+					body = "error"
+				}
+				_, _ = w.Write([]byte(body))
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -290,5 +299,51 @@ func TestAIAssistSmoke_FailAssist404IsRouteGap(t *testing.T) {
 	}
 	if !strings.Contains(out, "stage=route") {
 		t.Fatalf("output missing stage=route failure on 404\n%s", out)
+	}
+}
+
+// TestAIAssistSmoke_PolicyBanner403 is the deny-by-default staging state:
+// no ai_policy row → AIEnabled=false → the handler returns the policy
+// banner with HTTP 403 (ai_assist.go StatusForbidden, pinned by
+// ai_assist_test.go). The smoke must treat that as a graceful PASS, not a
+// CSRF/authz hard-fail (SIN-65285: the original 403)→die branch
+// false-failed real staging even though the deploy was wired correctly).
+func TestAIAssistSmoke_PolicyBanner403(t *testing.T) {
+	t.Parallel()
+	base := newAIAssistFake(t, aiassistFakeOptions{
+		HealthProvider: "llmcustomer",
+		ButtonState:    "enabled",
+		AssistStatus:   http.StatusForbidden,
+		AssistBody:     `<div class="ai-assist__banner ai-assist__banner--policy">IA desabilitada neste canal.</div>`,
+	})
+	out, code := runAIAssistSmoke(t, base)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d want 0 (403 + policy banner is graceful)\n%s", code, out)
+	}
+	if !strings.Contains(out, "PASS (wired; precondition banner") {
+		t.Fatalf("output missing graceful-banner PASS on 403\n%s", out)
+	}
+	if !strings.Contains(out, "on HTTP 403") {
+		t.Fatalf("output should record the observed 403 status\n%s", out)
+	}
+}
+
+// TestAIAssistSmoke_FailAssist403NoBanner pins that a 403 WITHOUT a known
+// graceful marker is still a real CSRF/Origin/role rejection and must
+// hard-fail — the fix accepts policy-off, not every 403.
+func TestAIAssistSmoke_FailAssist403NoBanner(t *testing.T) {
+	t.Parallel()
+	base := newAIAssistFake(t, aiassistFakeOptions{
+		HealthProvider: "llmcustomer",
+		ButtonState:    "enabled",
+		AssistStatus:   http.StatusForbidden,
+		AssistBody:     `<h1>Forbidden</h1>`,
+	})
+	out, code := runAIAssistSmoke(t, base)
+	if code == 0 {
+		t.Fatalf("smoke exit=0 want non-zero on marker-less 403\n%s", out)
+	}
+	if !strings.Contains(out, "stage=assist: /ai-assist 403 with no graceful banner") {
+		t.Fatalf("output missing marker-less 403 hard-fail\n%s", out)
 	}
 }
