@@ -563,12 +563,20 @@ func TestSend_NoUserIDPropagatesNilSentBy(t *testing.T) {
 
 // Status endpoint tests (SIN-62736 / ADR 0095). The realtime polling
 // loop on the message bubble polls this endpoint every 3 seconds while
-// the message is in a non-final state. The handler returns 304 when
+// the message is in a non-final state. The handler returns 204 when
 // the caller's ?currentStatus query matches the persisted status (so
 // HTMX leaves the bubble untouched), or 200 + a freshly rendered
 // bubble when the status changed.
 
-func TestStatus_Returns304WhenStatusUnchanged(t *testing.T) {
+// TestStatus_Returns204WhenStatusUnchanged pins the no-change response to
+// 204 No Content. The handler historically returned 304 here, but htmx
+// 2.x's default responseHandling maps the "[23].." code range (which
+// includes 304) to swap:true, so a 304 with an empty body was swapped
+// into the bubble's hx-swap="outerHTML" target and DELETED the outbound
+// bubble (SIN-65389/SIN-65393). 204 is the only status htmx treats as an
+// explicit no-swap. See TestStatus_NoChangePollDoesNotDeleteBubble for the
+// regression that captures the user-visible symptom.
+func TestStatus_Returns204WhenStatusUnchanged(t *testing.T) {
 	t.Parallel()
 	tenant := uuid.New()
 	convID := uuid.New()
@@ -589,17 +597,87 @@ func TestStatus_Returns304WhenStatusUnchanged(t *testing.T) {
 	target := "/inbox/conversations/" + convID.String() + "/messages/" + msgID.String() + "/status?currentStatus=delivered"
 	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, target, "", tenant))
 
-	if rec.Code != http.StatusNotModified {
-		t.Fatalf("status: got %d want 304; body=%q", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d want 204; body=%q", rec.Code, rec.Body.String())
 	}
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control: got %q want no-store", cc)
 	}
 	if rec.Body.Len() != 0 {
-		t.Errorf("304 should have empty body, got %q", rec.Body.String())
+		t.Errorf("204 should have empty body, got %q", rec.Body.String())
 	}
 	if get.in.TenantID != tenant || get.in.ConversationID != convID || get.in.MessageID != msgID {
 		t.Fatalf("use-case args: %+v", get.in)
+	}
+}
+
+// TestStatus_NoChangePollDoesNotDeleteBubble is the SIN-65393 regression:
+// an outbound, non-final message that is freshly opened polls its status
+// every 3s. On the first poll the persisted status has not changed yet, so
+// the handler must NOT return a response that htmx's outerHTML swap would
+// treat as "replace the <li> with this (empty) body" — that is exactly how
+// outbound bubbles were vanishing ~1s after a conversation opened.
+//
+// We assert the contract at the seam htmx depends on: the no-change poll
+// returns 204 (htmx swap:false → DOM untouched) with an empty body, while a
+// real status change returns a complete <li> bubble that still carries the
+// poll attrs (so the bubble is replaced, never deleted, and keeps polling).
+func TestStatus_NoChangePollDoesNotDeleteBubble(t *testing.T) {
+	t.Parallel()
+	tenant := uuid.New()
+	convID := uuid.New()
+	msgID := uuid.New()
+
+	newHandler := func(status string) (*http.ServeMux, *stubGetMessage) {
+		get := &stubGetMessage{res: inboxusecase.GetMessageResult{Message: inboxusecase.MessageView{
+			ID:             msgID,
+			ConversationID: convID,
+			Direction:      "out",
+			Body:           "olá",
+			Status:         status,
+			CreatedAt:      time.Now(),
+		}}}
+		h := newHandlerWithGet(t, &stubLister{}, &stubMessages{}, &stubSender{}, get)
+		mux := http.NewServeMux()
+		h.Routes(mux)
+		return mux, get
+	}
+
+	base := "/inbox/conversations/" + convID.String() + "/messages/" + msgID.String() + "/status"
+
+	// 1) No-change poll: client thinks "sent", server still "sent".
+	//    MUST be 204 (no swap), never a swap-eligible code with empty body.
+	mux, _ := newHandler("sent")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, reqWithTenant(http.MethodGet, base+"?currentStatus=sent", "", tenant))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("no-change poll: got %d want 204; an htmx outerHTML swap on any 2xx/3xx empty body deletes the bubble", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("no-change poll: body must be empty, got %q", rec.Body.String())
+	}
+
+	// 2) Status-change poll: client thinks "sent", server now "delivered".
+	//    MUST be a complete <li> bubble that is still polling — the swap
+	//    replaces the node, it never removes it.
+	mux2, _ := newHandler("delivered")
+	rec2 := httptest.NewRecorder()
+	mux2.ServeHTTP(rec2, reqWithTenant(http.MethodGet, base+"?currentStatus=sent", "", tenant))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("status-change poll: got %d want 200; body=%q", rec2.Code, rec2.Body.String())
+	}
+	body := rec2.Body.String()
+	for _, want := range []string{
+		`<li id="msg-` + msgID.String() + `"`,
+		`data-status="delivered"`,
+		`>olá<`,
+		`hx-trigger="every 3s"`,
+		`hx-swap="outerHTML"`,
+		`</li>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("status-change bubble missing %q\nbody=%s", want, body)
+		}
 	}
 }
 
