@@ -96,4 +96,27 @@ ON CONFLICT (id) DO NOTHING;
 -- fixtures are not exercised in staging; add them only if a future
 -- test demands the negative case.
 
+-- SIN-65285: enable AI-assist for the acme tenant in staging so the
+-- LLM/OpenRouter round-trip is exercisable without a manual gerente
+-- toggle. Tenant-level row (scope_type='tenant', scope_id=tenant UUID
+-- as text — matches the resolver's ScopeTenant cascade branch).
+-- model defaults to openrouter/auto; OPENROUTER_MODEL env overrides
+-- the runtime model so this row does not pin a specific model string.
+-- Idempotent: ON CONFLICT DO UPDATE so re-running `make seed-stg`
+-- after a DB reset refreshes the row safely.
+INSERT INTO ai_policy (id, tenant_id, scope_type, scope_id, ai_enabled, model, anonymize, opt_in)
+VALUES (
+  '00000000-0000-0000-0000-00000065ac01',
+  '00000000-0000-0000-0000-00000000ac01',
+  'tenant',
+  '00000000-0000-0000-0000-00000000ac01',
+  true,
+  'openrouter/auto',
+  false,
+  false
+)
+ON CONFLICT (tenant_id, scope_type, scope_id) DO UPDATE
+  SET ai_enabled = true,
+      updated_at = now();
+
 COMMIT;
