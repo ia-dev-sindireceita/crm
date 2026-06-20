@@ -104,19 +104,33 @@ ON CONFLICT (id) DO NOTHING;
 -- the runtime model so this row does not pin a specific model string.
 -- Idempotent: ON CONFLICT DO UPDATE so re-running `make seed-stg`
 -- after a DB reset refreshes the row safely.
-INSERT INTO ai_policy (id, tenant_id, scope_type, scope_id, ai_enabled, model, anonymize, opt_in)
-VALUES (
-  '00000000-0000-0000-0000-00000065ac01',
-  '00000000-0000-0000-0000-00000000ac01',
-  'tenant',
-  '00000000-0000-0000-0000-00000000ac01',
-  true,
-  'openrouter/auto',
-  false,
-  false
-)
-ON CONFLICT (tenant_id, scope_type, scope_id) DO UPDATE
-  SET ai_enabled = true,
-      updated_at = now();
+--
+-- Wrapped in a DO block that skips gracefully when the ai_policy table
+-- does not yet exist (minimal integration-test DBs may not run migration
+-- 0098 which also creates ai_summary — a table with an FK to
+-- conversation that many test harnesses omit). Real staging always has
+-- the table.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'ai_policy'
+  ) THEN
+    INSERT INTO ai_policy (id, tenant_id, scope_type, scope_id, ai_enabled, model, anonymize, opt_in)
+    VALUES (
+      '00000000-0000-0000-0000-00000065ac01',
+      '00000000-0000-0000-0000-00000000ac01',
+      'tenant',
+      '00000000-0000-0000-0000-00000000ac01',
+      true,
+      'openrouter/auto',
+      false,
+      false
+    )
+    ON CONFLICT (tenant_id, scope_type, scope_id) DO UPDATE
+      SET ai_enabled = true,
+          updated_at = now();
+  END IF;
+END $$;
 
 COMMIT;
