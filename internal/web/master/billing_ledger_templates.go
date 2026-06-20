@@ -197,6 +197,7 @@ var billingLayoutTmpl = template.Must(template.New("billing.layout").Funcs(billi
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/js/impersonation-countdown.js" defer></script>
 </head>
 <body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
   {{template "shell_impersonation_banner" .}}
@@ -345,6 +346,7 @@ var ledgerLayoutTmpl = template.Must(template.New("ledger.layout").Funcs(billing
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/js/impersonation-countdown.js" defer></script>
 </head>
 <body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
   {{template "shell_impersonation_banner" .}}

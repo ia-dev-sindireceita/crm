@@ -114,6 +114,7 @@ var grantsLayoutTmpl = template.Must(template.New("grants.layout").Funcs(grantsT
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
   <script src="/static/js/master-grants.js" defer></script>
+  <script src="/static/js/impersonation-countdown.js" defer></script>
 </head>
 <body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
   {{template "shell_impersonation_banner" .}}
