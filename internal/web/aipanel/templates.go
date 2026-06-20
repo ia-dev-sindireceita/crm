@@ -90,10 +90,15 @@ func shortHash(full string) string {
 //     ARIA dialog pattern.
 //   - autofocus on the Confirmar button puts the keyboard focus on the
 //     primary action when the modal swaps in.
-//   - The Cancelar button carries hx-trigger="click, keyup[key=='Escape']
-//     from:body" so pressing ESC anywhere on the page dismisses the
-//     modal (the from:body filter ensures the trigger fires regardless
-//     of the currently-focused element).
+//   - The Cancelar button fires on plain click only. It deliberately
+//     does NOT carry an htmx event filter such as
+//     keyup[key=='Escape'] — htmx compiles bracketed event filters with
+//     new Function(), which throws EvalError under the production strict
+//     CSP (script-src 'self' 'nonce-…', no 'unsafe-eval'; see memory
+//     reference_crm_csp_hx_on_evalerror / SIN-65067-68). ESC-to-dismiss
+//     is dropped rather than reintroduce a client-side eval; the modal
+//     still closes via the Cancelar button (and the accept/cancel both
+//     swap the dialog out via outerHTML).
 //
 // Both buttons use type="button" so the modal swap is not accidentally
 // submitted as the parent compose form (the inbox view nests the modal
@@ -145,7 +150,6 @@ var consentModalTmpl = template.Must(template.New("consent_modal").Funcs(templat
               hx-post="/aipanel/consent/cancel"
               hx-target="#ai-consent-modal"
               hx-swap="outerHTML"
-              hx-trigger="click, keyup[key=='Escape'] from:body"
               hx-include="closest .ai-consent-modal__form--cancel">Cancelar</button>
     </div>
   </div>

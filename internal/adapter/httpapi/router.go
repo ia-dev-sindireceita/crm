@@ -516,6 +516,23 @@ type Deps struct {
 	//   GET  /inbox/conversations/{id}/messages/{msgID}/status
 	WebInbox http.Handler
 
+	// WebAIPanel is the SIN-65364 LGPD consent accept/cancel handler
+	// (internal/web/aipanel). The inbox AI-assist gate renders a consent
+	// modal that POSTs to /aipanel/consent/{accept,cancel}; without this
+	// mount those POSTs 404 and the operator is stuck. When non-nil the
+	// two routes are mounted in the authed group (TenantScope + Auth +
+	// CSRF) behind RequireAction(iam.ActionTenantInboxRead) — same
+	// minimum-role envelope as the inbox itself, since consent accept is
+	// the inbox AI-assist continuation. The accept handler resolves the
+	// tenant from context and the actor from the session, never from the
+	// body, so authz never trusts a forgeable form field (OWASP A01).
+	// Nil keeps both routes unmounted (chi emits 404).
+	//
+	// Routes mounted:
+	//   POST /aipanel/consent/accept
+	//   POST /aipanel/consent/cancel
+	WebAIPanel http.Handler
+
 	// WebDashboard is the SIN-65008 managerial dashboard HTMX UI handler
 	// from internal/web/dashboard (frontend half of SIN-64963; the
 	// SIN-65007 read-model backs it). When non-nil, the two routes are
@@ -1384,6 +1401,32 @@ func NewRouter(deps Deps) http.Handler {
 				// inner mux returns 404 for the POST, so listing it here is
 				// safe either way (the feature stays gated).
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/ai-assist", webInbox)
+			}
+
+			// SIN-65364 — LGPD consent accept/cancel endpoints. The inbox
+			// AI-assist gate renders a consent modal (when the tenant runs
+			// with ai_policy.consent_required=true) that POSTs to these two
+			// routes; before this mount they 404'd and the operator was
+			// stuck. Same envelope as the inbox surface: RequireAuth installs
+			// the principal, RequireAction(ActionTenantInboxRead) gates both
+			// methods (atendente minimum; Common denied), and the authed
+			// group's RequireCSRF gate additionally protects the POSTs. The
+			// accept handler resolves tenant from context + actor from the
+			// session, never from the body, so authz never trusts a forgeable
+			// form field (OWASP A01 / BOPLA). When Authorizer is nil (router
+			// tests) the gate skips and the inner mux still runs with a
+			// Principal. When the dep is nil both routes stay unmounted.
+			if deps.WebAIPanel != nil {
+				webAIPanel := http.Handler(deps.WebAIPanel)
+				if deps.Authorizer != nil {
+					webAIPanel = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantInboxRead, nil)(webAIPanel),
+					)
+				} else {
+					webAIPanel = middleware.RequireAuth(middleware.RequireAuthDeps{})(webAIPanel)
+				}
+				authed.Method(http.MethodPost, "/aipanel/consent/accept", webAIPanel)
+				authed.Method(http.MethodPost, "/aipanel/consent/cancel", webAIPanel)
 			}
 
 			// SIN-65008 — managerial dashboard / relatórios surface
