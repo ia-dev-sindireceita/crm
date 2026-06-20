@@ -158,6 +158,13 @@ var iamRoutes = []string{
 	// stdlib mux the custom-domain catch-all at "/" would shadow them.
 	"/inbox",
 	"/inbox/",
+	// SIN-65364 — LGPD consent accept/cancel endpoints behind the inbox
+	// AI-assist gate. The "/aipanel/" subtree dispatches POST
+	// /aipanel/consent/accept and /aipanel/consent/cancel to the chi
+	// router; without it the custom-domain catch-all at "/" shadows both
+	// and confirming the consent modal 404s (the wireup gap this issue
+	// fixes — same defect class as the SIN-63821 inbox mount above).
+	"/aipanel/",
 	// SIN-64975 — HTMX branding admin surface (Fase 5, SIN-63084).
 	// The handler was registered inside the chi authed/tenanted group
 	// (router.go) but never added here, so the stdlib mux dispatched
@@ -286,6 +293,12 @@ type iamHandlerOpts struct {
 	// /inbox/* route unmounted; cmd/server tests that don't
 	// exercise the surface keep their pre-PR behaviour.
 	WebInbox http.Handler
+
+	// WebAIPanel is the SIN-65364 LGPD consent accept/cancel handler
+	// (internal/web/aipanel) the inbox AI-assist gate's modal POSTs to.
+	// Nil keeps the /aipanel/* routes unmounted; built by
+	// aipanel_wire.go with fail-soft semantics when DATABASE_URL is unset.
+	WebAIPanel http.Handler
 
 	// WebDashboard is the SIN-65008 managerial dashboard HTMX UI handler
 	// built by dashboard_wire.go on top of the SIN-65007 metrics read-
@@ -631,6 +644,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebConsent:          opts.WebConsent,
 		WebBillingInvoices:  opts.WebBillingInvoices,
 		WebInbox:            opts.WebInbox,
+		WebAIPanel:          opts.WebAIPanel,
 		WebDashboard:        opts.WebDashboard,
 		WebWallet:           opts.WebWallet,
 		Theme:               opts.Theme,
