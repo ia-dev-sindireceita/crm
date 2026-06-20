@@ -455,12 +455,76 @@ func TestSmoke_DispatchTimeout(t *testing.T) {
 		HealthProvider:   "llmcustomer",
 		InboundAfterPoll: 999, // never grows past baseline within budget
 	})
-	out, code := runSmoke(t, base, "POLL_TIMEOUT_SECONDS=2", "POLL_INTERVAL_SECONDS=1")
+	// SIN-65410 (rule-3 retarget, CTO-authorized): stage=dispatch is now a
+	// warn-only soft-check by default (SIN-65409 Opção A). DISPATCH_BLOCKING=true
+	// re-arms the hard gate so this timeout→exit≠0 assertion still holds under
+	// the env where the blocking behaviour applies.
+	out, code := runSmoke(t, base, "POLL_TIMEOUT_SECONDS=2", "POLL_INTERVAL_SECONDS=1", "DISPATCH_BLOCKING=true")
 	if code == 0 {
 		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
 	}
 	if !strings.Contains(out, "stage=dispatch") {
 		t.Fatalf("smoke output missing stage=dispatch failure label\n%s", out)
+	}
+}
+
+// TestSmoke_DispatchSoftCheckByDefault pins SIN-65409 Opção A: when the
+// LLM round-trip never completes (e.g. OpenRouter key/credit/latency on
+// the VPS), the default deploy is NOT failed. stage=dispatch is a
+// warn-only soft-check — it emits a ::warning:: annotation and exits 0
+// so a correct code deploy ships despite a paid external dependency
+// being unavailable. The auto-reply signal stays observable via the
+// per-attempt `inbound=` logs and the warning. The earlier gates
+// (auth/route/view/send) still run and would have blocked on failure.
+func TestSmoke_DispatchSoftCheckByDefault(t *testing.T) {
+	t.Parallel()
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider:   "llmcustomer",
+		InboundAfterPoll: 999, // inbound never grows past baseline within budget
+	})
+	// No DISPATCH_BLOCKING in the env → default false → soft-check.
+	out, code := runSmoke(t, base, "POLL_TIMEOUT_SECONDS=2", "POLL_INTERVAL_SECONDS=1")
+	if code != 0 {
+		t.Fatalf("smoke exit=%d want 0 (dispatch soft-check must not fail the deploy)\n%s", code, out)
+	}
+	// The warning annotation must be emitted so the signal stays
+	// observable in the cd-stg job log.
+	if !strings.Contains(out, "::warning::stage=dispatch") {
+		t.Fatalf("smoke output missing ::warning::stage=dispatch annotation\n%s", out)
+	}
+	if !strings.Contains(out, "DISPATCH_BLOCKING=true") {
+		t.Fatalf("soft-check output should document the DISPATCH_BLOCKING re-arm escape hatch\n%s", out)
+	}
+	// The earlier blocking gates must still have run (regression guard:
+	// soft-check only relaxes the final stage, not the incident coverage).
+	for _, want := range []string{"stage=auth ok", "stage=route ok", "stage=view ok", "stage=send ok"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("soft-check smoke skipped a blocking gate, missing %q\n%s", want, out)
+		}
+	}
+	// A blocking ::error:: must NOT be emitted on the default path.
+	if strings.Contains(out, "::error::stage=dispatch") {
+		t.Fatalf("default dispatch path emitted a blocking ::error:: (must be warn-only)\n%s", out)
+	}
+}
+
+// TestSmoke_DispatchBlockingReArm pins the reversibility AC: an operator
+// can re-arm stage=dispatch as a hard deploy gate with
+// DISPATCH_BLOCKING=true. With the flag set, a dispatch timeout fails
+// the smoke (exit 1, ::error::) exactly as it did before SIN-65409.
+func TestSmoke_DispatchBlockingReArm(t *testing.T) {
+	t.Parallel()
+	base := newInboxFake(t, inboxFakeOptions{
+		HealthProvider:   "llmcustomer",
+		InboundAfterPoll: 999, // never grows past baseline within budget
+	})
+	out, code := runSmoke(t, base,
+		"POLL_TIMEOUT_SECONDS=2", "POLL_INTERVAL_SECONDS=1", "DISPATCH_BLOCKING=true")
+	if code == 0 {
+		t.Fatalf("smoke exit=0 want non-zero (DISPATCH_BLOCKING=true must re-arm the gate)\n%s", out)
+	}
+	if !strings.Contains(out, "::error::stage=dispatch") {
+		t.Fatalf("re-armed dispatch gate must emit ::error::stage=dispatch\n%s", out)
 	}
 }
 
