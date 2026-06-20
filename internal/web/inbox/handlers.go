@@ -721,11 +721,19 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 // hx-trigger="every 3s" polling loop (SIN-62736, ADR 0095). The handler
 // looks up the message under the tenant + conversation scope and:
 //
-//   - returns 304 Not Modified when the caller's ?currentStatus= query
-//     param matches the persisted status (HTMX's default no-swap), or
+//   - returns 204 No Content when the caller's ?currentStatus= query
+//     param matches the persisted status, or
 //   - returns 200 + a re-rendered message_bubble partial when the status
 //     changed. Final states (read/failed) render a bubble without the
 //     polling attrs so HTMX's outerHTML swap stops the loop.
+//
+// The no-change response MUST be 204 (not 304): htmx 2.x's default
+// responseHandling maps the "[23].." status range — which includes 304 —
+// to swap:true, so a 304 with an empty body would make the outerHTML swap
+// replace the polling <li> with nothing, deleting the outbound bubble from
+// the thread (SIN-65389/SIN-65393). 204 is the only code htmx treats as an
+// explicit no-swap, leaving the existing element (and its poll attrs)
+// intact so it keeps polling and stays visible.
 //
 // Cache-Control: no-store keeps intermediate caches (CDN, browser) from
 // pinning the partial — every poll MUST hit the origin so a freshly
@@ -761,7 +769,12 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Query().Get("currentStatus") == res.Message.Status {
-		w.WriteHeader(http.StatusNotModified)
+		// No status change: 204 No Content. htmx 2.x treats 204 as an
+		// explicit no-swap, so the existing <li> (with its every-3s poll
+		// attrs) is left untouched. Returning 304 here would be swapped by
+		// htmx's "[23].." default into outerHTML and delete the bubble
+		// (SIN-65389/SIN-65393).
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
