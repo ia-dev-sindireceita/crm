@@ -17,6 +17,7 @@ package master
 import (
 	"context"
 	"html/template"
+	"io"
 	"net/http"
 	"time"
 
@@ -113,6 +114,29 @@ var impersonationBannerTmpl = template.Must(template.New("shell_impersonation_ba
 		"icon":                        iconSVG,
 	}).
 	Parse(impersonationBannerSource))
+
+func init() {
+	// Prime html/template's lazy escaper on the banner bundle's OWN
+	// namespace at package load, single-threaded. The master layouts
+	// that AddParseTree these partials are each primed in their
+	// per-file init()s, but impersonationBannerTmpl is also Executed
+	// directly (impersonation_banner_test.go). html/template escapes
+	// lazily on the first Execute, mutating the parse tree that is
+	// shared with every layout via AddParseTree. Without this prime the
+	// first direct Execute escapes that shared tree concurrently with
+	// the parallel layout Executes (e.g.
+	// TestMasterLayouts_LoadImpersonationCountdownScript), tripping the
+	// race detector — the repo's known html/template lazy-escape race
+	// (SIN-65379; see reference_crm_html_template_race, fix bc30fb1).
+	// Escaping the bundle once here, before any parallel render,
+	// guarantees later Executes only read the tree. The {{with
+	// .ActiveImpersonation}} guard makes the output empty for the nil
+	// pageData, but escaping still walks the whole tree regardless of
+	// data, which is all the prime needs.
+	for _, name := range []string{"shell_impersonation_banner", "shell_audit_feed_chip"} {
+		_ = impersonationBannerTmpl.ExecuteTemplate(io.Discard, name, pageData{})
+	}
+}
 
 func formatImpersonationISO(t time.Time) string {
 	if t.IsZero() {
