@@ -436,6 +436,73 @@ func TestRenderConsentModal_EscapesPayload(t *testing.T) {
 	}
 }
 
+// TestRenderConsentModal_NoEvalEventFilter is the SIN-65364 Bug 2
+// regression guard. htmx compiles a bracketed hx-trigger event filter
+// (e.g. keyup[key=='Escape']) AND any hx-on:* attribute with
+// new Function(), which the production strict CSP (script-src 'self'
+// 'nonce-…', no 'unsafe-eval') blocks with a loud EvalError — leaving
+// the modal's Cancelar control dead. The modal must therefore emit
+// neither an hx-on attribute nor a bracketed event filter.
+func TestRenderConsentModal_NoEvalEventFilter(t *testing.T) {
+	t.Parallel()
+	var buf strings.Builder
+	if err := aipanel.RenderConsentModal(&buf, aipanel.ConsentModalData{
+		ScopeKind:         "channel",
+		ScopeID:           "whatsapp",
+		Payload:           "ok",
+		AnonymizerVersion: "v1",
+		PromptVersion:     "p1",
+		PayloadHashHex:    "abcdef012345",
+	}); err != nil {
+		t.Fatalf("RenderConsentModal: %v", err)
+	}
+	out := buf.String()
+	// No hx-on:* (compiles with new Function under strict CSP).
+	if strings.Contains(out, "hx-on") {
+		t.Errorf("modal leaked an hx-on attribute (eval under strict CSP): %s", out)
+	}
+	// No bracketed event filter on hx-trigger (also new Function).
+	if strings.Contains(out, "keyup[") || strings.Contains(out, "[key==") {
+		t.Errorf("modal leaked a bracketed hx-trigger event filter (eval under strict CSP): %s", out)
+	}
+}
+
+// TestAccept_IgnoresForgedTenantInForm is the SIN-65364 BOPLA / OWASP
+// A01 regression guard: the consent row's tenant MUST come from the
+// server-resolved tenancy context, never from a client-supplied form
+// field. A forged tenant_id in the body must not redirect the recorded
+// consent to another tenant.
+func TestAccept_IgnoresForgedTenantInForm(t *testing.T) {
+	t.Parallel()
+	ctxTenant := uuid.New()
+	forgedTenant := uuid.New()
+	consent := &fakeConsent{}
+	h := newTestHandler(t, consent, uuid.New(), nil)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	// scope_id is a tenant-scope id; the attacker also smuggles a
+	// tenant_id field the handler does not read. The recorded scope
+	// must bind to the context tenant, not the forged one.
+	body := acceptBody("tenant", ctxTenant.String(), "v1", "p1", "preview", "") +
+		"&tenant_id=" + forgedTenant.String()
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, tenantRequest(http.MethodPost, aipanel.AcceptRoutePath, body, ctxTenant))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if !consent.called {
+		t.Fatal("RecordConsent not called")
+	}
+	if consent.scope.TenantID != ctxTenant {
+		t.Errorf("scope.TenantID = %s, want context tenant %s (forged form tenant must be ignored)", consent.scope.TenantID, ctxTenant)
+	}
+	if consent.scope.TenantID == forgedTenant {
+		t.Errorf("scope.TenantID bound to forged form tenant %s — BOPLA regression", forgedTenant)
+	}
+}
+
 func TestRenderConsentModal_ShortPayloadStillRenders(t *testing.T) {
 	t.Parallel()
 	var buf strings.Builder
