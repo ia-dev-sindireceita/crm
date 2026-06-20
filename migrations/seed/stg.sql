@@ -96,4 +96,27 @@ ON CONFLICT (id) DO NOTHING;
 -- fixtures are not exercised in staging; add them only if a future
 -- test demands the negative case.
 
+-- SIN-65311: enable AI assist for acme at the tenant scope so the
+-- "Resumir + sugerir 3 respostas" button works out of the box in
+-- staging. Without this row the resolver falls back to deny-by-default
+-- (DefaultPolicy, AIEnabled=false) and the POST /ai-assist handler
+-- returns 403. Globex has no ai_policy row intentionally — cross-tenant
+-- isolation control (same pattern as the gerente seed above).
+INSERT INTO ai_policy
+  (tenant_id, scope_type, scope_id,
+   model, prompt_version, tone, language,
+   ai_enabled, anonymize, opt_in)
+VALUES
+  ('00000000-0000-0000-0000-00000000ac01',
+   'tenant',
+   '00000000-0000-0000-0000-00000000ac01',
+   'openrouter/auto', 'v1', 'neutro', 'pt-BR',
+   true, true, true)
+ON CONFLICT (tenant_id, scope_type, scope_id)
+DO UPDATE SET
+  ai_enabled  = EXCLUDED.ai_enabled,
+  anonymize   = EXCLUDED.anonymize,
+  opt_in      = EXCLUDED.opt_in,
+  updated_at  = now();
+
 COMMIT;
