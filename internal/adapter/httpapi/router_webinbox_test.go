@@ -506,6 +506,83 @@ func TestRouter_WebInbox_AIAssistRouteDeniedForCommon(t *testing.T) {
 	}
 }
 
+// --- SIN-65392 / SIN-65406: POST /inbox/conversations/{id}/reset route mount ---
+//
+// Same defect class as the assign (SIN-64979) and ai-assist (SIN-65004)
+// routes above: PR #391 registered the reset POST only on the inner mux
+// (web/inbox Routes, conditional on the ResetConversation dep) plus the
+// "Apagar mensagens" button and the use-case wiring, but omitted the chi
+// mount in router.go — so chi 404'd the POST before the handler while the
+// button still rendered (confirmed on staging, SIN-65406). The inner-mux
+// handler tests passed because they bypass chi. These tests pin the chi
+// route table + security envelope (RequireAuth → RequireAction → RequireCSRF).
+
+// postReset fires POST /inbox/conversations/{id}/reset with a fully valid
+// CSRF presentation, mirroring postAIAssist so the route-table / RequireAction
+// behaviour is isolated from CSRF noise.
+func postReset(t *testing.T, h http.Handler, host, convID string, sess, csrf *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/inbox/conversations/"+convID+"/reset", nil)
+	r.Host = host
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "https://"+host)
+	r.Header.Set(csrfmw.HeaderName, assignCSRFToken)
+	r.AddCookie(sess)
+	r.AddCookie(csrf)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// TestRouter_WebInbox_ResetRouteReachableForAtendente pins the chi route
+// table for the reset POST: an authorized atendente, with a valid CSRF
+// presentation, reaches the inner handler with POST on the reset path.
+// Without the router.go mount this fails with 404 (the regression this
+// test guards — SIN-65406).
+func TestRouter_WebInbox_ResetRouteReachableForAtendente(t *testing.T) {
+	t.Parallel()
+	inboxH := &recordingInbox{}
+	h, store, host := newAssignRouter(t, inboxH)
+	store.addUser(host, "atendente@acme.test", "pw", iam.RoleTenantAtendente, uuid.New())
+
+	sess, csrf := loginBothCookies(t, h, host, "atendente@acme.test", "pw")
+	convID := uuid.New().String()
+	rec := postReset(t, h, host, convID, sess, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 (atendente must reach POST reset); body=%q", rec.Code, rec.Body.String())
+	}
+	if len(inboxH.calls) != 1 {
+		t.Fatalf("inner call count=%d, want 1 (%+v)", len(inboxH.calls), inboxH.calls)
+	}
+	c := inboxH.calls[0]
+	if c.method != http.MethodPost || c.path != "/inbox/conversations/"+convID+"/reset" {
+		t.Fatalf("inner call=%+v, want POST .../reset", c)
+	}
+	if !c.hadPrincipal {
+		t.Fatalf("inner handler ran without iam.Principal (RequireAuth missing)")
+	}
+}
+
+// TestRouter_WebInbox_ResetRouteDeniedForCommon proves the reset POST
+// inherits the RequireAction(ActionTenantInboxRead) gate: a Common-role
+// session — with a fully valid CSRF presentation, so the 403 can only come
+// from RequireAction, not CSRF — is denied before the inner handler runs.
+func TestRouter_WebInbox_ResetRouteDeniedForCommon(t *testing.T) {
+	t.Parallel()
+	inboxH := &recordingInbox{}
+	h, store, host := newAssignRouter(t, inboxH)
+	store.addUser(host, "common@acme.test", "pw", iam.RoleTenantCommon, uuid.New())
+
+	sess, csrf := loginBothCookies(t, h, host, "common@acme.test", "pw")
+	rec := postReset(t, h, host, uuid.New().String(), sess, csrf)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403 (common denied at RequireAction, CSRF valid); body=%q", rec.Code, rec.Body.String())
+	}
+	if len(inboxH.calls) != 0 {
+		t.Fatalf("inner handler ran on a deny path: %+v", inboxH.calls)
+	}
+}
+
 // avoid unused import error when middleware.SessionFromContext changes
 // upstream; keep the import alive so future test growth has the
 // session helpers at hand.

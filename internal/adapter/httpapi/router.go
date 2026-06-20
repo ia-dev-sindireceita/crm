@@ -1401,6 +1401,21 @@ func NewRouter(deps Deps) http.Handler {
 				// inner mux returns 404 for the POST, so listing it here is
 				// safe either way (the feature stays gated).
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/ai-assist", webInbox)
+				// SIN-65392 — fakellm training-conversation reset route.
+				// Same defect class as the assign + ai-assist routes above:
+				// the inner mux (web/inbox Routes) registers it conditionally
+				// on the ResetConversation dep, but chi enumerates the subtree
+				// route-by-route, so the POST must be listed here too or it
+				// 404s before the handler. PR #391 added the inner-mux route,
+				// the "Apagar mensagens" button, and the use-case wiring but
+				// omitted this chi mount — so the button rendered while the
+				// POST hit chi's 404 (confirmed on staging, SIN-65406). The
+				// inner-mux handler tests passed because they bypass chi. Same
+				// RequireAuth + RequireAction(ActionTenantInboxRead) envelope
+				// as the reads plus the authed group's RequireCSRF gate. When
+				// ResetConversation is nil the inner mux returns 404 for the
+				// POST, so listing it here is safe either way.
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/reset", webInbox)
 			}
 
 			// SIN-65364 — LGPD consent accept/cancel endpoints. The inbox
