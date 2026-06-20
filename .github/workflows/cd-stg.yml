@@ -430,8 +430,33 @@ jobs:
       # /hello-tenant; wrong password → 401; unknown email → 401 — against
       # the just-deployed image, so the deploy fails red on the next F10.
       # Budget ≤ 30s end-to-end so a hung handler cannot wedge the job.
+      # SIN-65377 — login-bucket budget. Every smoke step below runs from
+      # the SAME runner IP, and POST /login is rate-limited per IP at
+      # {Window 1min, Max 5} (internal/iam/ratelimit/policy.go). The old
+      # implementation retried the WHOLE 3-POST matrix up to 3× (up to 9
+      # POST /login) and the /inbox smoke then re-authenticated, so the
+      # cumulative count tripped the limiter and a later step 429'd —
+      # the gate failed red on a self-collision, not a regression
+      # (run 27879210465). The rate-limit is a security control and is
+      # NOT loosened. Instead we budget the logins so the whole deploy
+      # stays at or under the Max=5 ceiling:
+      #
+      #   * valid login  — retried for first-request warmup, but capped
+      #                    at ≤3 POST /login (this step), and 429-aware
+      #                    (a 429 drains the window instead of hammering).
+      #   * wrong-pw     — 1 POST /login, run ONCE (this step).
+      #   * unknown-user — 1 POST /login, run ONCE (this step).
+      #   * /inbox smoke — 0 POST /login (reuses STG_SESSION_JAR, below).
+      #   * /master smoke— 0 POST /login (unauthenticated probe).
+      #
+      # Worst case = 5 POST /login per deploy = the Max ceiling, typical
+      # case = 3, so a clean deploy can never 429 itself. The valid-login
+      # cookie jar is saved and exported as STG_SESSION_JAR for the
+      # /inbox step to reuse. timeout bumped 1→3m so a worst-case
+      # window drain on a 429 (up to two ~60s sleeps + the probes)
+      # surfaces the explicit error rather than a confusing timeout kill.
       - name: smoke check /login
-        timeout-minutes: 1
+        timeout-minutes: 3
         env:
           STG_BASE: ${{ secrets.STG_SMOKE_URL }}
           STG_SEED_AGENT_EMAIL: ${{ secrets.STG_SEED_AGENT_EMAIL }}
@@ -442,115 +467,133 @@ jobs:
           # masks secret values in logs, but we do not want the password
           # bytes echoed at all.
           set +x
-          smoke_run() {
-            local code
 
-            # 1) Valid creds → 302 with __Host-sess-tenant + __Host-csrf
-            #    cookies and Location: /hello-tenant. This is the case
-            #    that exploded with 500 on staging after PR #104.
-            code=$(curl -sS --max-time 5 -o /tmp/login.body -D /tmp/login.headers \
-              -w "%{http_code}" -X POST \
+          # Session jar shared with the /inbox smoke (SIN-65377). Path is
+          # exported via $GITHUB_ENV at the end so the next step reuses
+          # this session instead of spending another POST /login.
+          SESSION_JAR="${RUNNER_TEMP:-/tmp}/stg-smoke-session.jar"
+          rm -f "${SESSION_JAR}"
+
+          # Phase A — valid creds → 302 + __Host-* cookies + Location,
+          # persisting the session to SESSION_JAR. Retried up to 3× for
+          # prepared-statement-cache warmup; a 429 means the login window
+          # is saturated (re-run / overlapping deploy), so drain the
+          # Retry-After window rather than burning more of the bucket.
+          # This is the ONLY retried POST /login (≤3), so even with the
+          # two single-shot guards below the deploy stays ≤5.
+          valid_login() {
+            curl -sS --max-time 5 -o /tmp/login.body -D /tmp/login.headers \
+              -w "%{http_code}" -X POST -c "${SESSION_JAR}" \
               -H "Content-Type: application/x-www-form-urlencoded" \
               --data-urlencode "email=${STG_SEED_AGENT_EMAIL}" \
               --data-urlencode "password=${STG_SEED_AGENT_PASSWORD}" \
-              "${STG_BASE}/login")
-            if [ "$code" != "302" ]; then
-              echo "::error::login expected 302, got $code"
-              cat /tmp/login.body
-              return 1
-            fi
-            if ! grep -q "Set-Cookie: __Host-sess-tenant" /tmp/login.headers; then
-              echo "::error::missing __Host-sess-tenant cookie"
-              cat /tmp/login.headers
-              return 1
-            fi
-            if ! grep -q "Set-Cookie: __Host-csrf" /tmp/login.headers; then
-              echo "::error::missing __Host-csrf cookie"
-              cat /tmp/login.headers
-              return 1
-            fi
-            if ! grep -qi "^Location: /hello-tenant" /tmp/login.headers; then
-              echo "::error::missing/wrong Location header"
-              cat /tmp/login.headers
-              return 1
-            fi
-
-            # 2) Wrong password → 401 (regression guard for the
-            #    invalid-credentials branch).
-            code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" -X POST \
-              -H "Content-Type: application/x-www-form-urlencoded" \
-              --data-urlencode "email=${STG_SEED_AGENT_EMAIL}" \
-              --data-urlencode "password=definitely-not-the-password" \
-              "${STG_BASE}/login")
-            if [ "$code" != "401" ]; then
-              echo "::error::bad-password expected 401, got $code"
-              return 1
-            fi
-
-            # 3) Unknown user → 401 (regression guard against user
-            #    enumeration via a divergent error path).
-            code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" -X POST \
-              -H "Content-Type: application/x-www-form-urlencoded" \
-              --data-urlencode "email=does-not-exist@acme.crm.crm.someu.com.br" \
-              --data-urlencode "password=anything" \
-              "${STG_BASE}/login")
-            if [ "$code" != "401" ]; then
-              echo "::error::unknown-user expected 401, got $code"
-              return 1
-            fi
-
-            # 4) SIN-63294 — GET /login must reference the baseline auth
-            #    stylesheet. PR #244/#245 fixed the CSP-nonce on the
-            #    tenant-theme <style>, but the layout still shipped no
-            #    <link rel="stylesheet">, so the page rendered with
-            #    user-agent defaults ("tela sem formatação"). This grep
-            #    fails red if a future refactor strips the link tag from
-            #    internal/adapter/httpapi/views/layout.html.
-            code=$(curl -sS --max-time 5 -o /tmp/login.html -w "%{http_code}" \
-              "${STG_BASE}/login")
-            if [ "$code" != "200" ]; then
-              echo "::error::GET /login expected 200, got $code"
-              return 1
-            fi
-            if ! grep -qF '<link rel="stylesheet" href="/static/css/auth.css"' /tmp/login.html; then
-              echo "::error::SIN-63294 regression — /login HTML missing /static/css/auth.css link tag"
-              cat /tmp/login.html
-              return 1
-            fi
-
-            # 5) SIN-63294 — the referenced stylesheet must actually be
-            #    served as text/css. A missing file would 404 silently
-            #    in the browser and reproduce the same unstyled-page
-            #    bug. Status + content-type are both pinned.
-            code=$(curl -sS --max-time 5 -o /tmp/auth.css -D /tmp/auth.headers \
-              -w "%{http_code}" "${STG_BASE}/static/css/auth.css")
-            if [ "$code" != "200" ]; then
-              echo "::error::GET /static/css/auth.css expected 200, got $code"
-              cat /tmp/auth.headers
-              return 1
-            fi
-            if ! grep -qi "^Content-Type: text/css" /tmp/auth.headers; then
-              echo "::error::auth.css served with wrong Content-Type (expected text/css)"
-              cat /tmp/auth.headers
-              return 1
-            fi
+              "${STG_BASE}/login"
           }
-
-          # Up to 3 attempts with 5s backoff between attempts. The /health
-          # gate above already absorbed pod-warmup, but the IAM path can
-          # take an extra second to warm the prepared-statement cache on
-          # the first request — three tries cover that without hiding a
-          # genuine regression.
+          code=""
           for attempt in 1 2 3; do
-            if smoke_run; then
-              echo "login smoke OK on attempt ${attempt}"
-              exit 0
+            code=$(valid_login)
+            if [ "$code" = "429" ]; then
+              ra=$(grep -i '^Retry-After:' /tmp/login.headers | head -n1 | tr -dc '0-9')
+              ra=${ra:-60}
+              echo "login smoke attempt ${attempt}: valid login 429 (rate-limit window saturated) — draining ${ra}s then retrying (SIN-65377)"
+              sleep "${ra}"
+              continue
             fi
-            echo "login smoke attempt ${attempt} failed, retrying…"
+            if [ "$code" = "302" ]; then
+              break
+            fi
+            echo "login smoke attempt ${attempt}: valid login expected 302, got ${code} — retrying after warmup"
+            cat /tmp/login.body
             sleep 5
           done
-          echo "login smoke FAILED — deploy regression (see docs/deploy/staging.md → \"Login smoke gate\")"
-          exit 1
+          if [ "$code" != "302" ]; then
+            echo "::error::login expected 302, got ${code} (see docs/deploy/staging.md → \"Login smoke gate\")"
+            cat /tmp/login.body
+            exit 1
+          fi
+          if ! grep -q "Set-Cookie: __Host-sess-tenant" /tmp/login.headers; then
+            echo "::error::missing __Host-sess-tenant cookie"
+            cat /tmp/login.headers
+            exit 1
+          fi
+          if ! grep -q "Set-Cookie: __Host-csrf" /tmp/login.headers; then
+            echo "::error::missing __Host-csrf cookie"
+            cat /tmp/login.headers
+            exit 1
+          fi
+          if ! grep -qi "^Location: /hello-tenant" /tmp/login.headers; then
+            echo "::error::missing/wrong Location header"
+            cat /tmp/login.headers
+            exit 1
+          fi
+          # The exported jar is only useful if the session cookie landed
+          # in it — guard so a curl-version quirk can't ship an empty jar
+          # that would silently send the /inbox smoke back to logging in.
+          if ! grep -q "__Host-sess-tenant" "${SESSION_JAR}"; then
+            echo "::error::valid login did not persist __Host-sess-tenant to the cookie jar — /inbox session reuse (SIN-65377) would break"
+            exit 1
+          fi
+
+          # Phase B — negative-path regression guards. Run ONCE each (no
+          # retry): the IAM path is already warm from Phase A and
+          # re-running them would spend more of the login bucket.
+          #
+          # Wrong password → 401 (invalid-credentials branch guard).
+          code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "email=${STG_SEED_AGENT_EMAIL}" \
+            --data-urlencode "password=definitely-not-the-password" \
+            "${STG_BASE}/login")
+          if [ "$code" != "401" ]; then
+            echo "::error::bad-password expected 401, got $code (429 = login bucket exhausted; see SIN-65377 budget comment above)"
+            exit 1
+          fi
+          # Unknown user → 401 (guard against user enumeration via a
+          # divergent error path).
+          code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "email=does-not-exist@acme.crm.crm.someu.com.br" \
+            --data-urlencode "password=anything" \
+            "${STG_BASE}/login")
+          if [ "$code" != "401" ]; then
+            echo "::error::unknown-user expected 401, got $code (429 = login bucket exhausted; see SIN-65377 budget comment above)"
+            exit 1
+          fi
+
+          # Phase C — GET-only checks (0 POST /login, do not touch the
+          # login bucket). SIN-63294: GET /login must reference the
+          # baseline auth stylesheet and that stylesheet must serve as
+          # text/css, or the page renders unstyled ("tela sem
+          # formatação"). Fails red if a refactor strips the link tag
+          # from internal/adapter/httpapi/views/layout.html.
+          code=$(curl -sS --max-time 5 -o /tmp/login.html -w "%{http_code}" \
+            "${STG_BASE}/login")
+          if [ "$code" != "200" ]; then
+            echo "::error::GET /login expected 200, got $code"
+            exit 1
+          fi
+          if ! grep -qF '<link rel="stylesheet" href="/static/css/auth.css"' /tmp/login.html; then
+            echo "::error::SIN-63294 regression — /login HTML missing /static/css/auth.css link tag"
+            cat /tmp/login.html
+            exit 1
+          fi
+          code=$(curl -sS --max-time 5 -o /tmp/auth.css -D /tmp/auth.headers \
+            -w "%{http_code}" "${STG_BASE}/static/css/auth.css")
+          if [ "$code" != "200" ]; then
+            echo "::error::GET /static/css/auth.css expected 200, got $code"
+            cat /tmp/auth.headers
+            exit 1
+          fi
+          if ! grep -qi "^Content-Type: text/css" /tmp/auth.headers; then
+            echo "::error::auth.css served with wrong Content-Type (expected text/css)"
+            cat /tmp/auth.headers
+            exit 1
+          fi
+
+          # Export the session jar so the /inbox smoke reuses it (0 extra
+          # POST /login). SIN-65377.
+          echo "STG_SESSION_JAR=${SESSION_JAR}" >> "$GITHUB_ENV"
+          echo "login smoke OK — session jar exported for /inbox reuse (STG_SESSION_JAR=${SESSION_JAR})"
 
       # SIN-63858 — inbox smoke gate. The /login smoke above only proves
       # the IAM cookie contract; it does not exercise /inbox or the
@@ -560,12 +603,20 @@ jobs:
       # gate so a future seed/authorizer drift fails the job red instead
       # of leaking to production. Reuses the same STG_SEED_AGENT_*
       # secrets as the /login smoke — no new secrets required.
+      #
+      # SIN-65377 — session reuse. STG_SESSION_JAR is the cookie jar the
+      # /login smoke above minted and exported via $GITHUB_ENV. The
+      # script reuses it instead of POSTing /login again, so this step
+      # adds 0 to the per-IP login bucket and the deploy stays under the
+      # {ip: 1min, Max 5} ceiling. STG_SEED_AGENT_* stay wired as the
+      # standalone fallback (jar unset/stale).
       - name: smoke check /inbox
         timeout-minutes: 1
         env:
           STG_BASE: ${{ secrets.STG_SMOKE_URL }}
           STG_SEED_AGENT_EMAIL: ${{ secrets.STG_SEED_AGENT_EMAIL }}
           STG_SEED_AGENT_PASSWORD: ${{ secrets.STG_SEED_AGENT_PASSWORD }}
+          STG_SESSION_JAR: ${{ env.STG_SESSION_JAR }}
           POLL_TIMEOUT_SECONDS: "30"
           POLL_INTERVAL_SECONDS: "2"
         run: |

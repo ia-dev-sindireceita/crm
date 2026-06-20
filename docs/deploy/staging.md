@@ -1227,13 +1227,38 @@ fail closed.
 3. Unknown email + any password → `401 Unauthorized` (same body as
    case 2 — divergence here would be a user-enumeration regression).
 
-**Budget:** the step caps at 1 minute (`timeout-minutes: 1`); inside
-that the retry loop runs up to 3 attempts at ~5 s each with a 5 s
-backoff between attempts (≤ ~25 s wall clock for the happy path, ≤ 30 s
-for two retries). `curl --max-time 5` bounds each individual hit so a
-hung handler cannot wedge the job. The gate deliberately does NOT
-assert cookie attribute strings (`HttpOnly; Secure; SameSite=Lax`) —
-those vary by environment and are covered by other tests.
+**Budget:** the step caps at 3 minutes (`timeout-minutes: 3`).
+`curl --max-time 5` bounds each individual hit so a hung handler cannot
+wedge the job. The gate deliberately does NOT assert cookie attribute
+strings (`HttpOnly; Secure; SameSite=Lax`) — those vary by environment
+and are covered by other tests.
+
+**Login-bucket budget (SIN-65377).** Every `cd-stg` smoke step runs from
+the *same* runner IP, and `POST /login` is rate-limited per IP at
+`{Window 1min, Max 5}` (`internal/iam/ratelimit/policy.go`). The old
+gate retried the whole three-case matrix up to 3× (up to 9 `POST /login`)
+and the `/inbox` smoke then logged in again, so the cumulative count
+tripped the limiter and the `/inbox` step `429`'d — the deploy went red
+on a self-collision, not a regression (run `27879210465`). The rate
+limit is a security control and is **not** loosened. Instead the logins
+are budgeted so a whole deploy stays at or under the `Max=5` ceiling:
+
+| Step | `POST /login` | Notes |
+|------|---------------|-------|
+| `/login` smoke — valid creds | ≤ 3 | only retried path (warmup); 429-aware (drains the window instead of hammering) |
+| `/login` smoke — wrong password | 1 | run once (no retry) |
+| `/login` smoke — unknown user | 1 | run once (no retry) |
+| `/inbox` smoke | 0 | reuses the session jar via `STG_SESSION_JAR` |
+| `/master/tenants` smoke | 0 | unauthenticated probe |
+| **worst case / deploy** | **5** | = the `Max` ceiling; typical case is 3 |
+
+The `/login` smoke exports the valid-login cookie jar path as
+`STG_SESSION_JAR` (via `$GITHUB_ENV`); `scripts/ci/stg-smoke-inbox.sh`
+reuses it instead of re-authenticating. The Go behaviour spec
+`scripts/ci/stg_smoke_inbox_session_reuse_test.go` proves the reuse path
+makes **zero** `POST /login` and that a missing/stale jar falls back to a
+single login. If you run the inbox smoke standalone and hit a `429`,
+wait ~60 s for the per-IP window to drain (or export `STG_SESSION_JAR`).
 
 **Operator checklist when this gate goes red:**
 
