@@ -165,36 +165,49 @@ code=$(curl -sS --max-time 30 -o "${ASSIST_BODY}" -D "${ASSIST_HDR}" \
   --data-urlencode "_csrf=${csrf}" \
   "${STG_BASE}/inbox/conversations/${conversation_id}/ai-assist")
 
+# A graceful banner means the route + use case are wired correctly but a
+# tenant-level precondition blocked the LLM call. That is expected on a
+# freshly deployed/seeded tenant and must NOT fail the deploy gate. The
+# precondition states do NOT all share one HTTP status: the policy-off
+# path returns the banner with **403** by design (ai_assist.go
+# WriteHeader(StatusForbidden), pinned by ai_assist_test.go), while
+# balance/consent/rate/unavailable degrade on 200. So scan the body for
+# a known graceful marker on BOTH 200 and 403 before deciding — a 403
+# is only a real CSRF/Origin/role rejection when it carries NO marker.
+graceful_pass() { # $1 = observed http status (for the log line)
+  for marker in 'ai-assist__banner--policy' 'ai-assist__banner--balance' 'ai-consent-modal' 'ai-assist__banner--unavailable' 'ai-assist__toast--rate'; do
+    if grep -q "${marker}" "${ASSIST_BODY}"; then
+      log "stage=assist ok — wired; graceful degradation (${marker}) on HTTP ${1} — tenant-config/precondition state, not a deploy regression"
+      log "stg-smoke-aiassist: PASS (wired; precondition banner ${marker})"
+      exit 0
+    fi
+  done
+}
+
 case "${code}" in
   404)
     die "stage=route: /ai-assist 404 — button rendered but route not mounted (wireup gap: Summarizer reached the template but not Routes())" ;;
-  403)
-    cat "${ASSIST_HDR}" >&2
-    die "stage=assist: /ai-assist 403 — CSRF/authz rejected (Origin/Referer or role gate)" ;;
   5*)
     cat "${ASSIST_BODY}" >&2
     die "stage=assist: /ai-assist ${code} — LLM/wireup fault (check OPENROUTER_API_KEY validity + adapter logs)" ;;
-  200) ;;
+  403)
+    # Policy-off is the deny-by-default state (no ai_policy row → AIEnabled
+    # false): the handler returns the policy banner with 403. Accept that
+    # as a graceful degrade; only a 403 WITHOUT a marker is a true
+    # CSRF/Origin/role rejection.
+    graceful_pass "${code}"
+    cat "${ASSIST_HDR}" "${ASSIST_BODY}" >&2
+    die "stage=assist: /ai-assist 403 with no graceful banner — CSRF/authz rejected (Origin/Referer or role gate)" ;;
+  200)
+    if grep -q 'ai-assist__result' "${ASSIST_BODY}"; then
+      log "stage=assist ok — summary panel rendered (real LLM round-trip exercised)"
+      log "stg-smoke-aiassist: PASS (full — LLM path exercised)"
+      exit 0
+    fi
+    graceful_pass "${code}"
+    cat "${ASSIST_BODY}" >&2
+    die "stage=assist: /ai-assist 200 but response is neither a summary panel nor a known graceful banner (template drift?)" ;;
   *)
     cat "${ASSIST_BODY}" >&2
     die "stage=assist: /ai-assist unexpected status ${code}" ;;
 esac
-
-if grep -q 'ai-assist__result' "${ASSIST_BODY}"; then
-  log "stage=assist ok — summary panel rendered (real LLM round-trip exercised)"
-  log "stg-smoke-aiassist: PASS (full — LLM path exercised)"
-  exit 0
-fi
-# A graceful banner means the route + use case are wired correctly but a
-# tenant-level precondition blocked the LLM call. That is expected on a
-# freshly enabled tenant and must NOT fail the deploy gate.
-for marker in 'ai-assist__banner--policy' 'ai-assist__banner--balance' 'ai-consent-modal' 'ai-assist__banner--unavailable' 'ai-assist__toast--rate'; do
-  if grep -q "${marker}" "${ASSIST_BODY}"; then
-    log "stage=assist ok — wired; graceful degradation banner (${marker}) — tenant-config/precondition state, not a deploy regression"
-    log "stg-smoke-aiassist: PASS (wired; precondition banner ${marker})"
-    exit 0
-  fi
-done
-
-cat "${ASSIST_BODY}" >&2
-die "stage=assist: /ai-assist 200 but response is neither a summary panel nor a known graceful banner (template drift?)"
