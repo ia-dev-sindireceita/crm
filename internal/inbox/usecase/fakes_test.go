@@ -183,6 +183,27 @@ func (r *inMemoryRepo) ListMessages(_ context.Context, tenantID, conversationID 
 	return out, nil
 }
 
+// DeleteMessagesByConversation satisfies the inbox.Repository port
+// extension added in SIN-65392. It removes every message of the
+// conversation under the tenant scope and resets the parent's
+// LastMessageAt, mirroring the Postgres adapter so the use-case
+// orchestration test exercises real delete semantics (not a stub).
+func (r *inMemoryRepo) DeleteMessagesByConversation(_ context.Context, tenantID, conversationID uuid.UUID) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	deleted := 0
+	for id, m := range r.messages {
+		if m.TenantID == tenantID && m.ConversationID == conversationID {
+			delete(r.messages, id)
+			deleted++
+		}
+	}
+	if conv, ok := r.conversations[conversationID]; ok && conv.TenantID == tenantID {
+		conv.LastMessageAt = time.Time{}
+	}
+	return deleted, nil
+}
+
 func (r *inMemoryRepo) messageCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -237,6 +237,37 @@ func (a *Adapter) HandleInbound(ctx context.Context, ev inbox.InboundEvent) erro
 	return a.downstream.HandleInbound(ctx, ev)
 }
 
+// ResetConversation clears the adapter's in-memory state for tenantID so
+// a reset of the training conversation (SIN-65392) starts the simulator
+// fresh: the per-tenant turn history is dropped and the bootstrapped flag
+// is cleared, so the next GET /inbox re-bootstraps a new greeting and the
+// next operator turn drives the LLM against an empty history.
+//
+// It is the channel half of usecase.ResetConversation — the use case
+// deletes the message rows in Postgres, then calls this so the in-memory
+// twin cannot desync from the now-empty thread.
+//
+// v1 keys history + bootstrapped by tenant (one persona per tenant — see
+// persona_llm.go), so the conversationID argument is accepted for the
+// ConversationResetter contract but the reset is tenant-wide; with a
+// single training conversation per tenant the two are equivalent. The
+// adapter deliberately does NOT re-inject a greeting here: the reset's
+// contract is "the thread is now empty", and the lazy bootstrap path
+// (bootstrapOnList*) re-seeds the greeting on the next list load.
+//
+// Idempotent and safe to call after Stop: it only mutates maps under the
+// mutex and never schedules work.
+func (a *Adapter) ResetConversation(_ context.Context, tenantID, _ uuid.UUID) error {
+	if tenantID == uuid.Nil {
+		return errors.New("llmcustomer: ResetConversation requires non-nil tenantID")
+	}
+	a.mu.Lock()
+	delete(a.history, tenantID)
+	delete(a.bootstrapped, tenantID)
+	a.mu.Unlock()
+	return nil
+}
+
 // Drain blocks until every in-flight scheduled reply goroutine has
 // finished. It does NOT cancel the adapter — useful in tests that want
 // to assert post-condition without tearing the adapter down. Idempotent.
