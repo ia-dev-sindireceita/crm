@@ -1079,9 +1079,13 @@ sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
 ```
 
 After restarting the app with `MASTER_OPS_DATABASE_URL` set, the cd-stg
-`/master/tenants` smoke gate must return 302 (auth redirect), not 404. A
-lingering 404 means one of the three pre-conditions (DSN set + ACTOR_ID valid +
-DSN connects) is still failing — read the app boot log for
+`/master/tenants` smoke gate must return a 30x redirect (`303 → /m/login` is
+the relocated master login; `301`/`302` also pass), not 404. **The gate now
+curls the master console host (`STG_MASTER_SMOKE_URL`), not the tenant apex**
+— `/master/*` was relocated off tenant hosts (SIN-65264), where `/master/tenants`
+is *correctly* 404 (deny-by-default, SIN-63340). A lingering 404 on the master
+host means one of the three pre-conditions (DSN set + ACTOR_ID valid + DSN
+connects) is still failing — read the app boot log for
 `master tenants surface disabled` or `master pg connect` to see which.
 
 ### 6. Capturing the staging host key
@@ -1190,7 +1194,8 @@ beyond that, file a ticket and page the on-call.
 | `STG_HOST`         | DNS name or IP of the staging VPS.                                               |
 | `STG_HOST_KEY`     | Output of `ssh-keyscan -t ed25519 <stg-host>` — populates the runner's known_hosts. |
 | `STG_USER`         | Unprivileged deploy user (`crm-deploy` in this runbook).                         |
-| `STG_SMOKE_URL`    | Base URL the runner curls — e.g. `https://acme.crm.<stg-domain>`. Used by both the `/health` gate (SIN-63146) and the `/login` gate (SIN-63270). |
+| `STG_SMOKE_URL`    | Base URL the runner curls — e.g. `https://acme.crm.<stg-domain>` (tenant apex). Used by the `/health` gate (SIN-63146), the `/login` gate (SIN-63270), and the `/inbox` gate. |
+| `STG_MASTER_SMOKE_URL` | Base URL of the **master console host** — e.g. `https://master.crm.<stg-domain>`. Used only by the `/master/tenants` smoke gate (SIN-65297). `/master/*` was relocated off the tenant apex onto this host (SIN-65264), so the smoke must target it here, not `STG_SMOKE_URL`. **Board-gated:** add it in `pericles-luz/crm` GitHub Actions or the gate fails red. |
 | `STG_SEED_AGENT_EMAIL` | Email of the seeded staging tenant agent the `/login` smoke gate posts as — `agent@acme.<stg-domain>`, matching `migrations/seed/stg.sql`. Required by SIN-63270. |
 | `STG_SEED_AGENT_PASSWORD` | Password for the seed agent above (`stg-password` for the current seed). Set on the fork; coordinate with Pericles for upstream tier-2 if/when `cd-stg` runs on `pericles-luz/crm`. Required by SIN-63270. |
 
