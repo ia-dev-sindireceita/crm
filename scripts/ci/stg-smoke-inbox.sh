@@ -39,7 +39,12 @@
 #   stage=bootstrap   — /inbox 200 with no conversation link (W2)
 #   stage=view        — /inbox/conversations/<id> != 200 or no CSRF
 #   stage=send        — POST messages != 200
-#   stage=dispatch    — no LLM inbound observed within timeout
+#   stage=dispatch    — no LLM inbound observed within timeout.
+#       SIN-65409: SOFT-CHECK by default (warn-only) — the real LLM
+#       round-trip depends on a paid external dependency (OpenRouter:
+#       key + crédito + latência), so a correct code deploy is not
+#       failed by provider balance/latency. Re-arm as a blocking gate
+#       with DISPATCH_BLOCKING=true.
 #
 # Required env (passed from cd-stg.yml):
 #   STG_BASE             — base URL, e.g. https://acme.crm.crm.someu.com.br
@@ -50,6 +55,13 @@
 #   POLL_TIMEOUT_SECONDS  — default 30
 #   POLL_INTERVAL_SECONDS — default 2
 #   REPLY_BODY            — outbound text; default "ping from staging smoke"
+#   DISPATCH_BLOCKING     — default false (SIN-65409). When false the
+#       stage=dispatch poll-exhausted path is a warn-only soft-check
+#       (emits a ::warning:: and exits 0) so a correct code deploy is
+#       not failed by the paid external LLM dependency (OpenRouter key/
+#       crédito/latência). Set true to re-arm stage=dispatch as a
+#       blocking deploy gate (`die`, exit 1). All other stages
+#       (preflight/auth/route/bootstrap/view/send) remain blocking.
 #   STG_SESSION_JAR       — SIN-65377. Path to a curl cookie jar that
 #       already holds a valid tenant session (__Host-sess-tenant). When
 #       set and the jar carries that cookie, stage=auth REUSES it and
@@ -78,6 +90,11 @@ set +x
 POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-30}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-2}"
 REPLY_BODY="${REPLY_BODY:-ping from staging smoke}"
+# SIN-65409: o round-trip real do LLM (stage=dispatch) depende de uma
+# dependência externa paga (OpenRouter: key + crédito + latência). Por
+# padrão é um SOFT-CHECK observável, não um gate de deploy. Operadores
+# podem re-armar como bloqueante com DISPATCH_BLOCKING=true.
+DISPATCH_BLOCKING="${DISPATCH_BLOCKING:-false}"
 
 WORKDIR="$(mktemp -d -t stg-smoke-inbox.XXXXXX)"
 trap 'rm -rf "${WORKDIR}"' EXIT
@@ -337,5 +354,23 @@ done
 
 # Polling exhausted. Surface the last view payload to make root-cause
 # easier (e.g. an InboundMessagePublisher error renders nothing).
-cat "${VIEW_HTML}" >&2
-die "stage=dispatch: no LLM inbound observed within ${POLL_TIMEOUT_SECONDS}s — W2 receiver / W5 selector wireup may be broken (last inbound count=${baseline}, no growth)"
+# `|| true` keeps the soft-check `exit 0` path clean under `set -e` if
+# the view file is unexpectedly missing.
+cat "${VIEW_HTML}" >&2 || true
+
+dispatch_msg="stage=dispatch: no LLM inbound observed within ${POLL_TIMEOUT_SECONDS}s — W2 receiver / W5 selector wireup may be broken (last inbound count=${baseline}, no growth)"
+
+if [ "${DISPATCH_BLOCKING}" = "true" ]; then
+  # Operator re-armed the round-trip as a deploy gate (SIN-65409).
+  die "${dispatch_msg}"
+fi
+
+# SIN-65409 Opção A: by default stage=dispatch is a warn-only soft-check.
+# The real LLM round-trip depends on a paid external dependency
+# (OpenRouter: key + crédito + latência), so a correct code deploy must
+# not be failed by provider balance/latency. The auto-reply signal stays
+# observable: the per-attempt `inbound=` logs above plus this CD
+# annotation. Re-arm as a hard gate with DISPATCH_BLOCKING=true.
+printf '::warning::%s (soft-check: provider depends on external OpenRouter; deploy NOT failed — re-arm with DISPATCH_BLOCKING=true)\n' "${dispatch_msg}"
+log "stage=dispatch soft-check: no LLM inbound within ${POLL_TIMEOUT_SECONDS}s — warn-only (DISPATCH_BLOCKING=false), deploy not failed. See SIN-65409."
+exit 0
