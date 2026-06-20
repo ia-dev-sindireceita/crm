@@ -389,13 +389,22 @@ func (s *Service) validate(req SummarizeRequest) error {
 // carrying the anonymized preview, so the web handler can render the
 // confirmation modal and persist consent on accept.
 //
-// The gate is skipped when (a) consent/anonymizer/version are not all
-// wired (test-only), or (b) the resolved policy has no PromptVersion —
-// the latter is a tightly-scoped escape hatch for legacy tenants whose
-// admin row pre-dates the consent migration; once they re-run the
-// W4A config UI they receive a non-empty version and re-enter the
-// gate automatically.
+// The gate is opt-in by configuration (SIN-65363): it is skipped
+// unless policy.ConsentRequired is true. Off-by-default is a product
+// decision (Pericles, SIN-65356) — LGPD consent is optional per
+// tenant, not a security weakening; the PII anonymizer and LGPD field
+// catalogue (the real protections) are unaffected by this flag.
+//
+// The gate is also skipped — as defence in depth, even when
+// ConsentRequired is true — when (a) consent/anonymizer/version are not
+// all wired (test-only), or (b) the resolved policy has no
+// PromptVersion (no live prompt template to gate against). The
+// effective firing condition is therefore
+// "ConsentRequired && depsWired && PromptVersion != ”".
 func (s *Service) checkConsent(ctx context.Context, req SummarizeRequest, policy aiassist.Policy) error {
+	if !policy.ConsentRequired {
+		return nil
+	}
 	if s.consent == nil || s.anonymizer == nil || s.anonymizerVersion == "" {
 		return nil
 	}

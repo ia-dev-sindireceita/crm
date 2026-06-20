@@ -42,13 +42,15 @@ func seedAIPolicyTenant(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 
 // freshDBWithAIPolicyAdapter applies the migration chain needed by
 // ai_policy. Reuses the W1A prerequisites and then chains the
-// SIN-63945 / UX-F8 0118_ai_policy_structured_fields migration so the
-// adapter test runs against the production-shaped schema (the adapter
-// now SELECT/INSERTs structured_fields as part of the F8 feature).
+// SIN-63945 / UX-F8 0118_ai_policy_structured_fields migration plus the
+// SIN-65363 0123_ai_policy_consent_required migration so the adapter
+// test runs against the production-shaped schema (the adapter now
+// SELECT/INSERTs both structured_fields and consent_required).
 func freshDBWithAIPolicyAdapter(t *testing.T) *testpg.DB {
 	t.Helper()
 	db, ctx := freshDBWithAIW1A(t)
 	applyChain(t, ctx, db, "0118_ai_policy_structured_fields.up.sql")
+	applyChain(t, ctx, db, "0123_ai_policy_consent_required.up.sql")
 	return db
 }
 
@@ -452,6 +454,80 @@ func TestAIPolicyAdapter_ResolverCascadeAgainstRealDB(t *testing.T) {
 	}
 	if pol.Model != "openrouter/channel-model" {
 		t.Errorf("channel Model = %q, want channel-model", pol.Model)
+	}
+}
+
+// TestAIPolicyAdapter_ConsentRequired_RoundTripAndCascade pins the
+// SIN-65363 column to the production schema: it round-trips the flag
+// through Upsert/Get, confirms the DEFAULT false applies to a row
+// written without setting it (backward-compatible posture), and proves
+// the flag rides the channel>tenant cascade like every other field —
+// a channel row with consent_required=true overrides a tenant row with
+// consent_required=false.
+func TestAIPolicyAdapter_ConsentRequired_RoundTripAndCascade(t *testing.T) {
+	t.Parallel()
+	db := freshDBWithAIPolicyAdapter(t)
+	store := newAIPolicyStore(t, db)
+	tenant := seedAIPolicyTenant(t, db.AdminPool())
+	ctx := context.Background()
+
+	mk := func(scope aipolicy.ScopeType, scopeID string, consent bool) aipolicy.Policy {
+		return aipolicy.Policy{
+			TenantID: tenant, ScopeType: scope, ScopeID: scopeID,
+			Model: "openrouter/auto", PromptVersion: "v1", Tone: "neutro",
+			Language: "pt-BR", AIEnabled: true, Anonymize: true, OptIn: true,
+			ConsentRequired: consent,
+		}
+	}
+
+	// Tenant row written with the flag OFF; the column DEFAULT also
+	// being false, Get must report false.
+	if err := store.Upsert(ctx, mk(aipolicy.ScopeTenant, tenant.String(), false)); err != nil {
+		t.Fatalf("Upsert tenant: %v", err)
+	}
+	got, ok, err := store.Get(ctx, tenant, aipolicy.ScopeTenant, tenant.String())
+	if err != nil || !ok {
+		t.Fatalf("Get tenant: ok=%v err=%v", ok, err)
+	}
+	if got.ConsentRequired {
+		t.Errorf("tenant ConsentRequired = true; want false (off by default)")
+	}
+
+	// Flip it ON via a second Upsert and confirm the ON CONFLICT branch
+	// persists the new value.
+	if err := store.Upsert(ctx, mk(aipolicy.ScopeTenant, tenant.String(), true)); err != nil {
+		t.Fatalf("Upsert tenant on: %v", err)
+	}
+	got, _, err = store.Get(ctx, tenant, aipolicy.ScopeTenant, tenant.String())
+	if err != nil {
+		t.Fatalf("Get tenant on: %v", err)
+	}
+	if !got.ConsentRequired {
+		t.Errorf("tenant ConsentRequired = false after flip; want true")
+	}
+
+	// Cascade: tenant OFF, channel ON → resolver picks the channel row,
+	// so the effective ConsentRequired is true.
+	if err := store.Upsert(ctx, mk(aipolicy.ScopeTenant, tenant.String(), false)); err != nil {
+		t.Fatalf("Upsert tenant reset: %v", err)
+	}
+	if err := store.Upsert(ctx, mk(aipolicy.ScopeChannel, "whatsapp", true)); err != nil {
+		t.Fatalf("Upsert channel: %v", err)
+	}
+	resolver, err := aipolicy.NewResolver(store)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	channelStr := "whatsapp"
+	pol, src, err := resolver.Resolve(ctx, aipolicy.ResolveInput{TenantID: tenant, ChannelID: &channelStr})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if src != aipolicy.SourceChannel {
+		t.Fatalf("source = %q; want channel", src)
+	}
+	if !pol.ConsentRequired {
+		t.Errorf("cascaded ConsentRequired = false; want true (channel row wins over tenant)")
 	}
 }
 
