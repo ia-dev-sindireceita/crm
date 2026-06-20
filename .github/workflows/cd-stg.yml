@@ -589,36 +589,65 @@ jobs:
           bash scripts/ci/stg-smoke-inbox.sh
 
       # SIN-64032 — master-tenants surface smoke gate. cmd/server/master_tenants_wire.go
-      # (noopMasterTenantsStack, lines 99-103) silently mounts a 404 stack when
-      # MASTER_OPS_ACTOR_ID is unset, so /master/tenants returns 404 instead of the
-      # auth-gate 302 and the deploy still closes green. This step fails the job red
-      # when the surface is unmounted, naming the env var + runbook so a disaster-
-      # recovery rebuild that drops the line is caught here, not by an operator.
-      # Unauthenticated request: the auth gate must redirect (302) to a login page.
-      # No new secrets — reuses STG_SMOKE_URL like the /login + /inbox smokes.
+      # (buildMasterTenantsStack) silently returns a 404 noop stack when ANY of
+      # three boot pre-conditions fail, checked in this order: (1) MASTER_OPS_DATABASE_URL
+      # is set; (2) MASTER_OPS_ACTOR_ID is set AND a valid UUID; (3) the master-ops
+      # pgxpool actually connects to that DSN. Any miss → /master/tenants returns 404
+      # instead of the auth-gate redirect and the deploy still closes green. This step
+      # fails the job red when the surface is unmounted, naming all three pre-conditions +
+      # runbook so a disaster-recovery rebuild that drops one is caught here, not by an
+      # operator burning a deploy cycle (SIN-65286: the old message blamed only the
+      # ACTOR_ID, sending operators down a partial fix).
+      #
+      # SIN-65297 — HOST. SIN-65264 (#372) relocated /master/* off the tenant apex
+      # onto the dedicated master console host (deny-by-default on tenant hosts,
+      # SIN-63340). On the tenant host (STG_SMOKE_URL) /master/tenants is now
+      # *correctly* 404, so smoking it there false-reds every deploy and can no longer
+      # tell mounted from unmounted. This step must target the master host instead:
+      # STG_MASTER_SMOKE_URL (e.g. https://master.crm.crm.someu.com.br). The new secret
+      # is board-gated — until it is set in pericles-luz/crm GH Actions, this step
+      # fails red with a clear "add the secret" message rather than smoking a bad host.
+      #
+      # Unauthenticated request: the master auth gate redirects to /m/login. The
+      # mount uses 303 (See Other → /m/login); 301/302 are accepted too for safety.
       - name: smoke check /master/tenants
         timeout-minutes: 1
         env:
-          STG_BASE: ${{ secrets.STG_SMOKE_URL }}
+          STG_MASTER_BASE: ${{ secrets.STG_MASTER_SMOKE_URL }}
         run: |
           set -euo pipefail
           set +x
 
+          if [ -z "${STG_MASTER_BASE:-}" ]; then
+            echo "::error::SIN-65297 — STG_MASTER_SMOKE_URL secret is not set. /master/* was relocated to the master console host (SIN-65264 #372), so this smoke can no longer use STG_SMOKE_URL (tenant apex, where /master/tenants is correctly 404). Add the STG_MASTER_SMOKE_URL secret (e.g. https://master.crm.crm.someu.com.br) in pericles-luz/crm GitHub Actions, then re-run cd-stg. See docs/deploy/staging.md §4."
+            exit 1
+          fi
+
           smoke_master_tenants() {
-            local code
-            code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" \
-              "${STG_BASE}/master/tenants")
+            local code location
+            # Capture status + Location so a redirect (mounted+gated) can be told
+            # apart from a redirect to somewhere unexpected.
+            location=$(curl -sS --max-time 5 -o /dev/null \
+              -w "%{http_code} %{redirect_url}" \
+              "${STG_MASTER_BASE}/master/tenants")
+            code=${location%% *}
+            location=${location#* }
             case "$code" in
-              301|302)
-                echo "master-tenants smoke OK — /master/tenants returned ${code} (auth gate redirect)"
+              301|302|303)
+                echo "master-tenants smoke OK — /master/tenants returned ${code} (master auth gate redirect → ${location:-<no Location>})"
+                case "$location" in
+                  */m/login*) : ;;  # expected: relocated master login
+                  "") echo "::warning::/master/tenants redirected (${code}) but sent no Location header — gate behaviour changed, investigate." ;;
+                  *) echo "::warning::/master/tenants redirected (${code}) to '${location}', expected the master login (/m/login). Surface is mounted+gated but the redirect target drifted — investigate." ;;
+                esac
                 return 0
                 ;;
               404)
-                echo "::error::SIN-64032 regression — /master/tenants returned 404 (master surface unmounted). Root cause: MASTER_OPS_ACTOR_ID missing from /opt/crm/stg/.env.stg. Remediation: add the line per docs/deploy/staging.md §4 and re-run cd-stg."
+                echo "::error::SIN-64032 regression — /master/tenants returned 404 on the master host (master surface unmounted). buildMasterTenantsStack (cmd/server/master_tenants_wire.go) returns a 404 noop stack if ANY of three boot pre-conditions fail, in this order: (1) MASTER_OPS_DATABASE_URL set; (2) MASTER_OPS_ACTOR_ID set AND a valid UUID; (3) the master-ops pgxpool actually connects to that DSN. Adding only MASTER_OPS_ACTOR_ID is NOT enough — the DSN must also be present AND authenticate (the app_master_ops role is created WITHOUT a password by migrations/0001_roles.up.sql, so the DSN fails to connect until you ALTER ROLE ... PASSWORD). The runner cannot read the container boot log; on the VPS check it for 'master tenants surface disabled' (which pre-condition) or 'master pg connect' (DSN auth/connect failed). Remediation: docs/deploy/staging.md §4 covers all three (MASTER_OPS_DATABASE_URL + MASTER_OPS_ACTOR_ID + app_master_ops password), then re-run cd-stg."
                 return 1
                 ;;
               *)
-                echo "::error::/master/tenants expected 302 (auth gate), got ${code}. 200 means the master surface mounted without an auth gate; investigate before shipping."
+                echo "::error::/master/tenants expected a 30x auth-gate redirect, got ${code} from ${STG_MASTER_BASE}. 200 means the master surface mounted without an auth gate; investigate before shipping."
                 return 1
                 ;;
             esac
@@ -633,5 +662,5 @@ jobs:
             echo "master-tenants smoke attempt ${attempt} failed, retrying…"
             sleep 5
           done
-          echo "master-tenants smoke FAILED — see docs/deploy/staging.md §4 (MASTER_OPS_ACTOR_ID)"
+          echo "master-tenants smoke FAILED — see docs/deploy/staging.md §4 (all three: MASTER_OPS_DATABASE_URL + MASTER_OPS_ACTOR_ID + app_master_ops password)"
           exit 1
