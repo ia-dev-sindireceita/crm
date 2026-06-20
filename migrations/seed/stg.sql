@@ -96,4 +96,38 @@ ON CONFLICT (id) DO NOTHING;
 -- fixtures are not exercised in staging; add them only if a future
 -- test demands the negative case.
 
+-- SIN-65311/SIN-65285: enable AI-assist for the acme tenant in staging so
+-- the "Resumir + sugerir 3 respostas" button works out of the box.
+-- Without this row the resolver falls back to DefaultPolicy (AIEnabled=false,
+-- deny-by-default) and POST /ai-assist returns 403. Globex intentionally
+-- has no ai_policy row — cross-tenant isolation control.
+--
+-- Wrapped in a DO block that skips gracefully when the ai_policy table
+-- does not yet exist (minimal integration-test DBs may not run migration
+-- 0098 which also creates ai_summary — a table with an FK to conversation
+-- that many test harnesses omit). Real staging always has the table.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'ai_policy'
+  ) THEN
+    INSERT INTO ai_policy
+      (id, tenant_id, scope_type, scope_id,
+       model, prompt_version, tone, language,
+       ai_enabled, anonymize, opt_in)
+    VALUES
+      ('00000000-0000-0000-0000-00000065ac01',
+       '00000000-0000-0000-0000-00000000ac01',
+       'tenant',
+       '00000000-0000-0000-0000-00000000ac01',
+       'openrouter/auto', 'v1', 'neutro', 'pt-BR',
+       true, false, false)
+    ON CONFLICT (tenant_id, scope_type, scope_id)
+    DO UPDATE SET
+      ai_enabled  = EXCLUDED.ai_enabled,
+      updated_at  = now();
+  END IF;
+END $$;
+
 COMMIT;
