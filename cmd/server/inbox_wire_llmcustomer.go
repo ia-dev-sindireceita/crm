@@ -253,6 +253,18 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		listAssignableUC = &listAssignableAdapter{r: deps.Attendants}
 	}
 
+	// Training-conversation reset (SIN-65392). The same fake adapter that
+	// drives the auto-reply also satisfies inboxusecase.ConversationResetter
+	// (clears per-tenant turn history + bootstrapped flag), so a reset
+	// deletes the DB rows AND the in-memory simulator state in lock-step.
+	// The use case rejects any non-fakellm conversation, so this is the
+	// only inbox wire that registers the reset route.
+	resetUC, err := inboxusecase.NewResetConversation(deps.Repo, adapter)
+	if err != nil {
+		adapter.Stop()
+		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: reset conversation usecase: %w", err)
+	}
+
 	handlerDeps := webinbox.Deps{
 		ListConversations:   bootstrappedList,
 		ListSummaries:       summaries,
@@ -262,6 +274,7 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		ConversationContext: ctxUC,
 		AssignConversation:  assignUC,
 		ListAssignable:      listAssignableUC,
+		ResetConversation:   resetUC,
 		AIAssist:            deps.AIAssist,
 		CSRFToken:           csrfTokenFromSessionContext,
 		UserID:              userIDFromSessionContext,
