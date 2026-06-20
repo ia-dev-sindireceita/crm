@@ -28,12 +28,30 @@ jobs:
   paperclip-lint:
     runs-on: ubuntu-latest
     if: ${{ vars.PAPERCLIP_LINT_DISABLED != '1' }}
+    # Pin the toolchain so `go` never auto-downloads a `toolchain@…` module at
+    # runtime. setup-go already installs the exact version from go.mod's
+    # `toolchain` directive; `GOTOOLCHAIN=local` forces every `go` invocation to
+    # use *that* binary. Without it, GOTOOLCHAIN=auto could fetch a different
+    # patch release into a cache the setup-go restore didn't cover, producing the
+    # intermittent `cache entry not found: bad checksum` failure in
+    # tools/lint/nobodyreread's analysistest (SIN-65397). Reversible: drop this
+    # env block to restore auto behaviour.
+    env:
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
         with:
           go-version-file: go.mod
           cache: true
+
+      # Pre-build the standard library so the cgo export data for packages the
+      # lint fixtures import transitively (net → C) is in the build cache before
+      # analysistest type-checks them. On a cold/partial cache analysistest could
+      # otherwise hit `could not import C (no metadata for C)` while loading the
+      # `net` package, skipping the analysis and flaking the job (SIN-65397).
+      - name: warm build cache (stdlib incl. cgo export data)
+        run: go build std
 
       - name: analystest fixtures (positive + negative cases)
         run: go test ./tools/lint/nobodyreread/... ./tools/lint/nomathrand/... ./tools/lint/nosecrets/... -count=1 -race -cover
