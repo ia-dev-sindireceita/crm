@@ -50,6 +50,15 @@
 #   POLL_TIMEOUT_SECONDS  — default 30
 #   POLL_INTERVAL_SECONDS — default 2
 #   REPLY_BODY            — outbound text; default "ping from staging smoke"
+#   STG_SESSION_JAR       — SIN-65377. Path to a curl cookie jar that
+#       already holds a valid tenant session (__Host-sess-tenant). When
+#       set and the jar carries that cookie, stage=auth REUSES it and
+#       does NOT POST /login. The cd-stg `/login` smoke step exports
+#       this so the deploy gate logs in once instead of per-step,
+#       keeping the cumulative POST /login count under the {ip: 1min,
+#       Max 5} rate-limit bucket (internal/iam/ratelimit/policy.go).
+#       Unset/stale → fall back to a single login. The rate-limit is a
+#       security control and is NOT loosened by this reuse.
 #
 # The script is idempotent: the llmcustomer bootstrap reuses the same
 # synthetic conversation across runs (per-tenant ledger + idempotent
@@ -120,33 +129,61 @@ case "${provider}" in
 esac
 
 # ---------------------------------------------------------------------
-# Stage 2 — Login. Reuse the SIN-63270 cookie contract.
+# Stage 2 — Authenticate, or reuse a session minted upstream.
+#
+# SIN-65377: the cd-stg deploy gate runs several smoke steps from the
+# SAME runner IP inside the 1-minute POST /login rate-limit window
+# ({ip: Window 1min, Max 5}, internal/iam/ratelimit/policy.go). When
+# every step re-authenticates, the cumulative POST /login count trips
+# the limiter and a later step 429s — the gate then fails red on a
+# self-collision rather than a real regression, and the subsequent
+# /master/tenants smoke is skipped. To stay under the bucket the
+# cd-stg `/login` smoke saves its valid-login cookie jar and exports
+# its path as STG_SESSION_JAR; this script reuses it (zero extra
+# POST /login). The rate-limit is a legitimate security control and is
+# NOT loosened here — we simply stop spending the budget needlessly.
+# Standalone/local runs (STG_SESSION_JAR unset or stale) fall back to a
+# single login, reusing the SIN-63270 cookie contract.
 # ---------------------------------------------------------------------
-log "stage=auth POST ${STG_BASE}/login as ${STG_SEED_AGENT_EMAIL%@*}@…"
-code=$(curl -sS --max-time 5 -o "${LOGIN_BODY}" -D "${LOGIN_HDR}" \
-  -w "%{http_code}" -X POST \
-  -c "${JAR}" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "email=${STG_SEED_AGENT_EMAIL}" \
-  --data-urlencode "password=${STG_SEED_AGENT_PASSWORD}" \
-  "${STG_BASE}/login")
-if [ "${code}" != "302" ]; then
-  cat "${LOGIN_BODY}" >&2
-  die "stage=auth: /login expected 302, got ${code} (check seeded credentials and tenant FQDN)"
+if [ -n "${STG_SESSION_JAR:-}" ] && grep -q "__Host-sess-tenant" "${STG_SESSION_JAR}" 2>/dev/null; then
+  cp "${STG_SESSION_JAR}" "${JAR}"
+  log "stage=auth reuse — session jar ${STG_SESSION_JAR} carries __Host-sess-tenant; skipping POST /login (SIN-65377: avoids cd-stg rate-limit collision, 0 extra POST /login)"
+  log "stage=auth ok"
+else
+  log "stage=auth POST ${STG_BASE}/login as ${STG_SEED_AGENT_EMAIL%@*}@…"
+  code=$(curl -sS --max-time 5 -o "${LOGIN_BODY}" -D "${LOGIN_HDR}" \
+    -w "%{http_code}" -X POST \
+    -c "${JAR}" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "email=${STG_SEED_AGENT_EMAIL}" \
+    --data-urlencode "password=${STG_SEED_AGENT_PASSWORD}" \
+    "${STG_BASE}/login")
+  # SIN-65377: a 429 here means the login window is saturated (a
+  # concurrent run, a re-run, or a missing STG_SESSION_JAR upstream).
+  # That is not a deploy regression, so surface it distinctly with the
+  # remediation rather than the generic "expected 302" message.
+  if [ "${code}" = "429" ]; then
+    cat "${LOGIN_HDR}" >&2
+    die "stage=auth: /login returned 429 (login rate-limit window saturated). In cd-stg the /login smoke must export STG_SESSION_JAR so this step reuses the session instead of re-authenticating (SIN-65377). Standalone: wait ~60s for the {ip: 1min, Max 5} window to drain."
+  fi
+  if [ "${code}" != "302" ]; then
+    cat "${LOGIN_BODY}" >&2
+    die "stage=auth: /login expected 302, got ${code} (check seeded credentials and tenant FQDN)"
+  fi
+  # Staging is HTTP/2; curl emits response headers in their on-wire
+  # lowercase form (`set-cookie:`), so the grep must be case-insensitive
+  # or it false-fails on a successful login. See SIN-63858 cd-stg run
+  # 26724483191 — Pericles' first deploy after #130 hit exactly this.
+  if ! grep -qi "Set-Cookie: __Host-sess-tenant" "${LOGIN_HDR}"; then
+    cat "${LOGIN_HDR}" >&2
+    die "stage=auth: missing __Host-sess-tenant cookie (MFA gate may have intercepted — seed user must be tenant_atendente without totp_required_at)"
+  fi
+  if ! grep -qi "Set-Cookie: __Host-csrf" "${LOGIN_HDR}"; then
+    cat "${LOGIN_HDR}" >&2
+    die "stage=auth: missing __Host-csrf cookie"
+  fi
+  log "stage=auth ok"
 fi
-# Staging is HTTP/2; curl emits response headers in their on-wire
-# lowercase form (`set-cookie:`), so the grep must be case-insensitive
-# or it false-fails on a successful login. See SIN-63858 cd-stg run
-# 26724483191 — Pericles' first deploy after #130 hit exactly this.
-if ! grep -qi "Set-Cookie: __Host-sess-tenant" "${LOGIN_HDR}"; then
-  cat "${LOGIN_HDR}" >&2
-  die "stage=auth: missing __Host-sess-tenant cookie (MFA gate may have intercepted — seed user must be tenant_atendente without totp_required_at)"
-fi
-if ! grep -qi "Set-Cookie: __Host-csrf" "${LOGIN_HDR}"; then
-  cat "${LOGIN_HDR}" >&2
-  die "stage=auth: missing __Host-csrf cookie"
-fi
-log "stage=auth ok"
 
 # ---------------------------------------------------------------------
 # Stage 3 — GET /inbox. Pull the first conversation link out of the
