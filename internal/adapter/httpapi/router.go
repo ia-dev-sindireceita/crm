@@ -1597,78 +1597,99 @@ func NewRouter(deps Deps) http.Handler {
 			mo.Use(deps.Master.RequireMasterMFA)
 			mo.Use(deps.Master.RequirePrincipalFromMaster)
 
+			// SIN-65368/SIN-65369: ImpersonationFromSession must wrap
+			// EVERY /master/* route except End so the active envelope is
+			// resolved onto the request context. Page handlers read it via
+			// middleware.ActiveImpersonation(ctx) to render the red
+			// impersonation banner ({{with .ActiveImpersonation}}); without
+			// it the banner is silently suppressed on every operator page.
+			// It is a router-level middleware here (not inline on a handful
+			// of handlers) so any future /master/* route inherits it — the
+			// design the ImpersonationRoutes godoc documents ("Mounted by
+			// NewRouter as a wrapper on every /master/* route except End").
+			//
+			// End is the one deliberate exclusion: FromSession ends + 303
+			// redirects an expired envelope (step 4) and swaps the request
+			// into the impersonated tenant's context (step 7). POST
+			// /master/impersonation/end must instead reach its handler in
+			// the master's own context even when the envelope already
+			// expired, so an operator can always exit a stale envelope (see
+			// the ImpersonationRoutes godoc + impersonation_session.go §1.3).
+			// It stays mounted directly on mo, below, outside moImp.
+			moImp := mo.With()
+			if deps.Impersonation.FromSession != nil {
+				moImp = mo.With(deps.Impersonation.FromSession)
+			}
+
 			// MasterTenants surface (SIN-62882).
 			if deps.MasterTenants.List != nil {
-				mo.Method(http.MethodGet, "/master/tenants",
+				moImp.Method(http.MethodGet, "/master/tenants",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantRead, nil)(deps.MasterTenants.List))
 			}
 			if deps.MasterTenants.Create != nil {
-				mo.Method(http.MethodPost, "/master/tenants",
+				moImp.Method(http.MethodPost, "/master/tenants",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantCreate, nil)(deps.MasterTenants.Create))
 			}
 			if deps.MasterTenants.AssignPlan != nil {
-				mo.Method(http.MethodPatch, "/master/tenants/{id}/plan",
+				moImp.Method(http.MethodPatch, "/master/tenants/{id}/plan",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterSubscriptionAssignPlan, nil)(deps.MasterTenants.AssignPlan))
 			}
 			if deps.MasterTenants.Detail != nil {
-				mo.Method(http.MethodGet, "/master/tenants/{id}",
+				moImp.Method(http.MethodGet, "/master/tenants/{id}",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantRead, nil)(deps.MasterTenants.Detail))
 			}
 			// Grants surface (SIN-62884).
 			if deps.MasterTenants.GrantsNew != nil {
-				mo.Method(http.MethodGet, "/master/tenants/{id}/grants/new",
+				moImp.Method(http.MethodGet, "/master/tenants/{id}/grants/new",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, nil)(deps.MasterTenants.GrantsNew))
 			}
 			if deps.MasterTenants.GrantsCreate != nil {
-				mo.Method(http.MethodPost, "/master/tenants/{id}/grants",
+				moImp.Method(http.MethodPost, "/master/tenants/{id}/grants",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyFreeSubscriptionPeriod, nil)(deps.MasterTenants.GrantsCreate))
 			}
 			if deps.MasterTenants.GrantsRevoke != nil {
-				mo.Method(http.MethodPost, "/master/grants/{id}/revoke",
+				moImp.Method(http.MethodPost, "/master/grants/{id}/revoke",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantCourtesyRevoke, nil)(deps.MasterTenants.GrantsRevoke))
 			}
 			// Grant-requests surface (SIN-63605).
 			if deps.MasterTenants.GrantRequestsCreate != nil {
-				mo.Method(http.MethodPost, "/master/tenants/{id}/grants/requests",
+				moImp.Method(http.MethodPost, "/master/tenants/{id}/grants/requests",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestCreate, nil)(deps.MasterTenants.GrantRequestsCreate))
 			}
 			if deps.MasterTenants.GrantRequestsList != nil {
-				mo.Method(http.MethodGet, "/master/grants/requests",
+				moImp.Method(http.MethodGet, "/master/grants/requests",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsList))
 			}
 			if deps.MasterTenants.GrantRequestsShow != nil {
-				mo.Method(http.MethodGet, "/master/grants/requests/{id}",
+				moImp.Method(http.MethodGet, "/master/grants/requests/{id}",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsShow))
 			}
 			if deps.MasterTenants.GrantRequestsApprove != nil {
-				mo.Method(http.MethodPost, "/master/grants/requests/{id}/approve",
+				moImp.Method(http.MethodPost, "/master/grants/requests/{id}/approve",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestApprove, nil)(deps.MasterTenants.GrantRequestsApprove))
 			}
 			if deps.MasterTenants.GrantRequestsReject != nil {
-				mo.Method(http.MethodPost, "/master/grants/requests/{id}/reject",
+				moImp.Method(http.MethodPost, "/master/grants/requests/{id}/reject",
 					middleware.RequireAction(deps.Authorizer, iam.ActionMasterGrantRequestReject, nil)(deps.MasterTenants.GrantRequestsReject))
 			}
 			// Impersonation surface (SIN-63958). RequireRoleMaster instead
 			// of RequireAction for End/Feed (see original mount comment).
+			// Start + Feed ride moImp's FromSession wrapper; the previous
+			// inline FromSession wrap is now redundant and was removed.
 			if deps.Impersonation.Start != nil {
-				inner := deps.Impersonation.Start
-				if deps.Impersonation.FromSession != nil {
-					inner = deps.Impersonation.FromSession(inner)
-				}
-				mo.Method(http.MethodPost, "/master/tenants/{id}/impersonate",
-					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantImpersonate, nil)(inner))
+				moImp.Method(http.MethodPost, "/master/tenants/{id}/impersonate",
+					middleware.RequireAction(deps.Authorizer, iam.ActionMasterTenantImpersonate, nil)(deps.Impersonation.Start))
 			}
+			// End is deliberately mounted on mo, NOT moImp: it must reach
+			// its handler even with an expired envelope (FromSession would
+			// 303-redirect it) and in the master's own tenant context.
 			if deps.Impersonation.End != nil {
 				mo.Method(http.MethodPost, "/master/impersonation/end",
 					middleware.RequireRoleMaster()(deps.Impersonation.End))
 			}
 			if deps.Impersonation.Feed != nil {
-				inner := deps.Impersonation.Feed
-				if deps.Impersonation.FromSession != nil {
-					inner = deps.Impersonation.FromSession(inner)
-				}
-				mo.Method(http.MethodGet, "/master/impersonation/feed",
-					middleware.RequireRoleMaster()(inner))
+				moImp.Method(http.MethodGet, "/master/impersonation/feed",
+					middleware.RequireRoleMaster()(deps.Impersonation.Feed))
 			}
 		})
 	}
