@@ -209,6 +209,7 @@ var masterLayoutTmpl = template.Must(template.New("master.layout").Funcs(templat
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/js/impersonation-countdown.js" defer></script>
 </head>
 <body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
   {{template "shell_impersonation_banner" .}}
@@ -369,6 +370,7 @@ var tenantDetailLayoutTmpl = template.Must(template.New("tenant_detail.layout").
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/js/impersonation-countdown.js" defer></script>
 </head>
 <body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
   {{template "shell_impersonation_banner" .}}
