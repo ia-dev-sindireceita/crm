@@ -32,7 +32,14 @@ import (
 // spent. loginStatus controls what /login returns: a healthy 302 for
 // the fallback path, or 500 in the reuse path where /login must never
 // be called at all (a non-zero count then fails loudly).
-func reuseFake(t *testing.T, loginStatus int, loginHits *atomic.Int32) string {
+//
+// lowercaseCookies forces the login response to emit the Set-Cookie
+// headers with a lowercase field name (`set-cookie:`), reproducing how
+// HTTP/2 staging delivers them (httptest is HTTP/1.1 and would emit the
+// canonical `Set-Cookie:`). This is the regression condition behind
+// SIN-63858/SIN-65381: the auth grep must be case-insensitive (`-qi`)
+// or a successful login false-fails with "missing __Host-* cookie".
+func reuseFake(t *testing.T, loginStatus int, loginHits *atomic.Int32, lowercaseCookies bool) string {
 	t.Helper()
 	mux := http.NewServeMux()
 
@@ -51,8 +58,18 @@ func reuseFake(t *testing.T, loginStatus int, loginHits *atomic.Int32) string {
 			http.Error(w, "login should not have been called", loginStatus)
 			return
 		}
-		w.Header().Add("Set-Cookie", "__Host-sess-tenant=fake-session; Path=/; HttpOnly")
-		w.Header().Add("Set-Cookie", "__Host-csrf="+fakeCSRF+"; Path=/")
+		if lowercaseCookies {
+			// Set the map key verbatim (lowercase): net/http canonicalises
+			// on Add/Set but writes a directly-assigned key as-is, so curl
+			// receives `set-cookie:` exactly like HTTP/2 staging.
+			w.Header()["set-cookie"] = []string{
+				"__Host-sess-tenant=fake-session; Path=/; HttpOnly",
+				"__Host-csrf=" + fakeCSRF + "; Path=/",
+			}
+		} else {
+			w.Header().Add("Set-Cookie", "__Host-sess-tenant=fake-session; Path=/; HttpOnly")
+			w.Header().Add("Set-Cookie", "__Host-csrf="+fakeCSRF+"; Path=/")
+		}
 		w.Header().Set("Location", "/hello-tenant")
 		w.WriteHeader(http.StatusFound)
 	})
@@ -128,7 +145,7 @@ func writeSessionJar(t *testing.T, cookies map[string]string) string {
 func TestSmoke_SessionReuse_SkipsLogin(t *testing.T) {
 	t.Parallel()
 	var loginHits atomic.Int32
-	base := reuseFake(t, http.StatusInternalServerError, &loginHits)
+	base := reuseFake(t, http.StatusInternalServerError, &loginHits, false)
 	jar := writeSessionJar(t, map[string]string{
 		"__Host-sess-tenant": "fake-session",
 		"__Host-csrf":        fakeCSRF,
@@ -158,7 +175,7 @@ func TestSmoke_SessionReuse_SkipsLogin(t *testing.T) {
 func TestSmoke_SessionReuse_FallbackWhenJarMissingCookie(t *testing.T) {
 	t.Parallel()
 	var loginHits atomic.Int32
-	base := reuseFake(t, http.StatusFound, &loginHits)
+	base := reuseFake(t, http.StatusFound, &loginHits, false)
 	// Jar present but only carries an unrelated cookie → reuse guard
 	// fails, fallback login runs.
 	jar := writeSessionJar(t, map[string]string{"__Host-csrf": fakeCSRF})
@@ -183,7 +200,7 @@ func TestSmoke_SessionReuse_FallbackWhenJarMissingCookie(t *testing.T) {
 func TestSmoke_SessionReuse_FallbackWhenJarUnset(t *testing.T) {
 	t.Parallel()
 	var loginHits atomic.Int32
-	base := reuseFake(t, http.StatusFound, &loginHits)
+	base := reuseFake(t, http.StatusFound, &loginHits, false)
 
 	out, code := runSmoke(t, base)
 	if code != 0 {
@@ -191,5 +208,30 @@ func TestSmoke_SessionReuse_FallbackWhenJarUnset(t *testing.T) {
 	}
 	if got := loginHits.Load(); got != 1 {
 		t.Fatalf("POST /login count=%d want 1 (no jar → single login)\n%s", got, out)
+	}
+}
+
+// TestSmoke_SessionReuse_FallbackHandlesLowercaseSetCookie reproduces the
+// SIN-63858/SIN-65381 regression condition: staging serves HTTP/2, so the
+// login response delivers `set-cookie:` headers lowercased. The fallback
+// login must still recognise the __Host-* cookies — which only holds if
+// the auth grep is case-insensitive (`-qi`). A case-sensitive `grep -q`
+// would die here with "missing __Host-sess-tenant cookie" on a perfectly
+// valid login, exactly as cd-stg run 26724483191 did upstream before the
+// fix. httptest is HTTP/1.1, so reuseFake forges the lowercase field name.
+func TestSmoke_SessionReuse_FallbackHandlesLowercaseSetCookie(t *testing.T) {
+	t.Parallel()
+	var loginHits atomic.Int32
+	base := reuseFake(t, http.StatusFound, &loginHits, true /* lowercaseCookies */)
+
+	out, code := runSmoke(t, base)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d want 0 — lowercase set-cookie (HTTP/2) must still pass the auth grep (SIN-63858/SIN-65381)\n%s", code, out)
+	}
+	if got := loginHits.Load(); got != 1 {
+		t.Fatalf("POST /login count=%d want 1 (no jar → single login)\n%s", got, out)
+	}
+	if !strings.Contains(out, "stage=auth ok") {
+		t.Fatalf("lowercase set-cookie smoke missing 'stage=auth ok' — case-insensitive cookie grep regressed\n%s", out)
 	}
 }
