@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/middleware"
 	"github.com/pericles-luz/crm/internal/iam"
 )
 
@@ -99,6 +100,27 @@ type RequirePrincipalFromMasterConfig struct {
 //     freshness gate consults it only on the impersonation path, which
 //     this surface is not (SecEng C4 documents nil is acceptable here).
 //
+// Alongside the principal it also synthesizes a minimal iam.Session and
+// attaches it via middleware.WithSession (SIN-65321): the downstream
+// ImpersonationFromSession middleware (and any handler reading
+// SessionFromContext) gates on a session being present and 503s "impersonation
+// requires session" otherwise. The /master/* chain intentionally omits
+// RequireAuth (the tenant-session middleware that normally seeds the session —
+// SecEng C3), so without this attach the impersonation routes always 503 even
+// for a fully authenticated master operator. The synthesized session carries
+// only:
+//   - UserID = master.ID — the field ImpersonationFromSession reads for the
+//     audit ActorUserID and the master-role re-check (checker.IsMaster),
+//   - Role  = RoleMaster — consistent with the synthesized principal,
+//   - TenantID = uuid.Nil — the surface runs outside TenantScope (SecEng C4);
+//     a non-Nil tenant here would be a tenant-scope leak.
+//
+// ID/ExpiresAt/CreatedAt are left ZERO ON PURPOSE: this is NOT a persisted
+// session row. The master impersonation envelope is keyed off the master
+// cookie (readMasterSessionID), not iam.Session.ID, so no real session id is
+// needed; minting one would risk downstream code treating it as a real
+// persisted session.
+//
 // Deny-by-default is preserved by the per-route RequireAction gates that
 // run AFTER this middleware (SecEng C3): the principal is an identity, not
 // an authorization. The crossing is logged for observability (SecEng C6).
@@ -128,6 +150,14 @@ func RequirePrincipalFromMaster(cfg RequirePrincipalFromMasterConfig) func(http.
 				UserID: master.ID,
 				Roles:  []iam.Role{iam.RoleMaster},
 			}
+			// SIN-65321: minimal session so ImpersonationFromSession (and
+			// any SessionFromContext reader) does not 503. Zero ID/expiry
+			// by design — see the doc comment. TenantID stays uuid.Nil to
+			// match the principal and avoid tenant-scope leakage.
+			sess := iam.Session{
+				UserID: master.ID,
+				Role:   iam.RoleMaster,
+			}
 			// C6: observe the cross-tenant crossing independent of the
 			// per-action authz outcome.
 			logger.InfoContext(r.Context(), "mastermfa: master principal synthesized",
@@ -135,7 +165,9 @@ func RequirePrincipalFromMaster(cfg RequirePrincipalFromMasterConfig) func(http.
 				slog.String("user_id", master.ID.String()),
 				slog.String("route", r.URL.Path),
 			)
-			next.ServeHTTP(w, r.WithContext(iam.WithPrincipal(r.Context(), p)))
+			ctx := iam.WithPrincipal(r.Context(), p)
+			ctx = middleware.WithSession(ctx, sess)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
