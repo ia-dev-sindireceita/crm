@@ -455,7 +455,11 @@ func TestSmoke_DispatchTimeout(t *testing.T) {
 		HealthProvider:   "llmcustomer",
 		InboundAfterPoll: 999, // never grows past baseline within budget
 	})
-	out, code := runSmoke(t, base, "POLL_TIMEOUT_SECONDS=2", "POLL_INTERVAL_SECONDS=1")
+	// SIN-65410 (rule-3 retarget, CTO-authorized): stage=dispatch is now a
+	// warn-only soft-check by default (SIN-65409 Opção A). DISPATCH_BLOCKING=true
+	// re-arms the hard gate so this timeout→exit≠0 assertion still holds under
+	// the env where the blocking behaviour applies.
+	out, code := runSmoke(t, base, "POLL_TIMEOUT_SECONDS=2", "POLL_INTERVAL_SECONDS=1", "DISPATCH_BLOCKING=true")
 	if code == 0 {
 		t.Fatalf("smoke exit=0 want non-zero\n%s", out)
 	}
