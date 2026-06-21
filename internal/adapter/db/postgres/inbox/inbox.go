@@ -38,6 +38,7 @@ var (
 	_ domain.ConversationReadModel         = (*Store)(nil)
 	_ domain.AssignableAttendantRepository = (*Store)(nil)
 	_ domain.ConversationLeadStore         = (*Store)(nil)
+	_ domain.ConversationStateStore        = (*Store)(nil)
 )
 
 // pgUniqueViolation is the SQLSTATE for unique-violation. We translate
@@ -144,6 +145,44 @@ func (s *Store) GetConversation(ctx context.Context, tenantID, conversationID uu
 		return nil, fmt.Errorf("inbox/postgres: GetConversation: %w", err)
 	}
 	return c, nil
+}
+
+// SetConversationState updates the conversation.state column so the inbox
+// list read-model (state filter) and the metrics open/closed split reflect
+// an Encerrar / Reabrir action (SIN-65473). The Conversation aggregate owns
+// the legal transition (Close / Reopen); this method only persists the
+// resulting state. It runs under WithTenant; the UPDATE's RLS USING clause
+// scopes the row to the tenant, and a zero rows-affected result means no
+// conversation matched the tenant scope (unknown id or RLS-hidden) — mapped
+// to domain.ErrNotFound, mirroring GetConversation / SetConversationLead.
+func (s *Store) SetConversationState(ctx context.Context, tenantID, conversationID uuid.UUID, state domain.ConversationState) error {
+	if tenantID == uuid.Nil {
+		return fmt.Errorf("inbox/postgres: SetConversationState: tenant id is nil")
+	}
+	if conversationID == uuid.Nil {
+		return fmt.Errorf("inbox/postgres: SetConversationState: conversation id is nil")
+	}
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE conversation
+			   SET state = $1
+			 WHERE id = $2
+		`, string(state), conversationID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
+	if errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("inbox/postgres: SetConversationState: %w", err)
+	}
+	return nil
 }
 
 // FindOpenConversation returns the open conversation for

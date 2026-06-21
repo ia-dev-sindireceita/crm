@@ -765,6 +765,21 @@ func (r *inMemoryInboxRepo) SetConversationLead(_ context.Context, _, _, _ uuid.
 	return nil
 }
 
+// SetConversationState mutates the stored conversation's lifecycle column
+// so the close / reopen wire path (SIN-65473) is exercised faithfully:
+// an unknown / cross-tenant id collapses to ErrNotFound like the postgres
+// adapter.
+func (r *inMemoryInboxRepo) SetConversationState(_ context.Context, tenantID, conversationID uuid.UUID, state inbox.ConversationState) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.conversations[conversationID]
+	if !ok || c.TenantID != tenantID {
+		return inbox.ErrNotFound
+	}
+	c.State = state
+	return nil
+}
+
 func (r *inMemoryInboxRepo) ListHistory(_ context.Context, _, _ uuid.UUID) ([]*inbox.Assignment, error) {
 	return nil, nil
 }
