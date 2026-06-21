@@ -315,6 +315,7 @@ var inboxLayoutTmpl = func() *template.Template {
   <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
   <link rel="stylesheet" href="/static/css/inbox.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{shellCSPNonce .}}" defer></script>
+  <script src="/static/js/inbox.js" nonce="{{shellCSPNonce .}}" defer></script>
 {{end}}
 {{define "content"}}
 <div class="inbox-shell" data-testid="inbox-shell">
