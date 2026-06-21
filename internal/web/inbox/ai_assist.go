@@ -67,6 +67,19 @@ type AssistSummarizer interface {
 	Summarize(ctx context.Context, req aiassistusecase.SummarizeRequest) (*aiassistusecase.SummarizeResponse, error)
 }
 
+// AssistInvalidator drops the stored summary + suggestions for a conversation
+// so the next Summarize regenerates instead of serving the cache. It backs the
+// "Atualizar resumo" refresh control (SIN-65471 AC#3): the handler invalidates
+// then re-summarizes, forcing a fresh result that reflects messages that
+// arrived since the last summary. Satisfied structurally by
+// *aiassistusecase.Service (Invalidate). It is a SEPARATE optional port rather
+// than a method on AssistSummarizer so existing Summarizer fakes keep
+// satisfying the interface; when nil the refresh degrades to a normal (cached)
+// summarize.
+type AssistInvalidator interface {
+	Invalidate(ctx context.Context, tenantID, conversationID uuid.UUID) error
+}
+
 // AssistPolicyChecker is the read-only port the handler calls to decide
 // whether the "resumir" button should render in the enabled state. A
 // nil checker keeps the legacy behaviour (button always enabled,
@@ -131,6 +144,12 @@ type AssistDeps struct {
 	// Summarizer is the use-case port. Required to activate the
 	// feature; when nil the assist routes / button are off entirely.
 	Summarizer AssistSummarizer
+	// Invalidator backs the "Atualizar resumo" refresh control (SIN-65471
+	// AC#3). Optional: when nil the refresh button is not rendered and a
+	// re-submit would only return the cached summary. When wired, a
+	// refresh=1 POST invalidates the stored summary before re-summarizing
+	// so the operator gets a fresh result after new messages.
+	Invalidator AssistInvalidator
 	// Policy is the optional read-side gate for the button-enabled
 	// cosmetic check. nil → assume enabled, defer to Summarizer.
 	Policy AssistPolicyChecker
@@ -209,6 +228,18 @@ func (h *Handler) aiAssist(w http.ResponseWriter, r *http.Request) {
 	channelID := strings.TrimSpace(r.PostFormValue("channelId"))
 	teamID := strings.TrimSpace(r.PostFormValue("teamId"))
 
+	// Refresh path (SIN-65471 AC#3): the "Atualizar resumo" control posts
+	// refresh=1. Invalidate the stored summary BEFORE summarizing so the
+	// cache lookup misses and the LLM regenerates against the current
+	// messages. Best-effort: an invalidation error is logged and the
+	// summarize proceeds (it may then serve the cache) rather than failing
+	// the whole panel. Without a wired Invalidator the flag is a no-op.
+	if isRefreshRequest(r.PostFormValue("refresh")) && h.deps.AIAssist.Invalidator != nil {
+		if err := h.deps.AIAssist.Invalidator.Invalidate(r.Context(), tenant.ID, conversationID); err != nil {
+			h.deps.Logger.Warn("web/inbox: ai-assist refresh invalidate", "err", err)
+		}
+	}
+
 	messages, err := h.deps.ListMessages.Execute(r.Context(), inboxusecase.ListMessagesInput{
 		TenantID:       tenant.ID,
 		ConversationID: conversationID,
@@ -272,10 +303,35 @@ func (h *Handler) aiAssist(w http.ResponseWriter, r *http.Request) {
 	h.observeAssistDuration(outcome, elapsed)
 
 	view := newAssistPanel(resp)
+	// Refresh control (SIN-65471 AC#3): only render the "Atualizar resumo"
+	// button when an Invalidator is wired (otherwise a refresh would just
+	// re-serve the cache). The control re-posts the same (channel, team)
+	// scope plus refresh=1, carrying the CSRF token like the other inbox
+	// write forms.
+	if h.deps.AIAssist.Invalidator != nil {
+		view.CanRefresh = true
+		view.ConversationID = conversationID
+		view.ChannelID = channelID
+		view.TeamID = teamID
+		view.CSRFInput = csrf.FormHidden(h.deps.CSRFToken(r))
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := assistPanelTmpl.Execute(w, view); err != nil {
 		h.deps.Logger.Error("web/inbox: render assist panel", "err", err)
+	}
+}
+
+// isRefreshRequest reports whether the assist POST asked for a forced
+// regeneration (SIN-65471 AC#3). Accepts the common truthy spellings the
+// refresh form emits ("1"/"true") so the contract is tolerant of a future
+// UI tweak.
+func isRefreshRequest(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -511,6 +567,15 @@ type assistPanelView struct {
 	Suggestions []string
 	CacheHit    bool
 	Model       string
+	// Refresh control (SIN-65471 AC#3). CanRefresh gates the "Atualizar
+	// resumo" button; the rest carry the data the refresh form re-posts
+	// (the conversation id in the action URL, the channel/team scope, and
+	// the CSRF token). All zero when the Invalidator is unwired.
+	CanRefresh     bool
+	ConversationID uuid.UUID
+	ChannelID      string
+	TeamID         string
+	CSRFInput      template.HTML
 }
 
 // newAssistPanel parses the (Summary.Text) string the use case
@@ -693,6 +758,19 @@ var assistPanelTmpl = template.Must(template.New("ai_assist_panel").Parse(`<sect
   <header class="ai-assist__result-header">
     <h2 class="ai-assist__result-title">Resumo da conversa</h2>
     {{if .CacheHit}}<span class="ai-assist__cache-hint" title="Resumo servido do cache">cache</span>{{end}}
+    {{if .CanRefresh}}
+    <form class="ai-assist__refresh"
+          hx-post="/inbox/conversations/{{.ConversationID}}/ai-assist"
+          hx-target="#ai-assist-panel"
+          hx-swap="innerHTML">
+      {{.CSRFInput}}
+      <input type="hidden" name="channelId" value="{{.ChannelID}}">
+      <input type="hidden" name="teamId" value="{{.TeamID}}">
+      <input type="hidden" name="refresh" value="1">
+      <button type="submit" class="ai-assist__refresh-btn" data-testid="ai-assist-refresh"
+              title="Gerar um novo resumo com as mensagens mais recentes">Atualizar resumo</button>
+    </form>
+    {{end}}
   </header>
   <p class="ai-assist__summary">{{.Summary}}</p>
   {{if .Suggestions}}

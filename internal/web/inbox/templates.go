@@ -617,7 +617,7 @@ var conversationContextTmpl = template.Must(template.New("conversation_context")
 // exclusively. The parent layout's hx-headers body attribute propagates
 // the X-CSRF-Token to all HTMX requests, so no hidden field is needed
 // inside the partial.
-var conversationAssignmentTmpl = template.Must(template.New("conversation_assignment").Funcs(templateFuncs).Parse(`<section id="conversation-context-assignment" class="conversation-context__section conversation-context__assignment" aria-label="Atribuição" data-testid="conversation-context-assignment">
+var conversationAssignmentTmpl = template.Must(template.New("conversation_assignment").Funcs(templateFuncs).Parse(`<section id="conversation-context-assignment" class="conversation-context__section conversation-context__assignment" aria-label="Atribuição" data-testid="conversation-context-assignment"{{if .OOB}} hx-swap-oob="outerHTML"{{end}}>
   <h3 class="conversation-context__subtitle">Atribuição</h3>
 {{- if .Assignees}}
   <details class="conversation-context__assign">
@@ -752,14 +752,7 @@ var customerPanelTmpl = template.Must(template.New("customer_panel").Funcs(templ
     <p class="customer-tips__policy"><a href="/settings/ai-policy">Ver política de IA</a></p>
   </section>
 
-  <section class="customer-actions" aria-labelledby="customer-actions-title" data-testid="customer-actions">
-    <h3 id="customer-actions-title" class="customer-section__title">Ações</h3>
-    <ul class="customer-actions__list" role="list">
-      <li><button type="button" class="customer-actions__btn" disabled title="Em breve">Transferir conversa</button></li>
-      <li><button type="button" class="customer-actions__btn" disabled title="Em breve">Encerrar conversa</button></li>
-      <li><a class="customer-actions__btn customer-actions__btn--link" href="/funnel?conversation={{.ConversationID}}">Ver no funil</a></li>
-    </ul>
-  </section>
+  {{template "customer_actions" .Actions}}
 {{- else}}
   <section class="customer-empty" data-testid="customer-empty">
     <h2 class="customer-empty__title">Selecione uma conversa</h2>
@@ -778,6 +771,61 @@ var customerPanelTmpl = template.Must(template.New("customer_panel").Funcs(templ
 // for outbound messages in a non-final status — once the status reaches
 // "read" or "failed" the next swap drops the attributes and HTMX stops
 // polling for this bubble.
+// customerActionsTmpl is the per-conversation "Ações" block (SIN-65471 AC#4):
+// Transferir conversa / Encerrar conversa / Ver no funil. It is rendered both
+// inside customerPanelTmpl (initial conversation view) and standalone by the
+// close/transfer handlers — the two write forms target "#inbox-customer-actions"
+// with hx-swap="outerHTML" so a click replaces this section in place.
+//
+// CSP-safe: the actions are real hx-* forms (no inline on*= handlers), matching
+// the reset form precedent. Each write form carries the hidden CSRF token
+// ({{.CSRFInput}}) like the reset/compose forms. CanTransfer / CanClose gate
+// the active vs. disabled rendering so an unwired action degrades to the
+// "Em breve" placeholder instead of a POST that 404s. Closed swaps the close
+// button for a spent "Conversa encerrada" state after the conversation closes.
+var customerActionsTmpl = template.Must(template.New("customer_actions").Funcs(templateFuncs).Parse(`<section id="inbox-customer-actions" class="customer-actions" aria-labelledby="customer-actions-title" data-testid="customer-actions">
+  <h3 id="customer-actions-title" class="customer-section__title">Ações</h3>
+  {{- if .Note}}
+  <p class="customer-actions__note" role="status" data-testid="customer-actions-note">{{.Note}}</p>
+  {{- end}}
+  <ul class="customer-actions__list" role="list">
+    <li>
+      {{- if .CanTransfer}}
+      <form class="customer-actions__form"
+            hx-post="/inbox/conversations/{{.ConversationID}}/transfer"
+            hx-target="#inbox-customer-actions"
+            hx-swap="outerHTML"
+            hx-confirm="Devolver esta conversa para a fila? Ela ficará sem responsável.">
+        {{.CSRFInput}}
+        <button type="submit" class="customer-actions__btn" data-testid="conversation-transfer">Transferir conversa</button>
+      </form>
+      {{- else}}
+      <button type="button" class="customer-actions__btn" disabled title="Em breve">Transferir conversa</button>
+      {{- end}}
+    </li>
+    <li>
+      {{- if .CanClose}}
+        {{- if .Closed}}
+      <button type="button" class="customer-actions__btn customer-actions__btn--done" disabled aria-disabled="true" data-testid="conversation-closed">Conversa encerrada</button>
+        {{- else}}
+      <form class="customer-actions__form"
+            hx-post="/inbox/conversations/{{.ConversationID}}/close"
+            hx-target="#inbox-customer-actions"
+            hx-swap="outerHTML"
+            hx-confirm="Encerrar esta conversa?">
+        {{.CSRFInput}}
+        <button type="submit" class="customer-actions__btn" data-testid="conversation-close">Encerrar conversa</button>
+      </form>
+        {{- end}}
+      {{- else}}
+      <button type="button" class="customer-actions__btn" disabled title="Em breve">Encerrar conversa</button>
+      {{- end}}
+    </li>
+    <li><a class="customer-actions__btn customer-actions__btn--link" href="/funnel?conversation={{.ConversationID}}">Ver no funil</a></li>
+  </ul>
+</section>
+`))
+
 var messageBubbleTmpl = template.Must(template.New("message_bubble").Funcs(templateFuncs).Parse(`<li id="msg-{{.ID}}" class="message-bubble {{messageClass .Direction}}" data-status="{{.Status}}" role="listitem"
 {{- if and (eq .Direction "out") (not (isFinalStatus .Status))}}
   hx-get="/inbox/conversations/{{.ConversationID}}/messages/{{.ID}}/status?currentStatus={{.Status}}"
@@ -889,7 +937,7 @@ func init() {
 	// {{template "conversation_list" …}} and so on with one template
 	// tree. Errors here are programmer errors (typos in the template
 	// source) — surface them at process start, not at request time.
-	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
+	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, customerActionsTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
 		if _, err := inboxLayoutTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + ": " + err.Error())
 		}
@@ -933,7 +981,7 @@ func init() {
 			panic("inbox/web: register " + child.Name() + " in list: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{channelBadgeTmpl} {
+	for _, child := range []*template.Template{channelBadgeTmpl, customerActionsTmpl} {
 		if _, err := customerPanelTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in customer: " + err.Error())
 		}
@@ -956,6 +1004,7 @@ func init() {
 		conversationContextTmpl,
 		conversationAssignmentTmpl,
 		customerPanelTmpl,
+		customerActionsTmpl,
 		channelBadgeTmpl,
 		inboxLayoutTmpl,
 	} {

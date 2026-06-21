@@ -268,27 +268,59 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 	// deletes the DB rows AND the in-memory simulator state in lock-step.
 	// The use case rejects any non-fakellm conversation, so this is the
 	// only inbox wire that registers the reset route.
-	resetUC, err := inboxusecase.NewResetConversation(deps.Repo, adapter)
+	// Close / Transfer actions (SIN-65471 AC#4) and the reset cleanups
+	// (AC#1 assignment release + AC#2 summary drop). The concrete
+	// *pginbox.Store satisfies the narrow state-writer / lead-clearer ports;
+	// we resolve them via interface assertion off deps.Repo so the in-memory
+	// test repo (which does not implement them) leaves the actions unwired
+	// (routes off) instead of forcing every fake to grow the methods.
+	var (
+		closeUC     webinbox.CloseConversationUseCase
+		transferUC  webinbox.TransferConversationUseCase
+		leadClearer inboxusecase.ConversationLeadClearer
+	)
+	if stateWriter, ok := deps.Repo.(interface {
+		SetConversationState(ctx context.Context, tenantID, conversationID uuid.UUID, state inbox.ConversationState) error
+	}); ok {
+		closeUC = inboxusecase.MustNewCloseConversation(deps.Repo, stateWriter)
+	}
+	if clearer, ok := deps.Repo.(inboxusecase.ConversationLeadClearer); ok {
+		leadClearer = clearer
+		transferUC = inboxusecase.MustNewTransferConversation(deps.Repo, clearer)
+	}
+
+	// The reset now also returns the wiped fakellm thread to the unassigned
+	// queue (AC#1, via leadClearer) and drops its stored AI summary (AC#2,
+	// via the AI-assist invalidator). Both are optional: an unwired clearer /
+	// invalidator simply skips that cleanup step.
+	resetUC, err := inboxusecase.NewResetConversation(
+		deps.Repo,
+		adapter,
+		inboxusecase.ResetWithLeadClearer(leadClearer),
+		inboxusecase.ResetWithSummaryInvalidator(deps.AIAssist.Invalidator),
+	)
 	if err != nil {
 		adapter.Stop()
 		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: reset conversation usecase: %w", err)
 	}
 
 	handlerDeps := webinbox.Deps{
-		ListConversations:   bootstrappedList,
-		ListSummaries:       summaries,
-		ListMessages:        listMsgsUC,
-		ListMessagesSince:   listMsgsSinceUC,
-		SendOutbound:        sendUC,
-		GetMessage:          getMsgUC,
-		ConversationContext: ctxUC,
-		AssignConversation:  assignUC,
-		ListAssignable:      listAssignableUC,
-		ResetConversation:   resetUC,
-		AIAssist:            deps.AIAssist,
-		CSRFToken:           csrfTokenFromSessionContext,
-		UserID:              userIDFromSessionContext,
-		Logger:              logger,
+		ListConversations:    bootstrappedList,
+		ListSummaries:        summaries,
+		ListMessages:         listMsgsUC,
+		ListMessagesSince:    listMsgsSinceUC,
+		SendOutbound:         sendUC,
+		GetMessage:           getMsgUC,
+		ConversationContext:  ctxUC,
+		AssignConversation:   assignUC,
+		ListAssignable:       listAssignableUC,
+		ResetConversation:    resetUC,
+		CloseConversation:    closeUC,
+		TransferConversation: transferUC,
+		AIAssist:             deps.AIAssist,
+		CSRFToken:            csrfTokenFromSessionContext,
+		UserID:               userIDFromSessionContext,
+		Logger:               logger,
 	}
 	h, err := webinbox.New(handlerDeps)
 	if err != nil {
@@ -370,6 +402,14 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 		log.Printf("crm: ai-assist operator summarizer disabled — assemble: %v; inbox continues without ai-assist", err)
 		summarizer = nil
 	}
+	// The concrete summarizer (*aiassistusecase.Service) also satisfies the
+	// AssistInvalidator port that backs the "Atualizar resumo" refresh
+	// (SIN-65471 AC#3) and the reset summary-drop (AC#2). Resolve it via
+	// assertion so a nil/canned summarizer leaves the invalidator unwired.
+	aiAssist := webinbox.AssistDeps{Summarizer: summarizer}
+	if inv, ok := summarizer.(webinbox.AssistInvalidator); ok {
+		aiAssist.Invalidator = inv
+	}
 	mux, cleanup, _, err := assembleInboxLLMCustomerHandler(inboxLLMCustomerDeps{
 		Repo: inboxStore,
 		// *pginbox.Store satisfies inbox.ConversationReadModel too, so the
@@ -383,7 +423,7 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 		Contacts:   contactsStore,
 		LLM:        personaLLM,
 		ReplyDelay: llmcustomerReplyDelay,
-		AIAssist:   webinbox.AssistDeps{Summarizer: summarizer},
+		AIAssist:   aiAssist,
 		// Logger left at the production default (slog.Default).
 	})
 	if err != nil {

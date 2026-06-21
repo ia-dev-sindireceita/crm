@@ -115,6 +115,23 @@ type ResetConversationUseCase interface {
 	Execute(ctx context.Context, in inboxusecase.ResetConversationInput) (inboxusecase.ResetConversationResult, error)
 }
 
+// CloseConversationUseCase is the write-side port for the "Encerrar conversa"
+// action (SIN-65471 AC#4): it transitions a conversation to the closed state.
+// It is optional on Deps — when nil the close route is not registered and the
+// action renders disabled, so deployments that have not wired it keep the
+// read/send-only surface.
+type CloseConversationUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.CloseConversationInput) (inboxusecase.CloseConversationResult, error)
+}
+
+// TransferConversationUseCase is the write-side port for the
+// "Transferir conversa" action (SIN-65471 AC#4): it returns a conversation to
+// the unassigned queue. Optional on Deps — when nil the transfer route is not
+// registered and the action renders disabled.
+type TransferConversationUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.TransferConversationInput) (inboxusecase.TransferConversationResult, error)
+}
+
 // AssignableRow is the web-local projection of inbox.AssignableAttendant.
 // Kept here (instead of importing the domain root) because the
 // forbidwebboundary lint forbids web/* from importing internal/inbox
@@ -211,6 +228,18 @@ type Deps struct {
 	// rejects any non-fakellm conversation, so the reach is confined to
 	// the synthetic training thread regardless of caller role.
 	ResetConversation ResetConversationUseCase
+	// CloseConversation is the optional write-side for the "Encerrar conversa"
+	// action (SIN-65471 AC#4). When wired, POST
+	// /inbox/conversations/{id}/close is registered and the customer-panel
+	// action renders an active button; when nil the route is absent and the
+	// action renders disabled.
+	CloseConversation CloseConversationUseCase
+	// TransferConversation is the optional write-side for the
+	// "Transferir conversa" action (SIN-65471 AC#4). When wired, POST
+	// /inbox/conversations/{id}/transfer is registered and the customer-panel
+	// action renders an active button; when nil the route is absent and the
+	// action renders disabled.
+	TransferConversation TransferConversationUseCase
 }
 
 // CustomerInfoLoader is the read-side port that hydrates the customer
@@ -307,6 +336,12 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	}
 	if h.deps.ResetConversation != nil {
 		mux.HandleFunc("POST /inbox/conversations/{id}/reset", h.reset)
+	}
+	if h.deps.CloseConversation != nil {
+		mux.HandleFunc("POST /inbox/conversations/{id}/close", h.close)
+	}
+	if h.deps.TransferConversation != nil {
+		mux.HandleFunc("POST /inbox/conversations/{id}/transfer", h.transfer)
 	}
 }
 
@@ -663,6 +698,10 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 			Channel:         channel,
 			Contact:         customer,
 			AssistButton:    assistHTML,
+			// Initial render: Closed is false (the conversation pane only opens
+			// for a thread the operator is working). The close/transfer handlers
+			// re-render this block with the post-action state.
+			Actions: h.buildCustomerActions(conversationID, token, false, ""),
 		}); err != nil {
 			h.deps.Logger.Error("web/inbox: render customer panel", "err", err)
 		} else {
@@ -1054,6 +1093,108 @@ func (h *Handler) reset(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// close handles POST /inbox/conversations/{id}/close (SIN-65471 AC#4). It
+// transitions the conversation to the closed state via CloseConversation, then
+// re-renders the customer-panel actions partial so HTMX swaps it in place
+// (the close form targets "#inbox-customer-actions", hx-swap="outerHTML").
+// ErrNotFound (unknown / RLS-hidden id) maps to 404. Closing an already-closed
+// conversation is an idempotent no-op that still returns the refreshed actions.
+func (h *Handler) close(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.deps.CloseConversation.Execute(r.Context(), inboxusecase.CloseConversationInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+	}); err != nil {
+		if errors.Is(err, inboxusecase.ErrNotFound) {
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		h.fail(w, http.StatusInternalServerError, "close conversation", err)
+		return
+	}
+	token := h.deps.CSRFToken(r)
+	if token == "" {
+		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := customerActionsTmpl.Execute(w, h.buildCustomerActions(conversationID, token, true, "Conversa encerrada.")); err != nil {
+		h.deps.Logger.Error("web/inbox: render customer actions after close", "err", err)
+	}
+}
+
+// transfer handles POST /inbox/conversations/{id}/transfer (SIN-65471 AC#4).
+// It returns the conversation to the unassigned queue via
+// TransferConversation, re-renders the customer-panel actions partial (the
+// swap target), and OOB-refreshes the conversation-context assignment section
+// so the assignee chip flips to "Não atribuída" without a reload. ErrNotFound
+// maps to 404; transferring an already-unassigned conversation is idempotent.
+func (h *Handler) transfer(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.deps.TransferConversation.Execute(r.Context(), inboxusecase.TransferConversationInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+	}); err != nil {
+		if errors.Is(err, inboxusecase.ErrNotFound) {
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		h.fail(w, http.StatusInternalServerError, "transfer conversation", err)
+		return
+	}
+	token := h.deps.CSRFToken(r)
+	if token == "" {
+		h.fail(w, http.StatusInternalServerError, "csrf token missing", errors.New("empty csrf token"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := customerActionsTmpl.Execute(w, h.buildCustomerActions(conversationID, token, false, "Conversa devolvida à fila.")); err != nil {
+		h.deps.Logger.Error("web/inbox: render customer actions after transfer", "err", err)
+		return
+	}
+	// OOB-refresh the middle-pane assignment section so the chip reflects the
+	// now-unassigned lead. Best-effort: a render failure only costs the live
+	// chip update (corrected on the next conversation open), so it must not
+	// fail the transfer response.
+	panel := h.buildAssignPanel(r.Context(), tenant.ID, conversationID, uuid.Nil)
+	panel.OOB = true
+	if err := conversationAssignmentTmpl.Execute(w, panel); err != nil {
+		h.deps.Logger.Error("web/inbox: render oob assignment after transfer", "err", err)
+	}
+}
+
+// buildCustomerActions assembles the customerActionsData the actions partial
+// renders. CanClose / CanTransfer mirror the wired write-side deps so an
+// unwired action degrades to a disabled button rather than a dead link.
+func (h *Handler) buildCustomerActions(conversationID uuid.UUID, token string, closed bool, note string) customerActionsData {
+	return customerActionsData{
+		ConversationID: conversationID,
+		CSRFInput:      csrf.FormHidden(token),
+		CanClose:       h.deps.CloseConversation != nil,
+		CanTransfer:    h.deps.TransferConversation != nil,
+		Closed:         closed,
+		Note:           note,
+	}
+}
+
 // buildAssignPanel assembles the contextPanelData subset the assignment
 // partial needs. It calls ListAssignable (when wired) to populate the
 // dropdown and resolves the new assignee's display name from the list.
@@ -1294,6 +1435,12 @@ type contextPanelData struct {
 	ConversationIDStr   string
 	CurrentUserID       string
 	AssignedDisplayName string
+	// OOB renders the assignment section with hx-swap-oob="outerHTML" so a
+	// handler can refresh the middle-pane chip from a response whose primary
+	// target is a different element (the transfer handler swaps the
+	// customer-panel actions and OOB-updates this section). False for the
+	// in-place assign response and the initial context render.
+	OOB bool
 }
 
 // contextIdentity is one contact channel identity (e.g. a WhatsApp
@@ -1346,4 +1493,26 @@ type customerPanelData struct {
 	// feature is not wired (the panel falls back to a disabled-state
 	// hint then).
 	AssistButton template.HTML
+	// Actions drives the per-conversation actions block (Transferir / Encerrar
+	// / Ver no funil — SIN-65471 AC#4). The view handler populates it with the
+	// CSRF token and the wired-action flags; the close/transfer handlers
+	// re-render the same partial in place after an action.
+	Actions customerActionsData
+}
+
+// customerActionsData drives the customer-panel "Ações" block (SIN-65471
+// AC#4). It is both rendered inside customerPanelTmpl on the conversation view
+// and re-rendered standalone by the close/transfer handlers (the forms target
+// "#inbox-customer-actions"). CanClose / CanTransfer mirror the wired
+// write-side deps so an unwired action renders disabled instead of a 404 link.
+// Note is an optional post-action confirmation line ("Conversa encerrada." /
+// "Conversa devolvida à fila."); Closed flips the close button to a spent
+// state once the conversation is closed.
+type customerActionsData struct {
+	ConversationID uuid.UUID
+	CSRFInput      template.HTML
+	CanClose       bool
+	CanTransfer    bool
+	Closed         bool
+	Note           string
 }

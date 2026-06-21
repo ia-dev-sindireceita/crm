@@ -132,3 +132,96 @@ func (s *Store) SetConversationLead(ctx context.Context, tenantID, conversationI
 	}
 	return nil
 }
+
+// ClearConversationLead nulls the denormalised
+// conversation.assigned_user_id so the inbox list read-model
+// (ListConversationSummaries) and the "fila / não atribuídas" queue see
+// the conversation as Unassigned again. It is the release half of
+// SetConversationLead: SetConversationLead names a user, ClearConversationLead
+// removes whoever currently leads. Two callers use it — the
+// "Transferir conversa" action (return the thread to the queue, SIN-65471
+// AC#4) and the fakellm reset (drop the assignment when the training thread
+// is wiped, SIN-65471 AC#1).
+//
+// The append-only assignment_history ledger is the audit source of truth and
+// is intentionally left untouched: it has no nil-user "unassigned" row shape
+// (AppendHistory rejects uuid.Nil), so a release is recorded only on the
+// cached lead column the read-model projects on. Idempotent: clearing a
+// conversation that is already unassigned affects one row and returns nil.
+//
+// It runs under WithTenant; the UPDATE's RLS USING clause scopes the row to
+// the tenant, and a zero rows-affected result means no conversation matched
+// the tenant scope (unknown id or RLS-hidden) — mapped to domain.ErrNotFound,
+// mirroring SetConversationLead's no-cross-tenant-existence posture.
+func (s *Store) ClearConversationLead(ctx context.Context, tenantID, conversationID uuid.UUID) error {
+	if tenantID == uuid.Nil {
+		return fmt.Errorf("inbox/postgres: ClearConversationLead: tenant id is nil")
+	}
+	if conversationID == uuid.Nil {
+		return fmt.Errorf("inbox/postgres: ClearConversationLead: conversation id is nil")
+	}
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE conversation
+			   SET assigned_user_id = NULL
+			 WHERE id = $1
+		`, conversationID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
+	if errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("inbox/postgres: ClearConversationLead: %w", err)
+	}
+	return nil
+}
+
+// SetConversationState updates conversation.state for (tenantID,
+// conversationID). It backs the "Encerrar conversa" action (SIN-65471 AC#4):
+// the CloseConversation use case loads the conversation, applies the domain
+// transition (Conversation.Close), and persists the new state through this
+// method. The DB CHECK constraint (migration 0088) rejects any value outside
+// {open, closed}, so an invalid state surfaces as an adapter error rather
+// than corrupting the row.
+//
+// It runs under WithTenant; a zero rows-affected result means no conversation
+// matched the tenant scope (unknown id or RLS-hidden) — mapped to
+// domain.ErrNotFound, the same no-cross-tenant-existence posture as the other
+// conversation mutators. Idempotent: writing the state a conversation already
+// holds affects one row and returns nil.
+func (s *Store) SetConversationState(ctx context.Context, tenantID, conversationID uuid.UUID, state domain.ConversationState) error {
+	if tenantID == uuid.Nil {
+		return fmt.Errorf("inbox/postgres: SetConversationState: tenant id is nil")
+	}
+	if conversationID == uuid.Nil {
+		return fmt.Errorf("inbox/postgres: SetConversationState: conversation id is nil")
+	}
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE conversation
+			   SET state = $1
+			 WHERE id = $2
+		`, string(state), conversationID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
+	if errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("inbox/postgres: SetConversationState: %w", err)
+	}
+	return nil
+}

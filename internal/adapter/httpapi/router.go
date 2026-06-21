@@ -1432,6 +1432,21 @@ func NewRouter(deps Deps) http.Handler {
 				// ResetConversation is nil the inner mux returns 404 for the
 				// POST, so listing it here is safe either way.
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/reset", webInbox)
+				// SIN-65471 AC#4 — "Encerrar conversa" / "Transferir conversa"
+				// write routes. Same chi route-enumeration defect class as the
+				// assign / ai-assist / reset routes above: the inner mux
+				// (web/inbox Routes) registers them conditionally on the
+				// CloseConversation / TransferConversation deps, but chi
+				// enumerates the /inbox subtree route-by-route, so each POST
+				// must be listed here too or the button renders and the live
+				// POST 404s before reaching the handler (the original "do
+				// nothing" buttons were never wired at all — this is the wire).
+				// Same RequireAuth + RequireAction(ActionTenantInboxRead)
+				// envelope as the reads plus the authed group's RequireCSRF
+				// gate. When the deps are nil the inner mux returns 404 for the
+				// POSTs, so listing them here is safe either way.
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/close", webInbox)
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/transfer", webInbox)
 			}
 
 			// SIN-65364 — LGPD consent accept/cancel endpoints. The inbox
