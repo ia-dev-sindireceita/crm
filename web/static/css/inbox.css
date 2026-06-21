@@ -730,6 +730,13 @@
   gap: var(--space-2);
 }
 
+/* SIN-65419: the live-thread poll sentinel carries no visible content —
+   it only drives htmx's every-3s GET .../messages/since. display:none does
+   not stop htmx's interval timer, so the poll keeps firing while hidden. */
+.thread-live-poll {
+  display: none;
+}
+
 .conversation__compose {
   display: grid;
   grid-template-columns: 1fr auto;
