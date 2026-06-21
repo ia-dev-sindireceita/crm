@@ -853,13 +853,16 @@ var threadLivePollTmpl = template.Must(template.New("thread_live_poll").Funcs(te
 // threadLiveUpdateTmpl is the since handler's 200 response: the fresh
 // sentinel (advanced cursor, replacing the old one in place via the
 // sentinel's configured outerHTML self-swap) followed by the new message
-// bubbles wrapped in a <template hx-swap-oob="beforeend:#conversation-thread">
+// bubbles wrapped in an <ol hx-swap-oob="beforeend:#conversation-thread">
 // so htmx appends them to the END of the thread regardless of where the
-// sentinel sits in the DOM. The <template> wrapper is required because the
-// bubbles are bare <li>s, which a browser would hoist out of any other
-// container during parsing.
+// sentinel sits in the DOM.
+//
+// NOTE: must be <ol>, NOT <template>. htmx 2.x's c() insertion loop reads
+// n.childNodes; <template>.childNodes is always empty (content lives in
+// .content DocumentFragment), so nothing would be inserted. <ol> keeps
+// <li> children in childNodes and is a valid <li> container.
 var threadLiveUpdateTmpl = template.Must(template.New("thread_live_update").Funcs(templateFuncs).Parse(
-	`{{template "thread_live_poll" .Poll}}<template hx-swap-oob="beforeend:#conversation-thread">{{range .Messages}}{{template "message_bubble" .}}{{end}}</template>`))
+	`{{template "thread_live_poll" .Poll}}<ol hx-swap-oob="beforeend:#conversation-thread">{{range .Messages}}{{template "message_bubble" .}}{{end}}</ol>`))
 
 // composeTextareaTmpl is the single source of truth for the outbound
 // compose <textarea>. It renders in two places that MUST stay identical:
