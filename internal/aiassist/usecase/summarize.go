@@ -134,6 +134,13 @@ type SummarizeRequest struct {
 	// MaxOutputTokens and forwards the same string to LLMClient.
 	Prompt string
 	Scope  aiassist.Scope
+	// Force, when true, skips the valid-cache early return so the
+	// summary is regenerated even if a fresh row already exists
+	// (SIN-65474 operator "Atualizar"). The policy, consent, and rate
+	// limit gates still run before the LLM call — Force only bypasses
+	// the cache, never the deny-by-default guards. A forced call charges
+	// the wallet exactly like a cache miss.
+	Force bool
 }
 
 // SummarizeResponse is what callers receive on success. CacheHit is
@@ -194,12 +201,17 @@ func (s *Service) Summarize(ctx context.Context, req SummarizeRequest) (*Summari
 
 	now := s.clock()
 
-	cached, err := s.repo.GetLatestValid(ctx, req.TenantID, req.ConversationID, now)
-	if err != nil && !errors.Is(err, aiassist.ErrCacheMiss) {
-		return nil, fmt.Errorf("aiassist/usecase: cache lookup: %w", err)
-	}
-	if err == nil && cached.IsValid(now) {
-		return &SummarizeResponse{Summary: cached, CacheHit: true}, nil
+	// A forced refresh skips the cache lookup entirely so the operator
+	// always gets a freshly generated summary (SIN-65474). Non-forced
+	// calls keep the cache-first behaviour that protects the wallet.
+	if !req.Force {
+		cached, err := s.repo.GetLatestValid(ctx, req.TenantID, req.ConversationID, now)
+		if err != nil && !errors.Is(err, aiassist.ErrCacheMiss) {
+			return nil, fmt.Errorf("aiassist/usecase: cache lookup: %w", err)
+		}
+		if err == nil && cached.IsValid(now) {
+			return &SummarizeResponse{Summary: cached, CacheHit: true}, nil
+		}
 	}
 
 	dispatchPrompt, err := s.buildDispatchPrompt(ctx, req, policy)
@@ -217,6 +229,30 @@ func (s *Service) Summarize(ctx context.Context, req SummarizeRequest) (*Summari
 		return nil, err
 	}
 	return &SummarizeResponse{Summary: committed, CacheHit: false}, nil
+}
+
+// LatestSummaryGeneratedAt returns the generated_at timestamp of the
+// most recent VALID (non-invalidated, non-expired) summary for the
+// conversation, plus whether such a summary exists. It is the read side
+// the inbox uses to compute the SIN-65474 staleness hint server-side:
+// the caller compares this timestamp against the newest message's
+// CreatedAt. A cache miss (no valid summary yet) returns
+// (zero, false, nil) — there is nothing to be stale against, so the
+// caller renders no hint. This method never charges the wallet and
+// never calls the LLM.
+func (s *Service) LatestSummaryGeneratedAt(ctx context.Context, tenantID, conversationID uuid.UUID) (time.Time, bool, error) {
+	now := s.clock()
+	cached, err := s.repo.GetLatestValid(ctx, tenantID, conversationID, now)
+	if errors.Is(err, aiassist.ErrCacheMiss) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("aiassist/usecase: latest summary lookup: %w", err)
+	}
+	if !cached.IsValid(now) {
+		return time.Time{}, false, nil
+	}
+	return cached.GeneratedAt, true, nil
 }
 
 // buildDispatchPrompt assembles the final text the LLM adapter receives.

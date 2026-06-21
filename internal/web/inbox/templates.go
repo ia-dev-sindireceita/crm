@@ -807,6 +807,13 @@ var customerPanelTmpl = template.Must(template.New("customer_panel").Funcs(templ
     </header>
     {{- if .AssistButton}}
     {{.AssistButton}}
+    {{- if .AssistStale}}
+    <p id="ai-assist-staleness" class="ai-assist__staleness" role="status" data-testid="ai-assist-staleness">
+      Há novas mensagens desde o último resumo. Clique em <strong>Atualizar</strong> para regenerar.
+    </p>
+    {{- else}}
+    <p id="ai-assist-staleness" class="ai-assist__staleness" role="status" hidden></p>
+    {{- end}}
     <section id="ai-assist-panel" class="customer-summary__panel ai-assist__panel" data-testid="customer-summary-panel" aria-live="polite">
       <p class="customer-summary__empty">Clique para gerar um resumo e 3 dicas para fechar a venda.</p>
     </section>
