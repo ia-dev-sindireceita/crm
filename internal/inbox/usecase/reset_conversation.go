@@ -59,6 +59,52 @@ func (NoopConversationResetter) ResetConversation(context.Context, uuid.UUID, uu
 	return nil
 }
 
+// AssignmentClearer is the narrow storage port that drops a
+// conversation back to Unassigned (SIN-65472). Wiping a training
+// thread's messages must also surrender its leader: a stale assignee
+// chip on an empty conversation is misleading, and the cleared state
+// has to be visible through the LIVE read path
+// (Store.ListConversationSummaries reads conversation.assigned_user_id),
+// not just the legacy listing. The Postgres *inbox.Store satisfies this
+// via ClearConversationLead; NoopAssignmentClearer covers deployments
+// that do not wire it.
+type AssignmentClearer interface {
+	ClearAssignment(ctx context.Context, tenantID, conversationID uuid.UUID) error
+}
+
+// NoopAssignmentClearer is the clearer wired when no assignment store is
+// available. It satisfies AssignmentClearer with a no-op so the
+// composition root and tests need not always inject a concrete adapter.
+type NoopAssignmentClearer struct{}
+
+// ClearAssignment satisfies AssignmentClearer; it does nothing.
+func (NoopAssignmentClearer) ClearAssignment(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+// SummaryInvalidator is the narrow storage port that invalidates the
+// AI summary cached for a conversation (SIN-65472). Deleting every
+// message MUST invalidate the stored ai_summary rows: a summary
+// describes a history that no longer exists, so no stale summary may
+// survive a wipe. Suggestions are not separately persisted — they are
+// regenerated from the summary — so invalidating the summary covers
+// them too. The Postgres aiassist store satisfies this via
+// InvalidateForConversation (sets invalidated_at); NoopSummaryInvalidator
+// covers deployments without aiassist wired.
+type SummaryInvalidator interface {
+	InvalidateSummaries(ctx context.Context, tenantID, conversationID uuid.UUID) error
+}
+
+// NoopSummaryInvalidator is the invalidator wired when no summary store
+// is available. It satisfies SummaryInvalidator with a no-op so the
+// composition root and tests need not always inject a concrete adapter.
+type NoopSummaryInvalidator struct{}
+
+// InvalidateSummaries satisfies SummaryInvalidator; it does nothing.
+func (NoopSummaryInvalidator) InvalidateSummaries(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
 // ResetConversation deletes every message of a fakellm training
 // conversation and resets the channel adapter's in-memory state for it.
 // It is the write side of SIN-65392 "apagar mensagens da conversa de
@@ -72,28 +118,73 @@ func (NoopConversationResetter) ResetConversation(context.Context, uuid.UUID, uu
 // the role gate on the route stays at the ordinary inbox-read level
 // because the channel guard, not RBAC, is what confines the reach.
 type ResetConversation struct {
-	repo     ResetRepository
-	resetter ConversationResetter
+	repo       ResetRepository
+	resetter   ConversationResetter
+	assignment AssignmentClearer
+	summaries  SummaryInvalidator
+}
+
+// ResetOption configures the optional collaborators of a
+// ResetConversation. They are options (not positional constructor args)
+// so the existing two-argument call sites — the wire and the unit
+// tests — keep compiling while deployments that wire the assignment
+// store and the aiassist summary store opt in explicitly.
+type ResetOption func(*ResetConversation)
+
+// WithAssignmentClearer wires the port that drops the conversation back
+// to Unassigned after its messages are deleted (SIN-65472). A nil
+// clearer is ignored, leaving the no-op default in place.
+func WithAssignmentClearer(c AssignmentClearer) ResetOption {
+	return func(u *ResetConversation) {
+		if c != nil {
+			u.assignment = c
+		}
+	}
+}
+
+// WithSummaryInvalidator wires the port that invalidates the cached AI
+// summary after a wipe (SIN-65472). A nil invalidator is ignored,
+// leaving the no-op default in place.
+func WithSummaryInvalidator(s SummaryInvalidator) ResetOption {
+	return func(u *ResetConversation) {
+		if s != nil {
+			u.summaries = s
+		}
+	}
 }
 
 // NewResetConversation wires the use case. A nil repo is a programming
 // error caught here. A nil resetter is tolerated and replaced with the
 // no-op resetter so callers in deployments without a stateful channel
-// adapter need not construct one.
-func NewResetConversation(repo ResetRepository, resetter ConversationResetter) (*ResetConversation, error) {
+// adapter need not construct one. The assignment clearer and summary
+// invalidator default to no-ops (tolerating a deployment that wires
+// neither aiassist nor the assignment store) and are opted in via
+// WithAssignmentClearer / WithSummaryInvalidator.
+func NewResetConversation(repo ResetRepository, resetter ConversationResetter, opts ...ResetOption) (*ResetConversation, error) {
 	if repo == nil {
 		return nil, errors.New("inbox/usecase: reset repo must not be nil")
 	}
 	if resetter == nil {
 		resetter = NoopConversationResetter{}
 	}
-	return &ResetConversation{repo: repo, resetter: resetter}, nil
+	u := &ResetConversation{
+		repo:       repo,
+		resetter:   resetter,
+		assignment: NoopAssignmentClearer{},
+		summaries:  NoopSummaryInvalidator{},
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(u)
+		}
+	}
+	return u, nil
 }
 
 // MustNewResetConversation is the panic-on-error variant for the
 // composition root.
-func MustNewResetConversation(repo ResetRepository, resetter ConversationResetter) *ResetConversation {
-	u, err := NewResetConversation(repo, resetter)
+func MustNewResetConversation(repo ResetRepository, resetter ConversationResetter, opts ...ResetOption) *ResetConversation {
+	u, err := NewResetConversation(repo, resetter, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -113,8 +204,18 @@ type ResetConversationResult struct {
 	Deleted int
 }
 
-// Execute runs the reset pipeline: load + guard, delete rows, reset
-// adapter state.
+// Execute runs the reset pipeline: load + guard, delete rows, clear the
+// assignment, invalidate the cached summary, reset adapter state.
+//
+// Ordering rationale (SIN-65472): guard → delete rows → clear
+// assignment → invalidate summary → resetter. Every step after the
+// guard is idempotent, so on a partial failure the caller can retry and
+// the steps converge (deleting again removes 0 rows, clearing an
+// already-Unassigned conversation is a no-op write, invalidating an
+// already-invalid summary is a no-op). We return on the first error
+// rather than pressing on so a transient storage fault does not leave
+// the operation reporting success with a stale assignee or summary
+// still live; the retry finishes the remaining steps.
 func (u *ResetConversation) Execute(ctx context.Context, in ResetConversationInput) (ResetConversationResult, error) {
 	if in.TenantID == uuid.Nil {
 		return ResetConversationResult{}, inbox.ErrInvalidTenant
@@ -143,9 +244,25 @@ func (u *ResetConversation) Execute(ctx context.Context, in ResetConversationInp
 		return ResetConversationResult{}, err
 	}
 
+	// Drop the conversation back to Unassigned. A training thread whose
+	// history was just wiped should not keep its assignee chip — the
+	// cleared state is read back through the live ListConversationSummaries
+	// path (conversation.assigned_user_id). Done AFTER the delete so a
+	// failed delete never surrenders the leader.
+	if err := u.assignment.ClearAssignment(ctx, in.TenantID, in.ConversationID); err != nil {
+		return ResetConversationResult{}, err
+	}
+
+	// Invalidate the cached AI summary: it describes a history that no
+	// longer exists. Cached suggestions are regenerated from the summary
+	// and are not separately persisted, so this also voids them.
+	if err := u.summaries.InvalidateSummaries(ctx, in.TenantID, in.ConversationID); err != nil {
+		return ResetConversationResult{}, err
+	}
+
 	// Clear the channel adapter's in-memory state so the simulator starts
-	// fresh. Done AFTER the DB delete: if the delete fails we never touch
-	// adapter state, keeping the two sides convergent on the next attempt.
+	// fresh. Done LAST: if any DB-side step fails we never touch adapter
+	// state, keeping the two sides convergent on the next attempt.
 	if err := u.resetter.ResetConversation(ctx, in.TenantID, in.ConversationID); err != nil {
 		return ResetConversationResult{}, err
 	}

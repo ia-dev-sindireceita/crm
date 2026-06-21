@@ -47,6 +47,7 @@ var templateFuncs = mergeIconFuncs(template.FuncMap{
 	"avatarInitial":    avatarInitial,
 	"initials":         initials,
 	"livePoll":         newLivePollData,
+	"composeView":      newComposeView,
 })
 
 // newLivePollData builds the live-poll sentinel data (SIN-65419) from a
@@ -56,6 +57,26 @@ var templateFuncs = mergeIconFuncs(template.FuncMap{
 // id. Exposed to the templates as {{livePoll .ConversationID .Cursor}}.
 func newLivePollData(conversationID uuid.UUID, cursor string) threadLivePollData {
 	return threadLivePollData{ConversationID: conversationID, Cursor: cursor}
+}
+
+// composeView drives the conversation_compose region (SIN-65473): the
+// outbound form when the conversation is open, or a "conversa encerrada"
+// notice when it is closed. OOB marks the standalone re-render emitted by
+// the close / reopen handlers so HTMX patches the region in place by id
+// (hx-swap-oob) after the customer-actions toggle swap.
+type composeView struct {
+	ConversationID uuid.UUID
+	CSRFInput      template.HTML
+	Closed         bool
+	OOB            bool
+}
+
+// newComposeView builds the inline compose region data from a conversation
+// id + CSRF fragment + closed flag. OOB is always false here — the initial
+// view render swaps the region into place by document position, not by id.
+// Exposed to the templates as {{composeView .ConversationID .CSRFInput .Closed}}.
+func newComposeView(conversationID uuid.UUID, csrfInput template.HTML, closed bool) composeView {
+	return composeView{ConversationID: conversationID, CSRFInput: csrfInput, Closed: closed}
 }
 
 // mergeIconFuncs overlays the Peitho {{icon}} helper (internal/web/icon)
@@ -531,6 +552,25 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
   {{- if .ShowLivePoll}}
   {{template "thread_live_poll" (livePoll .ConversationID .LivePollCursor)}}
   {{- end}}
+  {{template "conversation_compose" (composeView .ConversationID .CSRFInput .Closed)}}
+</article>
+{{.CustomerPanel}}
+`))
+
+// conversationComposeTmpl is the outbound compose region (SIN-65473). It
+// renders the message form when the conversation is open, or a
+// "conversa encerrada" notice when it is closed — sending to a closed
+// conversation is already rejected server-side (SendOutbound →
+// ErrConversationClosed → 409), and this hides the dead form so the
+// operator sees why. The region carries a stable id so the close / reopen
+// handlers can re-render it out-of-band (hx-swap-oob="outerHTML") in the
+// same response that swaps the Encerrar / Reabrir toggle. CSP-safe: no
+// inline handlers — htmx drives every interaction through hx-* attributes
+// and the layout's hx-headers propagates the CSRF token.
+var conversationComposeTmpl = template.Must(template.New("conversation_compose").Funcs(templateFuncs).Parse(`<div id="conversation-compose" class="conversation__compose-region"{{if .OOB}} hx-swap-oob="outerHTML"{{end}}>
+{{- if .Closed}}
+  <p class="conversation__closed-notice" role="status" data-testid="conversation-closed-notice">Conversa encerrada. Reabra a conversa para enviar novas mensagens.</p>
+{{- else}}
   <form class="conversation__compose"
         hx-post="/inbox/conversations/{{.ConversationID}}/messages"
         hx-target="#conversation-thread"
@@ -542,8 +582,38 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
     <button type="submit" class="conversation__compose-submit">Enviar</button>
     <span id="compose-indicator" class="conversation__compose-indicator" role="status" aria-live="polite">Enviando…</span>
   </form>
-</article>
-{{.CustomerPanel}}
+{{- end}}
+</div>
+`))
+
+// conversationStateActionTmpl is the Encerrar / Reabrir toggle in the
+// customer-actions panel (SIN-65473). It renders the "Encerrar conversa"
+// button (POST .../close) when the conversation is open, or the
+// "Conversa encerrada" badge + "Reabrir conversa" button (POST .../reopen)
+// when it is closed. It carries a stable id so the close / reopen handlers
+// re-render it in place (hx-target="#conversation-state-action",
+// hx-swap="outerHTML"). CSP-safe: the only interactivity is hx-* on the
+// form; hx-confirm shows a native confirm() without inline JS, and the
+// layout's hx-headers propagates the CSRF token.
+var conversationStateActionTmpl = template.Must(template.New("conversation_state_action").Funcs(templateFuncs).Parse(`<span id="conversation-state-action" class="customer-actions__state">
+{{- if .Closed}}
+  <span class="customer-actions__state-badge customer-actions__state-badge--closed" data-testid="conversation-closed-badge">Conversa encerrada</span>
+  <form class="customer-actions__reopen-form"
+        hx-post="/inbox/conversations/{{.ConversationID}}/reopen"
+        hx-target="#conversation-state-action"
+        hx-swap="outerHTML">
+    <button type="submit" class="customer-actions__btn customer-actions__btn--reopen" data-testid="conversation-reopen">Reabrir conversa</button>
+  </form>
+{{- else}}
+  <form class="customer-actions__close-form"
+        hx-post="/inbox/conversations/{{.ConversationID}}/close"
+        hx-target="#conversation-state-action"
+        hx-swap="outerHTML"
+        hx-confirm="Encerrar esta conversa? Você pode reabri-la depois.">
+    <button type="submit" class="customer-actions__btn customer-actions__btn--close" data-testid="conversation-close">Encerrar conversa</button>
+  </form>
+{{- end}}
+</span>
 `))
 
 // conversationContextTmpl is the conversation context side panel
@@ -737,6 +807,13 @@ var customerPanelTmpl = template.Must(template.New("customer_panel").Funcs(templ
     </header>
     {{- if .AssistButton}}
     {{.AssistButton}}
+    {{- if .AssistStale}}
+    <p id="ai-assist-staleness" class="ai-assist__staleness" role="status" data-testid="ai-assist-staleness">
+      Há novas mensagens desde o último resumo. Clique em <strong>Atualizar</strong> para regenerar.
+    </p>
+    {{- else}}
+    <p id="ai-assist-staleness" class="ai-assist__staleness" role="status" hidden></p>
+    {{- end}}
     <section id="ai-assist-panel" class="customer-summary__panel ai-assist__panel" data-testid="customer-summary-panel" aria-live="polite">
       <p class="customer-summary__empty">Clique para gerar um resumo e 3 dicas para fechar a venda.</p>
     </section>
@@ -755,8 +832,29 @@ var customerPanelTmpl = template.Must(template.New("customer_panel").Funcs(templ
   <section class="customer-actions" aria-labelledby="customer-actions-title" data-testid="customer-actions">
     <h3 id="customer-actions-title" class="customer-section__title">Ações</h3>
     <ul class="customer-actions__list" role="list">
+      {{- if .Assignees}}
+      <li class="customer-actions__transfer">
+        <form class="customer-actions__transfer-form"
+              hx-post="/inbox/conversations/{{.ConversationID}}/transfer"
+              hx-target="#conversation-context-assignment"
+              hx-swap="outerHTML">
+          <label for="transfer-target-{{.ConversationID}}" class="visually-hidden">Transferir conversa para</label>
+          <select id="transfer-target-{{.ConversationID}}" name="targetUserID" class="customer-actions__transfer-select" data-testid="transfer-select">
+            {{- range .Assignees}}
+            <option value="{{.UserID}}">{{.DisplayName}}</option>
+            {{- end}}
+          </select>
+          <button type="submit" class="customer-actions__btn" data-testid="conversation-transfer">Transferir conversa</button>
+        </form>
+      </li>
+      {{- else}}
       <li><button type="button" class="customer-actions__btn" disabled title="Em breve">Transferir conversa</button></li>
+      {{- end}}
+      {{- if .CanClose}}
+      <li>{{template "conversation_state_action" .}}</li>
+      {{- else}}
       <li><button type="button" class="customer-actions__btn" disabled title="Em breve">Encerrar conversa</button></li>
+      {{- end}}
       <li><a class="customer-actions__btn customer-actions__btn--link" href="/funnel?conversation={{.ConversationID}}">Ver no funil</a></li>
     </ul>
   </section>
@@ -889,7 +987,7 @@ func init() {
 	// {{template "conversation_list" …}} and so on with one template
 	// tree. Errors here are programmer errors (typos in the template
 	// source) — surface them at process start, not at request time.
-	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl} {
+	for _, child := range []*template.Template{inboxListRegionTmpl, inboxFiltersTmpl, conversationListTmpl, conversationViewTmpl, conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl, conversationComposeTmpl, conversationStateActionTmpl, composeTextareaTmpl} {
 		if _, err := inboxLayoutTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + ": " + err.Error())
 		}
@@ -902,9 +1000,17 @@ func init() {
 			panic("inbox/web: register " + child.Name() + " in list region: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl, composeTextareaTmpl, threadLivePollTmpl} {
+	for _, child := range []*template.Template{conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl, composeTextareaTmpl, threadLivePollTmpl, conversationComposeTmpl, conversationStateActionTmpl} {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
+		}
+	}
+	// conversationComposeTmpl is executed standalone by the close / reopen
+	// handlers (OOB compose swap), so it needs compose_textarea on its own
+	// tree.
+	for _, child := range []*template.Template{composeTextareaTmpl} {
+		if _, err := conversationComposeTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
+			panic("inbox/web: register " + child.Name() + " in compose: " + err.Error())
 		}
 	}
 	// threadLiveUpdateTmpl is executed standalone by the since handler
@@ -933,7 +1039,7 @@ func init() {
 			panic("inbox/web: register " + child.Name() + " in list: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{channelBadgeTmpl} {
+	for _, child := range []*template.Template{channelBadgeTmpl, conversationStateActionTmpl} {
 		if _, err := customerPanelTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in customer: " + err.Error())
 		}
@@ -955,6 +1061,8 @@ func init() {
 		conversationViewTmpl,
 		conversationContextTmpl,
 		conversationAssignmentTmpl,
+		conversationComposeTmpl,
+		conversationStateActionTmpl,
 		customerPanelTmpl,
 		channelBadgeTmpl,
 		inboxLayoutTmpl,

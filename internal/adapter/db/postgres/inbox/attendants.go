@@ -132,3 +132,45 @@ func (s *Store) SetConversationLead(ctx context.Context, tenantID, conversationI
 	}
 	return nil
 }
+
+// ClearConversationLead drops the denormalised
+// conversation.assigned_user_id cache back to NULL so the inbox list
+// read-model renders the conversation as Unassigned (SIN-65472, the
+// training-thread reset cascade). It mirrors SetConversationLead: runs
+// under WithTenant (RLS scopes the row to the tenant) and a zero
+// rows-affected result — unknown id or RLS-hidden — maps to
+// domain.ErrNotFound rather than silently succeeding. The UPDATE is
+// idempotent: clearing an already-Unassigned conversation still matches
+// the row and reports success, so a reset retry converges. The
+// append-only assignment_history ledger is left untouched — it is the
+// audit source of truth and stays append-only; only the cached lead is
+// cleared.
+func (s *Store) ClearConversationLead(ctx context.Context, tenantID, conversationID uuid.UUID) error {
+	if tenantID == uuid.Nil {
+		return fmt.Errorf("inbox/postgres: ClearConversationLead: tenant id is nil")
+	}
+	if conversationID == uuid.Nil {
+		return fmt.Errorf("inbox/postgres: ClearConversationLead: conversation id is nil")
+	}
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE conversation
+			   SET assigned_user_id = NULL
+			 WHERE id = $1
+		`, conversationID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
+	if errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("inbox/postgres: ClearConversationLead: %w", err)
+	}
+	return nil
+}

@@ -41,6 +41,7 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/channels/llmcustomer/canned"
 	openrouterpersona "github.com/pericles-luz/crm/internal/adapter/channels/llmcustomer/openrouter"
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
+	aiassistpg "github.com/pericles-luz/crm/internal/adapter/db/postgres/aiassist"
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
 	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
 	"github.com/pericles-luz/crm/internal/contacts"
@@ -69,6 +70,9 @@ type fakellmRepository interface {
 	inbox.InboundDedupRepository
 	inbox.AssignmentRepository
 	inbox.ConversationLeadStore
+	// ConversationStateStore backs the Encerrar / Reabrir conversa use
+	// cases (SIN-65473): SetConversationState persists the lifecycle column.
+	inbox.ConversationStateStore
 }
 
 // inboxLLMCustomerDeps bundles the ports assembleInboxLLMCustomerHandler
@@ -111,6 +115,19 @@ type inboxLLMCustomerDeps struct {
 	// FromPool; the in-memory test path may leave it zero or inject a
 	// fake to exercise route registration.
 	AIAssist webinbox.AssistDeps
+	// AssignmentClearer drops a conversation back to Unassigned when its
+	// training history is wiped (SIN-65472). nil degrades to the no-op
+	// default inside NewResetConversation, leaving the assignee chip
+	// untouched on reset. The production path supplies the same
+	// *pginbox.Store (ClearConversationLead).
+	AssignmentClearer inboxusecase.AssignmentClearer
+	// SummaryInvalidator voids the cached AI summary when a conversation
+	// is wiped (SIN-65472). nil degrades to the no-op default, leaving
+	// a stale summary live. The production path supplies the aiassist
+	// store (InvalidateForConversation), wired independently of the
+	// AI-assist Summarizer so summaries are voided even when the LLM key
+	// is absent.
+	SummaryInvalidator inboxusecase.SummaryInvalidator
 	// Logger receives the bootstrap audit lines. nil falls back to
 	// slog.Default with a "wire=inbox_llmcustomer" attribute.
 	Logger *slog.Logger
@@ -262,16 +279,43 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		listAssignableUC = &listAssignableAdapter{r: deps.Attendants}
 	}
 
-	// Training-conversation reset (SIN-65392). The same fake adapter that
-	// drives the auto-reply also satisfies inboxusecase.ConversationResetter
-	// (clears per-tenant turn history + bootstrapped flag), so a reset
-	// deletes the DB rows AND the in-memory simulator state in lock-step.
-	// The use case rejects any non-fakellm conversation, so this is the
-	// only inbox wire that registers the reset route.
-	resetUC, err := inboxusecase.NewResetConversation(deps.Repo, adapter)
+	// Training-conversation reset (SIN-65392 / SIN-65472). The same fake
+	// adapter that drives the auto-reply also satisfies
+	// inboxusecase.ConversationResetter (clears per-tenant turn history +
+	// bootstrapped flag), so a reset deletes the DB rows AND the in-memory
+	// simulator state in lock-step. The use case rejects any non-fakellm
+	// conversation, so this is the only inbox wire that registers the
+	// reset route.
+	//
+	// SIN-65472 delete-cascade: a reset must also drop the conversation
+	// back to Unassigned and invalidate the cached AI summary. Both ports
+	// are optional — NewResetConversation tolerates nil with no-op
+	// defaults — so a deployment that wires neither degrades to the
+	// pre-65472 delete-only behaviour rather than panicking.
+	resetUC, err := inboxusecase.NewResetConversation(
+		deps.Repo,
+		adapter,
+		inboxusecase.WithAssignmentClearer(deps.AssignmentClearer),
+		inboxusecase.WithSummaryInvalidator(deps.SummaryInvalidator),
+	)
 	if err != nil {
 		adapter.Stop()
 		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: reset conversation usecase: %w", err)
+	}
+
+	// Encerrar / Reabrir conversa (SIN-65473). Both read the conversation
+	// under the tenant scope (deps.Repo) and persist the lifecycle column
+	// through the same store's SetConversationState. They are wired as a
+	// pair so a closed conversation always has a reopen path.
+	closeUC, err := inboxusecase.NewCloseConversation(deps.Repo, deps.Repo)
+	if err != nil {
+		adapter.Stop()
+		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: close conversation usecase: %w", err)
+	}
+	reopenUC, err := inboxusecase.NewReopenConversation(deps.Repo, deps.Repo)
+	if err != nil {
+		adapter.Stop()
+		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: reopen conversation usecase: %w", err)
 	}
 
 	handlerDeps := webinbox.Deps{
@@ -285,6 +329,8 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		AssignConversation:  assignUC,
 		ListAssignable:      listAssignableUC,
 		ResetConversation:   resetUC,
+		CloseConversation:   closeUC,
+		ReopenConversation:  reopenUC,
 		AIAssist:            deps.AIAssist,
 		CSRFToken:           csrfTokenFromSessionContext,
 		UserID:              userIDFromSessionContext,
@@ -370,6 +416,18 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 		log.Printf("crm: ai-assist operator summarizer disabled — assemble: %v; inbox continues without ai-assist", err)
 		summarizer = nil
 	}
+	// Summary invalidation on reset (SIN-65472) is wired independently of
+	// the AI-assist Summarizer above: it depends only on the runtime pool
+	// (no LLM key), so a wipe still voids stale ai_summary rows even when
+	// the live summarizer is disabled. A construction fault soft-degrades
+	// to no-op invalidation (delete-only reset) rather than downing the
+	// inbox, mirroring the summarizer's posture.
+	var summaryInvalidator inboxusecase.SummaryInvalidator
+	if aiStore, aerr := aiassistpg.New(pool); aerr != nil {
+		log.Printf("crm: reset summary invalidation disabled — aiassist store: %v; reset continues without summary invalidation", aerr)
+	} else {
+		summaryInvalidator = summaryInvalidatorAdapter{store: aiStore, now: time.Now}
+	}
 	mux, cleanup, _, err := assembleInboxLLMCustomerHandler(inboxLLMCustomerDeps{
 		Repo: inboxStore,
 		// *pginbox.Store satisfies inbox.ConversationReadModel too, so the
@@ -383,7 +441,12 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 		Contacts:   contactsStore,
 		LLM:        personaLLM,
 		ReplyDelay: llmcustomerReplyDelay,
-		AIAssist:   webinbox.AssistDeps{Summarizer: summarizer},
+		AIAssist:   newAIAssistDeps(summarizer),
+		// SIN-65472 delete-cascade: the same *pginbox.Store clears the
+		// assignment (ClearConversationLead) and the aiassist store voids
+		// the cached summary on reset.
+		AssignmentClearer:  assignmentClearerAdapter{store: inboxStore},
+		SummaryInvalidator: summaryInvalidator,
 		// Logger left at the production default (slog.Default).
 	})
 	if err != nil {
@@ -563,6 +626,33 @@ func (b *bootstrapOnListSummaries) releasePending(tenantID uuid.UUID) {
 		return
 	}
 	delete(b.seen, tenantID)
+}
+
+// assignmentClearerAdapter adapts *pginbox.Store.ClearConversationLead
+// to inboxusecase.AssignmentClearer (SIN-65472). The store's vocabulary
+// is "ConversationLead"; the reset use case's port is "ClearAssignment".
+// The thin adapter keeps the use-case port decoupled from the adapter's
+// method naming.
+type assignmentClearerAdapter struct {
+	store *pginbox.Store
+}
+
+func (a assignmentClearerAdapter) ClearAssignment(ctx context.Context, tenantID, conversationID uuid.UUID) error {
+	return a.store.ClearConversationLead(ctx, tenantID, conversationID)
+}
+
+// summaryInvalidatorAdapter adapts the aiassist Postgres store's
+// InvalidateForConversation (which takes an explicit now timestamp for
+// an auditable invalidated_at) to inboxusecase.SummaryInvalidator
+// (SIN-65472). now is supplied by the wire (time.Now); injecting it
+// keeps the audit timestamp seam deterministic.
+type summaryInvalidatorAdapter struct {
+	store *aiassistpg.Store
+	now   func() time.Time
+}
+
+func (a summaryInvalidatorAdapter) InvalidateSummaries(ctx context.Context, tenantID, conversationID uuid.UUID) error {
+	return a.store.InvalidateForConversation(ctx, tenantID, conversationID, a.now().UTC())
 }
 
 // listAssignableAdapter adapts inbox.AssignableAttendantRepository to
