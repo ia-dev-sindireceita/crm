@@ -17,9 +17,22 @@ Adds the AI panel cooldown UI smoke for SIN-62318.
   2. `prefers-reduced-motion: reduce` collapses the bar without animation
   3. keyboard focus + native disabled semantics survive the swap
   4. CLS during the swap stays under the 0.05 "Good" threshold
+- `cmd/inbox-autoscroll-e2e-fixture` — a Go HTTP fixture binary (NOT a
+  production surface) that serves the real `web/static/js/inbox.js`
+  against the production inbox DOM contract (the `#conversation-thread`
+  scroll container inside `#inbox-conversation-pane`) and reproduces the
+  three htmx swap shapes that move the thread (open/innerHTML,
+  send/beforeend, inbound/OOB-beforeend). Listens on `127.0.0.1:8089`.
+- `tests/e2e/specs/inbox-autoscroll.spec.ts` — covers the four
+  acceptance behaviours from SIN-65455, asserting real `scrollTop`:
+  1. opening a conversation lands scrolled to the latest message
+  2. sending pins to the just-sent message (even after scrolling up)
+  3. an inbound message pins to bottom when already at the bottom
+  4. an inbound message does NOT yank the view when scrolled up reading
+     history (pin-to-bottom only when near the bottom)
 
-The Go fixture is unit-tested in `cmd/aipanel-e2e-fixture/main_test.go`
-and runs in the standard `go test ./...` suite.
+The Go fixtures are unit-tested in `cmd/*-e2e-fixture/main_test.go`
+and run in the standard `go test ./...` suite.
 
 ## One-time setup
 
