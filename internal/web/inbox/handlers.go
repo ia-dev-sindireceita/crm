@@ -686,6 +686,15 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Staleness hint (SIN-65474): when the conversation already has a
+	// valid summary and a message arrived after it was generated, flag
+	// the panel so the operator sees a "há novas mensagens" affordance
+	// next to the refresh control. Computed entirely server-side (no
+	// client polling) by comparing the newest message's CreatedAt to the
+	// last summary's generated_at. Best-effort: a read error only drops
+	// the hint, never the panel.
+	assistStale := h.assistStale(r.Context(), tenant.ID, conversationID, res.Items)
+
 	// Hydrate the customer panel through the optional loader. When the
 	// loader is nil or errors we degrade to the empty CustomerInfo so
 	// the panel still renders (with "Contato sem nome" + no metadata).
@@ -712,6 +721,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 			Channel:         channel,
 			Contact:         customer,
 			AssistButton:    assistHTML,
+			AssistStale:     assistStale,
 			// Transfer + close actions (SIN-65473). Assignees enables the
 			// "Transferir conversa" form (reusing the assign use case);
 			// CanClose enables the Encerrar / Reabrir toggle; Closed selects
@@ -1517,6 +1527,10 @@ type customerPanelData struct {
 	// feature is not wired (the panel falls back to a disabled-state
 	// hint then).
 	AssistButton template.HTML
+	// AssistStale is true when a valid summary exists but a newer message
+	// has arrived since it was generated (SIN-65474). The panel then
+	// renders a "há novas mensagens" hint next to the refresh control.
+	AssistStale bool
 	// Assignees feeds the customer-actions "Transferir conversa" form
 	// (SIN-65473). When non-empty the panel renders the transfer select +
 	// submit (posting to .../transfer, which reuses the assign use case);
@@ -1531,4 +1545,28 @@ type customerPanelData struct {
 	// "Reabrir conversa" + a closed badge instead of "Encerrar conversa",
 	// and the compose region renders the closed notice instead of the form.
 	Closed bool
+}
+
+// assistStale reports whether the conversation's latest valid summary is
+// older than its newest message. It returns false when the reader port
+// is not wired, when no valid summary exists yet, when the thread is
+// empty, or on any read error (the hint is a best-effort affordance, not
+// a correctness gate). The comparison is strict — a message generated in
+// the same instant as the summary is not "newer".
+func (h *Handler) assistStale(ctx context.Context, tenantID, conversationID uuid.UUID, items []inboxusecase.MessageView) bool {
+	if h.deps.AIAssist.SummaryReader == nil || len(items) == 0 {
+		return false
+	}
+	generatedAt, exists, err := h.deps.AIAssist.SummaryReader.LatestSummaryGeneratedAt(ctx, tenantID, conversationID)
+	if err != nil {
+		h.deps.Logger.Warn("web/inbox: assist staleness read", "err", err)
+		return false
+	}
+	if !exists {
+		return false
+	}
+	// Items are ordered oldest-first (same contract liveCursor relies on),
+	// so the last element is the newest message.
+	newest := items[len(items)-1].CreatedAt
+	return newest.After(generatedAt)
 }

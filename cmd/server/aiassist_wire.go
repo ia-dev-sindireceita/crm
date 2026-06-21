@@ -76,6 +76,22 @@ func (d defaultModelLLMClient) Complete(ctx context.Context, req aiassist.LLMReq
 	return d.inner.Complete(ctx, req)
 }
 
+// newAIAssistDeps bundles the assembled summarizer into the inbox
+// AssistDeps. The production summarizer is a *aiassistusecase.Service,
+// which also satisfies webinbox.AssistSummaryReader (the SIN-65474
+// staleness read side), so we surface it through SummaryReader via a
+// type assertion. Keeping the assertion here (rather than changing the
+// existing builder signatures) leaves the SIN-65244 wire tests
+// untouched. A nil summarizer (soft-degrade) yields the assertion ok ==
+// false, so both fields stay nil and the feature stays off.
+func newAIAssistDeps(summarizer webinbox.AssistSummarizer) webinbox.AssistDeps {
+	deps := webinbox.AssistDeps{Summarizer: summarizer}
+	if reader, ok := summarizer.(webinbox.AssistSummaryReader); ok {
+		deps.SummaryReader = reader
+	}
+	return deps
+}
+
 // buildAIAssistLLMClient constructs the OpenRouter-backed
 // aiassist.LLMClient: the validated SDK client → the W2C shim → the
 // env-default-model decorator. apiKey is required (the caller has

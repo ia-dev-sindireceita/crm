@@ -78,6 +78,18 @@ type AssistPolicyChecker interface {
 	IsEnabled(ctx context.Context, tenantID uuid.UUID, channelID, teamID string) (bool, error)
 }
 
+// AssistSummaryReader is the read-only port the handler calls to learn
+// when the conversation's latest valid summary was generated. The inbox
+// uses it to compute the SIN-65474 staleness hint server-side: if the
+// newest message is newer than the returned timestamp, the operator is
+// shown a "há novas mensagens" affordance next to the refresh control.
+// A nil reader simply disables the hint (the refresh control still
+// works). exists is false when there is no valid summary yet — there is
+// nothing to be stale against, so no hint renders.
+type AssistSummaryReader interface {
+	LatestSummaryGeneratedAt(ctx context.Context, tenantID, conversationID uuid.UUID) (generatedAt time.Time, exists bool, err error)
+}
+
 // AssistProductArgumentLister is the catalog port the handler calls to
 // fold ProductArgument text into the LLM prompt. ProductID is the
 // product the conversation is about; pass uuid.Nil to skip arguments
@@ -134,6 +146,10 @@ type AssistDeps struct {
 	// Policy is the optional read-side gate for the button-enabled
 	// cosmetic check. nil → assume enabled, defer to Summarizer.
 	Policy AssistPolicyChecker
+	// SummaryReader is the optional read port used to compute the
+	// staleness hint (SIN-65474). nil → no hint; the refresh control
+	// still regenerates on demand.
+	SummaryReader AssistSummaryReader
 	// Arguments is the optional catalog port for prompt-folding. nil →
 	// no product context (the LLM still produces a generic reply).
 	Arguments AssistProductArgumentLister
@@ -208,6 +224,11 @@ func (h *Handler) aiAssist(w http.ResponseWriter, r *http.Request) {
 	}
 	channelID := strings.TrimSpace(r.PostFormValue("channelId"))
 	teamID := strings.TrimSpace(r.PostFormValue("teamId"))
+	// force=1 is the operator "Atualizar" (refresh) path: regenerate the
+	// summary even when a fresh cache row exists (SIN-65474). The policy
+	// and rate-limit gates still run in Summarize — force only bypasses
+	// the cache, never the deny-by-default guards.
+	force := r.PostFormValue("force") == "1"
 
 	messages, err := h.deps.ListMessages.Execute(r.Context(), inboxusecase.ListMessagesInput{
 		TenantID:       tenant.ID,
@@ -248,6 +269,7 @@ func (h *Handler) aiAssist(w http.ResponseWriter, r *http.Request) {
 		ConversationID: conversationID,
 		RequestID:      requestID,
 		Prompt:         prompt,
+		Force:          force,
 		Scope: aiassist.Scope{
 			TeamID:    teamID,
 			ChannelID: channelID,
@@ -272,6 +294,14 @@ func (h *Handler) aiAssist(w http.ResponseWriter, r *http.Request) {
 	h.observeAssistDuration(outcome, elapsed)
 
 	view := newAssistPanel(resp)
+	// Wire the in-panel "Atualizar" refresh form (SIN-65474). The form
+	// re-POSTs the same route with force=1; the CSRF token comes from the
+	// request so the swapped-in panel carries a valid token for the next
+	// click.
+	view.ConversationID = conversationID
+	view.ChannelID = channelID
+	view.TeamID = teamID
+	view.CSRFInput = csrf.FormHidden(h.deps.CSRFToken(r))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := assistPanelTmpl.Execute(w, view); err != nil {
@@ -511,6 +541,14 @@ type assistPanelView struct {
 	Suggestions []string
 	CacheHit    bool
 	Model       string
+	// ConversationID / ChannelID / TeamID / CSRFInput back the in-panel
+	// "Atualizar" refresh form (SIN-65474). They are populated by the
+	// handler after parsing; newAssistPanel leaves them zero so the pure
+	// parse path stays test-friendly.
+	ConversationID uuid.UUID
+	ChannelID      string
+	TeamID         string
+	CSRFInput      template.HTML
 }
 
 // newAssistPanel parses the (Summary.Text) string the use case
@@ -693,6 +731,18 @@ var assistPanelTmpl = template.Must(template.New("ai_assist_panel").Parse(`<sect
   <header class="ai-assist__result-header">
     <h2 class="ai-assist__result-title">Resumo da conversa</h2>
     {{if .CacheHit}}<span class="ai-assist__cache-hint" title="Resumo servido do cache">cache</span>{{end}}
+    <form class="ai-assist__refresh-form"
+          hx-post="/inbox/conversations/{{.ConversationID}}/ai-assist"
+          hx-target="#ai-assist-panel"
+          hx-swap="innerHTML"
+          hx-include="this">
+      {{.CSRFInput}}
+      <input type="hidden" name="channelId" value="{{.ChannelID}}">
+      <input type="hidden" name="teamId" value="{{.TeamID}}">
+      <input type="hidden" name="force" value="1">
+      <button id="ai-assist-refresh" type="submit" class="ai-assist__refresh-button"
+              title="Regenerar resumo e sugestões com as mensagens mais recentes">Atualizar</button>
+    </form>
   </header>
   <p class="ai-assist__summary">{{.Summary}}</p>
   {{if .Suggestions}}
@@ -709,6 +759,7 @@ var assistPanelTmpl = template.Must(template.New("ai_assist_panel").Parse(`<sect
   </ol>
   {{end}}
 </section>
+<p id="ai-assist-staleness" class="ai-assist__staleness" role="status" hidden hx-swap-oob="outerHTML"></p>
 `))
 
 // assistBalanceBannerTmpl is the no-retry banner for insufficient

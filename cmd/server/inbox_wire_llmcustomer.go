@@ -441,7 +441,7 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 		Contacts:   contactsStore,
 		LLM:        personaLLM,
 		ReplyDelay: llmcustomerReplyDelay,
-		AIAssist:   webinbox.AssistDeps{Summarizer: summarizer},
+		AIAssist:   newAIAssistDeps(summarizer),
 		// SIN-65472 delete-cascade: the same *pginbox.Store clears the
 		// assignment (ClearConversationLead) and the aiassist store voids
 		// the cached summary on reset.
