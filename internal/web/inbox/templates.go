@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/pericles-luz/crm/internal/web/icon"
 	"github.com/pericles-luz/crm/internal/web/shell"
 )
@@ -44,7 +46,17 @@ var templateFuncs = mergeIconFuncs(template.FuncMap{
 	"channelLabel":     channelLabel,
 	"avatarInitial":    avatarInitial,
 	"initials":         initials,
+	"livePoll":         newLivePollData,
 })
+
+// newLivePollData builds the live-poll sentinel data (SIN-65419) from a
+// conversation id + cursor so conversationViewTmpl can render the shared
+// thread_live_poll partial inline. OOB is always false here — the initial
+// view render swaps the sentinel into place by document position, not by
+// id. Exposed to the templates as {{livePoll .ConversationID .Cursor}}.
+func newLivePollData(conversationID uuid.UUID, cursor string) threadLivePollData {
+	return threadLivePollData{ConversationID: conversationID, Cursor: cursor}
+}
 
 // mergeIconFuncs overlays the Peitho {{icon}} helper (internal/web/icon)
 // onto fm so the inbox templates can render inline-SVG Lucide glyphs and
@@ -515,6 +527,9 @@ var conversationViewTmpl = template.Must(template.New("conversation_view").Funcs
   </header>
   {{template "conversation_context" .Context}}
   {{template "conversation_thread" .Messages}}
+  {{- if .ShowLivePoll}}
+  {{template "thread_live_poll" (livePoll .ConversationID .LivePollCursor)}}
+  {{- end}}
   <form class="conversation__compose"
         hx-post="/inbox/conversations/{{.ConversationID}}/messages"
         hx-target="#conversation-thread"
@@ -812,6 +827,40 @@ var conversationThreadTmpl = template.Must(template.New("conversation_thread").F
     {{- end}}
 </ol>`))
 
+// threadLivePollTmpl is the conversation thread live-refresh sentinel
+// (SIN-65419): a hidden element that polls GET
+// /inbox/conversations/{id}/messages/since every 3s through an exclusive
+// cursor (the newest message the client holds, as Unix nanoseconds). It
+// is the single source of truth for the sentinel, rendered in three
+// places that MUST stay identical:
+//
+//   - inside conversationViewTmpl (initial in-place render, OOB=false),
+//   - as the since handler's main (non-OOB) swap content, replacing the
+//     old sentinel via its own hx-swap="outerHTML" (OOB=false), and
+//   - as an out-of-band cursor advance from the send handler (OOB=true →
+//     hx-swap-oob="true" replaces the sentinel by id wherever it sits).
+//
+// hx-target="this" + hx-swap="outerHTML" make the poll replace itself with
+// the fresh sentinel the since response carries; a 204 no-change response
+// leaves it untouched so it keeps polling. .thread-live-poll is
+// display:none in inbox.css — htmx's every-3s timer fires regardless of
+// visibility, and the element carries no content of its own.
+var threadLivePollTmpl = template.Must(template.New("thread_live_poll").Funcs(templateFuncs).Parse(
+	`<div id="thread-live-poll" class="thread-live-poll" aria-hidden="true"{{if .OOB}} hx-swap-oob="true"{{end}}` +
+		` hx-get="/inbox/conversations/{{.ConversationID}}/messages/since?after={{.Cursor}}"` +
+		` hx-trigger="every 3s" hx-target="this" hx-swap="outerHTML"></div>`))
+
+// threadLiveUpdateTmpl is the since handler's 200 response: the fresh
+// sentinel (advanced cursor, replacing the old one in place via the
+// sentinel's configured outerHTML self-swap) followed by the new message
+// bubbles wrapped in a <template hx-swap-oob="beforeend:#conversation-thread">
+// so htmx appends them to the END of the thread regardless of where the
+// sentinel sits in the DOM. The <template> wrapper is required because the
+// bubbles are bare <li>s, which a browser would hoist out of any other
+// container during parsing.
+var threadLiveUpdateTmpl = template.Must(template.New("thread_live_update").Funcs(templateFuncs).Parse(
+	`{{template "thread_live_poll" .Poll}}<template hx-swap-oob="beforeend:#conversation-thread">{{range .Messages}}{{template "message_bubble" .}}{{end}}</template>`))
+
 // composeTextareaTmpl is the single source of truth for the outbound
 // compose <textarea>. It renders in two places that MUST stay identical:
 //
@@ -849,9 +898,17 @@ func init() {
 			panic("inbox/web: register " + child.Name() + " in list region: " + err.Error())
 		}
 	}
-	for _, child := range []*template.Template{conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl, composeTextareaTmpl} {
+	for _, child := range []*template.Template{conversationThreadTmpl, messageBubbleTmpl, customerPanelTmpl, channelBadgeTmpl, conversationContextTmpl, conversationAssignmentTmpl, composeTextareaTmpl, threadLivePollTmpl} {
 		if _, err := conversationViewTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
 			panic("inbox/web: register " + child.Name() + " in view: " + err.Error())
+		}
+	}
+	// threadLiveUpdateTmpl is executed standalone by the since handler
+	// (SIN-65419): it embeds the sentinel + the new message bubbles, so it
+	// needs both partials registered on its own tree.
+	for _, child := range []*template.Template{threadLivePollTmpl, messageBubbleTmpl} {
+		if _, err := threadLiveUpdateTmpl.AddParseTree(child.Name(), child.Tree); err != nil {
+			panic("inbox/web: register " + child.Name() + " in thread live update: " + err.Error())
 		}
 	}
 	// conversationThreadTmpl is executed standalone by the reset handler
@@ -885,6 +942,8 @@ func init() {
 	for _, t := range []*template.Template{
 		messageBubbleTmpl,
 		conversationThreadTmpl,
+		threadLivePollTmpl,
+		threadLiveUpdateTmpl,
 		composeTextareaTmpl,
 		conversationListTmpl,
 		inboxFiltersTmpl,

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +67,20 @@ type SendOutboundUseCase interface {
 // without reloading the conversation pane.
 type GetMessageUseCase interface {
 	Execute(ctx context.Context, in inboxusecase.GetMessageInput) (inboxusecase.GetMessageResult, error)
+}
+
+// ListMessagesSinceUseCase is the incremental read-side that backs the
+// conversation thread's live-refresh poll (SIN-65419). The open
+// conversation pane polls every few seconds with an exclusive cursor
+// (the Unix-nanosecond CreatedAt of the last message it already holds);
+// the use case returns only the messages created after it so the handler
+// appends the new inbound (auto-reply) bubbles without a reload. It is
+// optional on Deps: when nil the live-poll route is not registered and
+// the conversation view renders without the poll sentinel, so the thread
+// stays static (the legacy behaviour) on deployments that have not wired
+// it.
+type ListMessagesSinceUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.ListMessagesSinceInput) (inboxusecase.ListMessagesSinceResult, error)
 }
 
 // GetConversationContextUseCase is the read side that gathers the
@@ -144,11 +159,20 @@ type Deps struct {
 	// UX-spec surface.
 	ListSummaries ListSummariesUseCase
 	ListMessages  ListMessagesUseCase
-	SendOutbound  SendOutboundUseCase
-	GetMessage    GetMessageUseCase
-	CSRFToken     CSRFTokenFn
-	UserID        UserIDFn
-	Logger        *slog.Logger
+	// ListMessagesSince is the optional incremental read-side for the
+	// conversation thread live-refresh poll (SIN-65419). When wired, GET
+	// /inbox/conversations/{id}/messages/since is registered and the
+	// conversation view renders the poll sentinel that appends new inbound
+	// bubbles every few seconds; when nil the route is absent and the
+	// thread stays static (legacy behaviour). It reuses the same message
+	// read port as ListMessages, so wiring it carries no extra storage
+	// surface.
+	ListMessagesSince ListMessagesSinceUseCase
+	SendOutbound      SendOutboundUseCase
+	GetMessage        GetMessageUseCase
+	CSRFToken         CSRFTokenFn
+	UserID            UserIDFn
+	Logger            *slog.Logger
 	// AIAssist wires the optional SIN-62908 ai-assist feature. The
 	// nested Summarizer field is the activation switch.
 	AIAssist AssistDeps
@@ -272,6 +296,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /inbox/conversations/{id}", h.view)
 	mux.HandleFunc("POST /inbox/conversations/{id}/messages", h.send)
 	mux.HandleFunc("GET /inbox/conversations/{id}/messages/{msgID}/status", h.status)
+	if h.deps.ListMessagesSince != nil {
+		mux.HandleFunc("GET /inbox/conversations/{id}/messages/since", h.since)
+	}
 	if h.deps.AIAssist.Summarizer != nil {
 		mux.HandleFunc("POST /inbox/conversations/{id}/ai-assist", h.aiAssist)
 	}
@@ -656,6 +683,11 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		// wired (SIN-65392). Both conditions resolve server-side so the
 		// button is absent — not merely hidden — on real conversations.
 		ShowReset: h.deps.ResetConversation != nil && channel == inboxusecase.TrainingChannel,
+		// Live-thread poll (SIN-65419): rendered only when the incremental
+		// read side is wired. The cursor is the newest message's CreatedAt
+		// so the first poll only fetches strictly-newer inbound replies.
+		ShowLivePoll:   h.deps.ListMessagesSince != nil,
+		LivePollCursor: liveCursor(res.Items),
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render view", "err", err)
 		return
@@ -743,6 +775,21 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	if err := composeTextareaTmpl.Execute(w, true); err != nil {
 		h.deps.Logger.Error("web/inbox: render compose reset", "err", err)
 	}
+	// Out-of-band live-poll cursor advance (SIN-65419): the bubble above is
+	// appended client-side, so the live thread poll must skip past the
+	// just-sent message or its next tick would re-fetch and duplicate it.
+	// Replacing the sentinel by id (hx-swap-oob="true") moves the cursor to
+	// this message's CreatedAt; the subsequent poll then returns only the
+	// later inbound reply. Emitted only when the live poll is wired.
+	if h.deps.ListMessagesSince != nil {
+		if err := threadLivePollTmpl.Execute(w, threadLivePollData{
+			ConversationID: conversationID,
+			Cursor:         strconv.FormatInt(msg.CreatedAt.UnixNano(), 10),
+			OOB:            true,
+		}); err != nil {
+			h.deps.Logger.Error("web/inbox: render live poll cursor advance", "err", err)
+		}
+	}
 }
 
 // status is the realtime message-status partial that backs the bubble's
@@ -808,6 +855,86 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := messageBubbleTmpl.Execute(w, res.Message); err != nil {
 		h.deps.Logger.Error("web/inbox: render status bubble", "err", err)
+	}
+}
+
+// since is the conversation thread live-refresh poll (SIN-65419). The
+// open conversation pane polls this endpoint every few seconds through a
+// hidden sentinel element that carries an exclusive cursor — the
+// Unix-nanosecond CreatedAt of the last message the client already holds.
+// The handler returns only the messages created after the cursor:
+//
+//   - 204 No Content when nothing is newer (the common case), so htmx
+//     leaves the sentinel (and its poll trigger) untouched and keeps
+//     polling. As with the status poll, the no-change code MUST be 204
+//     and never 304: htmx 2.x swaps the "[23].." status range, so a 304
+//     would be applied and wipe the sentinel (SIN-65389/SIN-65393).
+//   - 200 + the new bubbles (OOB-appended to #conversation-thread) plus a
+//     fresh sentinel carrying the advanced cursor, when there are new
+//     messages.
+//
+// Security: the read is tenant-scoped (tenancy.FromContext + the
+// use-case's tenant predicate), so it can never surface another tenant's
+// messages; an unknown/RLS-hidden conversation collapses to 404 — the
+// same opaque response the view and status handlers give. A malformed
+// cursor is rejected at the boundary with 400.
+//
+// Cache-Control: no-store keeps every poll hitting the origin so a freshly
+// persisted inbound reply surfaces within the next poll window.
+func (h *Handler) since(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	// The cursor is the Unix-nanosecond CreatedAt of the last message the
+	// client holds. Absent ("") means the client thread is empty → cursor
+	// 0, which the use case treats as "return all" (the correct first
+	// fill). A present-but-unparseable cursor is a malformed request.
+	var afterNanos int64
+	if raw := r.URL.Query().Get("after"); raw != "" {
+		afterNanos, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
+			return
+		}
+	}
+	res, err := h.deps.ListMessagesSince.Execute(r.Context(), inboxusecase.ListMessagesSinceInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+		AfterUnixNano:  afterNanos,
+	})
+	if err != nil {
+		if errors.Is(err, inboxusecase.ErrNotFound) {
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		h.fail(w, http.StatusInternalServerError, "list messages since", err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if len(res.Items) == 0 {
+		// Nothing new: 204 No Content. htmx treats 204 as an explicit
+		// no-swap, so the sentinel (with its every-3s poll attrs and the
+		// unchanged cursor) is left intact and keeps polling. A re-poll with
+		// the same cursor lands here, so the response is idempotent.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := threadLiveUpdateTmpl.Execute(w, threadLiveUpdate{
+		Poll: threadLivePollData{
+			ConversationID: conversationID,
+			Cursor:         liveCursor(res.Items),
+		},
+		Messages: res.Items,
+	}); err != nil {
+		h.deps.Logger.Error("web/inbox: render thread live update", "err", err)
 	}
 }
 
@@ -967,6 +1094,21 @@ func assigneeDisplayName(assignees []AssignableRow, userID string) string {
 	return ""
 }
 
+// liveCursor renders the live-poll cursor for a message slice: the
+// Unix-nanosecond CreatedAt of the last (newest) message, as a decimal
+// string. An integer cursor sidesteps all URL-escaping and timezone
+// pitfalls a formatted timestamp would carry in the poll's hx-get query.
+// Returns "" for an empty slice so a conversation that rendered with no
+// messages emits an empty cursor — the since handler then treats it as
+// "return all" (the correct first fill). Messages are oldest-first, so
+// the last element is the newest.
+func liveCursor(items []inboxusecase.MessageView) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return strconv.FormatInt(items[len(items)-1].CreatedAt.UnixNano(), 10)
+}
+
 // buildInboxNavItems returns the SidebarNav primary nav for the inbox
 // page (SIN-65104). It mirrors funnel's buildFunnelNavItems so the two
 // post-login surfaces share one nav, with "Inbox" marked active here so
@@ -1083,12 +1225,42 @@ type viewData struct {
 	// this flag so the destructive action is structurally absent from
 	// every real conversation.
 	ShowReset bool
+	// ShowLivePoll gates the conversation thread live-refresh sentinel
+	// (SIN-65419). True only when the ListMessagesSince use case is wired;
+	// the template renders the hidden poll element solely on this flag so
+	// unwired deployments keep the static thread. LivePollCursor seeds the
+	// sentinel's exclusive cursor (the newest message's Unix-nanosecond
+	// CreatedAt, "" when the thread is empty).
+	ShowLivePoll   bool
+	LivePollCursor string
 	// Context drives the conversation context side panel (SIN-64970):
 	// contact identity, channel, funnel stage, and assignment state. Its
 	// zero value (HasContext=false) renders the panel's degraded
 	// "contexto indisponível" state, so a skipped or failed context read
 	// never breaks the conversation pane.
 	Context contextPanelData
+}
+
+// threadLivePollData drives the conversation thread live-refresh sentinel
+// (SIN-65419) — the hidden element that polls GET
+// .../messages/since every few seconds. Cursor is the exclusive
+// Unix-nanosecond cursor (the newest message the client holds); OOB is
+// true when the element is re-emitted as an out-of-band swap (the send
+// handler advancing the cursor past a just-sent message) and false for
+// the in-place renders (initial view + the poll's own outerHTML refresh).
+type threadLivePollData struct {
+	ConversationID uuid.UUID
+	Cursor         string
+	OOB            bool
+}
+
+// threadLiveUpdate drives the since handler's 200 response: a fresh
+// sentinel (Poll, carrying the advanced cursor, replacing the old one in
+// place) plus the new message bubbles, OOB-appended to the thread so they
+// land at the end regardless of where the sentinel sits.
+type threadLiveUpdate struct {
+	Poll     threadLivePollData
+	Messages []inboxusecase.MessageView
 }
 
 // contextPanelData is the web-local projection of
