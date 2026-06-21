@@ -29,3 +29,16 @@ func TestLeadReason_Valid(t *testing.T) {
 		})
 	}
 }
+
+// TestLeadReason_UnassignValid pins the SIN-65480 unassign event reason as
+// an accepted value — it must match migration 0124's widened CHECK so the
+// adapter can append the explicit unassign row.
+func TestLeadReason_UnassignValid(t *testing.T) {
+	t.Parallel()
+	if !inbox.LeadReasonUnassign.Valid() {
+		t.Errorf("LeadReasonUnassign.Valid() = false, want true")
+	}
+	if inbox.LeadReasonUnassign != inbox.LeadReason("unassign") {
+		t.Errorf("LeadReasonUnassign = %q, want %q", inbox.LeadReasonUnassign, "unassign")
+	}
+}

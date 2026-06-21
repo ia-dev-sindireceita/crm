@@ -55,6 +55,38 @@ func (s *Store) AppendHistory(
 	return a, nil
 }
 
+// AppendUnassign inserts an explicit unassign event row in
+// assignment_history (user_id NULL, reason 'unassign') — the append-only
+// audit record that a conversation was returned to the Não atribuído
+// state (SIN-65480). It is the unassign counterpart to AppendHistory and
+// the only write path that produces a NULL-user_id row; the presence
+// CHECK (migration 0124) is the database backstop. The returned
+// Assignment carries UserID = uuid.Nil and the adapter-chosen
+// assigned_at so the caller can keep an in-memory projection coherent.
+func (s *Store) AppendUnassign(
+	ctx context.Context,
+	tenantID, conversationID uuid.UUID,
+) (*domain.Assignment, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: AppendUnassign: tenant id is nil")
+	}
+	if conversationID == uuid.Nil {
+		return nil, fmt.Errorf("inbox/postgres: AppendUnassign: conversation id is nil")
+	}
+	a := domain.HydrateAssignment(uuid.New(), tenantID, conversationID, uuid.Nil, s.nowUTC(), domain.LeadReasonUnassign)
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO assignment_history (id, tenant_id, conversation_id, user_id, assigned_at, reason)
+			VALUES ($1, $2, $3, NULL, $4, $5)
+		`, a.ID, a.TenantID, a.ConversationID, a.AssignedAt, string(a.Reason))
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inbox/postgres: AppendUnassign: %w", err)
+	}
+	return a, nil
+}
+
 // LatestAssignment returns the most recent assignment_history row for
 // (tenantID, conversationID) — served by the
 // (tenant_id, conversation_id, assigned_at DESC) composite index. Returns
@@ -80,7 +112,7 @@ func (s *Store) LatestAssignment(
 		`, tenantID, conversationID)
 		var (
 			id     uuid.UUID
-			userID uuid.UUID
+			userID uuid.NullUUID
 			at     time.Time
 			reason string
 		)
@@ -90,7 +122,9 @@ func (s *Store) LatestAssignment(
 			}
 			return err
 		}
-		out = domain.HydrateAssignment(id, tenantID, conversationID, userID, at.UTC(), domain.LeadReason(reason))
+		// userID.UUID is uuid.Nil for an unassign event row (user_id NULL,
+		// SIN-65480) — the canonical "no current leader" projection.
+		out = domain.HydrateAssignment(id, tenantID, conversationID, userID.UUID, at.UTC(), domain.LeadReason(reason))
 		return nil
 	})
 	if err != nil {
@@ -129,14 +163,15 @@ func (s *Store) ListHistory(
 		for rows.Next() {
 			var (
 				id     uuid.UUID
-				userID uuid.UUID
+				userID uuid.NullUUID
 				at     time.Time
 				reason string
 			)
 			if err := rows.Scan(&id, &userID, &at, &reason); err != nil {
 				return err
 			}
-			out = append(out, domain.HydrateAssignment(id, tenantID, conversationID, userID, at.UTC(), domain.LeadReason(reason)))
+			// userID.UUID is uuid.Nil for an unassign event row (SIN-65480).
+			out = append(out, domain.HydrateAssignment(id, tenantID, conversationID, userID.UUID, at.UTC(), domain.LeadReason(reason)))
 		}
 		return rows.Err()
 	})

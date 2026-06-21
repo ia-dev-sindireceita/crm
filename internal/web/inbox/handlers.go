@@ -131,6 +131,15 @@ type ReopenConversationUseCase interface {
 	Execute(ctx context.Context, in inboxusecase.ReopenConversationInput) (inboxusecase.ReopenConversationResult, error)
 }
 
+// UnassignConversationUseCase is the write-side port behind the
+// "— Não atribuído —" option of the Transferir select (SIN-65480): it
+// returns a conversation to the unassigned state. Optional — when nil,
+// the option is not rendered and the /transfer handler never routes to
+// the unassign path.
+type UnassignConversationUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.UnassignConversationInput) (inboxusecase.UnassignConversationResult, error)
+}
+
 // AssignableRow is the web-local projection of inbox.AssignableAttendant.
 // Kept here (instead of importing the domain root) because the
 // forbidwebboundary lint forbids web/* from importing internal/inbox
@@ -236,6 +245,12 @@ type Deps struct {
 	// a closed conversation must always have a reopen path.
 	CloseConversation  CloseConversationUseCase
 	ReopenConversation ReopenConversationUseCase
+	// UnassignConversation is the optional write-side for the
+	// "— Não atribuído —" option of the Transferir select (SIN-65480).
+	// When wired the option is rendered and POST .../transfer routes a
+	// sentinel-valued submit to the unassign path; when nil the option is
+	// absent and /transfer only reassigns to another attendant.
+	UnassignConversation UnassignConversationUseCase
 }
 
 // CustomerInfoLoader is the read-side port that hydrates the customer
@@ -330,12 +345,14 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	if h.deps.AssignConversation != nil {
 		mux.HandleFunc("POST /inbox/conversations/{id}/assign", h.assign)
 		// Transfer is the operator-facing "Transferir conversa" action: a
-		// reassignment of the conversation lead to another attendant. It is
-		// the same domain operation as assign (SIN-64978/64979) — the form
-		// just lives in the customer-actions panel instead of the context
-		// chip — so it reuses the AssignConversation use case and the assign
-		// handler verbatim rather than duplicating the pipeline (SIN-65473).
-		mux.HandleFunc("POST /inbox/conversations/{id}/transfer", h.assign)
+		// reassignment of the conversation lead surfaced from the
+		// customer-actions panel rather than the context chip (SIN-65473).
+		// h.transfer dispatches on the submitted targetUserID: the
+		// "— Não atribuído —" sentinel routes to the unassign path
+		// (SIN-65480), every other value is the same reassignment pipeline
+		// as assign. The route is enumerated once in router.go regardless of
+		// which branch handles it, so no new route is added.
+		mux.HandleFunc("POST /inbox/conversations/{id}/transfer", h.transfer)
 	}
 	if h.deps.ResetConversation != nil {
 		mux.HandleFunc("POST /inbox/conversations/{id}/reset", h.reset)
@@ -716,9 +733,10 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 			// "Transferir conversa" form (reusing the assign use case);
 			// CanClose enables the Encerrar / Reabrir toggle; Closed selects
 			// which side of the toggle renders.
-			Assignees: assignees,
-			CanClose:  h.deps.CloseConversation != nil,
-			Closed:    closed,
+			Assignees:   assignees,
+			CanClose:    h.deps.CloseConversation != nil,
+			CanUnassign: h.deps.UnassignConversation != nil,
+			Closed:      closed,
 		}); err != nil {
 			h.deps.Logger.Error("web/inbox: render customer panel", "err", err)
 		} else {
@@ -1190,6 +1208,81 @@ func (h *Handler) reopen(w http.ResponseWriter, r *http.Request) {
 	h.renderStateAction(w, r, conversationID, false)
 }
 
+// transferUnassignValue is the sentinel option value the Transferir
+// select submits for "— Não atribuído —" (SIN-65480). It is deliberately
+// NOT a UUID so the assign path's uuid.Parse rejects it if it ever leaks
+// there; h.transfer intercepts it first and routes to the unassign use
+// case. The customerPanelTmpl renders the matching <option value="...">,
+// and a guard test pins the two literals together.
+const transferUnassignValue = "unassigned"
+
+// transfer handles POST /inbox/conversations/{id}/transfer. It dispatches
+// on the submitted targetUserID: the transferUnassignValue sentinel
+// routes to the unassign path (SIN-65480); any other value is the same
+// reassignment operation as assign (SIN-65473) and is delegated verbatim
+// to h.assign. ParseForm is idempotent, so re-parsing inside h.assign is
+// safe.
+func (h *Handler) transfer(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(r.PostFormValue("targetUserID")) == transferUnassignValue {
+		h.unassign(w, r)
+		return
+	}
+	h.assign(w, r)
+}
+
+// unassign handles the "— Não atribuído —" branch of POST .../transfer
+// (SIN-65480): it returns the conversation to the unassigned state via
+// UnassignConversation, then re-renders the assignment-section partial so
+// HTMX swaps the chip to "Não atribuída" in place. A nil use case (the
+// option should not have rendered) collapses to 404 so a hand-crafted
+// POST cannot reach an unwired path. ErrConversationClosed maps to 409
+// (the close gate); ErrNotFound (unknown / cross-tenant id, IDOR) to 404.
+func (h *Handler) unassign(w http.ResponseWriter, r *http.Request) {
+	if h.deps.UnassignConversation == nil {
+		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		return
+	}
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.deps.UnassignConversation.Execute(r.Context(), inboxusecase.UnassignConversationInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+	}); err != nil {
+		switch {
+		case errors.Is(err, inboxusecase.ErrNotFound):
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		case errors.Is(err, inboxusecase.ErrConversationClosed):
+			http.Error(w, http.StatusText(http.StatusConflict), http.StatusConflict)
+			return
+		default:
+			h.fail(w, http.StatusInternalServerError, "unassign conversation", err)
+			return
+		}
+	}
+
+	// Re-render the assignment panel in the unassigned state (assignedUserID
+	// = uuid.Nil → "Não atribuída"). Same partial and swap target as the
+	// assign path so the OOB chip swap is symmetric.
+	panel := h.buildAssignPanel(r.Context(), tenant.ID, conversationID, uuid.Nil)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := conversationAssignmentTmpl.Execute(w, panel); err != nil {
+		h.deps.Logger.Error("web/inbox: render unassign panel", "err", err)
+	}
+}
+
 // renderStateAction writes the close/reopen response: the
 // conversation_state_action toggle as the primary swap target plus an
 // out-of-band re-render of the compose region (enabled when open, replaced
@@ -1527,6 +1620,11 @@ type customerPanelData struct {
 	// (SIN-65473). False leaves the "Encerrar conversa" button disabled (the
 	// pre-feature stub) when the close use case is not wired.
 	CanClose bool
+	// CanUnassign renders the "— Não atribuído —" option inside the
+	// Transferir select (SIN-65480). False (the unassign use case not wired)
+	// omits the option entirely — deny-by-default: an action the server
+	// cannot perform is never offered.
+	CanUnassign bool
 	// Closed reflects the conversation lifecycle state so the toggle renders
 	// "Reabrir conversa" + a closed badge instead of "Encerrar conversa",
 	// and the compose region renders the closed notice instead of the form.
