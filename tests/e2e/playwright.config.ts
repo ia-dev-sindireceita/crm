@@ -11,6 +11,11 @@ const FIXTURE_PORT = Number(process.env.AIPANEL_FIXTURE_PORT || 8088);
 const FIXTURE_HOST = "127.0.0.1";
 const COOLDOWN_MS = Number(process.env.AIPANEL_COOLDOWN_MS || 1500);
 
+// SIN-65455: a second fixture serves the inbox thread auto-scroll smoke on
+// its own loopback port. inbox-autoscroll.spec.ts targets it by absolute
+// URL so the aipanel project's baseURL is untouched.
+const INBOX_FIXTURE_PORT = Number(process.env.INBOX_FIXTURE_PORT || 8089);
+
 export default defineConfig({
   testDir: "./specs",
   fullyParallel: false,
@@ -39,12 +44,22 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
-    command: `./.bin/aipanel-e2e-fixture -addr ${FIXTURE_HOST}:${FIXTURE_PORT} -cooldown ${COOLDOWN_MS}ms -static ../../web/static`,
-    url: `http://${FIXTURE_HOST}:${FIXTURE_PORT}/`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 15_000,
-    stdout: "pipe",
-    stderr: "pipe",
-  },
+  webServer: [
+    {
+      command: `./.bin/aipanel-e2e-fixture -addr ${FIXTURE_HOST}:${FIXTURE_PORT} -cooldown ${COOLDOWN_MS}ms -static ../../web/static`,
+      url: `http://${FIXTURE_HOST}:${FIXTURE_PORT}/`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 15_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    {
+      command: `./.bin/inbox-autoscroll-e2e-fixture -addr ${FIXTURE_HOST}:${INBOX_FIXTURE_PORT} -static ../../web/static`,
+      url: `http://${FIXTURE_HOST}:${INBOX_FIXTURE_PORT}/`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 15_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  ],
 });
