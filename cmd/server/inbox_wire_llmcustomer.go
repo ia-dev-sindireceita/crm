@@ -318,23 +318,42 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: reopen conversation usecase: %w", err)
 	}
 
+	// Transferir para Não atribuído (SIN-65480). The unassign path needs
+	// the append-only ledger's AppendUnassign seam (records the explicit
+	// unassign event row) plus the lead-cache clearer (drops the
+	// denormalised conversation.assigned_user_id). The *pginbox.Store
+	// behind deps.Repo grew AppendUnassign in this slice, so we probe for
+	// it via a capability assertion rather than widening the
+	// fakellmRepository union — that keeps the in-memory test fakes (which
+	// have no unassign ledger) compiling and simply leaves the option
+	// unrendered there. Both collaborators are required: without the
+	// clearer the read-model would drift, so we wire the use case only when
+	// both are present.
+	var unassignUC webinbox.UnassignConversationUseCase
+	if ledger, ok := deps.Repo.(interface {
+		AppendUnassign(ctx context.Context, tenantID, conversationID uuid.UUID) (*inbox.Assignment, error)
+	}); ok && deps.AssignmentClearer != nil {
+		unassignUC = inboxusecase.MustNewUnassignConversation(deps.Repo, ledger, deps.AssignmentClearer)
+	}
+
 	handlerDeps := webinbox.Deps{
-		ListConversations:   bootstrappedList,
-		ListSummaries:       summaries,
-		ListMessages:        listMsgsUC,
-		ListMessagesSince:   listMsgsSinceUC,
-		SendOutbound:        sendUC,
-		GetMessage:          getMsgUC,
-		ConversationContext: ctxUC,
-		AssignConversation:  assignUC,
-		ListAssignable:      listAssignableUC,
-		ResetConversation:   resetUC,
-		CloseConversation:   closeUC,
-		ReopenConversation:  reopenUC,
-		AIAssist:            deps.AIAssist,
-		CSRFToken:           csrfTokenFromSessionContext,
-		UserID:              userIDFromSessionContext,
-		Logger:              logger,
+		ListConversations:    bootstrappedList,
+		ListSummaries:        summaries,
+		ListMessages:         listMsgsUC,
+		ListMessagesSince:    listMsgsSinceUC,
+		SendOutbound:         sendUC,
+		GetMessage:           getMsgUC,
+		ConversationContext:  ctxUC,
+		AssignConversation:   assignUC,
+		ListAssignable:       listAssignableUC,
+		ResetConversation:    resetUC,
+		CloseConversation:    closeUC,
+		ReopenConversation:   reopenUC,
+		UnassignConversation: unassignUC,
+		AIAssist:             deps.AIAssist,
+		CSRFToken:            csrfTokenFromSessionContext,
+		UserID:               userIDFromSessionContext,
+		Logger:               logger,
 	}
 	h, err := webinbox.New(handlerDeps)
 	if err != nil {

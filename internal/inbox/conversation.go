@@ -112,6 +112,23 @@ func (c *Conversation) AssignTo(userID uuid.UUID, reason LeadReason) (*Assignmen
 	return a, nil
 }
 
+// Unassign returns the conversation to the Não atribuído state by
+// clearing its current leader (SIN-65480). Like AssignTo it is gated on
+// the open lifecycle: unassigning a closed conversation returns
+// ErrConversationClosed, so the close gate stays the single guard for
+// "no leadership change on a closed conversation". It is the domain
+// owner of the AssignedUserID == nil invariant; recording the explicit
+// append-only unassign event row and clearing the denormalised
+// read-model are the use case's responsibility (the in-memory history
+// projection is left untouched — the ledger is the audit truth).
+func (c *Conversation) Unassign() error {
+	if c.State != ConversationStateOpen {
+		return ErrConversationClosed
+	}
+	c.AssignedUserID = nil
+	return nil
+}
+
 // Lead returns the current leader of the conversation: the most recent
 // row in the in-memory history. Returns nil when no leader has ever
 // been recorded (history empty). Callers MUST NOT mutate the returned

@@ -17,14 +17,20 @@ const (
 	// LeadReasonReassign — supervisor/admin handed the conversation
 	// off to a different operator.
 	LeadReasonReassign LeadReason = "reassign"
+	// LeadReasonUnassign — the conversation was returned to the Não
+	// atribuído state (SIN-65480). The matching assignment_history row
+	// names no user (user_id IS NULL); migration 0124 widened the reason
+	// CHECK and added the user_id presence CHECK to make that row legal.
+	LeadReasonUnassign LeadReason = "unassign"
 )
 
-// Valid reports whether r is one of the three accepted reason values.
-// The CHECK constraint in migration 0092 rejects anything else; this
-// guard catches programmer errors at the domain boundary.
+// Valid reports whether r is one of the four accepted reason values. The
+// CHECK constraint in migration 0092 (widened by 0124 to add 'unassign')
+// rejects anything else; this guard catches programmer errors at the
+// domain boundary.
 func (r LeadReason) Valid() bool {
 	switch r {
-	case LeadReasonLead, LeadReasonManual, LeadReasonReassign:
+	case LeadReasonLead, LeadReasonManual, LeadReasonReassign, LeadReasonUnassign:
 		return true
 	}
 	return false

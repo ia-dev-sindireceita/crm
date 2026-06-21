@@ -843,6 +843,9 @@ var customerPanelTmpl = template.Must(template.New("customer_panel").Funcs(templ
             {{- range .Assignees}}
             <option value="{{.UserID}}">{{.DisplayName}}</option>
             {{- end}}
+            {{- if .CanUnassign}}
+            <option value="unassigned" data-testid="transfer-unassign-option">— Não atribuído —</option>
+            {{- end}}
           </select>
           <button type="submit" class="customer-actions__btn" data-testid="conversation-transfer">Transferir conversa</button>
         </form>

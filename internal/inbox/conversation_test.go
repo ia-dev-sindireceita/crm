@@ -88,6 +88,43 @@ func TestConversation_AssignTo_RejectsClosed(t *testing.T) {
 	}
 }
 
+func TestConversation_Unassign(t *testing.T) {
+	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
+	user := uuid.New()
+	if _, err := c.AssignTo(user, inbox.LeadReasonManual); err != nil {
+		t.Fatalf("AssignTo: %v", err)
+	}
+	if err := c.Unassign(); err != nil {
+		t.Fatalf("Unassign: %v", err)
+	}
+	if c.AssignedUserID != nil {
+		t.Errorf("AssignedUserID = %v, want nil after Unassign", c.AssignedUserID)
+	}
+	// Unassign is idempotent on an already-unassigned (open) conversation.
+	if err := c.Unassign(); err != nil {
+		t.Fatalf("second Unassign: %v", err)
+	}
+	if c.AssignedUserID != nil {
+		t.Errorf("AssignedUserID = %v, want nil after second Unassign", c.AssignedUserID)
+	}
+}
+
+func TestConversation_Unassign_RejectsClosed(t *testing.T) {
+	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
+	user := uuid.New()
+	if _, err := c.AssignTo(user, inbox.LeadReasonManual); err != nil {
+		t.Fatalf("AssignTo: %v", err)
+	}
+	c.Close()
+	if err := c.Unassign(); !errors.Is(err, inbox.ErrConversationClosed) {
+		t.Errorf("err = %v, want ErrConversationClosed", err)
+	}
+	// The leader is left intact when the close gate rejects the unassign.
+	if c.AssignedUserID == nil || *c.AssignedUserID != user {
+		t.Errorf("AssignedUserID = %v, want %v (unchanged on rejected unassign)", c.AssignedUserID, user)
+	}
+}
+
 func TestConversation_History_ReturnsCopy(t *testing.T) {
 	t.Parallel()
 	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
