@@ -98,6 +98,11 @@ type ConversationContextView struct {
 	// the id is surfaced; name resolution is left for a follow-up.
 	Assigned       bool
 	AssignedUserID *uuid.UUID
+
+	// Closed reflects the conversation lifecycle state (SIN-65473): true
+	// when conv.State is closed. The inbox view uses it to render the
+	// Encerrar / Reabrir toggle and to disable the compose form.
+	Closed bool
 }
 
 // GetConversationContextInput is the use-case argument. TenantID scopes
@@ -173,6 +178,7 @@ func (u *GetConversationContext) Execute(ctx context.Context, in GetConversation
 		ContactID:      conv.ContactID,
 		Assigned:       conv.AssignedUserID != nil,
 		AssignedUserID: conv.AssignedUserID,
+		Closed:         conv.State == inbox.ConversationStateClosed,
 	}
 
 	if err := u.fillContact(ctx, in.TenantID, conv.ContactID, &view); err != nil {

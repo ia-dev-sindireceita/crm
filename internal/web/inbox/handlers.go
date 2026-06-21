@@ -115,6 +115,22 @@ type ResetConversationUseCase interface {
 	Execute(ctx context.Context, in inboxusecase.ResetConversationInput) (inboxusecase.ResetConversationResult, error)
 }
 
+// CloseConversationUseCase is the write-side port behind the inbox
+// "Encerrar conversa" action (SIN-65473). It is optional on Deps: when
+// nil the close/reopen routes are not registered and the customer-actions
+// "Encerrar conversa" button is rendered disabled (the pre-feature stub).
+type CloseConversationUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.CloseConversationInput) (inboxusecase.CloseConversationResult, error)
+}
+
+// ReopenConversationUseCase is the inverse write-side port behind the
+// "Reabrir conversa" action (SIN-65473). It is wired together with
+// CloseConversation — closing a conversation without a reopen path would
+// trap it — and shares the same optionality.
+type ReopenConversationUseCase interface {
+	Execute(ctx context.Context, in inboxusecase.ReopenConversationInput) (inboxusecase.ReopenConversationResult, error)
+}
+
 // AssignableRow is the web-local projection of inbox.AssignableAttendant.
 // Kept here (instead of importing the domain root) because the
 // forbidwebboundary lint forbids web/* from importing internal/inbox
@@ -211,6 +227,15 @@ type Deps struct {
 	// rejects any non-fakellm conversation, so the reach is confined to
 	// the synthetic training thread regardless of caller role.
 	ResetConversation ResetConversationUseCase
+	// CloseConversation / ReopenConversation are the optional write-side
+	// for the inbox "Encerrar / Reabrir conversa" actions (SIN-65473). When
+	// CloseConversation is wired, POST /inbox/conversations/{id}/close and
+	// .../reopen are registered and the customer-actions panel renders the
+	// live Encerrar / Reabrir toggle; when nil the routes are absent and the
+	// "Encerrar conversa" button stays disabled. They are wired as a pair —
+	// a closed conversation must always have a reopen path.
+	CloseConversation  CloseConversationUseCase
+	ReopenConversation ReopenConversationUseCase
 }
 
 // CustomerInfoLoader is the read-side port that hydrates the customer
@@ -304,9 +329,22 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	}
 	if h.deps.AssignConversation != nil {
 		mux.HandleFunc("POST /inbox/conversations/{id}/assign", h.assign)
+		// Transfer is the operator-facing "Transferir conversa" action: a
+		// reassignment of the conversation lead to another attendant. It is
+		// the same domain operation as assign (SIN-64978/64979) — the form
+		// just lives in the customer-actions panel instead of the context
+		// chip — so it reuses the AssignConversation use case and the assign
+		// handler verbatim rather than duplicating the pipeline (SIN-65473).
+		mux.HandleFunc("POST /inbox/conversations/{id}/transfer", h.assign)
 	}
 	if h.deps.ResetConversation != nil {
 		mux.HandleFunc("POST /inbox/conversations/{id}/reset", h.reset)
+	}
+	if h.deps.CloseConversation != nil {
+		mux.HandleFunc("POST /inbox/conversations/{id}/close", h.close)
+		if h.deps.ReopenConversation != nil {
+			mux.HandleFunc("POST /inbox/conversations/{id}/reopen", h.reopen)
+		}
 	}
 }
 
@@ -592,6 +630,12 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	// tenant-scope default, which is the safe behaviour.
 	channel := ""
 	var contextPanel contextPanelData
+	// closed reflects the conversation lifecycle state (SIN-65473): it
+	// drives the customer-actions Encerrar / Reabrir toggle and the compose
+	// region. It stays false (open) when the context read is skipped or
+	// fails, matching the graceful-degradation posture of the rest of this
+	// handler.
+	var closed bool
 	if h.deps.ConversationContext != nil {
 		ctxRes, err := h.deps.ConversationContext.Execute(r.Context(), inboxusecase.GetConversationContextInput{
 			TenantID:       tenant.ID,
@@ -601,6 +645,7 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 			h.deps.Logger.Warn("web/inbox: conversation context read", "err", err)
 		} else {
 			channel = ctxRes.Context.Channel
+			closed = ctxRes.Context.Closed
 			contextPanel = newContextPanelData(ctxRes.Context)
 		}
 	}
@@ -608,19 +653,23 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 	// Enrich the context panel with the assignable-attendant list when
 	// the dep is wired (SIN-64979). Best-effort: a load failure only
 	// costs the interactive widget; the panel still renders read-only.
+	// The same list feeds the customer-actions "Transferir conversa" form
+	// (SIN-65473), so it is captured for the customer panel below.
+	var assignees []AssignableRow
 	if h.deps.ListAssignable != nil {
 		contextPanel.ConversationIDStr = conversationID.String()
-		assignees, err := h.deps.ListAssignable.Execute(r.Context(), tenant.ID)
+		rows, err := h.deps.ListAssignable.Execute(r.Context(), tenant.ID)
 		if err != nil {
 			h.deps.Logger.Warn("web/inbox: list assignable", "err", err)
 		} else {
-			contextPanel.Assignees = assignees
+			assignees = rows
+			contextPanel.Assignees = rows
 			if uid := h.deps.UserID(r); uid != uuid.Nil {
 				contextPanel.CurrentUserID = uid.String()
 			}
 			// Resolve the current assignee's display name from the
 			// dropdown list so the badge reads a name, not an ID.
-			contextPanel.AssignedDisplayName = assigneeDisplayName(assignees, contextPanel.AssignedUserID)
+			contextPanel.AssignedDisplayName = assigneeDisplayName(rows, contextPanel.AssignedUserID)
 		}
 	}
 
@@ -663,6 +712,13 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 			Channel:         channel,
 			Contact:         customer,
 			AssistButton:    assistHTML,
+			// Transfer + close actions (SIN-65473). Assignees enables the
+			// "Transferir conversa" form (reusing the assign use case);
+			// CanClose enables the Encerrar / Reabrir toggle; Closed selects
+			// which side of the toggle renders.
+			Assignees: assignees,
+			CanClose:  h.deps.CloseConversation != nil,
+			Closed:    closed,
 		}); err != nil {
 			h.deps.Logger.Error("web/inbox: render customer panel", "err", err)
 		} else {
@@ -688,6 +744,9 @@ func (h *Handler) view(w http.ResponseWriter, r *http.Request) {
 		// so the first poll only fetches strictly-newer inbound replies.
 		ShowLivePoll:   h.deps.ListMessagesSince != nil,
 		LivePollCursor: liveCursor(res.Items),
+		// Closed gates the compose region (SIN-65473): a closed conversation
+		// renders the "conversa encerrada" notice instead of the form.
+		Closed: closed,
 	}); err != nil {
 		h.deps.Logger.Error("web/inbox: render view", "err", err)
 		return
@@ -1054,6 +1113,112 @@ func (h *Handler) reset(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// stateActionData drives the standalone conversation_state_action render
+// emitted by the close / reopen handlers (SIN-65473). The customer panel
+// renders the same partial inline from customerPanelData, which exposes the
+// same two field names.
+type stateActionData struct {
+	ConversationID uuid.UUID
+	Closed         bool
+}
+
+// close handles POST /inbox/conversations/{id}/close (SIN-65473). It flips
+// the conversation to the closed lifecycle state via CloseConversation,
+// then re-renders the Encerrar / Reabrir toggle (hx-target
+// "#conversation-state-action") and out-of-band swaps the compose region so
+// the now-dead outbound form is replaced by the "conversa encerrada"
+// notice in the same response.
+//
+// Security: tenant scope comes from the request context; the use case loads
+// the conversation under that scope so an unknown / RLS-hidden id collapses
+// to 404 (the IDOR guard), identical to assign/reset. The route inherits
+// the /inbox subtree's RequireAuth → RequireAction(ActionTenantInboxRead) →
+// RequireCSRF envelope from the chi router; the form carries no extra token
+// because the layout's hx-headers propagates X-CSRF-Token on every HTMX
+// request. Closing is idempotent (double-click safe).
+func (h *Handler) close(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.deps.CloseConversation.Execute(r.Context(), inboxusecase.CloseConversationInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+	}); err != nil {
+		if errors.Is(err, inboxusecase.ErrNotFound) {
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		h.fail(w, http.StatusInternalServerError, "close conversation", err)
+		return
+	}
+	h.renderStateAction(w, r, conversationID, true)
+}
+
+// reopen handles POST /inbox/conversations/{id}/reopen (SIN-65473), the
+// inverse of close: it lifts a closed conversation back to open and
+// re-renders the toggle + compose region (now the live outbound form).
+// Same security envelope and idempotency posture as close.
+func (h *Handler) reopen(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "tenant required", err)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.deps.ReopenConversation.Execute(r.Context(), inboxusecase.ReopenConversationInput{
+		TenantID:       tenant.ID,
+		ConversationID: conversationID,
+	}); err != nil {
+		if errors.Is(err, inboxusecase.ErrNotFound) {
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		h.fail(w, http.StatusInternalServerError, "reopen conversation", err)
+		return
+	}
+	h.renderStateAction(w, r, conversationID, false)
+}
+
+// renderStateAction writes the close/reopen response: the
+// conversation_state_action toggle as the primary swap target plus an
+// out-of-band re-render of the compose region (enabled when open, replaced
+// by the closed notice when closed). Both fragments are coherent with the
+// new lifecycle state so the operator sees the action reflected without a
+// full conversation reload.
+func (h *Handler) renderStateAction(w http.ResponseWriter, r *http.Request, conversationID uuid.UUID, closed bool) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := conversationStateActionTmpl.Execute(w, stateActionData{
+		ConversationID: conversationID,
+		Closed:         closed,
+	}); err != nil {
+		h.deps.Logger.Error("web/inbox: render state action", "err", err)
+		return
+	}
+	// Out-of-band compose swap so the outbound form toggles with the state.
+	// The CSRF hidden field mirrors the conversation view; an empty token is
+	// non-fatal here because the layout's hx-headers carries the token on
+	// the HTMX request regardless.
+	if err := conversationComposeTmpl.Execute(w, composeView{
+		ConversationID: conversationID,
+		CSRFInput:      csrf.FormHidden(h.deps.CSRFToken(r)),
+		Closed:         closed,
+		OOB:            true,
+	}); err != nil {
+		h.deps.Logger.Error("web/inbox: render compose oob", "err", err)
+	}
+}
+
 // buildAssignPanel assembles the contextPanelData subset the assignment
 // partial needs. It calls ListAssignable (when wired) to populate the
 // dropdown and resolves the new assignee's display name from the list.
@@ -1239,6 +1404,12 @@ type viewData struct {
 	// "contexto indisponível" state, so a skipped or failed context read
 	// never breaks the conversation pane.
 	Context contextPanelData
+	// Closed reflects the conversation lifecycle state (SIN-65473). When
+	// true the compose region renders the "conversa encerrada" notice
+	// instead of the outbound form — sending is already rejected server-side
+	// (ErrConversationClosed → 409), this hides the dead form. The close /
+	// reopen handlers swap the region out-of-band to keep it coherent.
+	Closed bool
 }
 
 // threadLivePollData drives the conversation thread live-refresh sentinel
@@ -1346,4 +1517,18 @@ type customerPanelData struct {
 	// feature is not wired (the panel falls back to a disabled-state
 	// hint then).
 	AssistButton template.HTML
+	// Assignees feeds the customer-actions "Transferir conversa" form
+	// (SIN-65473). When non-empty the panel renders the transfer select +
+	// submit (posting to .../transfer, which reuses the assign use case);
+	// when empty the button stays disabled. Mirrors the context panel's
+	// assignment dropdown so both surfaces share the eligible-attendant list.
+	Assignees []AssignableRow
+	// CanClose enables the customer-actions Encerrar / Reabrir toggle
+	// (SIN-65473). False leaves the "Encerrar conversa" button disabled (the
+	// pre-feature stub) when the close use case is not wired.
+	CanClose bool
+	// Closed reflects the conversation lifecycle state so the toggle renders
+	// "Reabrir conversa" + a closed badge instead of "Encerrar conversa",
+	// and the compose region renders the closed notice instead of the form.
+	Closed bool
 }
