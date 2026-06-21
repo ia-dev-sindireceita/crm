@@ -69,6 +69,9 @@ type fakellmRepository interface {
 	inbox.InboundDedupRepository
 	inbox.AssignmentRepository
 	inbox.ConversationLeadStore
+	// ConversationStateStore backs the Encerrar / Reabrir conversa use
+	// cases (SIN-65473): SetConversationState persists the lifecycle column.
+	inbox.ConversationStateStore
 }
 
 // inboxLLMCustomerDeps bundles the ports assembleInboxLLMCustomerHandler
@@ -274,6 +277,21 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: reset conversation usecase: %w", err)
 	}
 
+	// Encerrar / Reabrir conversa (SIN-65473). Both read the conversation
+	// under the tenant scope (deps.Repo) and persist the lifecycle column
+	// through the same store's SetConversationState. They are wired as a
+	// pair so a closed conversation always has a reopen path.
+	closeUC, err := inboxusecase.NewCloseConversation(deps.Repo, deps.Repo)
+	if err != nil {
+		adapter.Stop()
+		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: close conversation usecase: %w", err)
+	}
+	reopenUC, err := inboxusecase.NewReopenConversation(deps.Repo, deps.Repo)
+	if err != nil {
+		adapter.Stop()
+		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: reopen conversation usecase: %w", err)
+	}
+
 	handlerDeps := webinbox.Deps{
 		ListConversations:   bootstrappedList,
 		ListSummaries:       summaries,
@@ -285,6 +303,8 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		AssignConversation:  assignUC,
 		ListAssignable:      listAssignableUC,
 		ResetConversation:   resetUC,
+		CloseConversation:   closeUC,
+		ReopenConversation:  reopenUC,
 		AIAssist:            deps.AIAssist,
 		CSRFToken:           csrfTokenFromSessionContext,
 		UserID:              userIDFromSessionContext,

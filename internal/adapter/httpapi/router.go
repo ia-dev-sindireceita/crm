@@ -1432,6 +1432,24 @@ func NewRouter(deps Deps) http.Handler {
 				// ResetConversation is nil the inner mux returns 404 for the
 				// POST, so listing it here is safe either way.
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/reset", webInbox)
+				// SIN-65473 — Transferir + Encerrar conversa write routes.
+				// Same chi-enumeration discipline as the assign / ai-assist /
+				// reset routes above: the inner mux (web/inbox Routes) registers
+				// these conditionally (transfer on AssignConversation; close /
+				// reopen on CloseConversation + ReopenConversation), but chi
+				// enumerates the /inbox subtree route-by-route, so each POST must
+				// be listed here or it 404s before the handler while the rendered
+				// button posts into the void (the recurring defect on assign
+				// SIN-64979, reset SIN-65406, live-poll SIN-65419). Same
+				// RequireAuth + RequireAction(ActionTenantInboxRead) envelope as
+				// the reads plus the authed group's RequireCSRF gate. When the
+				// backing dep is nil the inner mux returns 404, so listing them
+				// here is safe either way. Transfer reuses the assign handler —
+				// it is the same reassignment operation surfaced from the
+				// customer-actions panel.
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/transfer", webInbox)
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/close", webInbox)
+				authed.Method(http.MethodPost, "/inbox/conversations/{id}/reopen", webInbox)
 			}
 
 			// SIN-65364 — LGPD consent accept/cancel endpoints. The inbox
