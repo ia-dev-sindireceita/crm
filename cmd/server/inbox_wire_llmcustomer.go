@@ -175,6 +175,15 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		adapter.Stop()
 		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: list messages usecase: %w", err)
 	}
+	// Live-thread refresh (SIN-65419): the incremental read side backing
+	// GET .../messages/since. Reuses the same repository as ListMessages, so
+	// wiring it adds no extra storage surface — it lets the open
+	// conversation pane surface inbound auto-reply bubbles without a reload.
+	listMsgsSinceUC, err := inboxusecase.NewListMessagesSince(deps.Repo)
+	if err != nil {
+		adapter.Stop()
+		return nil, nil, nil, fmt.Errorf("inbox/llmcustomer: list messages since usecase: %w", err)
+	}
 	getMsgUC, err := inboxusecase.NewGetMessage(deps.Repo)
 	if err != nil {
 		adapter.Stop()
@@ -269,6 +278,7 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		ListConversations:   bootstrappedList,
 		ListSummaries:       summaries,
 		ListMessages:        listMsgsUC,
+		ListMessagesSince:   listMsgsSinceUC,
 		SendOutbound:        sendUC,
 		GetMessage:          getMsgUC,
 		ConversationContext: ctxUC,
