@@ -1365,6 +1365,22 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/inbox/conversations/{id}", webInbox)
 				authed.Method(http.MethodPost, "/inbox/conversations/{id}/messages", webInbox)
 				authed.Method(http.MethodGet, "/inbox/conversations/{id}/messages/{msgID}/status", webInbox)
+				// SIN-65419 — conversation-thread live-refresh poll route. Same
+				// defect class as the assign / ai-assist / reset routes below:
+				// the inner mux (web/inbox Routes) registers it conditionally on
+				// the ListMessagesSince dep, but chi enumerates the subtree
+				// route-by-route, so the GET must be listed here too or it 404s
+				// before the handler. PR #395 added the inner-mux route, the
+				// live-poll sentinel, and the use-case wiring but omitted this
+				// chi mount — so the conversation view rendered the sentinel
+				// while its every-3s GET .../messages/since hit chi's 404 and the
+				// thread never live-refreshed (confirmed on staging: sentinel
+				// present, route 404 with the chi default body). The inner-mux
+				// handler tests passed because they bypass chi. Same RequireAuth +
+				// RequireAction(ActionTenantInboxRead) read envelope as the view
+				// and status polls. When ListMessagesSince is nil the inner mux
+				// returns 404 for the GET, so listing it here is safe either way.
+				authed.Method(http.MethodGet, "/inbox/conversations/{id}/messages/since", webInbox)
 				// SIN-64979 — conversation-assignment write route. The inner
 				// mux (web/inbox Routes) registers it conditionally on the
 				// AssignConversation dep, but chi enumerates the subtree

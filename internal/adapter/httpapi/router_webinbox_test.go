@@ -190,6 +190,7 @@ func TestRouter_WebInbox_NilDepsKeepRouteUnmounted(t *testing.T) {
 		"/inbox",
 		"/inbox/conversations/" + uuid.New().String(),
 		"/inbox/conversations/" + uuid.New().String() + "/messages/" + uuid.New().String() + "/status",
+		"/inbox/conversations/" + uuid.New().String() + "/messages/since",
 	} {
 		rec := do(t, h, http.MethodGet, host, path, nil, sess)
 		if rec.Code != http.StatusNotFound {
@@ -198,11 +199,16 @@ func TestRouter_WebInbox_NilDepsKeepRouteUnmounted(t *testing.T) {
 	}
 }
 
-// TestRouter_WebInbox_NestedRoutesReachInnerHandler proves the three
-// subtree routes (view, send, status) also reach the inner handler
-// for an authorized principal. The chi route table is what we're
-// pinning here — the actual handler logic (404 on missing
-// conversation, etc.) is covered by web/inbox handler tests.
+// TestRouter_WebInbox_NestedRoutesReachInnerHandler proves the GET
+// subtree routes (view, status, and the SIN-65419 messages/since
+// live-refresh poll) also reach the inner handler for an authorized
+// principal. The chi route table is what we're pinning here — the
+// actual handler logic (404 on missing conversation, etc.) is covered
+// by web/inbox handler tests. The messages/since case is the standing
+// guard against the chi-enumeration miss that recurred on assign
+// (SIN-64979), ai-assist (SIN-65004), reset (SIN-65392/65406), and
+// again here (SIN-65419): the inner-mux tests pass while the chi mount
+// 404s in production.
 func TestRouter_WebInbox_NestedRoutesReachInnerHandler(t *testing.T) {
 	t.Parallel()
 	inboxH := &recordingInbox{}
@@ -216,14 +222,15 @@ func TestRouter_WebInbox_NestedRoutesReachInnerHandler(t *testing.T) {
 	for _, path := range []string{
 		"/inbox/conversations/" + convID,
 		"/inbox/conversations/" + convID + "/messages/" + msgID + "/status",
+		"/inbox/conversations/" + convID + "/messages/since",
 	} {
 		rec := do(t, h, http.MethodGet, host, path, nil, sess)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d for %q, want 200 (atendente must reach inbox subtree); body=%q", rec.Code, path, rec.Body.String())
 		}
 	}
-	if len(inboxH.calls) != 2 {
-		t.Fatalf("inner call count=%d, want 2 (%+v)", len(inboxH.calls), inboxH.calls)
+	if len(inboxH.calls) != 3 {
+		t.Fatalf("inner call count=%d, want 3 (%+v)", len(inboxH.calls), inboxH.calls)
 	}
 }
 
