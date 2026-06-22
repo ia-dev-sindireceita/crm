@@ -54,3 +54,29 @@ func TestContactsStylesheet_ServedAsCSS(t *testing.T) {
 		}
 	}
 }
+
+// SIN-65575 — the public stdlib mux delegates a prefix to the chi router
+// only if that prefix is present in iamRoutes. SIN-64977 added the chi
+// handler for the exact GET /contacts page (router.go contactsRead) but
+// iamRoutes only carried the "/contacts/" subtree. Without the exact
+// "/contacts" pattern, the stdlib mux applied its subtree→canonical
+// redirect (/contacts → /contacts/), and since chi has no index handler
+// for /contacts/, the request 404'd. Every analogous surface
+// (funnel/catalog/campaigns/inbox) carries both variants; contacts was
+// the only one missing the exact pattern. This assertion catches a
+// regression that drops either the exact "/contacts" page route or the
+// "/contacts/" subtree.
+func TestIAMRoutesIncludesContacts(t *testing.T) {
+	t.Parallel()
+	want := map[string]bool{"/contacts": false, "/contacts/": false}
+	for _, r := range iamRoutes {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		}
+	}
+	for route, found := range want {
+		if !found {
+			t.Errorf("iamRoutes does not contain %q — the SIN-64977 contacts mount would be unreachable (GET /contacts 404s at the subtree redirect)", route)
+		}
+	}
+}
