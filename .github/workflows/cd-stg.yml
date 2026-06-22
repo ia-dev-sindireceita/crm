@@ -628,6 +628,29 @@ jobs:
           set +x
           bash scripts/ci/stg-smoke-inbox.sh
 
+      # SIN-65590 — positive cross-tenant RLS smoke. The SIN-65580 incident
+      # was the "Atribuir a / Transferir" dropdown listing an attendant from
+      # ANOTHER tenant (agent@globex) while logged in as agent@acme — only
+      # possible if the runtime DSN connects as a SUPERUSER/BYPASSRLS role and
+      # RLS is silently off. The companion boot guard
+      # (postgres.EnforceRuntimeRLSRoleFromEnv, DB_ENFORCE_RLS_ROLE=1) fails
+      # the process fast; this step is the black-box confirmation from the
+      # HTTP surface that no cross-tenant row leaks into the rendered HTML.
+      # Reuses STG_SESSION_JAR (SIN-65377) so it adds 0 to the per-IP /login
+      # bucket. Defaults forbid the agent@globex seed UUID and expect the
+      # agent@acme one (migrations/seed/stg.sql).
+      - name: smoke check cross-tenant RLS
+        timeout-minutes: 1
+        env:
+          STG_BASE: ${{ secrets.STG_SMOKE_URL }}
+          STG_SEED_AGENT_EMAIL: ${{ secrets.STG_SEED_AGENT_EMAIL }}
+          STG_SEED_AGENT_PASSWORD: ${{ secrets.STG_SEED_AGENT_PASSWORD }}
+          STG_SESSION_JAR: ${{ env.STG_SESSION_JAR }}
+        run: |
+          set -euo pipefail
+          set +x
+          bash scripts/ci/stg-smoke-rls-cross-tenant.sh
+
       # SIN-64032 — master-tenants surface smoke gate. cmd/server/master_tenants_wire.go
       # (buildMasterTenantsStack) silently returns a 404 noop stack when ANY of
       # three boot pre-conditions fail, checked in this order: (1) MASTER_OPS_DATABASE_URL
