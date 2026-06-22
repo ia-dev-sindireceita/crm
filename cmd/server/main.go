@@ -190,6 +190,21 @@ func runWith(ctx context.Context, addr string, getenv func(string) string, webho
 // grab (SIN-65045).
 func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) string, webhookDial webhookDial) error {
 	addr := ln.Addr().String()
+
+	// SIN-65590 defense-in-depth boot guard. The runtime pool's tenant
+	// isolation is RLS (DB) + WithTenant (app); RLS only bites when the
+	// runtime DSN connects as a NOBYPASSRLS role (app_runtime). If the role
+	// is SUPERUSER/BYPASSRLS, RLS is silently OFF and cross-tenant rows leak
+	// (SIN-65580). This guard ALWAYS WARNs in that case and HARD-FAILs boot
+	// when DB_ENFORCE_RLS_ROLE=1 (set in compose.stg.yml / compose.yml). It
+	// no-ops when DATABASE_URL is unset (dev `make up`) and is fail-soft on
+	// connectivity, so it only refuses to boot on a genuine RLS-role
+	// misconfiguration — never the master_ops/audit pools (those are
+	// BYPASSRLS by design and are not inspected here).
+	if err := pgpool.EnforceRuntimeRLSRoleFromEnv(ctx, getenv); err != nil {
+		return fmt.Errorf("rls-role boot guard: %w", err)
+	}
+
 	mux := newMux()
 
 	// SIN-62300 webhook intake — registered before the custom-domain
