@@ -42,6 +42,7 @@ import (
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/inbox"
 	webfunnel "github.com/pericles-luz/crm/internal/web/funnel"
+	"github.com/pericles-luz/crm/internal/web/userlabel"
 )
 
 // buildWebFunnelHandler returns the HTMX funnel mux + a cleanup closure
@@ -71,7 +72,16 @@ func buildWebFunnelHandler(ctx context.Context, getenv func(string) string) (htt
 		log.Printf("crm: web/funnel handler disabled — inbox store: %v", err)
 		return nil, noop
 	}
-	handler, err := assembleWebFunnelHandlerFull(funnelStore, funnelStore, funnelStore, funnelStore, inboxStore, slog.Default())
+	// SIN-65578: resolve the top-bar account label off the same users
+	// table the inbox uses. A nil directory soft-degrades to the "Conta"
+	// fallback rather than downing the surface.
+	userDir, err := pginbox.NewUserDirectory(pool)
+	if err != nil {
+		pool.Close()
+		log.Printf("crm: web/funnel handler disabled — user directory: %v", err)
+		return nil, noop
+	}
+	handler, err := assembleWebFunnelHandlerFull(funnelStore, funnelStore, funnelStore, funnelStore, inboxStore, userDir, slog.Default())
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/funnel handler disabled — assemble: %v", err)
@@ -93,7 +103,7 @@ func assembleWebFunnelHandler(
 	assignments assignmentHistoryReader,
 	logger *slog.Logger,
 ) (http.Handler, error) {
-	return assembleWebFunnelHandlerFull(stages, transitions, board, nil, assignments, logger)
+	return assembleWebFunnelHandlerFull(stages, transitions, board, nil, assignments, nil, logger)
 }
 
 // assembleWebFunnelHandlerFull builds the funnel.Service + StatsService +
@@ -109,6 +119,7 @@ func assembleWebFunnelHandlerFull(
 	board funnel.BoardReader,
 	stats funnel.StatsRepository,
 	assignments assignmentHistoryReader,
+	userLabels userlabel.Directory,
 	logger *slog.Logger,
 ) (http.Handler, error) {
 	if stages == nil {
@@ -151,6 +162,7 @@ func assembleWebFunnelHandlerFull(
 		CSRFToken:         csrfTokenFromSessionContext,
 		UserID:            userIDFromSessionContext,
 		Role:              roleFromSessionContext,
+		UserLabels:        userLabels,
 		Logger:            logger,
 	})
 	if err != nil {
