@@ -11,7 +11,7 @@ import (
 // dashboard page is composed on the global SidebarNav app-shell
 // (internal/web/shell). The chrome (sidebar, primary nav, brand, user
 // menu) renders around the dashboard grid so the screen matches the
-// Peitho rollout instead of the old standalone full-page document.
+// Pitho rollout instead of the old standalone full-page document.
 func TestPage_RendersAppShellChrome(t *testing.T) {
 	t.Parallel()
 	fake := &fakeSnapshot{snap: sampleSnapshot()}
@@ -34,7 +34,7 @@ func TestPage_RendersAppShellChrome(t *testing.T) {
 		`href="/inbox"`,
 		`href="/funnel"`,
 		`href="/contacts"`,
-		`<a href="/dashboard" aria-current="page">Painel</a>`,
+		`href="/dashboard" aria-current="page"`,
 		// user-menu logout (form-based, lives in the shell)
 		`action="/logout"`,
 		`Sair`,

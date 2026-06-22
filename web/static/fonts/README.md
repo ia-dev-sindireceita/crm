@@ -1,4 +1,4 @@
-# Self-hosted webfonts (Peitho — SIN-65087)
+# Self-hosted webfonts (Pitho — SIN-65087)
 
 These woff2 files are served from disk at `/static/fonts/*.woff2` and wired
 into the design system via `web/static/css/tokens.css` (`--font-sans`,
@@ -30,6 +30,6 @@ Both families are licensed under the **SIL Open Font License 1.1** (OFL).
 
 woff2 binaries vendored from the `@fontsource-variable/{inter,jetbrains-mono}@5`
 packages (jsDelivr CDN) — pre-built, subset, OFL-clean redistributions of the
-upstream fonts. The Peitho design handoff (`design/peitho/`) specified these two
+upstream fonts. The Pitho design handoff (`design/pitho/`) specified these two
 families but shipped only a Google-CDN `@import`; A2 self-hosts them per the
 ticket's CSP / offline requirement.

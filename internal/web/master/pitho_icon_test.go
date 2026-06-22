@@ -1,7 +1,7 @@
 package master_test
 
-// SIN-65103 / Peitho C8 — the master console chrome must render the
-// Peitho inline-SVG {{icon}} helper instead of Unicode emoji, which the
+// SIN-65103 / Pitho C8 — the master console chrome must render the
+// Pitho inline-SVG {{icon}} helper instead of Unicode emoji, which the
 // "no emoji in chrome" rule forbids (emoji are inconsistent across
 // platforms and not themable). These tests pin the swap so a future
 // edit can't silently reintroduce an emoji glyph.
@@ -32,7 +32,7 @@ func assertNoEmoji(t *testing.T, where, rendered string) {
 	}
 }
 
-func TestImpersonationBanner_RendersPeithoIconsNoEmoji(t *testing.T) {
+func TestImpersonationBanner_RendersPithoIconsNoEmoji(t *testing.T) {
 	t.Parallel()
 	ctx, _ := bannerCtx(t, "Acme", "acme")
 	r := httptest.NewRequest(http.MethodGet, "/master/tenants", nil).WithContext(ctx)
@@ -44,8 +44,8 @@ func TestImpersonationBanner_RendersPeithoIconsNoEmoji(t *testing.T) {
 
 	// The impersonation pill (🛑) and audit-feed chip (⚡) now render
 	// inline Lucide SVG via the shared icon helper.
-	if !strings.Contains(rendered, `class="peitho-icon"`) {
-		t.Fatalf("expected inline peitho-icon SVG in banner chrome, got: %q", rendered)
+	if !strings.Contains(rendered, `class="pitho-icon"`) {
+		t.Fatalf("expected inline pitho-icon SVG in banner chrome, got: %q", rendered)
 	}
 	// octagon-alert geometry (the halt pill) and zap geometry (auditoria)
 	// are stamped from the curated icon set.
@@ -58,7 +58,7 @@ func TestImpersonationBanner_RendersPeithoIconsNoEmoji(t *testing.T) {
 	assertNoEmoji(t, "impersonation banner", rendered)
 }
 
-func TestGrantRequestDetail_RendersPeithoIconsNoEmoji(t *testing.T) {
+func TestGrantRequestDetail_RendersPithoIconsNoEmoji(t *testing.T) {
 	t.Parallel()
 	requester := uuid.MustParse("77777777-7777-7777-7777-777777777777")
 	other := uuid.MustParse("88888888-8888-8888-8888-888888888888")
@@ -68,15 +68,15 @@ func TestGrantRequestDetail_RendersPeithoIconsNoEmoji(t *testing.T) {
 		State:       master.GrantRequestStateAwaiting,
 		Kind:        master.GrantKindExtraTokens,
 		Amount:      25_000_000,
-		Reason:      "peitho icon sweep",
+		Reason:      "pitho icon sweep",
 		CreatedAt:   time.Now().UTC(),
 	}
 
 	// A different reviewer: requester sigil (🔒) + reviewer sigil (✔)
 	// both render as icons; no self-guard branch.
 	rendered := renderGrantRequestDetailPanel(t, req, other, "")
-	if !strings.Contains(rendered, `class="peitho-icon"`) {
-		t.Fatalf("expected peitho-icon SVG on the 4-eyes sigils, got: %q", rendered)
+	if !strings.Contains(rendered, `class="pitho-icon"`) {
+		t.Fatalf("expected pitho-icon SVG on the 4-eyes sigils, got: %q", rendered)
 	}
 	if !strings.Contains(rendered, `M7 11V7a5 5 0 0 1 10 0v4`) {
 		t.Error("lock icon missing from SOLICITANTE sigil")

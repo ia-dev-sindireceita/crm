@@ -1,11 +1,11 @@
 /* SIN-62797 / Fase 2 F2-12 — funnel board styles.
  *
- * SIN-65098 / Peitho Tranche C3 — visual port onto the design-system
+ * SIN-65098 / Pitho Tranche C3 — visual port onto the design-system
  * layer. Every colour now resolves through the tokens.css custom
- * properties (no bare hex), so the board inherits the Peitho light +
+ * properties (no bare hex), so the board inherits the Pitho light +
  * dark palettes with zero per-rule changes. Cards adopt the `.card`
  * primitive (the page also adds the class) plus compact overrides;
- * stage pills reuse `.status-badge--peitho`; action buttons reuse
+ * stage pills reuse `.status-badge--pitho`; action buttons reuse
  * `.btn`/`.btn--sm`. All structural class names + JS hooks
  * (.funnel-card, .funnel-card__action--*, .funnel-column__list,
  * --drop-target, --dragging) are preserved for funnel-board.js and the

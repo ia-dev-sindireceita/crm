@@ -1,5 +1,5 @@
 /*
- * brand.css — Peitho brand chrome: inline Lucide icon sizing, brand
+ * brand.css — Pitho brand chrome: inline Lucide icon sizing, brand
  * mark/logo placement, and light/dark logo switching.
  *
  * Loaded AFTER the page stylesheets so its overrides win. All rules are
@@ -8,13 +8,13 @@
  * inline icon SVGs nor the brand logos carry any inline style.
  *
  * Light/dark logo switching honors the [data-theme] attribute set on
- * <html> (Peitho Tranche A2 dark-mode). With no [data-theme] the page
+ * <html> (Pitho Tranche A2 dark-mode). With no [data-theme] the page
  * defaults to the light logo.
  */
 
 /* ---- inline Lucide icons ------------------------------------------ */
 
-.peitho-icon {
+.pitho-icon {
   display: inline-block;
   vertical-align: middle;
   flex-shrink: 0;
@@ -33,26 +33,26 @@
 
 /* ---- brand logos (self-hosted SVG, light/dark) -------------------- */
 
-.peitho-logo {
+.pitho-logo {
   display: inline-block;
   width: auto;
   height: auto;
   max-width: 100%;
 }
 
-.peitho-logo--dark {
+.pitho-logo--dark {
   display: none;
 }
 
-[data-theme="dark"] .peitho-logo--light {
+[data-theme="dark"] .pitho-logo--light {
   display: none;
 }
 
-[data-theme="dark"] .peitho-logo--dark {
+[data-theme="dark"] .pitho-logo--dark {
   display: inline-block;
 }
 
-/* Login card word-mark slot: when it holds the Peitho logo (no tenant
+/* Login card word-mark slot: when it holds the Pitho logo (no tenant
  * logo configured) drop the chip background/padding so the logo reads
  * as artwork, not a labelled pill. */
 
@@ -63,7 +63,7 @@
   border-radius: 0;
 }
 
-.login-card__wordmark--brand .peitho-logo {
+.login-card__wordmark--brand .pitho-logo {
   height: 40px;
 }
 
@@ -74,6 +74,6 @@
   margin-bottom: var(--space-3);
 }
 
-.hello-tenant__brand .peitho-logo {
+.hello-tenant__brand .pitho-logo {
   height: 32px;
 }

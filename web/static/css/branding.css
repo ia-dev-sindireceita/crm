@@ -1,4 +1,4 @@
-/* SIN-65112 / Peitho C6b — Branding (identidade visual) admin surface.
+/* SIN-65112 / Pitho C6b — Branding (identidade visual) admin surface.
    Served at /static/css/branding.css for the /branding page rendered by
    internal/web/branding (templates.go, "branding.page").
 
@@ -12,7 +12,7 @@
 
    The page links tokens.css + components.css ahead of this sheet, and an
    inline <style id="tenant-theme"> precedes both so the live colour
-   preview reflects the tenant palette over the Peitho defaults
+   preview reflects the tenant palette over the Pitho defaults
    (SIN-63084/63085; the OOB swap that refreshes it on save carries the CSP
    nonce per SIN-63275). Consuming the --color-* tokens here is what makes
    the action buttons and accents track the tenant palette in real time.
@@ -60,7 +60,7 @@
 
 /* --------------------------------------------------- Cards / sections --- */
 
-/* Upload + preview both sit on Peitho elevated card surfaces. */
+/* Upload + preview both sit on Pitho elevated card surfaces. */
 .branding-upload,
 .branding-preview {
   margin-top: var(--space-5);
@@ -227,7 +227,7 @@
   gap: var(--space-3);
 }
 
-/* Shared Peitho button shell — mirrors components.css `.btn` so the
+/* Shared Pitho button shell — mirrors components.css `.btn` so the
    branding actions match the design system without a template rename. */
 .branding-action {
   display: inline-flex;

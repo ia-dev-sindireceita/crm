@@ -96,8 +96,18 @@ func newAIAssistDeps(summarizer webinbox.AssistSummarizer) webinbox.AssistDeps {
 // aiassist.LLMClient: the validated SDK client → the W2C shim → the
 // env-default-model decorator. apiKey is required (the caller has
 // already gated on it); model is the resolved AI-assist default.
+// aiAssistLLMTimeout is the per-call deadline for the operator
+// summarizer. Summarisation prompts are larger than persona prompts
+// (full conversation transcript) and the model (gemini-2.5-flash or
+// configured override) can take 30–60 s on long threads. 8 s (the
+// adapter default) is too tight and causes context-deadline errors.
+const aiAssistLLMTimeout = 90 * time.Second
+
 func buildAIAssistLLMClient(apiKey, model string) (aiassist.LLMClient, error) {
-	client, err := openrouterclient.New(openrouterclient.Config{APIKey: apiKey})
+	client, err := openrouterclient.New(openrouterclient.Config{
+		APIKey:  apiKey,
+		Timeout: aiAssistLLMTimeout,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("openrouter client: %w", err)
 	}

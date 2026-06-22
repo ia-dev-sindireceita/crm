@@ -288,7 +288,7 @@ type dashboardView struct {
 type balanceCard struct {
 	Severity       string // "ok" / "warn" / "critical" / "blocked"
 	SeverityLabel  string
-	GlyphIcon      string // Peitho icon name (see internal/web/icon); rendered via {{icon}}
+	GlyphIcon      string // Pitho icon name (see internal/web/icon); rendered via {{icon}}
 	Hint           string
 	AvailableLabel string
 	BalanceLabel   string

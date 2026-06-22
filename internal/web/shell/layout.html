@@ -15,7 +15,7 @@
     <script src="/static/js/app-shell.js" defer></script>
     <script src="/static/js/impersonation-countdown.js" defer></script>
     {{block "head_extra" .}}{{end}}
-    <title>{{block "title" .}}Peitho{{end}}</title>
+    <title>{{block "title" .}}Pitho{{end}}</title>
   </head>
   <body{{with shellCSRFToken .}} {{csrfHXHeaders .}}{{end}}{{with shellActiveImpersonation .}} data-impersonating="true"{{end}}>
     {{template "shell_impersonation_banner" .}}
@@ -93,7 +93,7 @@
        aria-label="Áreas"
        data-collapsed="true">
     {{- range .}}
-    <a href="{{.Path}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
+    <a href="{{.Path}}"{{if .Active}} aria-current="page"{{end}}>{{- if .Icon}}{{icon .Icon 16}}{{end}}{{.Label}}</a>
     {{- end}}
   </nav>
   {{- end}}

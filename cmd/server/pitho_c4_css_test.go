@@ -1,6 +1,6 @@
 package main
 
-// SIN-65099 / Peitho C4 — regression guards for the Contacts + LGPD
+// SIN-65099 / Pitho C4 — regression guards for the Contacts + LGPD
 // stylesheets.
 //
 //   1. The LGPD admin templates (internal/web/lgpd/ui.go) link
@@ -11,7 +11,7 @@ package main
 //      and is served as text/css.
 //
 //   2. Both contacts.css and lgpd.css were ported to the design-system
-//      tokens. The Peitho bar forbids raw hex colour literals — every
+//      tokens. The Pitho bar forbids raw hex colour literals — every
 //      colour must consume a tokens.css custom property so per-tenant
 //      branding + dark mode work. These guards fail if a future edit
 //      reintroduces a bare #rrggbb / #rgb literal or drops token usage.
@@ -70,7 +70,7 @@ func TestLGPDStylesheet_ServedAsCSS(t *testing.T) {
 	}
 }
 
-func TestPeithoC4_StylesheetsAreTokenOnly(t *testing.T) {
+func TestPithoC4_StylesheetsAreTokenOnly(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"contacts.css", "lgpd.css"} {
 		name := name

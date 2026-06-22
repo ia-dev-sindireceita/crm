@@ -1,7 +1,7 @@
 /*
  * billing-invoices.css — invoice list + PIX detail surface styles.
  *
- * SIN-65228 (Peitho hygiene) — restores the SIN-65123 "tokens-only"
+ * SIN-65228 (Pitho hygiene) — restores the SIN-65123 "tokens-only"
  * discipline that the SIN-63944 rewrite (#365) regressed. This sheet is
  * loaded after tokens.css + components.css and consumes ONLY design tokens
  * for colour / size / spacing / radius — no bare hex, and no bare rem/px

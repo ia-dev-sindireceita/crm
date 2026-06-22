@@ -23,6 +23,7 @@ type NavItem struct {
 	Label  string
 	Path   string
 	Active bool
+	Icon   string // Lucide icon name; empty = text-only (zero-value safe)
 }
 
 // UserMenuItem is one entry in the user-menu dropdown. Form=true emits
@@ -234,7 +235,7 @@ func stringField(data any, name, fallback string) string {
 	return fallback
 }
 
-func shellTenantName(data any) string      { return stringField(data, "TenantName", "Peitho") }
+func shellTenantName(data any) string      { return stringField(data, "TenantName", "Pitho") }
 func shellTenantLogo(data any) string      { return stringField(data, "TenantLogo", "") }
 func shellUserDisplayName(data any) string { return stringField(data, "UserDisplayName", "Conta") }
 func shellCSRFToken(data any) string       { return stringField(data, "CSRFToken", "") }

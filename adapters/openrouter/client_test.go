@@ -466,9 +466,9 @@ func TestCompleteMetricsRecorded(t *testing.T) {
 	// Drain registry into the text format and assert the in/out
 	// counters landed on the right labels.
 	dump := dumpMetrics(t, m)
-	mustContain(t, dump, `openrouter_tokens_consumed_total{direction="in",model="google/gemini-2.0-flash"} 7`)
-	mustContain(t, dump, `openrouter_tokens_consumed_total{direction="out",model="google/gemini-2.0-flash"} 11`)
-	mustContain(t, dump, `openrouter_request_duration_seconds_count{model="google/gemini-2.0-flash",outcome="ok"} 1`)
+	mustContain(t, dump, `openrouter_tokens_consumed_total{direction="in",model="google/gemini-2.5-flash-lite"} 7`)
+	mustContain(t, dump, `openrouter_tokens_consumed_total{direction="out",model="google/gemini-2.5-flash-lite"} 11`)
+	mustContain(t, dump, `openrouter_request_duration_seconds_count{model="google/gemini-2.5-flash-lite",outcome="ok"} 1`)
 }
 
 func TestCompleteMetricsNilSafe(t *testing.T) {

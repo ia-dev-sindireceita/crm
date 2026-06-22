@@ -1,7 +1,7 @@
 package walletui_test
 
-// SIN-65103 / Peitho C8 — the wallet balance card severity glyph must
-// render the Peitho inline-SVG {{icon}} helper instead of the Unicode
+// SIN-65103 / Pitho C8 — the wallet balance card severity glyph must
+// render the Pitho inline-SVG {{icon}} helper instead of the Unicode
 // emoji it shipped with (⛔ / ✅ / ⚠️). Emoji are forbidden in chrome:
 // they are inconsistent across platforms and ignore the design tokens.
 
@@ -69,8 +69,8 @@ func TestDashboard_RendersSeverityIconNoEmoji(t *testing.T) {
 				t.Fatalf("status: got %d want 200", rec.Code)
 			}
 			body := rec.Body.String()
-			if !strings.Contains(body, `class="peitho-icon"`) {
-				t.Fatalf("balance card glyph not rendered as inline peitho-icon SVG\nbody=%s", body)
+			if !strings.Contains(body, `class="pitho-icon"`) {
+				t.Fatalf("balance card glyph not rendered as inline pitho-icon SVG\nbody=%s", body)
 			}
 			if !strings.Contains(body, tc.wantPath) {
 				t.Errorf("expected icon geometry %q in balance card", tc.wantPath)

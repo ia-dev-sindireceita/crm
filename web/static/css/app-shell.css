@@ -1,6 +1,6 @@
 /*
  * SIN-63935 / UX-F1 — App-shell stylesheet.
- * SIN-65092 / Peitho Tranche B — refreshed to the Peitho SidebarNav.
+ * SIN-65092 / Pitho Tranche B — refreshed to the Pitho SidebarNav.
  *
  * Layout owned by internal/web/shell. The shell template renders a
  * `.app-shell` flex container wrapping `.app-shell__sidebar` (the
@@ -118,11 +118,29 @@
   color: var(--text-strong);
 }
 
-/* Active = accent-soft background + accent text (Peitho SidebarNav). */
+/* Active = accent-soft background + accent text + inset left bar (Pitho SidebarNav). */
 .app-shell__nav a[aria-current="page"] {
   color: var(--color-on-primary-soft);
   background-color: var(--color-primary-soft);
   font-weight: var(--font-medium);
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+/* Nav icons: inline SVG sizing and opacity rhythm. */
+.app-shell__nav a svg {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  opacity: 0.55;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.app-shell__nav a:hover svg {
+  opacity: 0.85;
+}
+
+.app-shell__nav a[aria-current="page"] svg {
+  opacity: 1;
 }
 
 .app-shell__nav a[aria-disabled="true"] {

@@ -1,7 +1,7 @@
 /*
  * Catalog (produtos + argumentos) styling.
  *
- * SIN-65100 / Peitho C5 — NEW stylesheet. The internal/web/catalog
+ * SIN-65100 / Pitho C5 — NEW stylesheet. The internal/web/catalog
  * templates shipped without any linked sheet, so /catalog and
  * /catalog/{id} rendered with user-agent defaults (the same "tela sem
  * formatação" class of bug auth.css / lgpd.css fixed for their screens).
@@ -9,7 +9,7 @@
  * only — no raw hex — so per-tenant branding and dark mode flow through.
  *
  * Class / id hooks match internal/web/catalog/templates.go; the
- * cmd/server peitho_c5 guard pins the load-bearing selectors.
+ * cmd/server pitho_c5 guard pins the load-bearing selectors.
  */
 
 .catalog-shell {
@@ -108,7 +108,7 @@
   font-family: var(--font-mono);
 }
 
-/* ---- Product + argument tables (card-wrapped Peitho look) -------- */
+/* ---- Product + argument tables (card-wrapped Pitho look) -------- */
 
 .catalog-list,
 #argument-list {

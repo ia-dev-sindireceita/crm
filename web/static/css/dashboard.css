@@ -1,19 +1,10 @@
-/* dashboard.css — Peitho visual port of the managerial dashboard
- * (SIN-65096 / Tranche C · C1). Tokens only, no raw hex; dark-aware via
- * the [data-theme="dark"] re-bind in tokens.css. Pairs with
- * components.css (.btn / .card / .status-badge--peitho) which the
- * dashboard template links alongside this sheet.
- *
- * The dashboard is a read-only, GET-only page rendered standalone (not
- * through the app shell, which would need session/nav data the handler
- * deliberately does not carry). It therefore styles its own page chrome
- * here while consuming the shared component primitives for cards, the
- * export button and the status pills. */
+/* dashboard.css — Pitho visual redesign of the managerial dashboard.
+ * Tokens only, no raw hex; dark-aware via [data-theme="dark"] in tokens.css.
+ * Layout: header → 4 metric cards → 2-column content (funnel bars | panels).
+ * Pairs with components.css (.btn / .card / .status-badge--pitho). */
 
 .dashboard {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: var(--space-6) var(--space-5) var(--space-8);
+  padding: var(--space-6) var(--space-6) var(--space-8);
   font-family: var(--font-sans);
   color: var(--text-default);
 }
@@ -21,13 +12,17 @@
 /* ---- Header -------------------------------------------------------- */
 
 .dashboard__header {
-  margin-bottom: var(--space-5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
 }
 
-.dashboard__header h1 {
+.dashboard__title {
   margin: 0;
-  font-size: var(--text-2xl);
-  line-height: var(--text-2xl-line);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl-line);
   font-weight: var(--font-semibold);
   letter-spacing: -0.02em;
   color: var(--text-strong);
@@ -40,37 +35,166 @@
   color: var(--text-muted);
 }
 
-.dashboard__actions {
-  margin: var(--space-4) 0 0;
-}
+/* ---- Metric cards -------------------------------------------------- */
 
-/* ---- Sections (rendered as Peitho cards in a responsive grid) ------ */
-
-.dashboard__grid {
+.dashboard__metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
+  margin-bottom: var(--space-5);
 }
 
-@media (max-width: 720px) {
-  .dashboard__grid {
+@media (max-width: 900px) {
+  .dashboard__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .dashboard__metrics {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-.dashboard__section {
-  margin: 0;
+.dashboard__metric-card {
+  padding: var(--space-4);
 }
 
-.dashboard__section h2 {
-  margin: 0 0 var(--space-3);
+.dashboard__metric-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.dashboard__metric-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  background-color: var(--color-primary-soft);
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.dashboard__metric-value {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+  line-height: 1;
+  margin-bottom: var(--space-1);
+}
+
+.dashboard__metric-label {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  color: var(--text-muted);
+}
+
+/* ---- Two-column content layout ------------------------------------- */
+
+.dashboard__content {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .dashboard__content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dashboard__side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* ---- Panel (card wrapper for content sections) --------------------- */
+
+.dashboard__panel {
+  padding: var(--space-5);
+}
+
+.dashboard__panel-title {
+  margin: 0 0 var(--space-4);
   font-size: var(--text-md);
   line-height: var(--text-md-line);
   font-weight: var(--font-semibold);
   color: var(--text-strong);
 }
 
-/* ---- Tables -------------------------------------------------------- */
+/* ---- Funnel by stage (visual progress bars) ------------------------ */
+
+.dashboard__funnel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dashboard__funnel-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dashboard__funnel-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.dashboard__funnel-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-default);
+}
+
+.dashboard__funnel-count {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+/* <meter> cross-browser styling — tracks and fills match Pitho indigo */
+
+.dashboard__funnel-meter {
+  display: block;
+  width: 100%;
+  height: 8px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+/* Webkit/Blink */
+.dashboard__funnel-meter::-webkit-meter-bar {
+  background: var(--surface-2);
+  border: none;
+  border-radius: var(--radius-full);
+}
+
+.dashboard__funnel-meter::-webkit-meter-optimum-value,
+.dashboard__funnel-meter::-webkit-meter-suboptimum-value,
+.dashboard__funnel-meter::-webkit-meter-even-less-good-value {
+  background: var(--color-primary);
+  border-radius: var(--radius-full);
+  transition: width var(--motion-base) var(--ease-out);
+}
+
+/* Firefox */
+.dashboard__funnel-meter::-moz-meter-bar {
+  background: var(--color-primary);
+  border-radius: var(--radius-full);
+}
+
+/* ---- Tables (for counters / channel / SLA panels) ------------------ */
 
 .dashboard__table {
   width: 100%;
@@ -81,7 +205,7 @@
 
 .dashboard__table th,
 .dashboard__table td {
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-2);
   text-align: left;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -99,8 +223,6 @@
   border-bottom: none;
 }
 
-/* Numeric columns sit after the first label column: right-align and
- * lock to tabular numerals so digits line up across rows. */
 .dashboard__table th + th,
 .dashboard__table td + td {
   text-align: right;
@@ -120,3 +242,8 @@
   line-height: var(--text-sm-line);
   color: var(--text-muted);
 }
+
+/* ---- Legacy aliases (kept for any external test selectors) --------- */
+
+.dashboard__section { margin: 0; }
+.dashboard__grid    { display: contents; }

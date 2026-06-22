@@ -1,7 +1,7 @@
 /* SIN-62919 / SIN-64977 — contacts identity panel + management styles.
    Served by internal/web/contacts at /static/css/contacts.css.
 
-   SIN-65099 / Peitho C4 — ported to the design-system tokens. Every
+   SIN-65099 / Pitho C4 — ported to the design-system tokens. Every
    visual constant now consumes a custom property from tokens.css
    (--color-*, --space-*, --text-*, --radius-*) — no raw hex / no
    bare colour literals. Because the token names re-bind under

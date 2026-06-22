@@ -12,12 +12,12 @@ import (
 // contact-identity view is composed on the global SidebarNav app-shell
 // (internal/web/shell). The chrome (sidebar, primary nav, brand, user
 // menu) renders around the contact-detail surface so the screen matches
-// the Peitho rollout instead of the old standalone full-page document.
+// the Pitho rollout instead of the old standalone full-page document.
 func TestContactLayout_RendersAppShellChrome(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	if err := contactLayoutTmpl.Execute(&buf, layoutData{
-		TenantName:      "Peitho",
+		TenantName:      "Pitho",
 		UserDisplayName: "atendente",
 		NavItems:        buildContactsNavItems(),
 		UserMenuItems:   buildContactsUserMenu(),
@@ -41,7 +41,7 @@ func TestContactLayout_RendersAppShellChrome(t *testing.T) {
 		// primary nav: the seed-role set, with Contatos active
 		`href="/inbox"`,
 		`href="/funnel"`,
-		`<a href="/contacts" aria-current="page">Contatos</a>`,
+		`href="/contacts" aria-current="page"`,
 		`href="/dashboard"`,
 		// user-menu logout (form-based, lives in the shell, carries CSRF)
 		`action="/logout"`,
@@ -84,7 +84,7 @@ func TestContactsListAndEdit_RenderAppShell(t *testing.T) {
 	t.Parallel()
 	var listBuf bytes.Buffer
 	if err := contactsListTmpl.Execute(&listBuf, listLayoutData{
-		TenantName:    "Peitho",
+		TenantName:    "Pitho",
 		NavItems:      buildContactsNavItems(),
 		UserMenuItems: buildContactsUserMenu(),
 		CSRFToken:     "csrf",
@@ -93,7 +93,7 @@ func TestContactsListAndEdit_RenderAppShell(t *testing.T) {
 		t.Fatalf("list Execute: %v", err)
 	}
 	list := listBuf.String()
-	for _, want := range []string{`class="app-shell"`, `id="contacts-results"`, `<a href="/contacts" aria-current="page">Contatos</a>`, `data-testid="contacts-shell"`} {
+	for _, want := range []string{`class="app-shell"`, `id="contacts-results"`, `href="/contacts" aria-current="page"`, `data-testid="contacts-shell"`} {
 		if !strings.Contains(list, want) {
 			t.Errorf("contacts list missing %q after shell migration", want)
 		}
@@ -101,7 +101,7 @@ func TestContactsListAndEdit_RenderAppShell(t *testing.T) {
 
 	var editBuf bytes.Buffer
 	if err := contactEditPageTmpl.Execute(&editBuf, editLayoutData{
-		TenantName:    "Peitho",
+		TenantName:    "Pitho",
 		NavItems:      buildContactsNavItems(),
 		UserMenuItems: buildContactsUserMenu(),
 		CSRFToken:     "csrf",
@@ -110,7 +110,7 @@ func TestContactsListAndEdit_RenderAppShell(t *testing.T) {
 		t.Fatalf("edit Execute: %v", err)
 	}
 	edit := editBuf.String()
-	for _, want := range []string{`class="app-shell"`, `id="contact-edit-panel"`, `<a href="/contacts" aria-current="page">Contatos</a>`} {
+	for _, want := range []string{`class="app-shell"`, `id="contact-edit-panel"`, `href="/contacts" aria-current="page"`} {
 		if !strings.Contains(edit, want) {
 			t.Errorf("contacts edit page missing %q after shell migration", want)
 		}

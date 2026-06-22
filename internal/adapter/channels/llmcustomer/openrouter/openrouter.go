@@ -60,7 +60,7 @@ const (
 	// the operator-AI default (see adapters/openrouter.DefaultModel),
 	// has a strong pt-BR profile, and is the cheapest tier OpenRouter
 	// publishes — appropriate for a staging-only simulator.
-	DefaultModel = "google/gemini-2.0-flash"
+	DefaultModel = "google/gemini-2.5-flash-lite"
 
 	// defaultTimeout caps a single chat-completion attempt. Persona
 	// replies are short (one to three sentences per the PersonaV1 prompt

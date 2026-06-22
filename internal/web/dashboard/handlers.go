@@ -145,10 +145,10 @@ func (h *Handler) csrfToken(r *http.Request) string {
 // The brand link back to /hello-tenant is owned by the shell layout.
 func buildDashboardNavItems() []shell.NavItem {
 	return []shell.NavItem{
-		{Label: "Inbox", Path: "/inbox"},
-		{Label: "Funil", Path: "/funnel"},
-		{Label: "Contatos", Path: "/contacts"},
-		{Label: "Painel", Path: "/dashboard", Active: true},
+		{Label: "Inbox", Path: "/inbox", Icon: "inbox"},
+		{Label: "Funil", Path: "/funnel", Icon: "git-branch"},
+		{Label: "Contatos", Path: "/contacts", Icon: "users"},
+		{Label: "Painel", Path: "/dashboard", Active: true, Icon: "bar-chart"},
 	}
 }
 
@@ -265,6 +265,10 @@ type pageData struct {
 	TenantThemeStyle     template.CSS
 	CSPNonce             string
 
+	// Derived metric-card values — pre-computed so the template stays simple.
+	OpenCount   int64
+	ClosedCount int64
+
 	// shell.Data chrome fields (SIN-65122) — read by shell.Layout's
 	// reflection helpers (shellTenantName, shellNavItems, …) so the
 	// dashboard renders inside the global SidebarNav app-shell.
@@ -292,5 +296,18 @@ func newPageData(snap metrics.DashboardMetrics, r *http.Request) pageData {
 		HasStates:            len(snap.ConversationsByState) > 0,
 		TenantThemeStyle:     branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:             csp.Nonce(r.Context()),
+		OpenCount:            stateCount(snap.ConversationsByState, "open"),
+		ClosedCount:          stateCount(snap.ConversationsByState, "closed"),
 	}
+}
+
+// stateCount extracts the conversation count for a specific lifecycle
+// state from the slice returned by the metrics read model.
+func stateCount(states []metrics.StateCount, state string) int64 {
+	for _, s := range states {
+		if s.State == state {
+			return s.Count
+		}
+	}
+	return 0
 }

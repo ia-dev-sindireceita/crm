@@ -12,13 +12,13 @@ import (
 	"github.com/pericles-luz/crm/internal/adapter/httpapi/sessioncookie"
 )
 
-// TestVerifyGETRendersPeithoCard locks in the SIN-65102 / Tranche C visual
-// port of the 2FA challenge screen: it must render inside the shared Peitho
-// login card (tokens + components + login.css), carry the Peitho wordmark,
+// TestVerifyGETRendersPithoCard locks in the SIN-65102 / Tranche C visual
+// port of the 2FA challenge screen: it must render inside the shared Pitho
+// login card (tokens + components + login.css), carry the Pitho wordmark,
 // and use the .btn--primary primitive — matching the /login surface so the
 // password and TOTP steps look like one flow. The behavior-carrying form
 // field (name="code") and the CSRF/next hidden inputs must survive the port.
-func TestVerifyGETRendersPeithoCard(t *testing.T) {
+func TestVerifyGETRendersPithoCard(t *testing.T) {
 	t.Parallel()
 	deps := newTestDeps()
 	id := uuid.New()
@@ -38,16 +38,16 @@ func TestVerifyGETRendersPeithoCard(t *testing.T) {
 	body := w.Body.String()
 
 	wants := []string{
-		`class="login-card"`,                      // shared Peitho card shell
-		`data-testid="login-wordmark"`,            // Peitho wordmark, no emoji
-		`/static/css/login.css`,                   // token-driven stylesheet linked
-		`/static/css/tokens.css`,                  // design tokens linked
-		`class="btn btn--primary`,                 // submit uses the button primitive
-		`name="code"`,                             // behavior-carrying field preserved
-		`name="csrf"`,                             // CSRF hidden input preserved
-		`name="next"`,                             // post-verify redirect preserved
-		`autocomplete="one-time-code"`,            // TOTP affordance preserved
-		`peitho-logo--light`, `peitho-logo--dark`, // both logo variants for light+dark
+		`class="login-card"`,                    // shared Pitho card shell
+		`data-testid="login-wordmark"`,          // Pitho wordmark, no emoji
+		`/static/css/login.css`,                 // token-driven stylesheet linked
+		`/static/css/tokens.css`,                // design tokens linked
+		`class="btn btn--primary`,               // submit uses the button primitive
+		`name="code"`,                           // behavior-carrying field preserved
+		`name="csrf"`,                           // CSRF hidden input preserved
+		`name="next"`,                           // post-verify redirect preserved
+		`autocomplete="one-time-code"`,          // TOTP affordance preserved
+		`pitho-logo--light`, `pitho-logo--dark`, // both logo variants for light+dark
 	}
 	for _, want := range wants {
 		if !strings.Contains(body, want) {

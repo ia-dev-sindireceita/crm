@@ -88,7 +88,7 @@ func TestNewHelloTenant_ShellSidebarRendersTenantBrand(t *testing.T) {
 	handler.NewHelloTenant(handler.HelloTenantDeps{})(rec, shellHelloRequest(t))
 	body := rec.Body.String()
 
-	// SIN-65092 — the Peitho Tranche B redesign replaced the top-bar chrome
+	// SIN-65092 — the Pitho Tranche B redesign replaced the top-bar chrome
 	// with a SidebarNav; the brand now lives in the sidebar head. Brand
 	// assertions below are unchanged (anchor/aria-label/brand-text).
 	if !strings.Contains(body, `class="app-shell__sidebar"`) {

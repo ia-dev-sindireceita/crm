@@ -1,7 +1,7 @@
 /*
  * SIN-63935 / UX-F1 — Component primitives.
- * SIN-65092 / Peitho Tranche B — refreshed to the Peitho spec
- *   (design/peitho/flua-design-system/project/components/**). Every
+ * SIN-65092 / Pitho Tranche B — refreshed to the Pitho spec
+ *   (design/pitho/flua-design-system/project/components/**). Every
  *   existing class NAME is preserved — feature screens depend on them —
  *   so this is a pure visual refresh plus net-new additive primitives
  *   (StatusBadge/Tag tones, Avatar, Switch, Tabs, Tooltip).
@@ -15,7 +15,7 @@
  * .btn--ghost; .alert, .alert--info. No nesting beyond the primary
  * class and its modifiers.
  *
- * Focus: every focusable primitive shares the Peitho indigo focus ring
+ * Focus: every focusable primitive shares the Pitho indigo focus ring
  * (1px accent border + 3px soft glow) via the `--focus-ring` token. We
  * keep a transparent `outline` so forced-colors / Windows high-contrast
  * mode still paints a visible ring.
@@ -53,7 +53,7 @@
   border-color: var(--border-strong);
 }
 
-/* Subtle press nudge — no heavy shadows (Peitho Button spec). */
+/* Subtle press nudge — no heavy shadows (Pitho Button spec). */
 .btn:active {
   transform: translateY(0.5px) scale(0.985);
 }
@@ -76,7 +76,7 @@
 }
 
 /* Bordered neutral surface — same look as the bare `.btn` default; the
-   explicit modifier exists so call sites can be intentional (Peitho
+   explicit modifier exists so call sites can be intentional (Pitho
    secondary variant). */
 .btn--secondary {
   color: var(--text-strong);
@@ -128,7 +128,7 @@
   background-color: var(--color-danger);
 }
 
-/* Size modifiers (Peitho sm | md | lg). md is the bare-`.btn` default. */
+/* Size modifiers (Pitho sm | md | lg). md is the bare-`.btn` default. */
 .btn--sm { height: var(--control-sm); padding: 0 var(--space-3); font-size: var(--text-sm); }
 .btn--lg { height: var(--control-lg); padding: 0 var(--space-5); font-size: var(--text-md); }
 .btn--block { display: flex; width: 100%; }
@@ -153,7 +153,7 @@
 .badge--warning { color: var(--color-warning-text); background-color: var(--color-warning); }
 .badge--danger  { color: var(--color-danger-text);  background-color: var(--color-danger); }
 
-/* Peitho tonal badges — softer surface tints for inline status pills.
+/* Pitho tonal badges — softer surface tints for inline status pills.
    neutral · accent · won · lost · nego (canonical StatusBadge tones). */
 .badge--neutral { color: var(--text-default);    background-color: var(--surface-2); }
 .badge--accent  { color: var(--color-on-primary-soft); background-color: var(--color-primary-soft); }
@@ -162,10 +162,10 @@
 .badge--nego    { color: var(--color-warning);   background-color: var(--color-warning-surface); }
 
 /* StatusBadge — the canonical deal-stage pill. A dot + label; tone comes
-   from a `.badge--*` modifier alongside `.status-badge--peitho`. The
-   `--peitho` suffix avoids colliding with the legacy customdomain
+   from a `.badge--*` modifier alongside `.status-badge--pitho`. The
+   `--pitho` suffix avoids colliding with the legacy customdomain
    `.status-badge` (which is scoped to its own non-shell stylesheet). */
-.status-badge--peitho {
+.status-badge--pitho {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -178,7 +178,7 @@
   background-color: var(--surface-2);
 }
 
-.status-badge--peitho::before {
+.status-badge--pitho::before {
   content: "";
   width: var(--space-1);
   height: var(--space-1);
@@ -199,12 +199,12 @@
               border-color var(--motion-base) var(--ease-out);
 }
 
-/* Peitho: 1px border + shadow-sm at rest, shadow-md on hover. */
+/* Pitho: 1px border + shadow-sm at rest, shadow-md on hover. */
 .card:hover {
   box-shadow: var(--shadow-2);
 }
 
-/* Opt-in affordance for clickable cards (Peitho `interactive`): pointer
+/* Opt-in affordance for clickable cards (Pitho `interactive`): pointer
    + a touch of lift. Static cards keep the gentle hover above. */
 .card--interactive {
   cursor: pointer;
@@ -395,7 +395,7 @@
 }
 
 /* Custom select chevron (SIN-65487): suppress the native OS dropdown
-   arrow — the strongest "old website" tell — and paint our own Peitho
+   arrow — the strongest "old website" tell — and paint our own Pitho
    chevron so selects read as part of the design system. Served as a
    static asset (not a data: URI) because the strict CSP is default-src
    'self' with no `data:` in img-src — a data-URI background-image is
@@ -611,7 +611,7 @@
 }
 
 /*
- * SIN-65092 / Peitho Tranche B — net-new shared primitives. Additive
+ * SIN-65092 / Pitho Tranche B — net-new shared primitives. Additive
  * only (no existing class names touched). All values consume tokens.css.
  */
 

@@ -1,13 +1,13 @@
 /*
  * SIN-63935 / UX-F1 — Design-system foundation tokens.
- * SIN-65087 / Peitho A2 — Peitho light + dark palette + self-hosted fonts.
+ * SIN-65087 / Pitho A2 — Pitho light + dark palette + self-hosted fonts.
  *
  * The values below are the SINGLE SOURCE OF TRUTH for every visual
  * constant in the CRM. Feature stylesheets MUST consume these via the
  * --space-*, --text-*, --color-*, --radius-*, --shadow-*, --motion-*
  * custom properties — never via bare hex / px / ms literals.
  *
- * Peitho values (source of truth: design/peitho/) are the DEFAULTS.
+ * Pitho values (source of truth: design/pitho/) are the DEFAULTS.
  * The token NAMES are stable — only their values changed in A2 — so every
  * feature stylesheet that already consumes them keeps working unchanged.
  *
@@ -22,7 +22,7 @@
  * `@layer tokens`: unlayered normal declarations ALWAYS beat layered ones
  * regardless of source order or specificity, so the unlayered inline
  * tenant override wins --color-primary et al. in both light and dark,
- * while these layered blocks remain the Peitho neutral fallback when no
+ * while these layered blocks remain the Pitho neutral fallback when no
  * tenant palette is bound. Keep the inline tenant <style> UNLAYERED.
  *
  * Dark mode: add `data-theme="dark"` to a root element; the
@@ -82,13 +82,13 @@
  * wins --color-primary et al. — see header note (SIN-65115). */
 @layer tokens {
 :root {
-  /* ---- Color: neutral surfaces (Peitho cool-grey ramp, light) ------ */
+  /* ---- Color: neutral surfaces (Pitho cool-grey ramp, light) ------ */
   --surface-0: #ffffff;   /* cards / panels — white                   */
-  --surface-1: #f4f5f7;   /* app background (Peitho gray-50)          */
+  --surface-1: #f4f5f7;   /* app background (Pitho gray-50)          */
   --surface-2: #eceef2;   /* nested / hover surfaces (gray-100)       */
   --surface-3: #e3e6ec;   /* sunken / strong fill (gray-150)          */
 
-  /* ---- Color: text (Peitho ink; contrast checked on --surface-1) --- */
+  /* ---- Color: text (Pitho ink; contrast checked on --surface-1) --- */
   --text-strong: #1a1a2e;   /* ink — headings, 14.9:1 on --surface-1  */
   --text-default: #242833;  /* body (gray-800), 12.6:1 on --surface-1 */
   --text-muted: #586575;    /* secondary, 5.4:1 AA on --surface-1     */
@@ -98,13 +98,13 @@
   --border-subtle: #e3e6ec;  /* gray-150 */
   --border-strong: #c0c5d0;  /* gray-300 */
 
-  /* ---- Color: brand — single Peitho indigo accent ------------------ */
+  /* ---- Color: brand — single Pitho indigo accent ------------------ */
   /* (also the per-tenant branding override targets — keep these names) */
   --color-primary: #5b63d3;    /* indigo-500 — primary action / focus  */
   --color-secondary: #586575;  /* neutral secondary, 5.4:1 AA on bg     */
   --color-accent: #7c85e0;     /* indigo-400 — soft accent             */
 
-  /* Indigo accent states (hover / active / soft) per Peitho spec. */
+  /* Indigo accent states (hover / active / soft) per Pitho spec. */
   --color-primary-hover: #4a51c0;   /* indigo-600 */
   --color-primary-active: #3c43a2;  /* indigo-700 */
   --color-primary-soft: #eeeffb;    /* indigo-50  */
@@ -118,7 +118,7 @@
      --color-primary fica reservado a fill/border/focus. */
   --color-link: #4a51c0;   /* indigo-600, 6.6:1 on white */
 
-  /* ---- Color: feedback — muted Peitho semantics ------------------- */
+  /* ---- Color: feedback — muted Pitho semantics ------------------- */
   /* Each band carries a foreground (AA) + a soft surface tint.        */
   --color-success: #268560;          /* green-600 — fill / border */
   --color-success-text: #ffffff;     /* text ON the success fill  */
@@ -175,28 +175,28 @@
   --font-medium: 500;
   --font-semibold: 600;
 
-  /* ---- Control heights (Peitho density-medium: 32px default) ------- */
+  /* ---- Control heights (Pitho density-medium: 32px default) ------- */
   --control-sm: 28px;   /* compact / inline */
   --control-md: 32px;   /* default: buttons, inputs, select */
   --control-lg: 40px;   /* prominent / touch-leaning */
 
-  /* ---- Focus ring (Peitho: 1px accent border + 3px soft glow) ------ */
+  /* ---- Focus ring (Pitho: 1px accent border + 3px soft glow) ------ */
   /* Paired with `border-color: var(--color-primary)` on the primitive. */
   --focus-ring: 0 0 0 3px rgba(91, 99, 211, 0.32);   /* indigo-500 @ 32% */
 
-  /* ---- Radii (Peitho: 7px controls / 10px cards / 14px modals) ----- */
+  /* ---- Radii (Pitho: 7px controls / 10px cards / 14px modals) ----- */
   --radius-sm: 5px;
   --radius-md: 7px;     /* default: inputs, buttons */
   --radius-lg: 10px;    /* cards, panels */
   --radius-xl: 14px;    /* modals, command bar */
   --radius-pill: 999px;
 
-  /* ---- Shadow elevations — soft, low-opacity (Peitho ink rgba) ----- */
+  /* ---- Shadow elevations — soft, low-opacity (Pitho ink rgba) ----- */
   --shadow-1: 0 1px 2px rgba(26, 26, 46, 0.06), 0 1px 3px rgba(26, 26, 46, 0.04);
   --shadow-2: 0 2px 4px rgba(26, 26, 46, 0.06), 0 4px 12px rgba(26, 26, 46, 0.06);
   --shadow-3: 0 6px 16px rgba(26, 26, 46, 0.10), 0 2px 6px rgba(26, 26, 46, 0.06);
 
-  /* ---- Motion (Peitho: 120–180ms ease) ----------------------------- */
+  /* ---- Motion (Pitho: 120–180ms ease) ----------------------------- */
   --motion-fast: 120ms;
   --motion-base: 160ms;
   --motion-slow: 180ms;
@@ -210,14 +210,14 @@
   /* ---- Hit target (Fitts mobile minimum) --------------------------- */
   --hit-target-min: 44px;
 
-  /* ---- App-shell chrome dimensions (Peitho SidebarNav) ------------- */
+  /* ---- App-shell chrome dimensions (Pitho SidebarNav) ------------- */
   --sidebar-w: 248px;       /* expanded sidebar width            */
   --topbar-h: 56px;         /* brand row / mobile bar height     */
-  --nav-item-h: 34px;       /* SidebarNav item height            */
+  --nav-item-h: 38px;       /* SidebarNav item height            */
 }
 
 /*
- * Dark theme — Peitho #0F1117 base, indigo accent lifted in luminosity.
+ * Dark theme — Pitho #0F1117 base, indigo accent lifted in luminosity.
  * Re-binds the SAME token names so every consuming stylesheet inherits
  * dark values with zero per-feature changes. Activate by setting
  * `data-theme="dark"` on a root element (html / body / app-shell).
@@ -296,8 +296,8 @@
  * Feature stylesheets may override individual properties on their root
  * containers but the body baseline keeps cross-feature parity.
  *
- * The page background is the Peitho app surface (--surface-1, soft grey);
- * cards/panels sit on --surface-0 (white) for the Peitho elevated look.
+ * The page background is the Pitho app surface (--surface-1, soft grey);
+ * cards/panels sit on --surface-0 (white) for the Pitho elevated look.
  */
 html {
   font-family: var(--font-sans);

@@ -1,7 +1,7 @@
 // Billing invoices — progressive enhancement for the PIX copia-e-cola
 // button.
 //
-// SIN-65123 (Peitho · Tranche-D). internal/web/billing/invoices/templates.go
+// SIN-65123 (Pitho · Tranche-D). internal/web/billing/invoices/templates.go
 // linked this file but it never existed, so the link 404'd and the
 // copy-to-clipboard button on the invoice-detail page silently no-op'd.
 //

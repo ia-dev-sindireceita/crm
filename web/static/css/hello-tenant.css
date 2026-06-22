@@ -1,7 +1,7 @@
 /*
  * SIN-65125 — post-login `/hello-tenant` index content surface.
  *
- * hello-tenant renders inside the Peitho app-shell (shell.Layout) but
+ * hello-tenant renders inside the Pitho app-shell (shell.Layout) but
  * its head_extra also pulls the legacy auth.css (the pre-shell login
  * baseline, pinned by hello_shell_test.go). auth.css hard-binds
  *   body  → --color-foreground / --color-background  (legacy tenant
@@ -12,7 +12,7 @@
  * the dark app surface — 30 axe color-contrast failures.
  *
  * This file loads AFTER auth.css (last link in head_extra) and rebinds
- * the hello-tenant content to the theme-aware Peitho tokens
+ * the hello-tenant content to the theme-aware Pitho tokens
  * (--surface-* / --text-* / --color-link) so the whole content area
  * flips with data-theme="dark", matching dashboard / walletui. Every
  * text/background pair below uses a documented-AA token combination in
@@ -32,7 +32,7 @@
 }
 
 /* Rebind the document baseline auth.css froze to the legacy light
-   tokens back onto the theme-aware Peitho surface tokens. */
+   tokens back onto the theme-aware Pitho surface tokens. */
 body {
   color: var(--text-default);
   background-color: var(--surface-1);

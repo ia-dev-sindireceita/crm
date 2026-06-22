@@ -7,7 +7,7 @@ package main
 // non-flipping legacy tenant tokens, so in dark mode the card copy and
 // "Abrir" links rendered low-contrast on the dark app surface (30 axe
 // color-contrast failures). hello-tenant.css loads after auth.css and
-// rebinds the content to the theme-aware Peitho tokens so the whole
+// rebinds the content to the theme-aware Pitho tokens so the whole
 // content area flips with data-theme="dark".
 //
 // If the file 404s the dark-mode contrast bug returns silently. Pin its

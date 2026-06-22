@@ -12,12 +12,12 @@ import (
 // inbox layout is composed on the global SidebarNav app-shell
 // (internal/web/shell). The chrome (sidebar, primary nav, brand, user
 // menu) must render around the inbox content so the inbox matches the
-// Peitho mock instead of the old standalone full-viewport <main>.
+// Pitho mock instead of the old standalone full-viewport <main>.
 func TestInboxLayout_RendersAppShellChrome(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	if err := inboxLayoutTmpl.Execute(&buf, layoutData{
-		TenantName:      "Peitho",
+		TenantName:      "Pitho",
 		UserDisplayName: "atendente",
 		NavItems:        buildInboxNavItems(),
 		UserMenuItems:   buildInboxUserMenu(),

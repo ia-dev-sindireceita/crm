@@ -1,6 +1,6 @@
 package main
 
-// SIN-65112 / Peitho C6b — regression guard for the branding (identidade
+// SIN-65112 / Pitho C6b — regression guard for the branding (identidade
 // visual) stylesheet.
 //
 //   1. internal/web/branding/templates.go ("branding.page") now links
@@ -11,11 +11,11 @@ package main
 //      of bug the C4–C6 guards cover). This proves the asset now exists on
 //      disk and is served as text/css.
 //
-//   2. branding.css must be token-only: the Peitho bar forbids raw hex on
+//   2. branding.css must be token-only: the Pitho bar forbids raw hex on
 //      screen — every colour must consume a tokens.css custom property so
 //      per-tenant branding overrides and dark mode work.
 //
-// rawHexColor is defined in peitho_c4_css_test.go (same package).
+// rawHexColor is defined in pitho_c4_css_test.go (same package).
 
 import (
 	"net/http"
@@ -25,7 +25,7 @@ import (
 	"testing"
 )
 
-func TestPeithoC6b_BrandingStylesheet_ServedAsCSS(t *testing.T) {
+func TestPithoC6b_BrandingStylesheet_ServedAsCSS(t *testing.T) {
 	t.Parallel()
 	// cmd/server lives two levels below the repo root, so the web/static
 	// tree is at ../../web/static when go test runs from the package dir.
@@ -65,7 +65,7 @@ func TestPeithoC6b_BrandingStylesheet_ServedAsCSS(t *testing.T) {
 	}
 }
 
-func TestPeithoC6b_BrandingStylesheetIsTokenOnly(t *testing.T) {
+func TestPithoC6b_BrandingStylesheetIsTokenOnly(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile("../../web/static/css/branding.css")
 	if err != nil {

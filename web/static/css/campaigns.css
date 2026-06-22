@@ -1,11 +1,11 @@
 /*
  * Campaign dashboard styling (SIN-62962).
  *
- * SIN-65100 / Peitho C5 — ported to the design-system tokens. Every
+ * SIN-65100 / Pitho C5 — ported to the design-system tokens. Every
  * colour, space, radius, shadow and font now consumes a tokens.css
  * custom property, so per-tenant branding (the `<style id="tenant-theme">`
  * override) and dark mode (`data-theme="dark"`) flow through with zero
- * per-rule changes. No raw hex literals — see cmd/server peitho_c5 guard.
+ * per-rule changes. No raw hex literals — see cmd/server pitho_c5 guard.
  *
  * Class names are unchanged: web/static/js/campaigns.js (copy button) and
  * the internal/web/campaigns templates + tests depend on them.
@@ -53,7 +53,7 @@
   color: var(--text-muted);
 }
 
-/* Card-wrapped table (Peitho: 1px border + soft shadow on --surface-0). */
+/* Card-wrapped table (Pitho: 1px border + soft shadow on --surface-0). */
 .campaigns-table-wrap {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);

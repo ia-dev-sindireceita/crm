@@ -331,6 +331,7 @@ func (h *Handler) renderAssistError(w http.ResponseWriter, err error, elapsed fl
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = assistRateLimitedTmpl.Execute(w, nil)
 	case errors.Is(err, aiassist.ErrLLMUnavailable):
+		h.deps.Logger.Error("web/inbox: LLM unavailable", "err", err)
 		h.incAssistError(assistReasonLLMUnavailable)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = assistLLMUnavailableTmpl.Execute(w, nil)
@@ -705,12 +706,17 @@ var assistButtonTmpl = template.Must(template.New("ai_assist_button").Parse(`<fo
       hx-target="#ai-assist-panel"
       hx-swap="innerHTML"
       hx-trigger="submit, ai-consent-accepted from:body"
-      hx-include="this">
+      hx-include="this"
+      hx-indicator="#ai-assist-loading"
+      hx-disabled-elt="find button[type=submit]">
   {{.CSRFInput}}
   <input type="hidden" name="channelId" value="{{.ChannelID}}">
   <input type="hidden" name="teamId" value="{{.TeamID}}">
   {{if .Enabled}}
-  <button id="ai-assist-button" class="ai-assist__button" type="submit">Resumir + sugerir 3 respostas</button>
+  <button id="ai-assist-button" class="ai-assist__button" type="submit">
+    <span class="ai-assist__btn-label">Resumir + sugerir 3 respostas</span>
+    <span class="ai-assist__btn-spinner" aria-hidden="true"></span>
+  </button>
   {{else}}
   <button id="ai-assist-button" class="ai-assist__button ai-assist__button--disabled" type="button"
           disabled aria-disabled="true" title="IA desabilitada neste canal">Resumir + sugerir 3 respostas</button>
@@ -735,7 +741,9 @@ var assistPanelTmpl = template.Must(template.New("ai_assist_panel").Parse(`<sect
           hx-post="/inbox/conversations/{{.ConversationID}}/ai-assist"
           hx-target="#ai-assist-panel"
           hx-swap="innerHTML"
-          hx-include="this">
+          hx-include="this"
+          hx-indicator="#ai-assist-loading"
+          hx-disabled-elt="find button[type=submit]">
       {{.CSRFInput}}
       <input type="hidden" name="channelId" value="{{.ChannelID}}">
       <input type="hidden" name="teamId" value="{{.TeamID}}">

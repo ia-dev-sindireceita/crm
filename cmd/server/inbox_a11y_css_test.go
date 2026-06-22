@@ -6,7 +6,7 @@ package main
 // (#7c84e8) is lighter still. inbox.css pins the dark compose Send button
 // to AA-clean brand indigo (base #5b63d3 = 5.0:1, hover #4a51c0 = 6.5:1).
 // This test fails if that scoped override is dropped before the global
-// dark-primary re-bind lands in the Peitho AA tokens track (SIN-65116).
+// dark-primary re-bind lands in the Pitho AA tokens track (SIN-65116).
 
 import (
 	"net/http"

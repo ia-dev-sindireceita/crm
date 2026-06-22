@@ -24,7 +24,7 @@ const defaultBaseURL = "https://openrouter.ai/api/v1"
 // #2 as the cost/latency default. Callers may override on a per-request
 // basis via CompleteRequest.Model; W2C's policy resolver supplies the
 // effective model.
-const DefaultModel = "google/gemini-2.0-flash"
+const DefaultModel = "google/gemini-2.5-flash-lite"
 
 // FallbackModel is the Anthropic Haiku tier that ops can flip to if
 // Gemini Flash is degraded. The adapter does not implement provider

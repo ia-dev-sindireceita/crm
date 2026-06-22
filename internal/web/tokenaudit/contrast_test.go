@@ -1,7 +1,7 @@
 package tokenaudit_test
 
 // SIN-65116 WCAG AA contrast guard. Tranche-D QA (SIN-65085) measured
-// four token-level contrast misses on the Peitho app background:
+// four token-level contrast misses on the Pitho app background:
 //
 //	A1  --text-muted / --color-secondary (#6b7280) = 4.43:1 on --surface-1
 //	A2  --color-success (#268560) used as TEXT       = 4.17:1 on --surface-1

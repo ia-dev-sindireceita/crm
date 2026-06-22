@@ -6,7 +6,7 @@ package main
 // internal/web/dashboard/templates.go references /static/css/dashboard.css
 // (alongside tokens.css + components.css). If the file is missing on disk
 // the link tag 404s silently and the managerial dashboard renders with
-// user-agent defaults — the "tela sem formatação" failure mode the Peitho
+// user-agent defaults — the "tela sem formatação" failure mode the Pitho
 // sweep exists to prevent. Spinning up the same FileServer setup that
 // main.go mounts in production proves the asset exists and is served as
 // text/css through the registered static handler.
@@ -45,7 +45,7 @@ func TestDashboardStylesheet_ServedAsCSS(t *testing.T) {
 		t.Fatal("served body is empty — dashboard.css must have rules")
 	}
 	// Spot-check the load-bearing selectors and the tokens-only contract
-	// so a future refactor that drops the Peitho port — or hard-codes a
+	// so a future refactor that drops the Pitho port — or hard-codes a
 	// raw colour — regresses here instead of in staging. Each needle
 	// gates a distinct concern: page container, card-wrapped section,
 	// table chrome, tabular numerals on metrics, and token usage.

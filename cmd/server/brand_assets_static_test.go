@@ -1,6 +1,6 @@
 package main
 
-// SIN-65088 — regression guard for the Peitho brand assets.
+// SIN-65088 — regression guard for the Pitho brand assets.
 //
 // The base layouts (internal/web/shell/layout.html and
 // internal/adapter/httpapi/views/layout.html) reference the favicon, the
@@ -32,10 +32,10 @@ func TestBrandAssets_Served(t *testing.T) {
 		contentType string
 	}{
 		{"/static/brand/favicon.svg", "image/svg+xml"},
-		{"/static/brand/peitho-icon.svg", "image/svg+xml"},
-		{"/static/brand/peitho-mark.svg", "image/svg+xml"},
-		{"/static/brand/peitho-logo-light.svg", "image/svg+xml"},
-		{"/static/brand/peitho-logo-dark.svg", "image/svg+xml"},
+		{"/static/brand/pitho-icon.svg", "image/svg+xml"},
+		{"/static/brand/pitho-mark.svg", "image/svg+xml"},
+		{"/static/brand/pitho-logo-light.svg", "image/svg+xml"},
+		{"/static/brand/pitho-logo-dark.svg", "image/svg+xml"},
 		{"/static/site.webmanifest", "application/manifest+json"},
 		{"/static/css/brand.css", "text/css"},
 	}
@@ -80,12 +80,12 @@ func TestBrandLogos_HaveThemeVariants(t *testing.T) {
 		return rec.Body.String()
 	}
 
-	light := get("/static/brand/peitho-logo-light.svg")
-	dark := get("/static/brand/peitho-logo-dark.svg")
+	light := get("/static/brand/pitho-logo-light.svg")
+	dark := get("/static/brand/pitho-logo-dark.svg")
 	if light == dark {
 		t.Fatal("light and dark logos are identical — theme switch is a no-op")
 	}
-	if !strings.Contains(light, "Peitho") || !strings.Contains(dark, "Peitho") {
-		t.Error("brand logos should carry the Peitho wordmark text")
+	if !strings.Contains(light, "Pitho") || !strings.Contains(dark, "Pitho") {
+		t.Error("brand logos should carry the Pitho wordmark text")
 	}
 }
