@@ -38,15 +38,15 @@ func TestVerifyGETRendersPithoCard(t *testing.T) {
 	body := w.Body.String()
 
 	wants := []string{
-		`class="login-card"`,                      // shared Pitho card shell
-		`data-testid="login-wordmark"`,            // Pitho wordmark, no emoji
-		`/static/css/login.css`,                   // token-driven stylesheet linked
-		`/static/css/tokens.css`,                  // design tokens linked
-		`class="btn btn--primary`,                 // submit uses the button primitive
-		`name="code"`,                             // behavior-carrying field preserved
-		`name="csrf"`,                             // CSRF hidden input preserved
-		`name="next"`,                             // post-verify redirect preserved
-		`autocomplete="one-time-code"`,            // TOTP affordance preserved
+		`class="login-card"`,                    // shared Pitho card shell
+		`data-testid="login-wordmark"`,          // Pitho wordmark, no emoji
+		`/static/css/login.css`,                 // token-driven stylesheet linked
+		`/static/css/tokens.css`,                // design tokens linked
+		`class="btn btn--primary`,               // submit uses the button primitive
+		`name="code"`,                           // behavior-carrying field preserved
+		`name="csrf"`,                           // CSRF hidden input preserved
+		`name="next"`,                           // post-verify redirect preserved
+		`autocomplete="one-time-code"`,          // TOTP affordance preserved
 		`pitho-logo--light`, `pitho-logo--dark`, // both logo variants for light+dark
 	}
 	for _, want := range wants {
