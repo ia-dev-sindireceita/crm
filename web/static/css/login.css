@@ -159,6 +159,74 @@
   line-height: var(--text-xs-line);
 }
 
+/* 2FA enrollment (setup.html) — wider card holds QR + secret + recovery
+   codes. All values are design tokens; the QR keeps a white plate so it
+   stays scannable on dark themes (the inline SVG also carries its own
+   white backing rect). */
+.login-card--wide {
+  max-width: 32rem;
+}
+
+.login-card--wide h2.login-card__title {
+  margin-top: var(--space-5);
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+}
+
+.totp-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.totp-qr__svg {
+  display: block;
+  width: 220px;
+  max-width: 100%;
+  height: auto;
+  padding: var(--space-3);
+  background-color: #ffffff;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.totp-secret,
+#totp-otpauth {
+  margin: 0;
+  padding: var(--space-3);
+  background-color: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-strong);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.totp-otpauth > summary {
+  cursor: pointer;
+  color: var(--color-link);
+  font-size: var(--text-sm);
+}
+
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: var(--space-3);
+  list-style: none;
+  background-color: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-strong);
+}
+
 @media (max-width: 480px) {
   .login-page {
     justify-content: flex-start;
@@ -170,5 +238,8 @@
   }
   .login-card__header {
     flex-direction: column;
+  }
+  .recovery-codes {
+    grid-template-columns: 1fr;
   }
 }
