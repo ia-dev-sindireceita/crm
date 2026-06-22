@@ -12,7 +12,7 @@ func TestSVG_KnownIconStrokeDefaults(t *testing.T) {
 	got := string(icon.SVG("search", 16))
 
 	for _, want := range []string{
-		`<svg class="peitho-icon"`,
+		`<svg class="pitho-icon"`,
 		`width="16"`,
 		`height="16"`,
 		`viewBox="0 0 24 24"`,

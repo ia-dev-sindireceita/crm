@@ -1,6 +1,6 @@
 package main
 
-// SIN-65087 / Peitho A2 — regression guard for the self-hosted webfonts.
+// SIN-65087 / Pitho A2 — regression guard for the self-hosted webfonts.
 //
 // tokens.css wires Inter + JetBrains Mono via @font-face pointing at
 // /static/fonts/*.woff2 (NO Google CDN, so they load under the strict CSP
@@ -17,7 +17,7 @@ import (
 	"testing"
 )
 
-func TestPeithoFonts_ServedAndWired(t *testing.T) {
+func TestPithoFonts_ServedAndWired(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../../web/static"))))

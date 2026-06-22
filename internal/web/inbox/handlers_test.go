@@ -717,7 +717,7 @@ func TestStatus_Returns200AndBubbleWhenStatusChanged(t *testing.T) {
 		`hx-get="/inbox/conversations/` + convID.String() + `/messages/` + msgID.String() + `/status?currentStatus=delivered"`,
 		`hx-trigger="every 3s"`,
 		`hx-swap="outerHTML"`,
-		// WhatsApp-style double check (Peitho check-check icon) + Portuguese aria-label
+		// WhatsApp-style double check (Pitho check-check icon) + Portuguese aria-label
 		`<path d="m22 10-7.5 7.5L13 16"/>`,
 		`aria-label="Entregue"`,
 	} {

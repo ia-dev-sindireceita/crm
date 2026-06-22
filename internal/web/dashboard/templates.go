@@ -58,7 +58,7 @@ func stateLabel(state string) string {
 }
 
 // stateTone maps the raw lifecycle column value onto the canonical
-// Peitho StatusBadge tone modifier (`.badge--*`). Open conversations
+// Pitho StatusBadge tone modifier (`.badge--*`). Open conversations
 // read as the active/accent tone; closed read neutral. Unknown states
 // fall back to neutral so a newly added state still renders a valid
 // pill rather than an unstyled chip.
@@ -184,7 +184,7 @@ var dashboardLayoutTmpl = func() *template.Template {
             <thead><tr><th scope="col">Estado</th><th scope="col">Total</th></tr></thead>
             <tbody>
             {{- range .ConversationsByState}}
-              <tr><td><span class="status-badge--peitho badge--{{stateTone .State}}">{{stateLabel .State}}</span></td><td>{{.Count}}</td></tr>
+              <tr><td><span class="status-badge--pitho badge--{{stateTone .State}}">{{stateLabel .State}}</span></td><td>{{.Count}}</td></tr>
             {{- end}}
             </tbody>
           </table>

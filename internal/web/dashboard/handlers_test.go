@@ -138,15 +138,15 @@ func TestPage_RendersStatusBadges(t *testing.T) {
 		t.Fatalf("status=%d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	// Conversation states render as canonical Peitho StatusBadge pills:
+	// Conversation states render as canonical Pitho StatusBadge pills:
 	// open → accent tone, closed → neutral tone.
 	for _, want := range []string{
-		`status-badge--peitho badge--accent">Abertas`,
-		`status-badge--peitho badge--neutral">Fechadas`,
-		// Peitho design-system stylesheets are linked on the page.
+		`status-badge--pitho badge--accent">Abertas`,
+		`status-badge--pitho badge--neutral">Fechadas`,
+		// Pitho design-system stylesheets are linked on the page.
 		`/static/css/components.css`,
 		`/static/css/dashboard.css`,
-		// Export affordance adopts the Peitho button primitive.
+		// Export affordance adopts the Pitho button primitive.
 		`class="btn btn--secondary"`,
 	} {
 		if !strings.Contains(body, want) {

@@ -1,6 +1,6 @@
 package main
 
-// SIN-65228 (Peitho hygiene) — tokens-only guard for the billing invoices
+// SIN-65228 (Pitho hygiene) — tokens-only guard for the billing invoices
 // stylesheet.
 //
 // The SIN-63944 rewrite (#365) reintroduced bare rem/px/radius literals,

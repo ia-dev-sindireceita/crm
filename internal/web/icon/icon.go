@@ -1,16 +1,16 @@
 // Package icon renders a curated subset of Lucide (https://lucide.dev,
-// MIT licensed) icons as inline SVG for the Peitho design system.
+// MIT licensed) icons as inline SVG for the Pitho design system.
 //
 // Icons inherit their color via currentColor and use a 2px stroke with
-// round caps/joins, matching the vendored Peitho design handoff
-// (design/peitho/flua-design-system/project/components/core/Icon.jsx).
+// round caps/joins, matching the vendored Pitho design handoff
+// (design/pitho/flua-design-system/project/components/core/Icon.jsx).
 //
 // Rendering is inline SVG only — no icon font and no external sprite URL
 // — so it is safe under the strict Content-Security-Policy the app ships
 // (default-src 'self'; style-src 'self' 'nonce-…' without
 // 'unsafe-inline'). For the same reason the emitted <svg> carries NO
 // `style` attribute: all sizing and vertical alignment is delegated to
-// the `.peitho-icon` class in web/static/css/brand.css. Only presentation
+// the `.pitho-icon` class in web/static/css/brand.css. Only presentation
 // attributes (width/height/fill/stroke/…), which CSP does not govern, are
 // stamped inline.
 package icon
@@ -31,7 +31,7 @@ const defaultSize = 16
 // (viewBox="0 0 24 24", 2px stroke, round caps/joins) is applied by
 // SVG(); only the shape elements live here.
 //
-// The entries up to the marker are the verbatim Peitho/Lucide subset
+// The entries up to the marker are the verbatim Pitho/Lucide subset
 // from the vendored handoff Icon.jsx. Entries after the marker are
 // additional Lucide (MIT) glyphs pulled in to cover app chrome the base
 // subset did not include.
@@ -115,7 +115,7 @@ func SVG(name string, size int) template.HTML {
 	dim := strconv.Itoa(size)
 
 	var b strings.Builder
-	b.WriteString(`<svg class="peitho-icon" width="`)
+	b.WriteString(`<svg class="pitho-icon" width="`)
 	b.WriteString(dim)
 	b.WriteString(`" height="`)
 	b.WriteString(dim)

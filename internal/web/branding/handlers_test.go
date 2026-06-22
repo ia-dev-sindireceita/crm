@@ -698,13 +698,13 @@ func TestFullFlow_UploadSaveRender(t *testing.T) {
 	}
 }
 
-// TestPage_HeadWiresPeithoStylesheets pins SIN-65112: the /branding page
+// TestPage_HeadWiresPithoStylesheets pins SIN-65112: the /branding page
 // <head> must link the design-system sheets so the page is no longer
 // rendered with user-agent defaults, and must keep the load-bearing
 // per-tenant theme injection. The canonical order (per app-shell
-// layout.html and the C4–C6 Peitho pages) is: inline tenant-theme <style>
+// layout.html and the C4–C6 Pitho pages) is: inline tenant-theme <style>
 // FIRST, then tokens.css → components.css → branding.css.
-func TestPage_HeadWiresPeithoStylesheets(t *testing.T) {
+func TestPage_HeadWiresPithoStylesheets(t *testing.T) {
 	t.Parallel()
 	rig := newTestRig(t)
 	rec := httptest.NewRecorder()
@@ -726,7 +726,7 @@ func TestPage_HeadWiresPeithoStylesheets(t *testing.T) {
 	}
 
 	// The tenant-theme block carries the current palette's :root{…} so the
-	// preview reflects the tenant colours over the Peitho defaults, and the
+	// preview reflects the tenant colours over the Pitho defaults, and the
 	// save/revert OOB swap has a live target to replace.
 	if !strings.Contains(body, ":root{--color-primary:") {
 		t.Fatalf("tenant-theme <style> missing :root palette declaration\n%s", body)

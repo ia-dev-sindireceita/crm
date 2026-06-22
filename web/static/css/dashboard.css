@@ -1,7 +1,7 @@
-/* dashboard.css — Peitho visual redesign of the managerial dashboard.
+/* dashboard.css — Pitho visual redesign of the managerial dashboard.
  * Tokens only, no raw hex; dark-aware via [data-theme="dark"] in tokens.css.
  * Layout: header → 4 metric cards → 2-column content (funnel bars | panels).
- * Pairs with components.css (.btn / .card / .status-badge--peitho). */
+ * Pairs with components.css (.btn / .card / .status-badge--pitho). */
 
 .dashboard {
   padding: var(--space-6) var(--space-6) var(--space-8);
@@ -161,7 +161,7 @@
   color: var(--text-muted);
 }
 
-/* <meter> cross-browser styling — tracks and fills match Peitho indigo */
+/* <meter> cross-browser styling — tracks and fills match Pitho indigo */
 
 .dashboard__funnel-meter {
   display: block;

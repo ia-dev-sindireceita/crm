@@ -335,7 +335,7 @@ const hostPageTmplSrc = `<!doctype html>
 </html>`
 
 // fixtureCSS pins the thread to a fixed-height scroll viewport so the seed
-// bubbles overflow it deterministically, independent of the peitho design
+// bubbles overflow it deterministically, independent of the pitho design
 // tokens inbox.css references. NOT a production stylesheet — layout only.
 const fixtureCSS = `* { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }

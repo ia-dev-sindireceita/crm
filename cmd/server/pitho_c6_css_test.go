@@ -1,6 +1,6 @@
 package main
 
-// SIN-65101 / Peitho C6 — regression guards for the Settings cluster
+// SIN-65101 / Pitho C6 — regression guards for the Settings cluster
 // stylesheets (privacy/DPA + AI-policy audit log).
 //
 //   1. The aipolicyaudit template (internal/web/aipolicyaudit/templates.go)
@@ -12,7 +12,7 @@ package main
 //
 //   2. privacy.css carried raw GitHub-primer hex literals; it is now
 //      ported to the design-system tokens so per-tenant branding + dark
-//      mode work. The Peitho bar forbids raw hex on screen — every colour
+//      mode work. The Pitho bar forbids raw hex on screen — every colour
 //      must consume a tokens.css custom property.
 //
 //      EXCEPTION: privacy.css keeps an `@media print` block whose colours
@@ -21,7 +21,7 @@ package main
 //      the token-only guard scopes itself to the on-screen rules (the
 //      portion before `@media print`).
 //
-// rawHexColor is defined in peitho_c4_css_test.go (same package).
+// rawHexColor is defined in pitho_c4_css_test.go (same package).
 
 import (
 	"net/http"
@@ -31,7 +31,7 @@ import (
 	"testing"
 )
 
-func TestPeithoC6_AuditStylesheet_ServedAsCSS(t *testing.T) {
+func TestPithoC6_AuditStylesheet_ServedAsCSS(t *testing.T) {
 	t.Parallel()
 	// cmd/server lives two levels below the repo root, so the web/static
 	// tree is at ../../web/static when go test runs from the package dir.
@@ -70,7 +70,7 @@ func TestPeithoC6_AuditStylesheet_ServedAsCSS(t *testing.T) {
 	}
 }
 
-func TestPeithoC6_SettingsStylesheetsAreTokenOnly(t *testing.T) {
+func TestPithoC6_SettingsStylesheetsAreTokenOnly(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"privacy.css", "aipolicyaudit.css"} {
 		name := name

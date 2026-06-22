@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-// TestLayouts_LinkPeithoStylesheets pins SIN-65123: every full-page
-// billing/invoices layout must link the shared Peitho sheets
+// TestLayouts_LinkPithoStylesheets pins SIN-65123: every full-page
+// billing/invoices layout must link the shared Pitho sheets
 // (tokens.css + components.css) BEFORE its own billing-invoices.css and
 // load the copy-to-clipboard script. The page shipped unstyled because
 // the template linked billing-invoices.css/.js that never existed; the
 // disk-existence half is guarded in cmd/server, this half guards the
 // <head> wireup so a future edit can't silently drop a sheet again.
-func TestLayouts_LinkPeithoStylesheets(t *testing.T) {
+func TestLayouts_LinkPithoStylesheets(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {

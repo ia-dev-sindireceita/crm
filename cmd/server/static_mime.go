@@ -2,7 +2,7 @@ package main
 
 import "mime"
 
-// SIN-65088 — guarantee the Peitho brand assets are served with the
+// SIN-65088 — guarantee the Pitho brand assets are served with the
 // correct Content-Type even on minimal deploy images that ship without a
 // system MIME database (/etc/mime.types). http.FileServer otherwise
 // falls back to content sniffing, which mistypes SVG as text/xml and the

@@ -1,23 +1,23 @@
 package main
 
-// SIN-65100 / Peitho C5 — regression guards for the Campaigns + Catalog
+// SIN-65100 / Pitho C5 — regression guards for the Campaigns + Catalog
 // stylesheets.
 //
 //   1. The catalog templates (internal/web/catalog/templates.go) shipped
 //      WITHOUT any linked stylesheet, so /catalog and /catalog/{id}
 //      rendered with user-agent defaults — the "tela sem formatação" bug
-//      auth_css_static_test / peitho_c4 (lgpd.css) guard for their
+//      auth_css_static_test / pitho_c4 (lgpd.css) guard for their
 //      screens. This proves catalog.css now exists on disk and is served
 //      as text/css through the same FileServer customdomain_wire.go mounts.
 //
 //   2. campaigns.css had raw GitHub-primer hex literals and only resolved
 //      its tokens via var() fallbacks (tokens.css was never linked on the
 //      campaigns pages, so the fallbacks were what actually rendered).
-//      Both sheets are now token-only; the Peitho bar forbids raw hex so
+//      Both sheets are now token-only; the Pitho bar forbids raw hex so
 //      per-tenant branding + dark mode work. These guards fail if a future
 //      edit reintroduces a bare #rrggbb / #rgb literal or drops tokens.
 //
-// rawHexColor is defined in peitho_c4_css_test.go (same package).
+// rawHexColor is defined in pitho_c4_css_test.go (same package).
 
 import (
 	"net/http"
@@ -66,7 +66,7 @@ func TestCatalogStylesheet_ServedAsCSS(t *testing.T) {
 	}
 }
 
-func TestPeithoC5_StylesheetsAreTokenOnly(t *testing.T) {
+func TestPithoC5_StylesheetsAreTokenOnly(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"campaigns.css", "catalog.css"} {
 		name := name

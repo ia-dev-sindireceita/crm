@@ -8,7 +8,7 @@ import (
 )
 
 // TestMasterLayouts_LinkTokensBeforeMasterCSS pins SIN-65124: every
-// full-page master-console layout must link the Peitho design-token
+// full-page master-console layout must link the Pitho design-token
 // sheet (/static/css/tokens.css) BEFORE /static/css/master.css.
 //
 // master.css consumes design tokens via bare `var(--*)` (no fallbacks)

@@ -1,6 +1,6 @@
 package main
 
-// SIN-65123 (Peitho · Tranche-D) — regression guard for the billing
+// SIN-65123 (Pitho · Tranche-D) — regression guard for the billing
 // invoices copy-to-clipboard script.
 //
 // internal/web/billing/invoices/templates.go references

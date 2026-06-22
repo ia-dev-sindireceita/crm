@@ -1,9 +1,9 @@
 package inbox
 
-// Render tests for the [SIN-65118] Peitho C1 emoji→{{icon}} sweep. The
+// Render tests for the [SIN-65118] Pitho C1 emoji→{{icon}} sweep. The
 // inbox message bubble previously embedded literal emoji (⛔ 📎 … for
 // media chrome; ✓ ✓✓ ⚠ ⏱ for outbound delivery status). These tests
-// assert the bubble now renders the Peitho inline-SVG Lucide helper
+// assert the bubble now renders the Pitho inline-SVG Lucide helper
 // instead, keeps the accessible text/aria-label for the decorative
 // icons, and that no emoji codepoint leaks into the rendered chrome.
 
@@ -34,7 +34,7 @@ func baseOutbound(status string) inboxusecase.MessageView {
 	return m
 }
 
-func TestMessageBubble_MediaIcons_UsePeithoSVG(t *testing.T) {
+func TestMessageBubble_MediaIcons_UsePithoSVG(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name       string
@@ -60,8 +60,8 @@ func TestMessageBubble_MediaIcons_UsePeithoSVG(t *testing.T) {
 			}
 			got := renderBubble(t, msg)
 
-			if !strings.Contains(got, `class="peitho-icon"`) {
-				t.Errorf("media icon should render a Peitho SVG; got: %s", got)
+			if !strings.Contains(got, `class="pitho-icon"`) {
+				t.Errorf("media icon should render a Pitho SVG; got: %s", got)
 			}
 			if !strings.Contains(got, tc.wantPath) {
 				t.Errorf("media icon missing expected glyph %q; got: %s", tc.wantPath, got)
@@ -75,7 +75,7 @@ func TestMessageBubble_MediaIcons_UsePeithoSVG(t *testing.T) {
 	}
 }
 
-func TestMessageBubble_StatusBadge_UsesPeithoSVG(t *testing.T) {
+func TestMessageBubble_StatusBadge_UsesPithoSVG(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		status   string
@@ -97,8 +97,8 @@ func TestMessageBubble_StatusBadge_UsesPeithoSVG(t *testing.T) {
 			if !strings.Contains(got, `class="message-bubble__status message-bubble__status--`+tc.status+`"`) {
 				t.Errorf("missing status badge for %q; got: %s", tc.status, got)
 			}
-			if !strings.Contains(got, `class="peitho-icon"`) {
-				t.Errorf("status badge should render a Peitho SVG; got: %s", got)
+			if !strings.Contains(got, `class="pitho-icon"`) {
+				t.Errorf("status badge should render a Pitho SVG; got: %s", got)
 			}
 			if !strings.Contains(got, tc.wantPath) {
 				t.Errorf("status %q missing expected glyph %q; got: %s", tc.status, tc.wantPath, got)

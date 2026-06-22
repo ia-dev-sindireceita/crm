@@ -1,7 +1,7 @@
 /* SIN-62916 / Fase 3 — privacy disclosure styles for the page served by
    internal/web/privacy.
 
-   SIN-65101 / Peitho C6 — ported to the design-system token layer: every
+   SIN-65101 / Pitho C6 — ported to the design-system token layer: every
    on-screen colour now consumes a custom property from tokens.css
    (--color-*, --surface-*, --text-*, --border-*) so the page renders
    correctly in both light and dark (the token names re-bind under
@@ -212,7 +212,7 @@
    These colours are INTENTIONALLY raw black/white, not tokens: the
    print archive must be theme-independent forced B/W so a dark-mode
    tenant does not print dark backgrounds (wasting toner / hurting
-   legibility). The Peitho token-only guard scopes itself to the
+   legibility). The Pitho token-only guard scopes itself to the
    on-screen rules above and exempts this @media print block.
 
    Goals:

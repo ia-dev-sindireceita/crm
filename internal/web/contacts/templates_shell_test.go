@@ -12,12 +12,12 @@ import (
 // contact-identity view is composed on the global SidebarNav app-shell
 // (internal/web/shell). The chrome (sidebar, primary nav, brand, user
 // menu) renders around the contact-detail surface so the screen matches
-// the Peitho rollout instead of the old standalone full-page document.
+// the Pitho rollout instead of the old standalone full-page document.
 func TestContactLayout_RendersAppShellChrome(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	if err := contactLayoutTmpl.Execute(&buf, layoutData{
-		TenantName:      "Peitho",
+		TenantName:      "Pitho",
 		UserDisplayName: "atendente",
 		NavItems:        buildContactsNavItems(),
 		UserMenuItems:   buildContactsUserMenu(),
@@ -84,7 +84,7 @@ func TestContactsListAndEdit_RenderAppShell(t *testing.T) {
 	t.Parallel()
 	var listBuf bytes.Buffer
 	if err := contactsListTmpl.Execute(&listBuf, listLayoutData{
-		TenantName:    "Peitho",
+		TenantName:    "Pitho",
 		NavItems:      buildContactsNavItems(),
 		UserMenuItems: buildContactsUserMenu(),
 		CSRFToken:     "csrf",
@@ -101,7 +101,7 @@ func TestContactsListAndEdit_RenderAppShell(t *testing.T) {
 
 	var editBuf bytes.Buffer
 	if err := contactEditPageTmpl.Execute(&editBuf, editLayoutData{
-		TenantName:    "Peitho",
+		TenantName:    "Pitho",
 		NavItems:      buildContactsNavItems(),
 		UserMenuItems: buildContactsUserMenu(),
 		CSRFToken:     "csrf",

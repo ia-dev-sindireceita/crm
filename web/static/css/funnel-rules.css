@@ -1,9 +1,9 @@
 /* Funnel-rules editor styling (SIN-62961).
  *
- * SIN-65098 / Peitho Tranche C3 — visual port onto the design-system
+ * SIN-65098 / Pitho Tranche C3 — visual port onto the design-system
  * layer. The standalone editor page now links tokens.css + components.css
  * (see rules/templates.go), so every colour resolves through the
- * tokens.css custom properties (no bare hex) and inherits the Peitho
+ * tokens.css custom properties (no bare hex) and inherits the Pitho
  * light + dark palettes. Buttons/links adopt the `.btn`/`.btn--*`
  * primitives and the inline alert adopts `.alert`/`.alert--danger`, so
  * this stylesheet only carries the screen-specific layout + the bespoke

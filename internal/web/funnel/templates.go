@@ -315,7 +315,7 @@ var cardTmpl = template.Must(template.New("card").Funcs(funcs).Parse(`<li id="ca
        aria-label="Conversa com {{.DisplayName}} ({{.Channel}}) em {{.StageKey}}">
     <header class="funnel-card__header">
       <span class="funnel-card__name">{{truncate .DisplayName 32}}</span>
-      <span class="status-badge--peitho badge--{{stageTone .StageKey}} funnel-card__stage">{{stageLabel .StageKey}}</span>
+      <span class="status-badge--pitho badge--{{stageTone .StageKey}} funnel-card__stage">{{stageLabel .StageKey}}</span>
     </header>
     <div class="funnel-card__meta">
       <span class="funnel-card__channel badge badge--neutral">{{.Channel}}</span>

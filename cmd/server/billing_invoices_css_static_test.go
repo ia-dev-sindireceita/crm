@@ -1,13 +1,13 @@
 package main
 
-// SIN-65123 (Peitho · Tranche-D) — regression guard for the billing
+// SIN-65123 (Pitho · Tranche-D) — regression guard for the billing
 // invoices stylesheet.
 //
 // internal/web/billing/invoices/templates.go references
 // /static/css/billing-invoices.css (alongside tokens.css + components.css).
 // The file did NOT exist on disk, so the <link> 404'd silently and both the
 // invoice list and detail pages rendered with user-agent defaults — the
-// "tela sem formatação" failure mode the Peitho sweep exists to prevent.
+// "tela sem formatação" failure mode the Pitho sweep exists to prevent.
 // Spinning up the same FileServer setup main.go mounts in production proves
 // the asset exists and is served as text/css through the static handler.
 //
@@ -42,7 +42,7 @@ func TestBillingInvoicesStylesheet_ServedAsCSS(t *testing.T) {
 		t.Fatal("served body is empty — billing-invoices.css must have rules")
 	}
 	// Spot-check the load-bearing selectors and the tokens-only contract so
-	// a future refactor that drops the Peitho port — or hard-codes a raw
+	// a future refactor that drops the Pitho port — or hard-codes a raw
 	// colour — regresses here instead of in staging. Each needle gates a
 	// distinct concern: page container, list table, status pill, dunning
 	// banner, tabular numerals on the R$ column (AC #3), and token usage.

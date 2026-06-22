@@ -13,7 +13,7 @@ import (
 // pipeline syntax `{{template "x" mkY .}}`. Hence the helpers are
 // declared here as package-level variables wired into the FuncMap.
 //
-// SIN-65098 / Peitho Tranche C3 — merges the {{icon}} helper so the
+// SIN-65098 / Pitho Tranche C3 — merges the {{icon}} helper so the
 // editor chrome (new-rule / back buttons) renders inline Lucide SVGs
 // instead of typographic glyphs.
 var funcs = buildFuncs()

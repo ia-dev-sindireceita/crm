@@ -849,7 +849,7 @@
    = 5.0:1; hover indigo-600 #4a51c0 = 6.5:1) so the button passes in both
    themes. The --text-on-primary white pairing is unchanged. The global
    dark-primary re-bind (which would fix every primary surface at once)
-   stays the Peitho AA tokens track's call — SIN-65116. */
+   stays the Pitho AA tokens track's call — SIN-65116. */
 [data-theme="dark"] .conversation__compose-submit {
   background: #5b63d3;
 }

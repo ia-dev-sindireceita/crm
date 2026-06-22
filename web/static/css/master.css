@@ -438,7 +438,7 @@ body[data-impersonating="true"] {
   text-decoration: none;
 }
 
-/* ─── Tabular numerals (SIN-65119 / Peitho E1) ──────────────────────────
+/* ─── Tabular numerals (SIN-65119 / Pitho E1) ──────────────────────────
  * The master console renders tenant counts, billing-ledger values and
  * grant amounts in <td> cells that lack a per-cell `.num` modifier, so we
  * apply tabular numerals at the table level. `font-variant-numeric` only

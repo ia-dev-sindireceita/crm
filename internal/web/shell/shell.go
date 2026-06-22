@@ -234,7 +234,7 @@ func stringField(data any, name, fallback string) string {
 	return fallback
 }
 
-func shellTenantName(data any) string      { return stringField(data, "TenantName", "Peitho") }
+func shellTenantName(data any) string      { return stringField(data, "TenantName", "Pitho") }
 func shellTenantLogo(data any) string      { return stringField(data, "TenantLogo", "") }
 func shellUserDisplayName(data any) string { return stringField(data, "UserDisplayName", "Conta") }
 func shellCSRFToken(data any) string       { return stringField(data, "CSRFToken", "") }

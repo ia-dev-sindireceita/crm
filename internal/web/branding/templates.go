@@ -15,7 +15,7 @@ type pageData struct {
 	// ThemeStyle is the pre-rendered :root{…} declaration for the
 	// current palette. It seeds the document-level <style id="tenant-theme">
 	// so the whole page (action buttons, accents) reflects the tenant
-	// palette over the Peitho defaults, and gives the save/revert OOB swap
+	// palette over the Pitho defaults, and gives the save/revert OOB swap
 	// (saveSrc) a live target to replace (SIN-63084/63085).
 	ThemeStyle template.CSS
 	// CSPNonce stamps that inline <style> so the strict

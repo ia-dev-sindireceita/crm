@@ -79,7 +79,7 @@ func newComposeView(conversationID uuid.UUID, csrfInput template.HTML, closed bo
 	return composeView{ConversationID: conversationID, CSRFInput: csrfInput, Closed: closed}
 }
 
-// mergeIconFuncs overlays the Peitho {{icon}} helper (internal/web/icon)
+// mergeIconFuncs overlays the Pitho {{icon}} helper (internal/web/icon)
 // onto fm so the inbox templates can render inline-SVG Lucide glyphs and
 // keep emoji out of the chrome (SIN-65118). The layout tree gets {{icon}}
 // for free via shell.BaseFuncs, but messageBubbleTmpl is parsed
@@ -110,7 +110,7 @@ func isFinalStatus(status string) bool {
 	return ok
 }
 
-// statusIcon maps an outbound message status onto the Peitho {{icon}}
+// statusIcon maps an outbound message status onto the Pitho {{icon}}
 // (Lucide) name for its WhatsApp-style delivery indicator. Inbound
 // messages return the empty string — the status badge is conceptually
 // about outbound delivery acks. Unknown statuses also return empty so
