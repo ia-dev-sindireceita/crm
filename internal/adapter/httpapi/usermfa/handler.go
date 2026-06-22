@@ -218,7 +218,7 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := h.cfg.Verifier.Verify(r.Context(), act.userID, code); {
 	case errors.Is(err, mfa.ErrInvalidCode):
-		h.renderAlreadyEnrolled(w, r, "Código inválido. Tente novamente com um código atual.", http.StatusUnauthorized)
+		h.handleStepUpWrongCode(w, r, act.userID)
 		return
 	case err != nil:
 		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: step-up verify failed",
@@ -228,8 +228,65 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	// Step-up passed — rotate the secret and render the fresh QR + codes.
+	// Step-up passed — clear the brute-force counter and rotate the secret.
+	if err := h.cfg.Failures.Reset(r.Context(), act.userID); err != nil {
+		h.cfg.Logger.WarnContext(r.Context(), "usermfa: step-up failure reset failed",
+			slog.String("user_id", act.userID.String()),
+			slog.String("err", err.Error()),
+		)
+	}
 	h.renderEnrollment(w, r, act)
+}
+
+// handleStepUpWrongCode applies brute-force lockout + audit to an invalid
+// step-up TOTP on POST /admin/2fa/setup (SIN-65593 / SIN-65596). Unlike
+// handleWrongCode — the mid-login verify path, keyed by pending.ID — the
+// step-up has no pending row, so the FailureCounter is keyed by the
+// server-resolved userID under the SAME LockoutThreshold/LockoutWindow.
+//
+// Every invalid attempt emits an audit row so the SIEM sees the brute-force
+// in progress (OWASP A09). Sub-threshold attempts re-render the styled
+// already-active page (401) without ever calling Enroll, so the secret is
+// never rotated by a guess. At the threshold the counter is reset and the
+// request gets 429 + Retry-After (mirrors handleWrongCode) instead of the
+// form — the attacker is shut out for the window.
+func (h *Handler) handleStepUpWrongCode(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	count, err := h.cfg.Failures.Increment(r.Context(), userID)
+	if err != nil {
+		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: step-up failure increment failed",
+			slog.String("user_id", userID.String()),
+			slog.String("err", err.Error()),
+		)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	locked := count >= h.cfg.LockoutThreshold
+	reason := "stepup_invalid_code"
+	if locked {
+		reason = "lockout_stepup_invalid_code"
+	}
+	if h.cfg.Audit != nil {
+		if auditErr := h.cfg.Audit.LogMFARequired(r.Context(), userID, r.URL.Path, reason); auditErr != nil {
+			h.cfg.Logger.WarnContext(r.Context(), "usermfa: step-up audit emit failed",
+				slog.String("user_id", userID.String()),
+				slog.String("err", auditErr.Error()),
+			)
+		}
+	}
+	if locked {
+		_ = h.cfg.Failures.Reset(r.Context(), userID)
+		secs := int64(h.cfg.LockoutWindow.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+		w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("<p>muitas tentativas; tente novamente em 15 minutos</p>\n"))
+		return
+	}
+	h.renderAlreadyEnrolled(w, r, "Código inválido. Tente novamente com um código atual.", http.StatusUnauthorized)
 }
 
 // resolveSetupActor applies the dual access predicate for /admin/2fa/setup.
@@ -348,7 +405,13 @@ func (h *Handler) renderEnrollment(w http.ResponseWriter, r *http.Request, act s
 		SecretEncoded: res.SecretEncoded,
 		RecoveryCodes: formatted,
 		NextPath:      act.nextPath,
-		CSRFToken:     "", // populated by upstream CSRF middleware on render
+		// /admin/2fa/setup is mounted OUTSIDE the `authed` group where
+		// csrfmw.New lives (router.go), so no middleware injects a token
+		// here. CSRF on this POST is mitigated by SameSite cookies
+		// (__Host-sess-tenant=Lax, __Host-mfa-pending=Strict) plus the
+		// secret TOTP required in the body; the empty hidden field is a
+		// harmless placeholder.
+		CSRFToken: "",
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "setup.html", data); err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: setup template render failed",
@@ -368,8 +431,11 @@ func (h *Handler) renderAlreadyEnrolled(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	data := alreadyEnrolledViewData{
-		ErrorMessage:     errMsg,
-		CSRFToken:        "", // populated by upstream CSRF middleware on render
+		ErrorMessage: errMsg,
+		// See renderEnrollment: this route is outside the csrfmw group;
+		// CSRF is mitigated by SameSite session cookies + the secret TOTP
+		// in the body, so the token stays empty by design.
+		CSRFToken:        "",
 		CSPNonce:         csp.Nonce(r.Context()),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}

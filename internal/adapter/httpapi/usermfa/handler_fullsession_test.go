@@ -198,6 +198,121 @@ func TestSetupFullSessionAlreadyEnrolledPOSTInvalidStepUpNoRotate(t *testing.T) 
 	}
 }
 
+// SIN-65596 (step-up brute-force lockout) — N invalid step-up codes lock
+// the user out: the 5th invalid POST returns 429 + Retry-After, the secret
+// is NEVER rotated (Enroll uncalled), and every invalid attempt emits an
+// audit row (OWASP A09) — the threshold attempt carrying the lockout reason.
+// This is the regression that fails against the pre-SIN-65596 handler, which
+// re-rendered 401 forever with no counter and no audit.
+func TestSetupFullSessionStepUpLocksOutAfterThreshold(t *testing.T) {
+	t.Parallel()
+	deps := newTestDeps()
+	user, tenant, session := uuid.New(), uuid.New(), uuid.New()
+	deps.enrollment.mark(user, true)
+	deps.verifier.accept = "654321" // every submitted "000000" is invalid
+	enroller := &countingEnroller{result: sampleEnrollResult()}
+	h := newFullSessionHandler(t, deps, enroller, fakeTenantSession{actor: TenantSessionActor{UserID: user, TenantID: tenant}})
+
+	// First threshold-1 invalid attempts: 401, no rotation, audit each time.
+	for i := 1; i < 5; i++ {
+		w := httptest.NewRecorder()
+		h.Setup(w, fullSessionRequest(http.MethodPost, "/admin/2fa/setup", tenant, session, "code=000000"))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status want 401 got %d", i, w.Code)
+		}
+		if deps.failures.count(user) != i {
+			t.Fatalf("attempt %d: failure count want %d got %d", i, i, deps.failures.count(user))
+		}
+	}
+
+	// The 5th invalid attempt trips the lockout.
+	w := httptest.NewRecorder()
+	h.Setup(w, fullSessionRequest(http.MethodPost, "/admin/2fa/setup", tenant, session, "code=000000"))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("threshold attempt: status want 429 got %d", w.Code)
+	}
+	if ra := w.Header().Get("Retry-After"); ra != "900" {
+		t.Fatalf("Retry-After: want 900 got %q", ra)
+	}
+	if enroller.count() != 0 {
+		t.Fatalf("CRITICAL: secret must NOT rotate under brute-force, Enroll calls=%d", enroller.count())
+	}
+	if reason := deps.audit.lastReason(); reason != "lockout_stepup_invalid_code" {
+		t.Fatalf("lockout audit reason: want lockout_stepup_invalid_code got %q", reason)
+	}
+	if deps.audit.events != 5 {
+		t.Fatalf("audit rows: want 5 (one per invalid attempt) got %d", deps.audit.events)
+	}
+	// Counter reset on lockout so the window-bounded limiter is the gate.
+	if deps.failures.count(user) != 0 {
+		t.Fatalf("failure counter must reset on lockout, got %d", deps.failures.count(user))
+	}
+}
+
+// SIN-65596 — a single invalid step-up still emits exactly one audit row
+// (sub-threshold) so the SIEM observes the attempt; the existing
+// no-rotate/401 behaviour is preserved.
+func TestSetupFullSessionStepUpInvalidEmitsAudit(t *testing.T) {
+	t.Parallel()
+	deps := newTestDeps()
+	user, tenant, session := uuid.New(), uuid.New(), uuid.New()
+	deps.enrollment.mark(user, true)
+	deps.verifier.accept = "654321"
+	enroller := &countingEnroller{result: sampleEnrollResult()}
+	h := newFullSessionHandler(t, deps, enroller, fakeTenantSession{actor: TenantSessionActor{UserID: user, TenantID: tenant}})
+
+	w := httptest.NewRecorder()
+	h.Setup(w, fullSessionRequest(http.MethodPost, "/admin/2fa/setup", tenant, session, "code=000000"))
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: want 401 got %d", w.Code)
+	}
+	if deps.audit.events != 1 {
+		t.Fatalf("audit rows: want 1 got %d", deps.audit.events)
+	}
+	if reason := deps.audit.lastReason(); reason != "stepup_invalid_code" {
+		t.Fatalf("audit reason: want stepup_invalid_code got %q", reason)
+	}
+}
+
+// SIN-65596 — a valid step-up after prior failures clears the brute-force
+// counter so a legitimate user is never penalised by earlier typos.
+func TestSetupFullSessionStepUpValidResetsCounter(t *testing.T) {
+	t.Parallel()
+	deps := newTestDeps()
+	user, tenant, session := uuid.New(), uuid.New(), uuid.New()
+	deps.labels.set(user, "agent@acme.test")
+	deps.enrollment.mark(user, true)
+	deps.verifier.accept = "123456"
+	enroller := &countingEnroller{result: sampleEnrollResult()}
+	h := newFullSessionHandler(t, deps, enroller, fakeTenantSession{actor: TenantSessionActor{UserID: user, TenantID: tenant}})
+
+	// Two typos first.
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		h.Setup(w, fullSessionRequest(http.MethodPost, "/admin/2fa/setup", tenant, session, "code=000000"))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("typo %d: want 401 got %d", i, w.Code)
+		}
+	}
+	if deps.failures.count(user) != 2 {
+		t.Fatalf("pre-success count: want 2 got %d", deps.failures.count(user))
+	}
+
+	// Now the correct code rotates and clears the counter.
+	w := httptest.NewRecorder()
+	h.Setup(w, fullSessionRequest(http.MethodPost, "/admin/2fa/setup", tenant, session, "code=123456"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid step-up: want 200 got %d", w.Code)
+	}
+	if enroller.count() != 1 {
+		t.Fatalf("valid step-up must rotate once, got %d", enroller.count())
+	}
+	if deps.failures.count(user) != 0 {
+		t.Fatalf("counter must reset after a valid step-up, got %d", deps.failures.count(user))
+	}
+}
+
 // AC #2 (non-numeric step-up) — a malformed step-up code is rejected with
 // 400 before any verify/enroll.
 func TestSetupFullSessionAlreadyEnrolledPOSTBadFormatNoRotate(t *testing.T) {
