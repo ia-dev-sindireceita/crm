@@ -1088,6 +1088,116 @@ host means one of the three pre-conditions (DSN set + ACTOR_ID valid + DSN
 connects) is still failing — read the app boot log for
 `master tenants surface disabled` or `master pg connect` to see which.
 
+### 5f. Provision the `app_runtime` login password (runtime RLS role)
+
+The application's **runtime** pool — every tenant-facing request — must connect
+as the least-privilege `app_runtime` role (`LOGIN … NOSUPERUSER NOBYPASSRLS`,
+created by `migrations/0001_roles.up.sql`). That `NOBYPASSRLS` is what makes
+Row-Level Security the *enforced* DB half of tenant isolation (the `WithTenant`
+app half is the other). Like `app_master_ops` in §5e, the role is created
+**without a password** (ADR-0071 §"ops injects at deploy time"), so right after
+§5c migrations apply it exists but cannot authenticate.
+
+`deploy/compose/compose.stg.yml` composes a default `DATABASE_URL` from
+`POSTGRES_USER` / `POSTGRES_PASSWORD` — i.e. the **bootstrap superuser `crm`**,
+which is `BYPASSRLS`. If `.env.stg` does not override `DATABASE_URL` to point at
+`app_runtime`, RLS is silently OFF and tenants see each other's rows
+(SIN-65580). To prevent that failure mode from shipping, compose defaults
+`DB_ENFORCE_RLS_ROLE=1`, and the boot guard
+`postgres.EnforceRuntimeRLSRoleFromEnv` (SIN-65590) inspects `current_user` /
+`pg_roles` at startup and **refuses to boot** (`ErrRuntimeRoleBypassesRLS`) when
+the runtime DSN connects as a SUPERUSER/BYPASSRLS role. So with the secure
+default in place, the app will not start until this step has run and
+`DATABASE_URL` points at `app_runtime`.
+
+Generate the password the same way as the other infra secrets (hex — no
+`@:/?` that break DSN parsing) and store it in the password manager; it is a
+**secret** and MUST NOT be committed or pasted into a log/comment/thread:
+
+```bash
+openssl rand -hex 32   # APP_RUNTIME_PASSWORD
+```
+
+Set it on the role (idempotent — re-running just rotates the password):
+
+```bash
+COMPOSE_ARGS="--env-file /opt/crm/stg/.env.stg -f /opt/crm/stg/compose.stg.yml"
+read_env() { sudo grep -E "^${1}=" /opt/crm/stg/.env.stg | tail -n1 | cut -d= -f2-; }
+POSTGRES_USER_VAL="$(read_env POSTGRES_USER)"
+POSTGRES_DB_VAL="$(read_env POSTGRES_DB)"
+
+# Paste the openssl output above. Passing it through a psql variable (:'pw')
+# keeps the literal out of the SQL text and quotes it safely. The superuser-tier
+# POSTGRES_USER runs the ALTER (app_admin/app_runtime lack CREATEROLE, by design
+# — see 0001_roles.up.sql).
+APP_RUNTIME_PASSWORD="REPLACE_WITH_HEX_FROM_OPENSSL_RAND"
+
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER_VAL}" -d "${POSTGRES_DB_VAL}" \
+       -v pw="${APP_RUNTIME_PASSWORD}" \
+  -c "ALTER ROLE app_runtime LOGIN PASSWORD :'pw';"
+```
+
+**Validation.** Confirm the role can authenticate with the new password (a
+successful `SELECT 1` means the DSN will connect at boot):
+
+```bash
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
+  env PGPASSWORD="REPLACE_WITH_APP_RUNTIME_PASSWORD" \
+  psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_runtime -d "${POSTGRES_DB_VAL}" \
+  -c "SELECT 1;"
+```
+
+Now persist the override into the **file** `/opt/crm/stg/.env.stg` (edit the
+file — do **not** pass it inline with `docker compose run -e`, which would leak
+the password into shell history and `docker inspect`). Add these two lines; the
+DSN template and the flag are documented in `deploy/compose/.env.example`:
+
+```dotenv
+# Runtime pool authenticates as the NOBYPASSRLS app_runtime role so RLS is
+# actually enforced (SIN-65580 / SIN-65590). SECRET — never commit the real
+# password; store it in the password manager alongside POSTGRES_PASSWORD.
+DATABASE_URL=postgres://app_runtime:REPLACE_WITH_APP_RUNTIME_PASSWORD@postgres:5432/crm?sslmode=disable
+DB_ENFORCE_RLS_ROLE=1
+```
+
+**Leave `POSTGRES_USER=crm` untouched.** The `migrate-up` step still needs the
+superuser DDL privilege (it runs CREATE/ALTER on the schema), and the compose
+`postgres` service is initialised from `POSTGRES_USER` / `POSTGRES_PASSWORD`.
+Only the *application* pool is re-pointed, via the `DATABASE_URL` override —
+`app_runtime` deliberately lacks the privileges `migrate-up` requires.
+
+Restart the app so it re-reads `.env.stg`:
+
+```bash
+sudo -u crm-deploy docker compose ${COMPOSE_ARGS} up -d --force-recreate app
+```
+
+**Verification gate.** After the redeploy, the cd-stg `smoke check
+cross-tenant RLS` step (`scripts/ci/stg-smoke-rls-cross-tenant.sh`) must exit
+`0`: logged in as `agent@acme` it asserts the forbidden `agent@globex` seed
+UUID (`…0e0e02`) never appears in the `/inbox` list or the conversation
+assignment dropdown. A failure there — or the boot guard hard-failing with
+`ErrRuntimeRoleBypassesRLS` in the app log — means `DATABASE_URL` is still
+composing from the bootstrap superuser instead of `app_runtime`; re-check the
+override line above. (Until this step runs, the app does not boot at all, given
+the compose-default `DB_ENFORCE_RLS_ROLE=1`.)
+
+**No GitHub Actions secret is required.** `cd-stg` never sees the runtime
+password: `migrate-up` connects with `POSTGRES_*` (the superuser, for DDL), and
+the smokes are black-box HTTP checks against the deployed surface. The
+`app_runtime` password lives **only** in `/opt/crm/stg/.env.stg` on the VPS and
+in the password manager — same blast-radius posture as `MASTER_OPS_DATABASE_URL`
+in §5e.
+
+**Relationship to rotation.** `scripts/rotate-secret.sh db:app_runtime` is a
+*dual-role swap of an already-provisioned credential* — it requires
+`CRM_DB_ADMIN_DSN` (the `app_admin` role) to CREATE/RENAME the `app_runtime_next`
+role and assumes a live credential already exists. It does **not** bootstrap the
+very first password on a cold/DR-rebuilt host. This §5f is that bootstrap step,
+and it precedes the first rotation: provision here once, then rotate on the
+normal cadence per `docs/ops/secrets-rotation.md`.
+
 ### 6. Capturing the staging host key
 
 The runner verifies the VPS host key via `STG_HOST_KEY` to avoid TOFU. Capture
