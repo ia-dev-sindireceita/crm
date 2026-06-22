@@ -30,6 +30,7 @@ var stubHandler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 var allSurfaceKeys = []string{
 	"ai_policy", "catalog", "funnel", "funnel_rules",
 	"privacy", "campaigns", "consent", "inbox", "contacts",
+	"aipanel", "dashboard",
 	"campaign_public", "public_privacy", "chat",
 	"branding", "wallet", "billing_invoices",
 }
@@ -76,7 +77,9 @@ func TestDeps_WebSurfaces_PresentHandlersTrue(t *testing.T) {
 		WebCampaigns:       stubHandler,
 		WebConsent:         stubHandler,
 		WebInbox:           stubHandler,
+		WebAIPanel:         stubHandler,
 		WebContacts:        stubHandler,
+		WebDashboard:       stubHandler,
 		WebCampaignPublic:  stubHandler,
 		WebPublicPrivacy:   stubHandler,
 		WebChat:            stubHandler,
