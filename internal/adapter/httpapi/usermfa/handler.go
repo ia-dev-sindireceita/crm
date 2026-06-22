@@ -397,6 +397,15 @@ func (h *Handler) renderEnrollment(w http.ResponseWriter, r *http.Request, act s
 	for i, c := range res.RecoveryCodes {
 		formatted[i] = mfa.FormatRecoveryCode(c)
 	}
+	// Generate the scannable QR server-side. On failure we log and leave
+	// QRCodeSVG empty so the page still renders with the otpauth URI +
+	// base32 secret as the manual-entry fallback.
+	qr, qrErr := otpauthQRCodeSVG(res.OTPAuthURI)
+	if qrErr != nil {
+		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: setup QR render failed",
+			slog.String("err", qrErr.Error()),
+		)
+	}
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -405,6 +414,10 @@ func (h *Handler) renderEnrollment(w http.ResponseWriter, r *http.Request, act s
 		SecretEncoded: res.SecretEncoded,
 		RecoveryCodes: formatted,
 		NextPath:      act.nextPath,
+		QRCodeSVG:     qr,
+		// app-shell parity with already_enrolled.html / verify.html.
+		CSPNonce:         csp.Nonce(r.Context()),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		// /admin/2fa/setup is mounted OUTSIDE the `authed` group where
 		// csrfmw.New lives (router.go), so no middleware injects a token
 		// here. CSRF on this POST is mitigated by SameSite cookies
@@ -768,6 +781,12 @@ type setupViewData struct {
 	RecoveryCodes []string
 	NextPath      string
 	CSRFToken     string
+	// QRCodeSVG is the inline SVG QR of OTPAuthURI, generated server-side
+	// (see otpauthQRCodeSVG). Empty if QR generation failed — the template
+	// degrades to the otpauth URI + base32 secret text fallback.
+	QRCodeSVG        template.HTML
+	CSPNonce         string
+	TenantThemeStyle template.CSS
 }
 
 type verifyViewData struct {
