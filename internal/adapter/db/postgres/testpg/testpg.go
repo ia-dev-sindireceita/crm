@@ -198,6 +198,17 @@ func (d *DB) MasterOpsPool() *pgxpool.Pool { return d.masterPool }
 // SECURITY can't be bypassed by ownership.
 func (d *DB) SuperuserPool() *pgxpool.Pool { return d.superuserPool }
 
+// RuntimeDSN returns the DSN that connects to this test DB as app_runtime —
+// the NOBYPASSRLS role the production app uses. Tests that exercise a DSN
+// boot seam (e.g. the SIN-65590 runtime RLS-role guard) need the string, not
+// just a pool.
+func (d *DB) RuntimeDSN() string { return d.harness.dsnAs(d.name, "app_runtime") }
+
+// AdminDSN returns the DSN that connects to this test DB as app_admin
+// (BYPASSRLS=true) — the migrator role. Useful to prove a DSN boot guard
+// rejects a role that bypasses RLS.
+func (d *DB) AdminDSN() string { return d.harness.dsnAs(d.name, "app_admin") }
+
 // ---------------------------------------------------------------------------
 // internals
 // ---------------------------------------------------------------------------
