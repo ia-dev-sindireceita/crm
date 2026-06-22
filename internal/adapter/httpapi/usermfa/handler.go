@@ -19,9 +19,10 @@ import (
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
+	"github.com/pericles-luz/crm/internal/tenancy"
 )
 
-//go:embed templates/setup.html templates/verify.html templates/regenerate_result.html
+//go:embed templates/setup.html templates/verify.html templates/regenerate_result.html templates/already_enrolled.html
 var templatesFS embed.FS
 
 // DefaultLockoutThreshold is the 5-strikes value mandated by AC #8.
@@ -38,14 +39,22 @@ const DefaultSessionTTL = 8 * time.Hour
 // endpoints. Every field must be non-nil; NewHandler validates and
 // panics on misconfiguration.
 type HandlerConfig struct {
-	Enroller         Enroller
-	Verifier         Verifier
-	Consumer         RecoveryConsumer
-	Regenerator      RecoveryRegenerator
-	Pendings         PendingStore
-	Enrollment       EnrollmentChecker
-	Reenroller       Reenroller
-	SessionMinter    SessionMinter
+	Enroller      Enroller
+	Verifier      Verifier
+	Consumer      RecoveryConsumer
+	Regenerator   RecoveryRegenerator
+	Pendings      PendingStore
+	Enrollment    EnrollmentChecker
+	Reenroller    Reenroller
+	SessionMinter SessionMinter
+	// TenantSession is the OPTIONAL second access predicate for
+	// /admin/2fa/setup: it resolves the post-login __Host-sess-tenant
+	// cookie to a server-derived actor so an already-authenticated user
+	// (no pending cookie) can reach the enrolment surface voluntarily
+	// (SIN-65579 / SIN-65587). When nil the setup handler keeps its
+	// pending-cookie-only behaviour, so router/handler tests that do not
+	// wire it are unaffected. NewHandler does NOT require it.
+	TenantSession    TenantSessionResolver
 	Failures         FailureCounter
 	Audit            AuditEmitter
 	Labels           UserLabelReader
@@ -129,12 +138,37 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 	return &Handler{cfg: cfg, tmpl: tmpl}, nil
 }
 
+// setupActor is the resolved access decision for a /admin/2fa/setup
+// request. Identity is always derived server-side — from the validated
+// tenant session row (fromSession) or the pending-MFA row — never from
+// request input.
+type setupActor struct {
+	userID      uuid.UUID
+	tenantID    uuid.UUID
+	nextPath    string
+	fromSession bool // true = full post-login session; false = mid-login pending cookie
+}
+
 // Setup serves GET+POST /admin/2fa/setup.
+//
+// Access is granted by EITHER of two authenticated predicates
+// (SIN-65579 / SIN-65587):
+//
+//  1. A full post-login tenant session (__Host-sess-tenant), resolved
+//     server-side via TenantSession. This is the voluntary "Configurar
+//     2FA" entry point from /hello-tenant and the user menu.
+//  2. The mid-login __Host-mfa-pending cookie — the original, unchanged
+//     forced-enrolment path.
+//
+// Guard against silent secret rotation: a full-session user who is ALREADY
+// enrolled never reaches Enroll on a bare GET (that would upsert a fresh
+// seed + invalidate recovery codes = self-lockout / DoS). They get the
+// styled "2FA já ativo" page; rotating an existing secret requires a
+// step-up (a current valid TOTP) on POST. First-time enrolment needs no
+// step-up. When neither predicate matches, the handler redirects to the
+// styled login page — it does NOT emit a raw 401 or a false 2fa_required
+// audit row.
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
-	pending, ok := h.requirePending(w, r, "/admin/2fa/setup")
-	if !ok {
-		return
-	}
 	switch r.Method {
 	case http.MethodGet, http.MethodPost:
 	default:
@@ -142,19 +176,218 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	label, err := h.cfg.Labels.LookupLabel(r.Context(), pending.TenantID, pending.UserID)
+	act, ok := h.resolveSetupActor(w, r)
+	if !ok {
+		return
+	}
+	if !act.fromSession {
+		// Mid-login pending path — behaviour unchanged: enrol directly.
+		h.renderEnrollment(w, r, act)
+		return
+	}
+	// Full-session path: guard against silent rotation of an existing
+	// secret before ever calling Enroll.
+	enrolled, err := h.cfg.Enrollment.IsEnrolled(r.Context(), act.userID)
 	if err != nil {
-		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: lookup label failed",
-			slog.String("user_id", pending.UserID.String()),
+		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: enrollment check failed",
+			slog.String("user_id", act.userID.String()),
 			slog.String("err", err.Error()),
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	res, err := h.cfg.Enroller.Enroll(r.Context(), pending.UserID, label)
+	if !enrolled {
+		// First-time enrolment for a logged-in user — no step-up.
+		h.renderEnrollment(w, r, act)
+		return
+	}
+	// Already enrolled. A bare GET must NOT rotate; POST rotates only
+	// behind a valid current TOTP (step-up).
+	if r.Method == http.MethodGet {
+		h.renderAlreadyEnrolled(w, r, "", http.StatusOK)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.renderAlreadyEnrolled(w, r, "Requisição inválida.", http.StatusBadRequest)
+		return
+	}
+	code := strings.TrimSpace(r.PostForm.Get("code"))
+	if !isSixDigit(code) {
+		h.renderAlreadyEnrolled(w, r, "Digite o código de 6 dígitos do seu autenticador atual.", http.StatusBadRequest)
+		return
+	}
+	switch err := h.cfg.Verifier.Verify(r.Context(), act.userID, code); {
+	case errors.Is(err, mfa.ErrInvalidCode):
+		h.handleStepUpWrongCode(w, r, act.userID)
+		return
+	case err != nil:
+		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: step-up verify failed",
+			slog.String("user_id", act.userID.String()),
+			slog.String("err", err.Error()),
+		)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	// Step-up passed — clear the brute-force counter and rotate the secret.
+	if err := h.cfg.Failures.Reset(r.Context(), act.userID); err != nil {
+		h.cfg.Logger.WarnContext(r.Context(), "usermfa: step-up failure reset failed",
+			slog.String("user_id", act.userID.String()),
+			slog.String("err", err.Error()),
+		)
+	}
+	h.renderEnrollment(w, r, act)
+}
+
+// handleStepUpWrongCode applies brute-force lockout + audit to an invalid
+// step-up TOTP on POST /admin/2fa/setup (SIN-65593 / SIN-65596). Unlike
+// handleWrongCode — the mid-login verify path, keyed by pending.ID — the
+// step-up has no pending row, so the FailureCounter is keyed by the
+// server-resolved userID under the SAME LockoutThreshold/LockoutWindow.
+//
+// Every invalid attempt emits an audit row so the SIEM sees the brute-force
+// in progress (OWASP A09). Sub-threshold attempts re-render the styled
+// already-active page (401) without ever calling Enroll, so the secret is
+// never rotated by a guess. At the threshold the counter is reset and the
+// request gets 429 + Retry-After (mirrors handleWrongCode) instead of the
+// form — the attacker is shut out for the window.
+func (h *Handler) handleStepUpWrongCode(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	count, err := h.cfg.Failures.Increment(r.Context(), userID)
+	if err != nil {
+		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: step-up failure increment failed",
+			slog.String("user_id", userID.String()),
+			slog.String("err", err.Error()),
+		)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	locked := count >= h.cfg.LockoutThreshold
+	reason := "stepup_invalid_code"
+	if locked {
+		reason = "lockout_stepup_invalid_code"
+	}
+	if h.cfg.Audit != nil {
+		if auditErr := h.cfg.Audit.LogMFARequired(r.Context(), userID, r.URL.Path, reason); auditErr != nil {
+			h.cfg.Logger.WarnContext(r.Context(), "usermfa: step-up audit emit failed",
+				slog.String("user_id", userID.String()),
+				slog.String("err", auditErr.Error()),
+			)
+		}
+	}
+	if locked {
+		_ = h.cfg.Failures.Reset(r.Context(), userID)
+		secs := int64(h.cfg.LockoutWindow.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+		w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("<p>muitas tentativas; tente novamente em 15 minutos</p>\n"))
+		return
+	}
+	h.renderAlreadyEnrolled(w, r, "Código inválido. Tente novamente com um código atual.", http.StatusUnauthorized)
+}
+
+// resolveSetupActor applies the dual access predicate for /admin/2fa/setup.
+// It tries the full tenant session first (the voluntary post-login path),
+// then the mid-login pending cookie. When neither resolves it redirects to
+// the styled login page and returns ok=false — no raw 401, no 2fa_required
+// audit row (those false signals are reserved for the verify/regenerate
+// surfaces where the pending cookie is the ONLY predicate).
+func (h *Handler) resolveSetupActor(w http.ResponseWriter, r *http.Request) (setupActor, bool) {
+	if act, ok := h.resolveFullSession(r); ok {
+		return act, true
+	}
+	if act, ok := h.resolvePendingActor(w, r); ok {
+		return act, true
+	}
+	h.redirectToLogin(w, r)
+	return setupActor{}, false
+}
+
+// resolveFullSession reads __Host-sess-tenant, parses it, and validates it
+// against the host-resolved tenant via TenantSession. Any failure (no
+// resolver wired, missing/malformed cookie, no tenant scope, or
+// ErrNoTenantSession) returns ok=false so the caller falls through to the
+// pending predicate. The actor's NextPath is the post-enrolment fallback
+// (FallbackOK) because a full-session user has no pending ?next= row.
+func (h *Handler) resolveFullSession(r *http.Request) (setupActor, bool) {
+	if h.cfg.TenantSession == nil {
+		return setupActor{}, false
+	}
+	raw, err := sessioncookie.Read(r, sessioncookie.NameTenant)
+	if err != nil {
+		return setupActor{}, false
+	}
+	sessionID, err := uuid.Parse(raw)
+	if err != nil {
+		return setupActor{}, false
+	}
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		return setupActor{}, false
+	}
+	actor, err := h.cfg.TenantSession.ResolveTenantSession(r.Context(), tenant.ID, sessionID)
+	if err != nil {
+		return setupActor{}, false
+	}
+	return setupActor{
+		userID:      actor.UserID,
+		tenantID:    actor.TenantID,
+		nextPath:    h.cfg.FallbackOK,
+		fromSession: true,
+	}, true
+}
+
+// resolvePendingActor resolves the __Host-mfa-pending cookie WITHOUT the
+// audit + 401 side effects of requirePending — for the setup surface a
+// missing/expired pending cookie on a non-session visit is a styled
+// login redirect, not a bypass attempt. Expired rows are still purged and
+// the stale cookie cleared.
+func (h *Handler) resolvePendingActor(w http.ResponseWriter, r *http.Request) (setupActor, bool) {
+	raw, err := sessioncookie.Read(r, sessioncookie.NameTenantPending)
+	if err != nil {
+		return setupActor{}, false
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return setupActor{}, false
+	}
+	row, err := h.cfg.Pendings.Get(r.Context(), id)
+	if err != nil {
+		return setupActor{}, false
+	}
+	if row.IsExpired(h.cfg.Now()) {
+		_ = h.cfg.Pendings.Delete(r.Context(), id)
+		sessioncookie.ClearTenantPending(w)
+		return setupActor{}, false
+	}
+	return setupActor{
+		userID:   row.UserID,
+		tenantID: row.TenantID,
+		nextPath: row.NextPath,
+	}, true
+}
+
+// renderEnrollment enrols (or rotates) the actor's TOTP secret and renders
+// the QR + recovery codes. This is the single Enroll call site for both
+// the pending path and the full-session first-enrolment / post-step-up
+// paths, so the rotation rule lives in exactly one place.
+func (h *Handler) renderEnrollment(w http.ResponseWriter, r *http.Request, act setupActor) {
+	label, err := h.cfg.Labels.LookupLabel(r.Context(), act.tenantID, act.userID)
+	if err != nil {
+		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: lookup label failed",
+			slog.String("user_id", act.userID.String()),
+			slog.String("err", err.Error()),
+		)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	res, err := h.cfg.Enroller.Enroll(r.Context(), act.userID, label)
 	if err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: enroll failed",
-			slog.String("user_id", pending.UserID.String()),
+			slog.String("user_id", act.userID.String()),
 			slog.String("err", err.Error()),
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -171,14 +404,55 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		OTPAuthURI:    res.OTPAuthURI,
 		SecretEncoded: res.SecretEncoded,
 		RecoveryCodes: formatted,
-		NextPath:      pending.NextPath,
-		CSRFToken:     "", // populated by upstream CSRF middleware on render
+		NextPath:      act.nextPath,
+		// /admin/2fa/setup is mounted OUTSIDE the `authed` group where
+		// csrfmw.New lives (router.go), so no middleware injects a token
+		// here. CSRF on this POST is mitigated by SameSite cookies
+		// (__Host-sess-tenant=Lax, __Host-mfa-pending=Strict) plus the
+		// secret TOTP required in the body; the empty hidden field is a
+		// harmless placeholder.
+		CSRFToken: "",
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "setup.html", data); err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: setup template render failed",
 			slog.String("err", err.Error()),
 		)
 	}
+}
+
+// renderAlreadyEnrolled renders the styled "2FA já está ativo" page for a
+// full-session user who already has a secret. It NEVER calls Enroll, so a
+// GET cannot rotate the secret. The page offers a step-up form (enter a
+// current TOTP) that POSTs back to /admin/2fa/setup to deliberately
+// re-enrol.
+func (h *Handler) renderAlreadyEnrolled(w http.ResponseWriter, r *http.Request, errMsg string, status int) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	data := alreadyEnrolledViewData{
+		ErrorMessage: errMsg,
+		// See renderEnrollment: this route is outside the csrfmw group;
+		// CSRF is mitigated by SameSite session cookies + the secret TOTP
+		// in the body, so the token stays empty by design.
+		CSRFToken:        "",
+		CSPNonce:         csp.Nonce(r.Context()),
+		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
+	}
+	if err := h.tmpl.ExecuteTemplate(w, "already_enrolled.html", data); err != nil {
+		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: already-enrolled template render failed",
+			slog.String("err", err.Error()),
+		)
+	}
+}
+
+// redirectToLogin 303s to the styled login page with the original path as
+// ?next= so the user lands back on /admin/2fa/setup after signing in. Used
+// when neither setup access predicate resolves.
+func (h *Handler) redirectToLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+	target := h.cfg.LoginPath + "?next=" + url.QueryEscape(r.URL.RequestURI())
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // Verify serves GET+POST /admin/2fa/verify.
@@ -506,4 +780,11 @@ type verifyViewData struct {
 
 type regenerateViewData struct {
 	RecoveryCodes []string
+}
+
+type alreadyEnrolledViewData struct {
+	ErrorMessage     string
+	CSRFToken        string
+	CSPNonce         string
+	TenantThemeStyle template.CSS
 }
