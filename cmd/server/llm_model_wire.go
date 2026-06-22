@@ -13,12 +13,12 @@ package main
 //
 //	per-point override  →  OPENROUTER_MODEL  →  hardcoded default
 //
-//	AI-assist: AIASSIST_LLM_MODEL → OPENROUTER_MODEL → google/gemini-2.0-flash
-//	Persona:   PERSONA_LLM_MODEL  → OPENROUTER_MODEL → google/gemini-2.0-flash
+//	AI-assist: AIASSIST_LLM_MODEL → OPENROUTER_MODEL → google/gemini-2.5-flash-lite
+//	Persona:   PERSONA_LLM_MODEL  → OPENROUTER_MODEL → google/gemini-2.5-flash-lite
 //
 // The CEO product decision (SIN-65243) is "same model everywhere by
 // default": leaving every knob unset routes both points to
-// google/gemini-2.0-flash, setting only OPENROUTER_MODEL moves both at
+// google/gemini-2.5-flash-lite, setting only OPENROUTER_MODEL moves both at
 // once, and a per-point override peels one point off the shared default.
 //
 // Hexagonal lens: resolveLLMModel is a pure function — it takes the
@@ -44,7 +44,7 @@ const (
 	// persona DefaultModel so the env-unset behaviour is identical to
 	// the adapters' own defaults — the env layer only makes that
 	// default overridable without a code change.
-	defaultLLMModel = "google/gemini-2.0-flash"
+	defaultLLMModel = "google/gemini-2.5-flash-lite"
 )
 
 // resolveLLMModel returns the first non-empty (whitespace-trimmed)
