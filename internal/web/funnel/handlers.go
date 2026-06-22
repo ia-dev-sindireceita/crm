@@ -18,6 +18,7 @@ import (
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/tenancy"
 	"github.com/pericles-luz/crm/internal/web/shell"
+	"github.com/pericles-luz/crm/internal/web/userlabel"
 )
 
 // Mover is the write-side dependency: it is satisfied by
@@ -97,7 +98,11 @@ type Deps struct {
 	UserID            UserIDFn
 	Role              RoleFn   // required when Stats is non-nil
 	TeamID            TeamIDFn // optional; returns uuid.Nil when unset
-	Logger            *slog.Logger
+	// UserLabels resolves the logged-in user's id to the top-bar account
+	// label (SIN-65578). Optional: when nil the shell renders the "Conta"
+	// fallback instead of the email-local-part label.
+	UserLabels userlabel.Directory
+	Logger     *slog.Logger
 }
 
 // Handler is the HTMX funnel UI front controller. It is mounted on
@@ -182,7 +187,7 @@ func (h *Handler) board(w http.ResponseWriter, r *http.Request) {
 
 	view := h.buildBoardView(board, stats)
 	view.TenantName = tenant.Name
-	view.UserDisplayName = displayNameForUser(h.deps.UserID(r))
+	view.UserDisplayName = userlabel.Resolve(r.Context(), h.deps.UserLabels, tenant.ID, h.deps.UserID(r))
 	view.CSRFToken = token
 	view.TenantThemeStyle = branding.ThemeStyleFromContext(r.Context())
 	view.CSPNonce = csp.Nonce(r.Context())
@@ -736,19 +741,4 @@ func buildFunnelUserMenu() []shell.UserMenuItem {
 	return []shell.UserMenuItem{
 		{Label: "Sair", Path: "/logout", Form: true},
 	}
-}
-
-// displayNameForUser is the placeholder display formatter for the
-// user-menu button. The session does not (yet) carry a human label,
-// so we render the uuid prefix — replace once a user-name resolver
-// lands.
-func displayNameForUser(userID uuid.UUID) string {
-	if userID == uuid.Nil {
-		return "Conta"
-	}
-	s := userID.String()
-	if len(s) > 8 {
-		return s[:8]
-	}
-	return s
 }

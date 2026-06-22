@@ -41,6 +41,7 @@ import (
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	inboxdomain "github.com/pericles-luz/crm/internal/inbox"
 	webcontacts "github.com/pericles-luz/crm/internal/web/contacts"
+	"github.com/pericles-luz/crm/internal/web/userlabel"
 )
 
 // contactConversationReader is the narrow read port the contact detail
@@ -92,7 +93,16 @@ func buildWebContactsHandler(ctx context.Context, getenv func(string) string) (h
 	} else {
 		convReader = inboxStore
 	}
-	handler, err := assembleWebContactsHandlerWith(store, contactsRepo, convReader)
+	// SIN-65578 — resolve the top-bar account label off the users table.
+	// A build failure soft-degrades to the "Conta" fallback (nil
+	// directory) rather than dropping the surface.
+	var userDir userlabel.Directory
+	if dir, derr := pginbox.NewUserDirectory(pool); derr != nil {
+		log.Printf("crm: web/contacts top-bar label disabled — user directory: %v", derr)
+	} else {
+		userDir = dir
+	}
+	handler, err := assembleWebContactsHandlerWith(store, contactsRepo, convReader, userDir)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/contacts handler disabled — assemble: %v", err)
@@ -124,10 +134,14 @@ func assembleWebContactsHandler(repo contactsusecase.IdentitySplitRepository) (h
 // The downstream Must* constructors panic only on a nil dependency; the
 // nil-repo guards here make those branches unreachable, so a panic would
 // be a genuine programmer bug rather than an operational error.
+// userLabels is variadic so the existing 3-arg test call sites keep
+// compiling; the production path passes the UserDirectory adapter as the
+// optional fourth argument. Only the first value is honoured.
 func assembleWebContactsHandlerWith(
 	identityRepo contactsusecase.IdentitySplitRepository,
 	contactsRepo contacts.Repository,
 	convReader contactConversationReader,
+	userLabels ...userlabel.Directory,
 ) (http.Handler, error) {
 	if identityRepo == nil {
 		return nil, errors.New("htmx_wire: identity split repository is nil")
@@ -140,11 +154,16 @@ func assembleWebContactsHandlerWith(
 	if err != nil {
 		panic(fmt.Errorf("htmx_wire: NewSplitIdentityLink (unreachable): %w", err))
 	}
+	var userDir userlabel.Directory
+	if len(userLabels) > 0 {
+		userDir = userLabels[0]
+	}
 	deps := webcontacts.Deps{
 		LoadIdentity: loadUC,
 		SplitLink:    splitUC,
 		CSRFToken:    csrfTokenFromSessionContext,
 		UserID:       userIDFromSessionContext,
+		UserLabels:   userDir,
 		Logger:       slog.Default(),
 	}
 	if contactsRepo != nil {

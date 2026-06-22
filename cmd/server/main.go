@@ -368,7 +368,12 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	// handler wire then returns nil so /dashboard* stays unmounted.
 	metricsDashboardUC, metricsDashboardCleanup := buildMetricsDashboard(ctx, getenv)
 	defer metricsDashboardCleanup()
-	webDashboardHandler := buildDashboardHandler(metricsDashboardUC)
+	// SIN-65578 — resolve the dashboard top-bar account label off the
+	// users table (same source as the inbox assignment dropdown). Owns a
+	// dedicated short-lived pool; fail-soft to the "Conta" fallback.
+	dashboardUserDir, dashboardUserDirCleanup := buildDashboardUserDirectory(ctx, getenv)
+	defer dashboardUserDirCleanup()
+	webDashboardHandler := buildDashboardHandler(metricsDashboardUC, dashboardUserDir)
 
 	// SIN-62527 / SIN-62217 — IAM chi handler (login, logout, hello-tenant,
 	// /m/*, metrics). Mounted before the custom-domain catch-all so

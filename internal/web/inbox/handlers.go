@@ -19,6 +19,7 @@ import (
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	"github.com/pericles-luz/crm/internal/tenancy"
 	"github.com/pericles-luz/crm/internal/web/shell"
+	"github.com/pericles-luz/crm/internal/web/userlabel"
 )
 
 // maxBodyChars caps the textarea (matches the maxlength on the form).
@@ -197,7 +198,13 @@ type Deps struct {
 	GetMessage        GetMessageUseCase
 	CSRFToken         CSRFTokenFn
 	UserID            UserIDFn
-	Logger            *slog.Logger
+	// UserLabels resolves the logged-in user's id to the top-bar account
+	// label (SIN-65578). Optional: when nil the shell renders the "Conta"
+	// fallback instead of the email-local-part label. The composition root
+	// supplies the same UserDirectory adapter that backs the assignment
+	// dropdown, so the top bar and the dropdown agree on every label.
+	UserLabels userlabel.Directory
+	Logger     *slog.Logger
 	// AIAssist wires the optional SIN-62908 ai-assist feature. The
 	// nested Summarizer field is the activation switch.
 	AIAssist AssistDeps
@@ -403,7 +410,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := inboxLayoutTmpl.Execute(w, layoutData{
 		TenantName:       tenant.Name,
-		UserDisplayName:  displayNameForUser(h.deps.UserID(r)),
+		UserDisplayName:  userlabel.Resolve(r.Context(), h.deps.UserLabels, tenant.ID, h.deps.UserID(r)),
 		NavItems:         buildInboxNavItems(),
 		UserMenuItems:    buildInboxUserMenu(),
 		CSRFToken:        token,
@@ -1395,22 +1402,6 @@ func buildInboxUserMenu() []shell.UserMenuItem {
 	return []shell.UserMenuItem{
 		{Label: "Sair", Path: "/logout", Form: true},
 	}
-}
-
-// displayNameForUser is the placeholder display formatter for the
-// user-menu button. The session does not (yet) carry a human label, so
-// we render the uuid prefix — replace once a user-name resolver lands.
-// Mirrors internal/web/funnel.displayNameForUser; kept local because the
-// two web packages do not share a helper module.
-func displayNameForUser(userID uuid.UUID) string {
-	if userID == uuid.Nil {
-		return "Conta"
-	}
-	s := userID.String()
-	if len(s) > 8 {
-		return s[:8]
-	}
-	return s
 }
 
 // fail centralises the error reporting + log path. The response body

@@ -353,7 +353,10 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		AIAssist:             deps.AIAssist,
 		CSRFToken:            csrfTokenFromSessionContext,
 		UserID:               userIDFromSessionContext,
-		Logger:               logger,
+		// SIN-65578: the same UserDirectory that labels the assignment
+		// dropdown now resolves the top-bar account label, so both agree.
+		UserLabels: deps.Directory,
+		Logger:     logger,
 	}
 	h, err := webinbox.New(handlerDeps)
 	if err != nil {

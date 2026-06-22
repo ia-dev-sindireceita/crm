@@ -28,6 +28,7 @@ import (
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/tenancy"
 	"github.com/pericles-luz/crm/internal/web/shell"
+	"github.com/pericles-luz/crm/internal/web/userlabel"
 )
 
 // LoadIdentityForContactUseCase is the read-side dependency: returns the
@@ -86,6 +87,11 @@ type Deps struct {
 	// UserID is the optional app-shell user-menu label source (SIN-65122).
 	// When nil the user-menu renders the "Conta" placeholder.
 	UserID UserIDFn
+
+	// UserLabels resolves the logged-in user's id to the top-bar account
+	// label (SIN-65578). Optional: when nil (or UserID nil) the shell
+	// renders the "Conta" fallback instead of the email-local-part label.
+	UserLabels userlabel.Directory
 
 	// ListContacts backs GET /contacts. When nil the list route is not
 	// mounted.
@@ -608,14 +614,20 @@ func isHXRequest(r *http.Request) bool {
 	return r.Header.Get("HX-Request") == "true"
 }
 
-// displayName resolves the session user id through the optional UserID dep
-// and formats it for the app-shell user-menu, falling back to "Conta" when
-// the dep is not wired or the session carries no user claim (SIN-65122).
+// displayName resolves the session user id to the app-shell account label
+// via the optional UserLabels directory (SIN-65578), falling back to
+// "Conta" when the UserID dep is not wired, the session carries no user
+// claim, the tenant is absent, or the directory cannot resolve the id —
+// never the raw uuid prefix.
 func (h *Handler) displayName(r *http.Request) string {
 	if h.deps.UserID == nil {
-		return "Conta"
+		return userlabel.Fallback
 	}
-	return displayNameForUser(h.deps.UserID(r))
+	tenant, err := tenancy.FromContext(r.Context())
+	if err != nil {
+		return userlabel.Fallback
+	}
+	return userlabel.Resolve(r.Context(), h.deps.UserLabels, tenant.ID, h.deps.UserID(r))
 }
 
 // buildContactsNavItems returns the SidebarNav primary nav for the
@@ -639,20 +651,4 @@ func buildContactsUserMenu() []shell.UserMenuItem {
 	return []shell.UserMenuItem{
 		{Label: "Sair", Path: "/logout", Form: true},
 	}
-}
-
-// displayNameForUser is the placeholder display formatter for the
-// user-menu button. The session does not (yet) carry a human label, so we
-// render the uuid prefix — replace once a user-name resolver lands.
-// Mirrors internal/web/inbox.displayNameForUser; kept local because the
-// two web packages do not share a helper module.
-func displayNameForUser(userID uuid.UUID) string {
-	if userID == uuid.Nil {
-		return "Conta"
-	}
-	s := userID.String()
-	if len(s) > 8 {
-		return s[:8]
-	}
-	return s
 }
