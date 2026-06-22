@@ -129,6 +129,15 @@ services:
     environment:
       HTTP_ADDR: ":8080"
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # SIN-65590 — defense-in-depth: hard-fail boot if the runtime DB role
+      # bypasses RLS (SUPERUSER/BYPASSRLS). The compose default composes
+      # DATABASE_URL from POSTGRES_USER (the bootstrap superuser `crm`); if
+      # .env.stg does NOT override DATABASE_URL to the app_runtime
+      # (NOBYPASSRLS) role, RLS is silently OFF and tenants see each other's
+      # rows (SIN-65580). With this flag set, the app refuses to boot in that
+      # state instead of serving cross-tenant data. The fix is to set
+      # DATABASE_URL=postgres://app_runtime:...@postgres:5432/crm in .env.stg.
+      DB_ENFORCE_RLS_ROLE: ${DB_ENFORCE_RLS_ROLE:-1}
       # SIN-65076 — operator-console hostname. Feeds httpapi.Deps.MasterHost
       # so the /m/* master console is reachable on a dedicated host and that
       # host joins the CSRF Origin/Referer allowlist. Sourced from .env.stg

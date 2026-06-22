@@ -12,9 +12,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -203,4 +205,105 @@ func NewFromEnv(ctx context.Context, getenv func(string) string) (*pgxpool.Pool,
 		return nil, ErrEmptyDSN
 	}
 	return New(ctx, getenv(EnvDSN))
+}
+
+// EnvEnforceRLSRole names the env var that turns the runtime RLS-role boot
+// guard from a WARNING into a hard boot failure. When its value is "1",
+// EnforceRuntimeRLSRoleFromEnv returns ErrRuntimeRoleBypassesRLS (so the
+// process never finishes booting) if the runtime DB role is SUPERUSER or
+// BYPASSRLS. compose.stg.yml and compose.yml (prod) set it; dev `make up`
+// leaves it unset so connecting as the bootstrap superuser only WARNs.
+const EnvEnforceRLSRole = "DB_ENFORCE_RLS_ROLE"
+
+// ErrRuntimeRoleBypassesRLS is returned by the runtime RLS-role guard when
+// the connected role bypasses Row-Level Security (SUPERUSER or BYPASSRLS)
+// and enforcement is on (DB_ENFORCE_RLS_ROLE=1). Callers can errors.Is on
+// it to surface a deterministic boot-failure hint. RLS is the DB half of
+// the tenant-isolation defense (RLS + WithTenant, ADR 0071); a runtime role
+// that bypasses it silently disables cross-tenant protection for every
+// query, so the only safe response in stg/prod is to refuse to boot.
+var ErrRuntimeRoleBypassesRLS = errors.New("postgres: runtime DB role bypasses RLS")
+
+// rlsRoleQuerier is the tiny seam assertRuntimeRLSRole needs. *pgxpool.Pool
+// already satisfies it; extracting it lets the guard's branches be unit
+// tested with a fake row that returns canned (rolsuper, rolbypassrls)
+// tuples, with no real database (table-driven, SIN-65590 AC3).
+type rlsRoleQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// assertRuntimeRLSRole reads the connected role's RLS-bypass attributes
+// from pg_roles and applies the SIN-65590 boot policy:
+//
+//   - role is NOBYPASSRLS and not SUPERUSER  → nil (correct; the runtime
+//     pool's tenant RLS is enforced).
+//   - role is SUPERUSER or BYPASSRLS         → ALWAYS emit a structured
+//     WARNING; return ErrRuntimeRoleBypassesRLS only when enforce is true.
+//
+// It reads ONLY current_user / pg_roles attributes — never the DSN, a
+// password, or any secret (security bar). A query/scan error is treated
+// conservatively: it fails (wrapped) when enforce is true, otherwise it
+// WARNs and returns nil so a transient catalog hiccup never bricks a dev
+// boot. logf is injected (log.Printf in production) so tests can capture it.
+func assertRuntimeRLSRole(ctx context.Context, q rlsRoleQuerier, enforce bool, logf func(string, ...any)) error {
+	const query = `SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`
+	var rolname string
+	var super, bypass bool
+	if err := q.QueryRow(ctx, query).Scan(&rolname, &super, &bypass); err != nil {
+		if enforce {
+			return fmt.Errorf("postgres: runtime RLS-role guard: read pg_roles: %w", err)
+		}
+		logf("level=WARN component=postgres event=rls_role_check_failed enforce=false err=%q msg=%q",
+			err.Error(),
+			"could not verify the runtime DB role enforces RLS; continuing (set DB_ENFORCE_RLS_ROLE=1 to fail-fast)")
+		return nil
+	}
+	if !super && !bypass {
+		return nil
+	}
+	logf("level=WARN component=postgres event=runtime_role_bypasses_rls role=%q rolsuper=%t rolbypassrls=%t enforce=%t msg=%q",
+		rolname, super, bypass, enforce,
+		"runtime DB role bypasses Row-Level Security; tenant isolation is NOT enforced for this pool. The runtime DSN MUST connect as a NOBYPASSRLS role (e.g. app_runtime). See deploy/compose/.env.example.")
+	if enforce {
+		return fmt.Errorf("%w: role %q (rolsuper=%t rolbypassrls=%t); point DATABASE_URL at a NOBYPASSRLS role (app_runtime)",
+			ErrRuntimeRoleBypassesRLS, rolname, super, bypass)
+	}
+	return nil
+}
+
+// EnforceRuntimeRLSRoleFromEnv is the boot-time defense-in-depth guard for
+// the runtime pool (SIN-65590). cmd/server calls it once early in boot. It:
+//
+//   - no-ops (nil) when DATABASE_URL is unset, so dev/local without a DB and
+//     the fail-soft feature wires are unaffected;
+//   - opens a short-lived pool on the RUNTIME DSN (DATABASE_URL) only — the
+//     app_master_ops / audit pools (MASTER_OPS_DATABASE_URL) are BYPASSRLS by
+//     design and are NEVER inspected here;
+//   - on a connectivity error, WARNs and returns nil (connectivity is the
+//     feature wires' / New's ping-retry concern, not this guard's — keep the
+//     existing fail-soft boot contract);
+//   - otherwise delegates to assertRuntimeRLSRole, which WARNs always and
+//     hard-fails (ErrRuntimeRoleBypassesRLS) only when DB_ENFORCE_RLS_ROLE=1.
+//
+// It closes the pool before returning; the real runtime pools are opened
+// independently by each feature wire.
+func EnforceRuntimeRLSRoleFromEnv(ctx context.Context, getenv func(string) string) error {
+	if getenv == nil {
+		return nil
+	}
+	dsn := getenv(EnvDSN)
+	if dsn == "" {
+		return nil
+	}
+	enforce := getenv(EnvEnforceRLSRole) == "1"
+	pool, err := New(ctx, dsn)
+	if err != nil {
+		log.Printf("level=WARN component=postgres event=rls_role_guard_skipped enforce=%t msg=%q err=%v",
+			enforce,
+			"could not open the runtime pool to verify it enforces RLS; skipping the role guard (connectivity is handled elsewhere)",
+			err)
+		return nil
+	}
+	defer pool.Close()
+	return assertRuntimeRLSRole(ctx, pool, enforce, log.Printf)
 }

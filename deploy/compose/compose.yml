@@ -135,6 +135,13 @@ services:
       # reach it (Caddy via `app:8081`).
       INTERNAL_HTTP_ADDR: ":8081"
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # SIN-65590 — defense-in-depth: hard-fail boot if the runtime DB role
+      # bypasses RLS (SUPERUSER/BYPASSRLS). The compose default composes
+      # DATABASE_URL from POSTGRES_USER (the bootstrap superuser `crm`); prod
+      # MUST override DATABASE_URL to the app_runtime (NOBYPASSRLS) role in
+      # .env, or RLS is silently OFF and tenants see each other's rows
+      # (SIN-65580). With this flag set the app refuses to boot in that state.
+      DB_ENFORCE_RLS_ROLE: ${DB_ENFORCE_RLS_ROLE:-1}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Default ON. Flip to "false" to globally disable on-demand TLS.
       CUSTOMDOMAIN_ASK_ENABLED: ${CUSTOMDOMAIN_ASK_ENABLED:-true}
