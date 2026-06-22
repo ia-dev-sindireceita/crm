@@ -163,6 +163,20 @@ func buildUserMFAStack(_ context.Context, pool *pgxpool.Pool, iamSvc usermfa.Log
 		return noopUserMFAStack()
 	}
 
+	// SIN-65587 — full-session entry to GET /admin/2fa/setup. iamSvc is
+	// the same iamAdapter the router uses as the authed-group
+	// SessionValidator, so it already implements ValidateSession. Detect
+	// that capability via a type assertion rather than widening
+	// buildUserMFAStack's signature: the existing wire tests pass a
+	// login-only stub that does not implement ValidateSession, so they
+	// keep compiling and fall back to the pending-only Setup behaviour.
+	// NewTenantSessionResolver returns a nil resolver when the assertion
+	// fails, which HandlerConfig treats as "pending-only".
+	var tenantSession usermfa.TenantSessionResolver
+	if v, ok := iamSvc.(usermfa.TenantSessionValidator); ok {
+		tenantSession = usermfa.NewTenantSessionResolver(v)
+	}
+
 	handler, err := usermfa.NewHandler(usermfa.HandlerConfig{
 		Enroller:      mfaSvc,
 		Verifier:      mfaSvc,
@@ -171,6 +185,7 @@ func buildUserMFAStack(_ context.Context, pool *pgxpool.Pool, iamSvc usermfa.Log
 		Pendings:      pendings,
 		Enrollment:    enrollment,
 		Reenroller:    reenroller,
+		TenantSession: tenantSession,
 		SessionMinter: sessionMinter,
 		Failures:      failures,
 		Audit:         auditBridge,

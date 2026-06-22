@@ -1,0 +1,30 @@
+{{ define "already_enrolled.html" }}<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2FA já está ativo</title>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+</head>
+<body>
+<main>
+  <h1>2FA já está ativo</h1>
+  <p>
+    A autenticação em dois fatores já está configurada para a sua conta.
+    Não é preciso configurar de novo — e por segurança não reativamos o
+    segredo automaticamente, pois isso invalidaria o seu aplicativo
+    autenticador e os códigos de recuperação atuais.
+  </p>
+  <p>
+    Para gerar novos <strong>códigos de recuperação</strong> ou trocar de
+    aplicativo autenticador, faça login novamente e confirme um código TOTP
+    atual antes de prosseguir.
+  </p>
+  <p>
+    <a href="/hello-tenant">Voltar ao início</a>
+  </p>
+</main>
+</body>
+</html>
+{{ end }}

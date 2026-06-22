@@ -65,6 +65,31 @@ type EnrollmentChecker interface {
 	IsEnrolled(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
+// TenantActor is the server-derived identity behind a full, post-login
+// tenant session. Both fields are resolved from the validated session
+// row — never from request input — so the Setup handler can trust them
+// for tenant-scoped writes (OWASP A01: identity is not attacker-supplied).
+type TenantActor struct {
+	UserID   uuid.UUID
+	TenantID uuid.UUID
+}
+
+// TenantSessionResolver resolves an already-authenticated tenant session
+// (the __Host-sess-tenant cookie) into a TenantActor. It is the
+// voluntary post-login entry predicate for GET /admin/2fa/setup — a
+// logged-in user who clicks "Configurar 2FA" on /hello-tenant holds a
+// full session but no __Host-mfa-pending cookie (SIN-65579).
+//
+// Returns ok=false when there is no valid full session on the request;
+// the Setup handler then falls back to the mid-login pending-cookie
+// predicate. Read-narrow (accept-broad/return-narrow): the resolver only
+// reports identity, never mutates, and never trusts request input for it.
+// A nil resolver in HandlerConfig disables the full-session entry and
+// preserves the pre-PR2 pending-only behaviour.
+type TenantSessionResolver interface {
+	ResolveTenantSession(r *http.Request) (TenantActor, bool)
+}
+
 // Reenroller is the write port the verify handler uses to force a
 // re-enrolment when the stored seed ciphertext is unreadable under
 // the current SeedCipher key. Calling MarkReenrollRequired flips the
