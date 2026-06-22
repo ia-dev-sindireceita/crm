@@ -176,6 +176,19 @@ var iamRoutes = []string{
 	// Identical defect + fix to the SIN-63821 inbox mount above.
 	"/branding",
 	"/branding/",
+	// SIN-65576 (fix SIN-65583) — SIN-65008 managerial dashboard /
+	// relatórios surface. The handler is registered inside the chi
+	// authed/tenanted group (router.go: GET /dashboard + GET
+	// /dashboard/export.csv, guarded by deps.WebDashboard != nil) and is
+	// non-nil at runtime, so the /hello-tenant tile renders — but the
+	// prefixes were never added here, so the stdlib mux dispatched every
+	// /dashboard* request to the custom-domain catch-all at "/" instead
+	// of chi and staging returned a raw 404. The "/dashboard" exact
+	// pattern matches GET /dashboard; the "/dashboard/" subtree catches
+	// GET /dashboard/export.csv. Identical defect + fix to the SIN-64975
+	// branding and SIN-64973 ai-policy mounts above.
+	"/dashboard",
+	"/dashboard/",
 	"/m/",
 	// SIN-63957 — master tenants + grants surface (Fase 2.5 C9/C10 +
 	// SIN-63605 + SIN-63958 impersonation). The "/master/" subtree
