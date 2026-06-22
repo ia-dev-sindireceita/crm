@@ -163,7 +163,7 @@ func buildUserMFAStack(_ context.Context, pool *pgxpool.Pool, iamSvc usermfa.Log
 		return noopUserMFAStack()
 	}
 
-	handler, err := usermfa.NewHandler(usermfa.HandlerConfig{
+	handlerCfg := usermfa.HandlerConfig{
 		Enroller:      mfaSvc,
 		Verifier:      mfaSvc,
 		Consumer:      mfaSvc,
@@ -176,7 +176,18 @@ func buildUserMFAStack(_ context.Context, pool *pgxpool.Pool, iamSvc usermfa.Log
 		Audit:         auditBridge,
 		Labels:        labels,
 		Logger:        logger,
-	})
+	}
+	// SIN-65579 / SIN-65587 — second access predicate for
+	// /admin/2fa/setup: a full post-login tenant session. The production
+	// iamSvc (iamAdapter) already implements ValidateSession, so an
+	// optional assertion lets a logged-in user reach the enrolment
+	// surface voluntarily without growing buildUserMFAStack's signature.
+	// Test doubles that don't validate sessions keep the pending-only
+	// behaviour (the field stays nil and Setup falls through).
+	if sv, ok := iamSvc.(sessionValidator); ok {
+		handlerCfg.TenantSession = tenantSessionResolverBridge{validator: sv}
+	}
+	handler, err := usermfa.NewHandler(handlerCfg)
 	if err != nil {
 		log.Printf("crm: usermfa disabled — handler: %v", err)
 		return noopUserMFAStack()
@@ -329,6 +340,33 @@ func (b *tenantRequirementsBridge) Load(ctx context.Context, userID uuid.UUID) (
 		return usermfa.Requirement{}, fmt.Errorf("usermfa wire: requirements: %w", err)
 	}
 	return usermfa.NewRequirementsBridge(adapter).Load(ctx, userID)
+}
+
+// sessionValidator is the slice of the IAM service the setup handler's
+// full-session predicate needs. iamAdapter (the production iamSvc) already
+// implements it; buildUserMFAStack picks it up via an optional assertion.
+type sessionValidator interface {
+	ValidateSession(ctx context.Context, tenantID, sessionID uuid.UUID) (iam.Session, error)
+}
+
+// tenantSessionResolverBridge adapts the IAM ValidateSession contract to
+// usermfa.TenantSessionResolver. It maps the two "no live session" errors
+// (ErrSessionNotFound / ErrSessionExpired) to usermfa.ErrNoTenantSession so
+// the handler can fall through to the pending predicate, and returns the
+// server-derived (userID, tenantID) — never anything from request input.
+type tenantSessionResolverBridge struct {
+	validator sessionValidator
+}
+
+func (b tenantSessionResolverBridge) ResolveTenantSession(ctx context.Context, tenantID, sessionID uuid.UUID) (usermfa.TenantSessionActor, error) {
+	sess, err := b.validator.ValidateSession(ctx, tenantID, sessionID)
+	if err != nil {
+		if errors.Is(err, iam.ErrSessionNotFound) || errors.Is(err, iam.ErrSessionExpired) {
+			return usermfa.TenantSessionActor{}, usermfa.ErrNoTenantSession
+		}
+		return usermfa.TenantSessionActor{}, err
+	}
+	return usermfa.TenantSessionActor{UserID: sess.UserID, TenantID: sess.TenantID}, nil
 }
 
 // tenantEnrollmentBridge satisfies usermfa.EnrollmentChecker.
@@ -499,15 +537,16 @@ func tenantIDFromContext(ctx context.Context) (uuid.UUID, error) {
 // here instead of at runtime when the wire-built handler is first
 // invoked.
 var (
-	_ usermfa.PendingCreator      = (*tenantPendingsBridge)(nil)
-	_ usermfa.PendingStore        = (*tenantPendingsBridge)(nil)
-	_ usermfa.RequirementReader   = (*tenantRequirementsBridge)(nil)
-	_ usermfa.EnrollmentChecker   = (*tenantEnrollmentBridge)(nil)
-	_ usermfa.Reenroller          = (*tenantReenrollBridge)(nil)
-	_ usermfa.Enroller            = (*tenantMFAServiceBridge)(nil)
-	_ usermfa.Verifier            = (*tenantMFAServiceBridge)(nil)
-	_ usermfa.RecoveryConsumer    = (*tenantMFAServiceBridge)(nil)
-	_ usermfa.RecoveryRegenerator = (*tenantMFAServiceBridge)(nil)
-	_ usermfa.AuditEmitter        = (*tenantUserMFAAuditBridge)(nil)
-	_ iam.SessionStore            = (*postgresadapter.SessionStore)(nil)
+	_ usermfa.PendingCreator        = (*tenantPendingsBridge)(nil)
+	_ usermfa.PendingStore          = (*tenantPendingsBridge)(nil)
+	_ usermfa.RequirementReader     = (*tenantRequirementsBridge)(nil)
+	_ usermfa.EnrollmentChecker     = (*tenantEnrollmentBridge)(nil)
+	_ usermfa.Reenroller            = (*tenantReenrollBridge)(nil)
+	_ usermfa.Enroller              = (*tenantMFAServiceBridge)(nil)
+	_ usermfa.Verifier              = (*tenantMFAServiceBridge)(nil)
+	_ usermfa.RecoveryConsumer      = (*tenantMFAServiceBridge)(nil)
+	_ usermfa.RecoveryRegenerator   = (*tenantMFAServiceBridge)(nil)
+	_ usermfa.AuditEmitter          = (*tenantUserMFAAuditBridge)(nil)
+	_ usermfa.TenantSessionResolver = tenantSessionResolverBridge{}
+	_ iam.SessionStore              = (*postgresadapter.SessionStore)(nil)
 )

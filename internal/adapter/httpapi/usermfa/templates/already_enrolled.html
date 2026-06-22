@@ -1,0 +1,47 @@
+{{ define "already_enrolled.html" }}<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+{{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/login.css">
+<link rel="stylesheet" href="/static/css/brand.css">
+<link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+<title>2FA já está ativo — Pitho</title>
+</head>
+<body>
+<main class="login-page">
+  <section class="login-card" role="region" aria-labelledby="already-heading">
+    <header class="login-card__header">
+      <span class="login-card__wordmark login-card__wordmark--brand" aria-hidden="true" data-testid="login-wordmark"><img class="pitho-logo pitho-logo--light" src="/static/brand/pitho-logo-light.svg" alt="Pitho" /><img class="pitho-logo pitho-logo--dark" src="/static/brand/pitho-logo-dark.svg" alt="Pitho" /></span>
+      <h1 id="already-heading" class="login-card__title">2FA já está ativo</h1>
+      <p class="login-card__subtitle">Verificação em duas etapas</p>
+    </header>
+    <p class="login-card__help">
+      A verificação em duas etapas já está configurada nesta conta. Não é
+      necessário fazer nada — seu autenticador atual continua válido.
+    </p>
+    {{ if .ErrorMessage }}<p role="alert" class="alert alert--danger login-card__error" data-testid="setup-error">{{ .ErrorMessage }}</p>{{ end }}
+    <h2 class="login-card__title">Gerar um novo segredo</h2>
+    <p class="login-card__help">
+      Para substituir o segredo atual (por exemplo, ao trocar de aparelho),
+      confirme um código atual do seu autenticador. Isso invalida o
+      autenticador e os códigos de recuperação anteriores.
+    </p>
+    <form method="POST" action="/admin/2fa/setup" hx-post="/admin/2fa/setup">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <div class="login-card__field">
+        <label for="setup-stepup-code">Código TOTP atual</label>
+        <input id="setup-stepup-code" type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" aria-describedby="setup-stepup-help" required>
+        <p id="setup-stepup-help" class="login-card__help">Digite os 6 dígitos exibidos agora no app autenticador.</p>
+      </div>
+      <button type="submit" class="btn btn--primary login-card__submit">Gerar novo segredo</button>
+    </form>
+  </section>
+</main>
+</body>
+</html>
+{{ end }}

@@ -2,6 +2,7 @@ package usermfa
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -10,6 +11,39 @@ import (
 	"github.com/pericles-luz/crm/internal/iam"
 	"github.com/pericles-luz/crm/internal/iam/mfa"
 )
+
+// TenantSessionActor is the server-derived identity a full post-login
+// tenant session (__Host-sess-tenant) resolves to. Both ids come from
+// the validated session row — never from request-supplied form/query
+// input (OWASP A01 Broken Access Control / deny-by-default).
+type TenantSessionActor struct {
+	UserID   uuid.UUID
+	TenantID uuid.UUID
+}
+
+// ErrNoTenantSession is the sentinel a TenantSessionResolver returns when
+// the presented session id does not resolve to a live session for the
+// tenant — missing, malformed, expired, or a cross-tenant probe. Every
+// failure mode collapses to this single value so a caller (and a hostile
+// probe) cannot distinguish "no session" from "wrong tenant".
+var ErrNoTenantSession = errors.New("usermfa: no tenant session")
+
+// TenantSessionResolver validates a __Host-sess-tenant cookie value
+// against the host-resolved tenant scope and returns the server-derived
+// actor. It is the second access predicate for GET/POST /admin/2fa/setup
+// (the voluntary post-login path; the __Host-mfa-pending cookie is the
+// first, mid-login path).
+//
+// Read-narrow / return-narrow (hexagonal accept-broad/return-narrow):
+// the handler supplies the tenant id (from the host gate) and the session
+// id parsed from the cookie; the resolver never trusts a user- or
+// tenant-id taken from request input, and it returns only the two ids the
+// setup flow needs. Implementations MUST return ErrNoTenantSession for
+// every non-resolving case so the handler can fall through to the pending
+// predicate without leaking which check failed.
+type TenantSessionResolver interface {
+	ResolveTenantSession(ctx context.Context, tenantID, sessionID uuid.UUID) (TenantSessionActor, error)
+}
 
 // Enroller is the slice of mfa.Service the setup handler depends on.
 type Enroller interface {
