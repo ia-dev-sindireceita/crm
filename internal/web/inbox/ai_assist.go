@@ -331,6 +331,7 @@ func (h *Handler) renderAssistError(w http.ResponseWriter, err error, elapsed fl
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = assistRateLimitedTmpl.Execute(w, nil)
 	case errors.Is(err, aiassist.ErrLLMUnavailable):
+		h.deps.Logger.Error("web/inbox: LLM unavailable", "err", err)
 		h.incAssistError(assistReasonLLMUnavailable)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = assistLLMUnavailableTmpl.Execute(w, nil)
