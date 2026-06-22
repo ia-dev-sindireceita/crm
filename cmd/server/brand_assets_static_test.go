@@ -61,6 +61,33 @@ func TestBrandAssets_Served(t *testing.T) {
 	}
 }
 
+func TestWebManifest_CarriesPithoBrand(t *testing.T) {
+	t.Parallel()
+
+	// SIN-65589 — the PWA manifest's name/short_name is user-visible: it is
+	// the label the browser shows in the install prompt and on the home-screen
+	// shortcut. The Peitho → Pitho rename's bulk sed missed this asset, so it
+	// kept showing "Peitho" while the rest of the UI read "Pitho". Guard the
+	// body here so the next rename can't regress it silently.
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../../web/static"))))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/static/site.webmanifest", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for /static/site.webmanifest", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"Pitho"`) {
+		t.Errorf("manifest body should carry the Pitho brand name; got:\n%s", body)
+	}
+	if strings.Contains(body, "Peitho") {
+		t.Errorf("manifest body still contains the stale Peitho brand name; got:\n%s", body)
+	}
+}
+
 func TestBrandLogos_HaveThemeVariants(t *testing.T) {
 	t.Parallel()
 
