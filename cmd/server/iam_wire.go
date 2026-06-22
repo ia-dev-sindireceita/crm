@@ -107,6 +107,10 @@ var iamRoutes = []string{
 	"/login",
 	"/logout",
 	"/hello-tenant",
+	// SIN-65575 — a rota exata GET /contacts (router.go contactsRead, add.
+	// em SIN-64977) precisa do padrão exato no stdlib mux; sem ela o mux
+	// redireciona /contacts → /contacts/ (sem handler de índice) → 404.
+	"/contacts",
 	"/contacts/",
 	"/funnel",
 	"/funnel/",
