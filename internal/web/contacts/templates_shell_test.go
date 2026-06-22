@@ -152,15 +152,3 @@ func TestBuildContactsUserMenu(t *testing.T) {
 		t.Errorf("user-menu item must be form-based Sair -> /logout, got %+v", items[0])
 	}
 }
-
-// TestDisplayNameForUser pins the placeholder display formatter.
-func TestDisplayNameForUser(t *testing.T) {
-	t.Parallel()
-	if got := displayNameForUser(uuid.Nil); got != "Conta" {
-		t.Errorf("nil user -> %q, want Conta", got)
-	}
-	id := uuid.New()
-	if got := displayNameForUser(id); got != id.String()[:8] {
-		t.Errorf("non-nil user -> %q, want %q", got, id.String()[:8])
-	}
-}

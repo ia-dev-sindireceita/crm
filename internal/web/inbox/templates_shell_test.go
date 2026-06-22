@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-
-	"github.com/google/uuid"
 )
 
 // TestInboxLayout_RendersAppShellChrome pins SIN-65104: the full-page
@@ -100,18 +98,5 @@ func TestBuildInboxUserMenu(t *testing.T) {
 	}
 	if items[0].Label != "Sair" || items[0].Path != "/logout" || !items[0].Form {
 		t.Errorf("user-menu item must be form-based Sair -> /logout, got %+v", items[0])
-	}
-}
-
-// TestDisplayNameForUser pins the placeholder display formatter used by
-// the user-menu toggle.
-func TestDisplayNameForUser(t *testing.T) {
-	t.Parallel()
-	if got := displayNameForUser(uuid.Nil); got != "Conta" {
-		t.Errorf("nil user -> %q, want Conta", got)
-	}
-	id := uuid.New()
-	if got := displayNameForUser(id); got != id.String()[:8] {
-		t.Errorf("non-nil user -> %q, want %q", got, id.String()[:8])
 	}
 }

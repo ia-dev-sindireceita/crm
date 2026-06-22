@@ -40,7 +40,10 @@ func TestBuildDashboardHandler_WiresMuxWhenUseCasePresent(t *testing.T) {
 		t.Fatalf("NewGetDashboard: %v", err)
 	}
 
-	h := buildDashboardHandler(uc)
+	// Passing a nil directory (the SIN-65578 fail-soft signal) must still
+	// wire the mux — the top bar degrades to the "Conta" fallback rather
+	// than dropping the surface.
+	h := buildDashboardHandler(uc, nil)
 	if h == nil {
 		t.Fatal("buildDashboardHandler(uc) = nil, want a routed mux")
 	}
@@ -53,4 +56,20 @@ func TestBuildDashboardHandler_WiresMuxWhenUseCasePresent(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d for unknown path, want 404 from the wired mux", rec.Code)
 	}
+}
+
+// TestBuildDashboardUserDirectory_DisabledWhenDSNUnset pins the SIN-65578
+// composition-root contract: with no DATABASE_URL the top-bar label
+// resolver is (nil, no-op) so health-only / smoke boots stay clean and the
+// dashboard degrades to the "Conta" fallback. The no-op cleanup must be
+// safe to call unconditionally.
+func TestBuildDashboardUserDirectory_DisabledWhenDSNUnset(t *testing.T) {
+	dir, cleanup := buildDashboardUserDirectory(context.Background(), func(string) string { return "" })
+	if dir != nil {
+		t.Errorf("buildDashboardUserDirectory directory = %v, want nil when DSN unset", dir)
+	}
+	if cleanup == nil {
+		t.Fatal("buildDashboardUserDirectory cleanup = nil, want non-nil no-op")
+	}
+	cleanup()
 }

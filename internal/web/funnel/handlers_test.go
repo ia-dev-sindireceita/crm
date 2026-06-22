@@ -781,3 +781,77 @@ func TestStats_NotMountedWhenStatsNil(t *testing.T) {
 		t.Error("stats route must not be mounted when Stats dep is nil")
 	}
 }
+
+// fakeUserDir is an in-memory userlabel.Directory for the top-bar label
+// assertions (SIN-65578): labels maps user id → label; absent ids resolve
+// to no label so Resolve falls back to "Conta".
+type fakeUserDir struct {
+	labels map[uuid.UUID]string
+}
+
+func (f fakeUserDir) LabelsByID(_ context.Context, _ uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	out := make(map[uuid.UUID]string, len(ids))
+	for _, id := range ids {
+		if l, ok := f.labels[id]; ok {
+			out[id] = l
+		}
+	}
+	return out, nil
+}
+
+// TestBoard_RendersResolvedUserLabel pins the SIN-65578 fix: the top-bar
+// account button renders the logged-in user's resolved label (email
+// local-part), not the uuid prefix the old displayNameForUser stub
+// produced.
+func TestBoard_RendersResolvedUserLabel(t *testing.T) {
+	t.Parallel()
+	userID := uuid.New()
+	deps := fullDeps()
+	deps.Board = &stubBoard{board: seededBoard()}
+	deps.UserID = func(*http.Request) uuid.UUID { return userID }
+	deps.UserLabels = fakeUserDir{labels: map[uuid.UUID]string{userID: "agent"}}
+
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "agent") {
+		t.Errorf("board body missing resolved label %q", "agent")
+	}
+	// The raw uuid prefix must never leak into the shell.
+	if strings.Contains(body, userID.String()[:8]) {
+		t.Errorf("board body leaked uuid prefix %q (stub regression)", userID.String()[:8])
+	}
+}
+
+// TestBoard_FallsBackToContaWithoutDirectory pins that an unwired
+// directory degrades the top bar to "Conta" rather than the uuid prefix.
+func TestBoard_FallsBackToContaWithoutDirectory(t *testing.T) {
+	t.Parallel()
+	userID := uuid.New()
+	deps := fullDeps()
+	deps.Board = &stubBoard{board: seededBoard()}
+	deps.UserID = func(*http.Request) uuid.UUID { return userID }
+	deps.UserLabels = nil // unwired
+
+	h := buildHandler(t, deps)
+	r := reqWithTenant(http.MethodGet, "/funnel", "", uuid.New())
+	w := httptest.NewRecorder()
+	mux(h).ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, userID.String()[:8]) {
+		t.Errorf("board body leaked uuid prefix %q with nil directory", userID.String()[:8])
+	}
+	if !strings.Contains(body, "Conta") {
+		t.Errorf("board body missing %q fallback with nil directory", "Conta")
+	}
+}
