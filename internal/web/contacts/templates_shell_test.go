@@ -41,7 +41,7 @@ func TestContactLayout_RendersAppShellChrome(t *testing.T) {
 		// primary nav: the seed-role set, with Contatos active
 		`href="/inbox"`,
 		`href="/funnel"`,
-		`<a href="/contacts" aria-current="page">Contatos</a>`,
+		`href="/contacts" aria-current="page"`,
 		`href="/dashboard"`,
 		// user-menu logout (form-based, lives in the shell, carries CSRF)
 		`action="/logout"`,
@@ -93,7 +93,7 @@ func TestContactsListAndEdit_RenderAppShell(t *testing.T) {
 		t.Fatalf("list Execute: %v", err)
 	}
 	list := listBuf.String()
-	for _, want := range []string{`class="app-shell"`, `id="contacts-results"`, `<a href="/contacts" aria-current="page">Contatos</a>`, `data-testid="contacts-shell"`} {
+	for _, want := range []string{`class="app-shell"`, `id="contacts-results"`, `href="/contacts" aria-current="page"`, `data-testid="contacts-shell"`} {
 		if !strings.Contains(list, want) {
 			t.Errorf("contacts list missing %q after shell migration", want)
 		}
@@ -110,7 +110,7 @@ func TestContactsListAndEdit_RenderAppShell(t *testing.T) {
 		t.Fatalf("edit Execute: %v", err)
 	}
 	edit := editBuf.String()
-	for _, want := range []string{`class="app-shell"`, `id="contact-edit-panel"`, `<a href="/contacts" aria-current="page">Contatos</a>`} {
+	for _, want := range []string{`class="app-shell"`, `id="contact-edit-panel"`, `href="/contacts" aria-current="page"`} {
 		if !strings.Contains(edit, want) {
 			t.Errorf("contacts edit page missing %q after shell migration", want)
 		}

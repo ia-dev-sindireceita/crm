@@ -213,7 +213,7 @@
   /* ---- App-shell chrome dimensions (Pitho SidebarNav) ------------- */
   --sidebar-w: 248px;       /* expanded sidebar width            */
   --topbar-h: 56px;         /* brand row / mobile bar height     */
-  --nav-item-h: 34px;       /* SidebarNav item height            */
+  --nav-item-h: 38px;       /* SidebarNav item height            */
 }
 
 /*

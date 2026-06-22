@@ -145,10 +145,10 @@ func (h *Handler) csrfToken(r *http.Request) string {
 // The brand link back to /hello-tenant is owned by the shell layout.
 func buildDashboardNavItems() []shell.NavItem {
 	return []shell.NavItem{
-		{Label: "Inbox", Path: "/inbox"},
-		{Label: "Funil", Path: "/funnel"},
-		{Label: "Contatos", Path: "/contacts"},
-		{Label: "Painel", Path: "/dashboard", Active: true},
+		{Label: "Inbox", Path: "/inbox", Icon: "inbox"},
+		{Label: "Funil", Path: "/funnel", Icon: "git-branch"},
+		{Label: "Contatos", Path: "/contacts", Icon: "users"},
+		{Label: "Painel", Path: "/dashboard", Active: true, Icon: "bar-chart"},
 	}
 }
 

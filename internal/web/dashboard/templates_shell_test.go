@@ -34,7 +34,7 @@ func TestPage_RendersAppShellChrome(t *testing.T) {
 		`href="/inbox"`,
 		`href="/funnel"`,
 		`href="/contacts"`,
-		`<a href="/dashboard" aria-current="page">Painel</a>`,
+		`href="/dashboard" aria-current="page"`,
 		// user-menu logout (form-based, lives in the shell)
 		`action="/logout"`,
 		`Sair`,

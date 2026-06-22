@@ -1384,8 +1384,8 @@ func liveCursor(items []inboxusecase.MessageView) string {
 // /hello-tenant is owned by the shell layout.
 func buildInboxNavItems() []shell.NavItem {
 	return []shell.NavItem{
-		{Label: "Inbox", Path: "/inbox", Active: true},
-		{Label: "Funil", Path: "/funnel"},
+		{Label: "Inbox", Path: "/inbox", Active: true, Icon: "inbox"},
+		{Label: "Funil", Path: "/funnel", Icon: "git-branch"},
 	}
 }
 

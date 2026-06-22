@@ -725,8 +725,8 @@ type statsView struct {
 // volta para landing via top-nav") is observable in any role.
 func buildFunnelNavItems() []shell.NavItem {
 	return []shell.NavItem{
-		{Label: "Inbox", Path: "/inbox"},
-		{Label: "Funil", Path: "/funnel", Active: true},
+		{Label: "Inbox", Path: "/inbox", Icon: "inbox"},
+		{Label: "Funil", Path: "/funnel", Active: true, Icon: "git-branch"},
 	}
 }
 

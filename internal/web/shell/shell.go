@@ -23,6 +23,7 @@ type NavItem struct {
 	Label  string
 	Path   string
 	Active bool
+	Icon   string // Lucide icon name; empty = text-only (zero-value safe)
 }
 
 // UserMenuItem is one entry in the user-menu dropdown. Form=true emits

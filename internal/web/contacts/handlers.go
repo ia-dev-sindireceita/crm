@@ -626,10 +626,10 @@ func (h *Handler) displayName(r *http.Request) string {
 // the shell layout.
 func buildContactsNavItems() []shell.NavItem {
 	return []shell.NavItem{
-		{Label: "Inbox", Path: "/inbox"},
-		{Label: "Funil", Path: "/funnel"},
-		{Label: "Contatos", Path: "/contacts", Active: true},
-		{Label: "Painel", Path: "/dashboard"},
+		{Label: "Inbox", Path: "/inbox", Icon: "inbox"},
+		{Label: "Funil", Path: "/funnel", Icon: "git-branch"},
+		{Label: "Contatos", Path: "/contacts", Active: true, Icon: "users"},
+		{Label: "Painel", Path: "/dashboard", Icon: "bar-chart"},
 	}
 }
 
