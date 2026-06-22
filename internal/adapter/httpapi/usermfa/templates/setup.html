@@ -2,42 +2,70 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<title>Ativar 2FA</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+{{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/login.css">
+<link rel="stylesheet" href="/static/css/brand.css">
+<link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+<title>Ativar 2FA — Pitho</title>
 </head>
 <body>
-<h1>Ativar 2FA</h1>
-<p>
-  Escaneie o código QR com seu aplicativo autenticador (Google
-  Authenticator, 1Password, Authy) ou digite o segredo manualmente.
-  <strong>Guarde os códigos de recuperação agora — eles aparecem
-  apenas uma vez.</strong>
-</p>
+<main class="login-page">
+  <section class="login-card login-card--wide" role="region" aria-labelledby="setup-heading">
+    <header class="login-card__header">
+      <span class="login-card__wordmark login-card__wordmark--brand" aria-hidden="true" data-testid="login-wordmark"><img class="pitho-logo pitho-logo--light" src="/static/brand/pitho-logo-light.svg" alt="Pitho" /><img class="pitho-logo pitho-logo--dark" src="/static/brand/pitho-logo-dark.svg" alt="Pitho" /></span>
+      <h1 id="setup-heading" class="login-card__title">Ativar 2FA</h1>
+      <p class="login-card__subtitle">Verificação em duas etapas</p>
+    </header>
 
-<h2>Segredo</h2>
-<pre id="totp-secret">{{ .SecretEncoded }}</pre>
+    <p class="login-card__help">
+      Escaneie o código QR com seu aplicativo autenticador (Google
+      Authenticator, 1Password, Authy) ou digite o segredo manualmente.
+      <strong>Guarde os códigos de recuperação agora — eles aparecem
+      apenas uma vez.</strong>
+    </p>
 
-<h2>otpauth URI</h2>
-<pre id="totp-otpauth">{{ .OTPAuthURI }}</pre>
+    <figure class="totp-qr">
+      {{ if .QRCodeSVG }}{{ .QRCodeSVG }}{{ else }}<p role="alert" class="login-card__help">Não foi possível gerar a imagem do QR. Use o segredo abaixo para configurar manualmente.</p>{{ end }}
+      <figcaption class="login-card__help">Aponte a câmera do app autenticador para este código.</figcaption>
+    </figure>
 
-<h2>Códigos de recuperação</h2>
-<p>Salve estes 10 códigos. Cada código serve apenas uma vez.</p>
-<ul id="recovery-codes">
+    <h2 class="login-card__title">Segredo (entrada manual)</h2>
+    <p class="login-card__help">Caso não consiga escanear, cadastre este segredo no app:</p>
+    <pre id="totp-secret" class="totp-secret">{{ .SecretEncoded }}</pre>
+    <details class="totp-otpauth">
+      <summary class="login-card__help">Mostrar URI otpauth</summary>
+      <pre id="totp-otpauth">{{ .OTPAuthURI }}</pre>
+    </details>
+
+    <h2 class="login-card__title">Códigos de recuperação</h2>
+    <p class="login-card__help">Salve estes 10 códigos. Cada código serve apenas uma vez.</p>
+    <ul id="recovery-codes" class="recovery-codes">
 {{ range .RecoveryCodes }}<li>{{ . }}</li>
 {{ end }}</ul>
 
-<form method="POST" action="/admin/2fa/setup/codes.txt" hx-post="/admin/2fa/setup/codes.txt">
-  <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
-  <button type="submit">Baixar códigos (.txt)</button>
-</form>
+    <form method="POST" action="/admin/2fa/setup/codes.txt" hx-post="/admin/2fa/setup/codes.txt">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <button type="submit" class="btn btn--secondary">Baixar códigos (.txt)</button>
+    </form>
 
-<h2>Confirmar ativação</h2>
-<p>Digite o código de 6 dígitos do seu autenticador para concluir.</p>
-<form method="POST" action="/admin/2fa/verify" hx-post="/admin/2fa/verify">
-  <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
-  <input type="hidden" name="next" value="{{ .NextPath }}">
-  <label>Código TOTP: <input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required></label>
-  <button type="submit">Ativar e entrar</button>
-</form>
+    <h2 class="login-card__title">Confirmar ativação</h2>
+    <p class="login-card__help">Digite o código de 6 dígitos do seu autenticador para concluir.</p>
+    <form method="POST" action="/admin/2fa/verify" hx-post="/admin/2fa/verify">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <input type="hidden" name="next" value="{{ .NextPath }}">
+      <div class="login-card__field">
+        <label for="setup-code">Código TOTP</label>
+        <input id="setup-code" type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" aria-describedby="setup-code-help" required>
+        <p id="setup-code-help" class="login-card__help">Os 6 dígitos exibidos agora no app autenticador.</p>
+      </div>
+      <button type="submit" class="btn btn--primary login-card__submit">Ativar e entrar</button>
+    </form>
+  </section>
+</main>
 </body>
 </html>
 {{ end }}
