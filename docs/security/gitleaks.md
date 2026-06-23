@@ -10,7 +10,7 @@ The pre-handoff `gitleaks detect --log-opts=--all` run on the SIN-62297 bridge t
 
 ## Rules
 
-The custom ruleset lives at [`.gitleaks.toml`](../../.gitleaks.toml) and extends gitleaks defaults via `[extend] useDefault = true`. Five custom rules cover Sindireceita-specific high-sensitivity tokens:
+The custom ruleset lives at [`.gitleaks.toml`](../../.gitleaks.toml) and extends gitleaks defaults via `[extend] useDefault = true`. Five custom rules cover LMHost-specific high-sensitivity tokens:
 
 | Rule ID | What it catches | Why it matters |
 |---|---|---|

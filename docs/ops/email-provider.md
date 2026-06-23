@@ -19,7 +19,7 @@ driven by `EMAIL_PROVIDER` at boot.
 | Variable           | Example                | Notes                                                              |
 | ------------------ | ---------------------- | ------------------------------------------------------------------ |
 | `MAILGUN_API_KEY`  | `key-xxxxxxxx`         | Region-private API key. Never logged. Never placed in URLs.        |
-| `MAILGUN_DOMAIN`   | `mg.sindireceita.com.br` | Authenticated sending domain (SPF/DKIM verified at the provider). |
+| `MAILGUN_DOMAIN`   | `mg.pitho.com.br` | Authenticated sending domain (SPF/DKIM verified at the provider). |
 | `MAILGUN_REGION`   | `us` or `eu`           | Choose the region the API key belongs to; wrong region → 404.     |
 
 `APP_ENV=production` + unset `EMAIL_PROVIDER` returns

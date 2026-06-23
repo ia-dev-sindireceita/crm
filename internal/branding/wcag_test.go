@@ -195,7 +195,7 @@ func TestEnsureWCAGAA_FallbackWhenLoopExhausts(t *testing.T) {
 func TestEnsureWCAGAA_ColouredPrimaryClearsViaDarkText(t *testing.T) {
 	t.Parallel()
 
-	// Sindireceita corporate red (~#C8102E): vibrant, clears 4.5 vs
+	// Pitho corporate red (~#C8102E): vibrant, clears 4.5 vs
 	// white but not via near-black; verifies the white-text branch on
 	// a saturated colour.
 	in := Palette{

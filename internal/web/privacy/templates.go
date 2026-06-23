@@ -37,7 +37,7 @@ var pageTmpl = template.Must(template.New("privacy.page").Parse(`<!doctype html>
       <p class="privacy-lede">
         Esta página lista as empresas terceiras que tratam dados pessoais
         em nome de <strong>{{.TenantName}}</strong> para operar o CRM
-        Sindireceita. As cláusulas integrais estão no
+        Pitho. As cláusulas integrais estão no
         <a href="/settings/privacy/dpa.md" rel="external"
            download="{{.DPAFilename}}">Acordo de Processamento de Dados
         (DPA), versão {{.DPAVersion}}</a>.

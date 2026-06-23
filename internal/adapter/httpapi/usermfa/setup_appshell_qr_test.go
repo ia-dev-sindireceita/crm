@@ -25,7 +25,7 @@ var externalQRHosts = []string{
 // self-contained inline SVG and never points at an external QR host.
 func TestOTPAuthQRCodeSVG_IsInlineAndLeaksNoSecret(t *testing.T) {
 	t.Parallel()
-	const uri = "otpauth://totp/Sindireceita:agent@acme.test?secret=ABCDEFGHJKLMNP&issuer=Pitho"
+	const uri = "otpauth://totp/Pitho:agent@acme.test?secret=ABCDEFGHJKLMNP&issuer=Pitho"
 	svg, err := otpauthQRCodeSVG(uri)
 	if err != nil {
 		t.Fatalf("otpauthQRCodeSVG: %v", err)
@@ -59,7 +59,7 @@ func TestOTPAuthQRCodeSVG_IsInlineAndLeaksNoSecret(t *testing.T) {
 // (e.g. a future map-iteration change) so golden assertions stay stable.
 func TestOTPAuthQRCodeSVG_Deterministic(t *testing.T) {
 	t.Parallel()
-	const uri = "otpauth://totp/Sindireceita:agent@acme.test?secret=ABC"
+	const uri = "otpauth://totp/Pitho:agent@acme.test?secret=ABC"
 	a, err := otpauthQRCodeSVG(uri)
 	if err != nil {
 		t.Fatalf("first: %v", err)

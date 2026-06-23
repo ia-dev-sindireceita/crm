@@ -134,7 +134,7 @@ func newServiceWithFakes(t *testing.T) (*Service, *fakeSeedRepository, *fakeReco
 		CodeHasher:     fakeHasher{},
 		Audit:          audit,
 		Alerter:        fakeAlerter{},
-		Issuer:         "Sindireceita",
+		Issuer:         "Pitho",
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -150,7 +150,7 @@ func TestNewService_RejectsMissingCollaborators(t *testing.T) {
 		CodeHasher:     fakeHasher{},
 		Audit:          &fakeAudit{},
 		Alerter:        fakeAlerter{},
-		Issuer:         "Sindireceita",
+		Issuer:         "Pitho",
 	}
 	cases := map[string]func(c *Config){
 		"SeedRepository": func(c *Config) { c.SeedRepository = nil },
@@ -219,8 +219,8 @@ func TestEnroll_HappyPath(t *testing.T) {
 		if err != nil {
 			t.Errorf("OTPAuthURI parse: %v", err)
 		}
-		if parsed.Query().Get("issuer") != "Sindireceita" {
-			t.Errorf("issuer: got %q want Sindireceita", parsed.Query().Get("issuer"))
+		if parsed.Query().Get("issuer") != "Pitho" {
+			t.Errorf("issuer: got %q want Pitho", parsed.Query().Get("issuer"))
 		}
 		if res.SecretEncoded == "" {
 			t.Error("SecretEncoded is empty")
@@ -313,7 +313,7 @@ func TestEnroll_PropagatesEachStepError(t *testing.T) {
 				CodeHasher:     fakeHasher{},
 				Audit:          &fakeAudit{},
 				Alerter:        fakeAlerter{},
-				Issuer:         "Sindireceita",
+				Issuer:         "Pitho",
 			}
 			mut(&cfg)
 			svc, err := NewService(cfg)

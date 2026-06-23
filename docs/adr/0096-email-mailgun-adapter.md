@@ -99,7 +99,7 @@ revisit the SDK.
 Three env vars are required when `EMAIL_PROVIDER=mailgun`:
 
 - `MAILGUN_API_KEY` — region-private API key.
-- `MAILGUN_DOMAIN` — sending domain (e.g. `mg.sindireceita.com.br`).
+- `MAILGUN_DOMAIN` — sending domain (e.g. `mg.pitho.com.br`).
 - `MAILGUN_REGION` — `us` or `eu`.
 
 The factory fails fast when `APP_ENV=production` and `EMAIL_PROVIDER`

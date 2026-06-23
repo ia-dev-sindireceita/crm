@@ -207,7 +207,7 @@ func loginTenantLogo(data any) string {
 
 // loginWhiteLabel is the FuncMap helper that reads .WhiteLabel from
 // the page data via reflection. The login template suppresses the
-// "Powered by CRM Sindireceita" footer when true so a white-label
+// "Powered by CRM Pitho" footer when true so a white-label
 // tenant does not advertise the underlying platform on its pre-auth
 // surface.
 //

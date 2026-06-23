@@ -40,7 +40,7 @@ func sampleResult() mfa.EnrollResult {
 		codes[i] = "ABCDE234567XYZ"[:mfa.RecoveryCodeLen] // 10 chars, RFC 4648
 	}
 	return mfa.EnrollResult{
-		OTPAuthURI:    "otpauth://totp/Sindireceita:ops%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Sindireceita&algorithm=SHA1&digits=6&period=30",
+		OTPAuthURI:    "otpauth://totp/Pitho:ops%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Pitho&algorithm=SHA1&digits=6&period=30",
 		SecretEncoded: "JBSWY3DPEHPK3PXP",
 		RecoveryCodes: codes,
 	}
@@ -232,7 +232,7 @@ func TestEnrollHandler_SecondPostAfterReloadDoesNotEchoOldCodes(t *testing.T) {
 
 	// Swap result before the second call.
 	second := mfa.EnrollResult{
-		OTPAuthURI:    "otpauth://totp/Sindireceita:ops%40example.com?secret=NEWSECRET&issuer=Sindireceita",
+		OTPAuthURI:    "otpauth://totp/Pitho:ops%40example.com?secret=NEWSECRET&issuer=Pitho",
 		SecretEncoded: "NEWSECRET",
 		RecoveryCodes: make([]string, mfa.RecoveryCodeCount),
 	}

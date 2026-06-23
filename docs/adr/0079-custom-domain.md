@@ -8,14 +8,14 @@
 
 ## Context
 
-Sindireceita lets a tenant publish their CRM under a custom hostname
+Pitho lets a tenant publish their CRM under a custom hostname
 (e.g. `crm.acme.com.br`). Once a tenant proves they own the hostname,
 Caddy issues an ACME certificate for it and routes the vhost to the
 tenant's slug. Two attack classes blocked merge of any custom-domain
 feature:
 
 - **F43 (SSRF via TLS issuance):** the older HTTP+DNS validator did a
-  parallel HTTP fetch of `http://<host>/.well-known/sindireceita-verify`
+  parallel HTTP fetch of `http://<host>/.well-known/pitho-verify`
   AND a TXT lookup. Either side passing was treated as ownership proof.
   An attacker who pointed `evil.test` at a CRM internal IP could then
   serve the verification file from inside our network and pass.

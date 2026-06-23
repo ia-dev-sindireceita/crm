@@ -1,4 +1,4 @@
-// Sindireceita CRM Webchat Widget (SIN-62800 / F2-14).
+// Pitho CRM Webchat Widget (SIN-62800 / F2-14).
 //
 // Vanilla JS, CSP-safe (no eval, no Function, no innerHTML). All
 // dynamic text is inserted via textContent so the browser escapes it

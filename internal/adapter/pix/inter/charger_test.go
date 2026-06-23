@@ -121,7 +121,7 @@ func (h *mtlsHarness) newCharger(t *testing.T) *inter.Charger {
 		CertPath:     h.clientCertPath,
 		KeyPath:      h.clientKeyPath,
 		BaseURL:      h.server.URL,
-		Chave:        "merchant@sindireceita.test",
+		Chave:        "merchant@pitho.test",
 		CACertPath:   h.caBundlePath,
 	})
 	if err != nil {
@@ -498,7 +498,7 @@ func TestCreate_PropagatesPSPFields(t *testing.T) {
 			var got map[string]any
 			body, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(body, &got)
-			if got["chave"] != "merchant@sindireceita.test" {
+			if got["chave"] != "merchant@pitho.test" {
 				t.Errorf("chave = %v", got["chave"])
 			}
 			if val, _ := got["valor"].(map[string]any); val["original"] != "12.34" {
@@ -829,7 +829,7 @@ func TestLogs_NoSecrets(t *testing.T) {
 		CertPath:     h.clientCertPath,
 		KeyPath:      h.clientKeyPath,
 		BaseURL:      h.server.URL,
-		Chave:        "merchant@sindireceita.test",
+		Chave:        "merchant@pitho.test",
 		CACertPath:   h.caBundlePath,
 	})
 	if err != nil {

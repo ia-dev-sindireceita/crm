@@ -54,7 +54,7 @@ const DPAContentType = "text/markdown; charset=utf-8"
 // append a timestamp at request time if it wants a unique name per
 // download.
 func DPAFilename() string {
-	return "dpa-sindireceita-v" + DPAVersion + ".md"
+	return "dpa-lmhost-v" + DPAVersion + ".md"
 }
 
 // SubprocessorKind classifies a sub-processor by the broad capability

@@ -33,7 +33,7 @@ import (
 // trip. TenantLogo / WhiteLabel currently fall back to zero values —
 // the tenant-settings read-port that fills them in lives in a
 // follow-up issue, and the template renders gracefully when both are
-// empty (word-mark fallback + "Powered by CRM Sindireceita" footer).
+// empty (word-mark fallback + "Powered by CRM Pitho" footer).
 type loginViewData struct {
 	Next             string
 	Error            string

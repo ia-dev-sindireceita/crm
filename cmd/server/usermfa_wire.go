@@ -73,7 +73,7 @@ const (
 	// defaultUserMFAIssuer is the brand string we ship to authenticator
 	// apps when the operator has not overridden it. Matches the brand
 	// already in user-facing copy across the tenant surface.
-	defaultUserMFAIssuer = "Sindireceita"
+	defaultUserMFAIssuer = "Pitho"
 
 	// envUserMFASessionTTL tunes the post-verify tenant session
 	// lifetime. Falls back to usermfa.DefaultSessionTTL (8h) when

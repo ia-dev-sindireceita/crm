@@ -231,7 +231,7 @@ func TestSetupRendersQRAndCodes(t *testing.T) {
 	deps.pendings.add(Pending{ID: id, UserID: user, TenantID: tenant, ExpiresAt: deps.clock.Now().Add(5 * time.Minute), NextPath: "/x"})
 	deps.labels.set(user, "admin@acme.test")
 	deps.enroller.result = mfa.EnrollResult{
-		OTPAuthURI:    "otpauth://totp/Sindireceita:admin@acme.test?secret=ABC",
+		OTPAuthURI:    "otpauth://totp/Pitho:admin@acme.test?secret=ABC",
 		SecretEncoded: "ABCDEFGHJKLMNPQRSTUVWXYZ234567",
 		RecoveryCodes: []string{"AAAAAAAAAA", "BBBBBBBBBB"},
 	}

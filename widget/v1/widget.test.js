@@ -8,8 +8,8 @@ const widget = require('./widget.js');
 
 test('deriveAPIBase strips path and keeps protocol+host', () => {
 	assert.equal(
-		widget.deriveAPIBase('https://acme.crm.sindireceita.org.br/widget.js'),
-		'https://acme.crm.sindireceita.org.br',
+		widget.deriveAPIBase('https://acme.crm.pitho.org.br/widget.js'),
+		'https://acme.crm.pitho.org.br',
 	);
 	assert.equal(
 		widget.deriveAPIBase('http://localhost:8080/static/widget/widget.js'),

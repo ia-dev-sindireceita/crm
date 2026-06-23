@@ -1,11 +1,11 @@
-# Sindireceita CRM — custom gitleaks ruleset
+# LMHost CRM — custom gitleaks ruleset
 # Owner: SecurityEngineer. Issue: SIN-62299.
 #
 # Defense in depth: layer 1 = human review, layer 2 = this gate, layer 3 = GitHub native secret scanning.
 # Fail-closed: future false positives must be fixed by tightening the rule or extending the allowlist below,
 # NEVER by disabling the workflow.
 
-title = "Sindireceita CRM secret-scanner ruleset"
+title = "LMHost CRM secret-scanner ruleset"
 
 # Extend the gitleaks default rules (AWS, GitHub PAT, generic API keys, etc.).
 [extend]

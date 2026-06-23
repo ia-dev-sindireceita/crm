@@ -41,7 +41,7 @@ type Config struct {
 	Audit          AuditLogger
 	Alerter        Alerter
 	// Issuer names the product in the otpauth:// URI (e.g.
-	// "Sindireceita"). Authenticators show this string above the code.
+	// "Pitho"). Authenticators show this string above the code.
 	Issuer string
 	// Rand is the random source for seed and recovery code generation.
 	// Production wiring leaves this nil and crypto/rand is used; tests

@@ -32,7 +32,7 @@ type UserMFARequirement struct {
 }
 
 // AdminRole names the role string that triggers mandatory TOTP under
-// AC #1. Sindireceita's tenant role vocabulary uses "admin" for the
+// AC #1. LMHost's tenant role vocabulary uses "admin" for the
 // tenant administrator; "member" is the opt-in non-admin role.
 const AdminRole = "admin"
 
