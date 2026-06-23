@@ -272,7 +272,7 @@ Implementation ([SIN-63076](/SIN/issues/SIN-63076)) MUST include
 unit tests against this fixture set, each pinning the expected
 `Palette` (5 RGB triples + `Source`):
 
-1. **High-variance brand** — Sindireceita corporate red / orange /
+1. **High-variance brand** — Pitho corporate red / orange /
    yellow on white (multiple distinct brand colours).
 2. **Single-colour wordmark** — dark navy text on transparent
    background (transparency edge).

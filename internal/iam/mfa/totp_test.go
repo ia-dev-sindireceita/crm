@@ -179,7 +179,7 @@ func TestDecodeSecret_RejectsMalformed(t *testing.T) {
 }
 
 func TestOTPAuthURI_StructureAndQuery(t *testing.T) {
-	uri, err := OTPAuthURI("Sindireceita", "ops@example.com", rfc6238Secret)
+	uri, err := OTPAuthURI("Pitho", "ops@example.com", rfc6238Secret)
 	if err != nil {
 		t.Fatalf("OTPAuthURI: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestOTPAuthURI_StructureAndQuery(t *testing.T) {
 	if parsed.Scheme != "otpauth" || parsed.Host != "totp" {
 		t.Errorf("scheme/host: got %q://%q want otpauth://totp", parsed.Scheme, parsed.Host)
 	}
-	if want := "Sindireceita:ops@example.com"; !strings.Contains(parsed.Path, want) {
+	if want := "Pitho:ops@example.com"; !strings.Contains(parsed.Path, want) {
 		t.Errorf("path: %q does not contain %q", parsed.Path, want)
 	}
 	q := parsed.Query()
@@ -207,13 +207,13 @@ func TestOTPAuthURI_StructureAndQuery(t *testing.T) {
 	if q.Get("period") != "30" {
 		t.Errorf("period: got %q want 30", q.Get("period"))
 	}
-	if q.Get("issuer") != "Sindireceita" {
-		t.Errorf("issuer: got %q want Sindireceita", q.Get("issuer"))
+	if q.Get("issuer") != "Pitho" {
+		t.Errorf("issuer: got %q want Pitho", q.Get("issuer"))
 	}
 }
 
 func TestOTPAuthURI_RejectsShortSeed(t *testing.T) {
-	_, err := OTPAuthURI("Sindireceita", "ops", bytes.Repeat([]byte{0}, totpSeedMin-1))
+	_, err := OTPAuthURI("Pitho", "ops", bytes.Repeat([]byte{0}, totpSeedMin-1))
 	if !errors.Is(err, ErrSeedTooShort) {
 		t.Fatalf("err: got %v want ErrSeedTooShort", err)
 	}

@@ -474,7 +474,7 @@ func TestValidate_TXTTokenIsTrimmed(t *testing.T) {
 // TestContainsToken_UsesConstantTimePrimitive is a lint-style regression
 // for SIN-63126 (F-3). It locks in that the TXT-token equality check in
 // validate.go uses crypto/subtle.ConstantTimeCompare and not variable-
-// time primitives. Sindireceita's security bar (AGENTS.md security lens:
+// time primitives. LMHost's security bar (AGENTS.md security lens:
 // "constant-time comparison for secrets") treats the verification token
 // as a secret, so any reintroduction of `==` / `bytes.Equal` /
 // `strings.EqualFold` against it must trip this test.

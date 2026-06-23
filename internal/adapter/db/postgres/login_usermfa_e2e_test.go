@@ -216,7 +216,7 @@ func TestRouter_Login_E2E_StgSeed_TOTPSetup_RendersQRAndCodes(t *testing.T) {
 		CodeHasher:     aesgcm.NewRecoveryHasher(),
 		Audit:          auditLogger,
 		Alerter:        usermfaadapter.NoopAlerter{},
-		Issuer:         "Sindireceita",
+		Issuer:         "Pitho",
 	})
 	if err != nil {
 		t.Fatalf("mfa.NewService: %v", err)

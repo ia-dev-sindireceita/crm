@@ -183,8 +183,8 @@ with PT-BR copy in `internal/customdomain/management/copy_pt_br.go`.
 
 **Blacklist (apex-protected hosts):**
 
-- The CRM platform's own apex (`sindireceita.com.br` and any
-  `*.sindireceita.com.br` reserved by ops). Configured in
+- The CRM platform's own apex (`pitho.com.br` and any
+  `*.pitho.com.br` reserved by ops). Configured in
   `customdomain.validation.blocklist` adjacent to the IP CIDR list, NOT
   hard-coded in Go — operators MUST be able to add a host without a
   redeploy.

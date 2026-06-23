@@ -1,8 +1,8 @@
 /*
- * Sindireceita CRM — custom-domain management UI (SIN-62259).
+ * Pitho CRM — custom-domain management UI (SIN-62259).
  *
  * Mobile-first; design system colors are conservative pending the
- * shared Sindireceita stylesheet. Status badges follow the spec:
+ * shared Pitho stylesheet. Status badges follow the spec:
  *   pending  → yellow
  *   verified → green
  *   paused   → gray

@@ -10,7 +10,7 @@ import (
 // Anything we cannot resolve falls through to next so the rest of the
 // catch-all routing still runs.
 //
-// PrimaryHost is the apex (e.g. "crm.sindireceita.app"). The handler
+// PrimaryHost is the apex (e.g. "crm.pitho.app"). The handler
 // extracts the leftmost label as the candidate slug.
 type RedirectHandler struct {
 	svc         *Service

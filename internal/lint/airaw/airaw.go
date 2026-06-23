@@ -43,7 +43,7 @@ var templRawNames = map[string]struct{}{
 var Analyzer = &analysis.Analyzer{
 	Name:     "airaw",
 	Doc:      "report templ.Raw / templ.Unsafe* calls whose first argument originates in internal/ai/...",
-	URL:      "https://sindireceita.local/SIN/issues/SIN-62237",
+	URL:      "https://pitho.local/SIN/issues/SIN-62237",
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 	Run:      run,
 }

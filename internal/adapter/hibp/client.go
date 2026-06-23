@@ -35,7 +35,7 @@ const DefaultBaseURL = "https://api.pwnedpasswords.com"
 // DefaultUserAgent is the User-Agent header HIBP requires (their TOS asks
 // for an identifying UA — opaque "Go-http-client" is rejected at the
 // edge).
-const DefaultUserAgent = "sindireceita-crm-hibp/1.0"
+const DefaultUserAgent = "lmhost-crm-hibp/1.0"
 
 // DefaultTimeout caps each upstream call. ADR 0070 §5 — the breach check
 // runs on the password-set/login critical path; a degraded upstream MUST

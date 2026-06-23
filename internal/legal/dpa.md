@@ -1,6 +1,6 @@
-# Acordo de Processamento de Dados (DPA) — CRM Sindireceita
+# Acordo de Processamento de Dados (DPA) — CRM Pitho
 
-Este documento descreve as obrigações da Sindireceita (Operadora) no
+Este documento descreve as obrigações da LMHost (Operadora) no
 tratamento de dados pessoais de titulares dos seus clientes (Controladores
 B2B), nos termos da Lei nº 13.709/2018 (LGPD).
 
@@ -11,8 +11,8 @@ timestamp da geração ficam impressos no rodapé da página
 
 ## 1. Definições
 
-- **Operadora**: Sindireceita, fornecedora do CRM.
-- **Controlador**: empresa cliente da Sindireceita que opera uma
+- **Operadora**: LMHost, fornecedora do CRM.
+- **Controlador**: empresa cliente da LMHost que opera uma
   instância white-label do CRM (referido como "tenant").
 - **Sub-processador**: terceiro contratado pela Operadora que realiza
   parte do tratamento de dados pessoais em nome do Controlador.
@@ -132,6 +132,6 @@ liquidação técnica (exportação final, eliminação certificada).
 
 ---
 
-_Documento gerado pelo CRM Sindireceita. Versão exibida e baixada pela
+_Documento gerado pelo CRM Pitho. Versão exibida e baixada pela
 página `/settings/privacy`. Para a versão canônica em vigor, consulte
 sempre o cabeçalho/rodapé com o número da versão e o timestamp._

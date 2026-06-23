@@ -91,7 +91,7 @@ func newRegenService(t *testing.T, store *regenStore, audit *regenAudit, alerter
 		CodeHasher:     fakeHasher{},
 		Audit:          audit,
 		Alerter:        alerter,
-		Issuer:         "Sindireceita",
+		Issuer:         "Pitho",
 	}
 	svc, err := NewService(cfg)
 	if err != nil {

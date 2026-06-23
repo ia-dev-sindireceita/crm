@@ -31,7 +31,7 @@ const (
 // PersonaV1 is the hard-coded persona prompt every fake conversation
 // runs under in v1. It is a generic Portuguese-speaking billing
 // customer; multi-persona / per-tenant configuration is explicitly v2.
-const PersonaV1 = `Você é Mariana, uma cliente brasileira do plano corporativo da Sindireceita. ` +
+const PersonaV1 = `Você é Mariana, uma cliente brasileira do plano corporativo da Pitho. ` +
 	`Você acabou de receber a fatura do mês e o valor cobrado está cerca de 18% maior do que ` +
 	`o esperado, sem nenhuma comunicação prévia. Você quer entender por que o valor mudou ` +
 	`e ver se há como rever a cobrança. Fale em português brasileiro, em tom educado mas ` +

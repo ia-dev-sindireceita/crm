@@ -104,7 +104,7 @@ type stubEnroller struct{}
 
 func (stubEnroller) Enroll(_ context.Context, _ uuid.UUID, _ string) (mfa.EnrollResult, error) {
 	return mfa.EnrollResult{
-		OTPAuthURI:    "otpauth://totp/Sindireceita%20Master:op@example.com?secret=ABC",
+		OTPAuthURI:    "otpauth://totp/Pitho%20Master:op@example.com?secret=ABC",
 		SecretEncoded: "ABCDEFGH",
 		RecoveryCodes: []string{"aaaa-bbbb", "cccc-dddd"},
 	}, nil

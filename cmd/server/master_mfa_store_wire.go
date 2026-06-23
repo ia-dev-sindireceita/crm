@@ -86,7 +86,7 @@ const (
 	// their authenticator app. Distinct from the tenant issuer so an
 	// operator who is both a tenant user and a master operator can tell
 	// the two TOTP entries apart.
-	defaultMasterMFAIssuer = "Sindireceita Master"
+	defaultMasterMFAIssuer = "Pitho Master"
 )
 
 // masterMFAStack bundles the master-side MFA adapters the /m/* router

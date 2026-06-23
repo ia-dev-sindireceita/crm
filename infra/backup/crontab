@@ -1,4 +1,4 @@
-# Sindireceita backup pipeline crontab — driven by supercronic inside the
+# LMHost backup pipeline crontab — driven by supercronic inside the
 # `backup` compose sidecar (see deploy/compose/compose.stg.yml).
 #
 # Schedule: 03:15 in the container's TZ (set via `environment.TZ` on the

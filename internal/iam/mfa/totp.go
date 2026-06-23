@@ -186,7 +186,7 @@ func totpVerify(seed []byte, submitted string, t time.Time, window int) error {
 //	  &algorithm=SHA1&digits=6&period=30
 //
 // label is typically the master's email; issuer identifies the
-// product (e.g. "Sindireceita"). Both are URL-escaped.
+// product (e.g. "Pitho"). Both are URL-escaped.
 func OTPAuthURI(issuer, label string, seed []byte) (string, error) {
 	encoded, err := EncodeSecret(seed)
 	if err != nil {

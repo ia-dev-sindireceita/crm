@@ -112,7 +112,7 @@ func newVerifyService(t *testing.T, seeds *fakeSeedRepoEnrolled, codes *fakeReco
 		CodeHasher:     fakeHasher{},
 		Audit:          audit,
 		Alerter:        alerter,
-		Issuer:         "Sindireceita",
+		Issuer:         "Pitho",
 		Clock:          clock,
 	})
 	if err != nil {
@@ -159,7 +159,7 @@ func TestVerify_DecryptErrorPropagates(t *testing.T) {
 		CodeHasher:     fakeHasher{},
 		Audit:          &recordingAudit{},
 		Alerter:        &recordingAlerter{},
-		Issuer:         "Sindireceita",
+		Issuer:         "Pitho",
 	}
 	svc, err := NewService(cfg)
 	if err != nil {
@@ -184,7 +184,7 @@ func TestVerify_DecryptErrorWrapsErrSeedCipherDecode(t *testing.T) {
 		CodeHasher:     fakeHasher{},
 		Audit:          &recordingAudit{},
 		Alerter:        &recordingAlerter{},
-		Issuer:         "Sindireceita",
+		Issuer:         "Pitho",
 	}
 	svc, err := NewService(cfg)
 	if err != nil {
@@ -330,7 +330,7 @@ func newConsumeService(t *testing.T, codes *recoveryStoreScripted, audit *record
 		CodeHasher:     hasher,
 		Audit:          audit,
 		Alerter:        alerter,
-		Issuer:         "Sindireceita",
+		Issuer:         "Pitho",
 	}
 	svc, err := NewService(cfg)
 	if err != nil {

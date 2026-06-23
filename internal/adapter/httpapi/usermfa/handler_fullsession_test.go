@@ -51,7 +51,7 @@ func (e *countingEnroller) count() int {
 
 func sampleEnrollResult() mfa.EnrollResult {
 	return mfa.EnrollResult{
-		OTPAuthURI:    "otpauth://totp/Sindireceita:agent@acme.test?secret=ABC",
+		OTPAuthURI:    "otpauth://totp/Pitho:agent@acme.test?secret=ABC",
 		SecretEncoded: "ABCDEFGHJKLMNPQRSTUVWXYZ234567",
 		RecoveryCodes: []string{"AAAAAAAAAA", "BBBBBBBBBB"},
 	}
