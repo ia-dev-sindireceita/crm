@@ -22,6 +22,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/yuin/goldmark v1.8.2
+	go.mau.fi/whatsmeow v0.0.0-20260622185415-5f04eac6dbbb
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0
@@ -30,11 +31,25 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/image v0.43.0
-	golang.org/x/tools v0.45.0
+	golang.org/x/tools v0.46.0
 	rsc.io/qr v0.2.0
 )
 
-require filippo.io/hpke v0.4.0 // indirect
+require (
+	filippo.io/edwards25519 v1.2.0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
+	github.com/beeper/argo-go v1.1.2 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
+	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 // indirect
+	github.com/rs/zerolog v1.35.1 // indirect
+	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
+	go.mau.fi/libsignal v0.2.2 // indirect
+	go.mau.fi/util v0.9.10 // indirect
+	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
+)
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
@@ -101,7 +116,7 @@ require (
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/mod v0.36.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
