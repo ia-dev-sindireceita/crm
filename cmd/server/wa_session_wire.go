@@ -74,6 +74,13 @@ type waSessionWiring struct {
 	Cleanup func()
 	Session inbox.OutboundChannel
 
+	// Provisioner is the Fase 4 (SIN-66259) provisioning seam: it adapts
+	// the Manager + QR cache into the web/wasession.Provisioner port so the
+	// HTMX UI can show status / QR and connect / disconnect a tenant
+	// session without ever touching whatsmeow. Nil-safe to read; only set
+	// when the transport is mounted.
+	Provisioner *managerProvisioner
+
 	flag   wasessionchan.FeatureFlag
 	logger *slog.Logger
 }
@@ -142,6 +149,7 @@ func buildWASessionWiring(ctx context.Context, getenv func(string) string) *waSe
 		return nil
 	}
 	manager := wasession.NewManager(factory, wasession.WithLogger(logger))
+	qrCache := wasession.NewQRCache()
 	flag := wasessionchan.NewEnvFeatureFlag(getenv)
 	adapter, err := assembleWASessionAdapter(
 		receiver,
@@ -160,7 +168,7 @@ func buildWASessionWiring(ctx context.Context, getenv func(string) string) *waSe
 	tenants := parseWASessionTenants(getenv)
 	pumpCtx, pumpCancel := context.WithCancel(context.Background())
 	start := func() {
-		go pumpWASessionInbound(pumpCtx, manager.Events(), adapter, logger)
+		go pumpWASessionInbound(pumpCtx, manager.Events(), adapter, logger, qrCache)
 		for _, t := range tenants {
 			if err := manager.StartSession(context.Background(), t); err != nil {
 				logger.Warn("wa_session.start_failed",
@@ -180,11 +188,12 @@ func buildWASessionWiring(ctx context.Context, getenv func(string) string) *waSe
 	}
 	log.Printf("crm: wa session transport mounted (tenants=%d)", len(tenants))
 	return &waSessionWiring{
-		Start:   start,
-		Cleanup: cleanup,
-		Session: adapter,
-		flag:    flag,
-		logger:  logger,
+		Start:       start,
+		Cleanup:     cleanup,
+		Session:     adapter,
+		Provisioner: &managerProvisioner{ctrl: manager, qr: qrCache},
+		flag:        flag,
+		logger:      logger,
 	}
 }
 
@@ -238,9 +247,17 @@ type sessionInboundReceiver interface {
 // (tenant + state only); QR events are acknowledged WITHOUT logging the
 // secret pairing code. It returns when ctx is cancelled or the channel
 // is closed.
-func pumpWASessionInbound(ctx context.Context, events <-chan wasession.Event, rcv sessionInboundReceiver, logger *slog.Logger) {
+// qr is a trailing variadic so the pre-Fase-4 4-arg call sites keep
+// compiling (the same backward-compatible pattern dashboard_wire uses for
+// its optional userLabels); production passes the QRCache as the single
+// value. Only the first sink is honoured; nil disables QR caching.
+func pumpWASessionInbound(ctx context.Context, events <-chan wasession.Event, rcv sessionInboundReceiver, logger *slog.Logger, qr ...qrSink) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var sink qrSink
+	if len(qr) > 0 {
+		sink = qr[0]
 	}
 	for {
 		select {
@@ -273,12 +290,27 @@ func pumpWASessionInbound(ctx context.Context, events <-chan wasession.Event, rc
 				}
 			case wasession.EventStatus:
 				if ev.Status != nil {
+					// Once the session pairs (connected) or is logged out
+					// (banned), the pending QR is dead — drop it so the
+					// provisioning UI stops offering a stale code.
+					if sink != nil {
+						switch ev.Status.To {
+						case wasession.StatusConnected, wasession.StatusBanned:
+							sink.Clear(ev.TenantID)
+						}
+					}
 					logger.Info("wa_session.status",
 						slog.String("tenant_id", ev.TenantID.String()),
 						slog.String("to", ev.Status.To.String()))
 				}
 			case wasession.EventQR:
-				// QR.Code is a Credential — never logged (ADR 0107 D6).
+				// QR.Code is a Credential — never logged (ADR 0107 D6). It
+				// is cached (not logged) so the Fase 4 provisioning UI can
+				// render it on demand; the cache entry expires at the QR's
+				// rotation deadline.
+				if sink != nil && ev.QR != nil {
+					sink.Put(ev.TenantID, *ev.QR)
+				}
 				logger.Info("wa_session.qr_pending",
 					slog.String("tenant_id", ev.TenantID.String()))
 			}

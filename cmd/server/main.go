@@ -237,10 +237,19 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	// WebSocket client driven by the Manager, so we Start the inbound pump
 	// and per-tenant sessions instead of registering on the mux.
 	was := buildWASessionWiring(ctx, getenv)
+	var waSessionProv *managerProvisioner
 	if was != nil {
 		defer was.Cleanup()
 		was.Start()
+		waSessionProv = was.Provisioner
 	}
+
+	// SIN-66259 WhatsApp session — Fase 4 provisioning UI. Mounts the
+	// /settings/whatsapp-session* HTMX surface ONLY when the transport above
+	// is mounted (waSessionProv non-nil) and the audited consent registry
+	// can be built — deny-by-default. Routed below via iamHandlerOpts.
+	webWASessionHandler, webWASessionCleanup := buildWASessionUIHandler(ctx, getenv, waSessionProv)
+	defer webWASessionCleanup()
 
 	// SIN-62844 Messenger inbound webhook + outbound sender (F2-10 follow-up).
 	ms := buildMessengerWiring(ctx, getenv)
@@ -423,6 +432,7 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		WebAIPanel:         webAIPanelHandler,
 		WebDashboard:       webDashboardHandler,
 		WebWallet:          webWalletHandler,
+		WebWASession:       webWASessionHandler,
 		Theme:              brandingStack.Theme,
 		Metrics:            metrics,
 		// SIN-63940 / UX-F3 — surface the custom-domain UI gate to

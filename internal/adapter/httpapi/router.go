@@ -572,6 +572,28 @@ type Deps struct {
 	// returns nil when DATABASE_URL is unset.
 	WebWallet http.Handler
 
+	// WebWASession is the SIN-66259 / Fase 4 WhatsApp non-official session
+	// provisioning HTMX handler from internal/web/wasession. When non-nil,
+	// the five /settings/whatsapp-session* routes are mounted in the authed
+	// group so they inherit TenantScope + Auth + CSRF, and each is gated by
+	// RequireAction(iam.ActionTenantWASessionManage). Gerente is the only
+	// role on the matrix that may provision the session — activating it
+	// accepts a board-acknowledged ToS / ban risk on behalf of the tenant,
+	// so the gate denies atendente / common with a 403 and an audit row.
+	//
+	// Routes mounted:
+	//   GET  /settings/whatsapp-session             (page)
+	//   GET  /settings/whatsapp-session/status      (QR + status poll)
+	//   POST /settings/whatsapp-session/consent     (record informed consent)
+	//   POST /settings/whatsapp-session/connect     (activate — gated on consent)
+	//   POST /settings/whatsapp-session/disconnect  (tear down)
+	//
+	// Nil keeps every route unmounted (chi emits 404). The wire layer in
+	// cmd/server/wa_session_ui_wire.go returns nil unless the session
+	// transport is mounted (FEATURE_WA_SESSION_ENABLED + DSNs) and the
+	// audited consent registry can be built — deny-by-default.
+	WebWASession http.Handler
+
 	// MasterTenants bundles the three master-console tenant routes
 	// from internal/web/master (SIN-62882 / Fase 2.5 C9). Each slot
 	// is the inner http.Handler the wire layer hands the router;
@@ -680,6 +702,8 @@ func (d Deps) WebSurfaces() map[string]bool {
 		"branding":         d.WebBranding != nil,
 		"wallet":           d.WebWallet != nil,
 		"billing_invoices": d.WebBillingInvoices != nil,
+		// SIN-66259 / Fase 4 — WhatsApp session provisioning surface.
+		"wa_session": d.WebWASession != nil,
 	}
 }
 
@@ -1522,6 +1546,32 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/wallet/topup", webWallet)
 				authed.Method(http.MethodGet, "/wallet/ledger", webWallet)
 				authed.Method(http.MethodGet, "/wallet/ledger.csv", webWallet)
+			}
+
+			// SIN-66259 / Fase 4 — WhatsApp non-official session
+			// provisioning surface. Same envelope as the wallet / branding
+			// admin surfaces: RequireAuth → RequireAction. The action is
+			// ActionTenantWASessionManage (gerente-only on the ADR 0090
+			// matrix; atendente / common are denied at the gate). All five
+			// patterns are enumerated on chi so the outer match and the
+			// inner mux agree — the inner http.Handler is the stdlib
+			// *http.ServeMux from web/wasession.Handler.Routes. When
+			// Authorizer is nil (router tests) the gate is skipped and the
+			// inner mux still runs behind RequireAuth.
+			if deps.WebWASession != nil {
+				webWASession := http.Handler(deps.WebWASession)
+				if deps.Authorizer != nil {
+					webWASession = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantWASessionManage, nil)(webWASession),
+					)
+				} else {
+					webWASession = middleware.RequireAuth(middleware.RequireAuthDeps{})(webWASession)
+				}
+				authed.Method(http.MethodGet, "/settings/whatsapp-session", webWASession)
+				authed.Method(http.MethodGet, "/settings/whatsapp-session/status", webWASession)
+				authed.Method(http.MethodPost, "/settings/whatsapp-session/consent", webWASession)
+				authed.Method(http.MethodPost, "/settings/whatsapp-session/connect", webWASession)
+				authed.Method(http.MethodPost, "/settings/whatsapp-session/disconnect", webWASession)
 			}
 
 			// SIN-62963 — HTMX PIX-invoice surface (Fase 4). Reuses

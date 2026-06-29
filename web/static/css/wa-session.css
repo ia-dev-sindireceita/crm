@@ -1,0 +1,172 @@
+/* wa-session.css — Pitho styling for the WhatsApp non-official session
+ * provisioning surface (SIN-66259 / Fase 4). Tokens only, no raw hex
+ * (except the QR svg's intrinsic black/white, which must stay fixed for
+ * scannability and is emitted inline by the handler, not here). Dark-aware
+ * via tokens.css. Pairs with components.css (.btn / .card / .status-badge).
+ *
+ * Risk banner uses warning-surface bg with warning-strong text/border per
+ * the SIN-65228 contrast rule (never pale-surface + white-text). */
+
+.wa-session {
+  padding: var(--space-6) var(--space-6) var(--space-8);
+  font-family: var(--font-sans);
+  color: var(--text-default);
+  max-width: 56rem;
+}
+
+.wa-session__header {
+  margin-bottom: var(--space-5);
+}
+
+.wa-session__title {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: var(--text-xl-line);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.wa-session__lead {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-muted);
+}
+
+/* ---- Risk banner --------------------------------------------------- */
+
+.wa-session__risk {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-4);
+  margin-bottom: var(--space-5);
+  background: var(--color-warning-surface);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  color: var(--color-warning-strong);
+}
+
+.wa-session__risk-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--color-warning-strong);
+}
+
+.wa-session__risk-body {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+/* ---- Panel / sections --------------------------------------------- */
+
+.wa-session__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.wa-session__consent,
+.wa-session__controls {
+  padding: var(--space-5);
+}
+
+.wa-session__subtitle {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.wa-session__consent-text,
+.wa-session__consent-note {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  color: var(--text-default);
+}
+
+.wa-session__consent-note {
+  color: var(--text-muted);
+  margin: 0 0 var(--space-4);
+}
+
+/* ---- Consent form -------------------------------------------------- */
+
+.wa-session__consent-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.wa-session__consent-check {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  cursor: pointer;
+}
+
+.wa-session__consent-check input {
+  margin-top: 0.2em;
+  flex: 0 0 auto;
+}
+
+/* ---- Status + actions --------------------------------------------- */
+
+.wa-session__status {
+  margin: var(--space-3) 0 var(--space-4);
+}
+
+.wa-session__status-line {
+  margin: 0 0 var(--space-3);
+}
+
+.wa-session__actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* ---- QR ------------------------------------------------------------ */
+
+.wa-session__qr {
+  margin: 0;
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--surface-default, #ffffff);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.wa-session__qr-svg {
+  display: block;
+  border-radius: var(--radius-sm);
+}
+
+.wa-session__qr-caption {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  color: var(--text-muted);
+  max-width: 240px;
+}
+
+/* ---- Alerts -------------------------------------------------------- */
+
+.wa-session__alert {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+}
+
+.wa-session__alert--error {
+  background: var(--color-danger-surface);
+  border: 1px solid var(--color-danger);
+  color: var(--color-danger-strong, var(--color-danger));
+}

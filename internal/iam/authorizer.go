@@ -122,6 +122,17 @@ const (
 	// the role is a strict superset of Atendente on tenant-scope
 	// operator work — same pattern as ActionTenantMessageSend.
 	ActionTenantInboxRead Action = "tenant.inbox.read"
+
+	// SIN-66259 (parent SIN-66252) — WhatsApp non-official session
+	// provisioning surface. Gates every /settings/whatsapp-session* route
+	// (status page, QR pairing partial, informed-consent POST, connect /
+	// disconnect). Gerente only: activating the unofficial session accepts
+	// a board-acknowledged ToS / ban risk on behalf of the tenant, so it
+	// is a tenant-admin decision — the same gerente-only posture as
+	// branding / catalog / billing admin. Atendente / common are denied at
+	// the gate; master reaches it only via impersonation (inherits gerente)
+	// per ADR 0090.
+	ActionTenantWASessionManage Action = "tenant.wa_session.manage"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -280,6 +291,10 @@ func defaultRolesByAction() map[Action][]Role {
 		// too (mirrors ActionTenantMessageSend). Common is
 		// excluded by design per CEO ACK on SIN-63808.
 		ActionTenantInboxRead: {RoleTenantAtendente, RoleTenantGerente},
+
+		// SIN-66259 — WhatsApp non-official session provisioning. Gerente
+		// only; see the constant declaration for the ban-risk rationale.
+		ActionTenantWASessionManage: {RoleTenantGerente},
 	}
 }
 
