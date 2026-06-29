@@ -702,6 +702,8 @@ func (d Deps) WebSurfaces() map[string]bool {
 		"branding":         d.WebBranding != nil,
 		"wallet":           d.WebWallet != nil,
 		"billing_invoices": d.WebBillingInvoices != nil,
+		// SIN-66259 / Fase 4 — WhatsApp session provisioning surface.
+		"wa_session": d.WebWASession != nil,
 	}
 }
 
