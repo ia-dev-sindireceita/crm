@@ -13,28 +13,39 @@ import (
 // flag turns the transport on at all, and the allowlist scopes it to
 // named tenants. WA_SESSION_RATE_MAX_PER_MIN caps outbound sends per
 // tenant per minute (ban-risk mitigation, ADR 0107 §risk).
+// WA_SESSION_INBOUND_RATE_MAX_PER_MIN caps inbound events accepted per
+// tenant per minute — SIN-66262 F1: Receive triggers DB writes (contact
+// upsert, conversation find/create, message insert) via HandleInbound,
+// so an unbounded inbound stream (a high-volume paired session or a
+// defective session redelivery loop) is a per-tenant DB load
+// amplification vector (OWASP API4). Outbound was already capped; this
+// gives inbound the symmetric guard SecurityEngineer requested.
 const (
-	EnvSessionEnabled       = "FEATURE_WA_SESSION_ENABLED"
-	EnvSessionTenantAllow   = "FEATURE_WA_SESSION_TENANTS"
-	EnvSessionRateMax       = "WA_SESSION_RATE_MAX_PER_MIN"
-	defaultRateMaxPerMinute = 60
-	defaultDeliverTimeout   = 8 * time.Second
+	EnvSessionEnabled              = "FEATURE_WA_SESSION_ENABLED"
+	EnvSessionTenantAllow          = "FEATURE_WA_SESSION_TENANTS"
+	EnvSessionRateMax              = "WA_SESSION_RATE_MAX_PER_MIN"
+	EnvSessionInboundRateMax       = "WA_SESSION_INBOUND_RATE_MAX_PER_MIN"
+	defaultRateMaxPerMinute        = 60
+	defaultInboundRateMaxPerMinute = 120
+	defaultDeliverTimeout          = 8 * time.Second
 )
 
 // Config bundles the values safely loaded from env. It carries no
 // secrets — the whatsmeow session credentials live in the Fase 1 store,
 // never here.
 type Config struct {
-	RateMaxPerMin  int
-	DeliverTimeout time.Duration
+	RateMaxPerMin        int
+	InboundRateMaxPerMin int
+	DeliverTimeout       time.Duration
 }
 
 // DefaultConfig returns the baseline configuration used when no env
 // override is supplied.
 func DefaultConfig() Config {
 	return Config{
-		RateMaxPerMin:  defaultRateMaxPerMinute,
-		DeliverTimeout: defaultDeliverTimeout,
+		RateMaxPerMin:        defaultRateMaxPerMinute,
+		InboundRateMaxPerMin: defaultInboundRateMaxPerMinute,
+		DeliverTimeout:       defaultDeliverTimeout,
 	}
 }
 
@@ -49,6 +60,11 @@ func ConfigFromEnv(getenv func(string) string) Config {
 	if raw := strings.TrimSpace(getenv(EnvSessionRateMax)); raw != "" {
 		if n, err := parsePositiveInt(raw); err == nil {
 			cfg.RateMaxPerMin = n
+		}
+	}
+	if raw := strings.TrimSpace(getenv(EnvSessionInboundRateMax)); raw != "" {
+		if n, err := parsePositiveInt(raw); err == nil {
+			cfg.InboundRateMaxPerMin = n
 		}
 	}
 	return cfg
