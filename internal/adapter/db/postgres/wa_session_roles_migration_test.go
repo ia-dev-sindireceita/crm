@@ -311,3 +311,237 @@ func TestWASessionRolesDownReverses(t *testing.T) {
 	applyWASessionRolesDown(t, ctx, su) // idempotent: down again with roles gone
 	applyWASessionRoles(t, ctx, su)     // restore for the rest of the cluster lifetime
 }
+
+// applyWASessionSequences loads and executes 0002 (the sequence-grant
+// follow-up, SIN-66311) as the cluster superuser against db. Like 0001 it is
+// idempotent and safe to re-run.
+func applyWASessionSequences(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	path := filepath.Join(harness.MigrationsDir(), "wa_session", "0002_wa_session_runtime_sequences.up.sql")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if _, err := pool.Exec(ctx, string(body)); err != nil {
+		t.Fatalf("apply wa_session sequences migration: %v", err)
+	}
+}
+
+// TestWASessionRuntimeSequencePrivilege proves the SIN-66311 follow-up: after
+// 0002, wa_session_runtime can call nextval() on a sequence the admin creates
+// (the future SERIAL/IDENTITY schema-bump case) via BOTH grant paths —
+//   - ALTER DEFAULT PRIVILEGES … ON SEQUENCES for a sequence created AFTER the
+//     migration (first-deploy / bump path), exercised through a real BIGSERIAL
+//     INSERT; and
+//   - the whatsmeow_%-prefixed grant loop for a sequence that already existed
+//     (re-deploy path) —
+//
+// while STILL being denied any sequence DDL (no CREATE/ALTER). Runs against a
+// real Postgres (testpg harness, no DB mock — rule 5), driving each role with
+// SET ROLE on a superuser connection (loses superuser for permission checks).
+func TestWASessionRuntimeSequencePrivilege(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db := harness.DB(t)
+	su := db.SuperuserPool()
+
+	applyWASessionRoles(t, ctx, su)
+
+	// A whatsmeow_* sequence created BEFORE 0002 — stands in for a re-deploy
+	// where the schema (and its sequence) already exists. The 0002 grant loop
+	// must hand runtime USAGE+SELECT on it.
+	if _, err := su.Exec(ctx,
+		`CREATE SEQUENCE whatsmeow_preexisting_seq`); err != nil {
+		t.Fatalf("create pre-existing whatsmeow sequence: %v", err)
+	}
+
+	applyWASessionSequences(t, ctx, su)
+
+	conn, err := su.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire superuser conn: %v", err)
+	}
+	defer conn.Release()
+
+	setRole := func(role string) {
+		t.Helper()
+		if _, err := conn.Exec(ctx, "SET ROLE "+role); err != nil {
+			t.Fatalf("SET ROLE %s: %v", role, err)
+		}
+	}
+	resetRole := func() {
+		if _, err := conn.Exec(ctx, "RESET ROLE"); err != nil {
+			t.Fatalf("RESET ROLE: %v", err)
+		}
+	}
+
+	// --- admin runs the bumped schema DDL (a SERIAL column owns a sequence) ---
+	// Created by wa_session_admin AFTER 0002, so the sequence falls under ALTER
+	// DEFAULT PRIVILEGES FOR ROLE wa_session_admin … ON SEQUENCES → runtime gets
+	// USAGE+SELECT automatically. The table itself is covered by 0001's ON
+	// TABLES default privilege.
+	setRole("wa_session_admin")
+	if _, err := conn.Exec(ctx,
+		`CREATE TABLE whatsmeow_bumped (id BIGSERIAL PRIMARY KEY, data text)`); err != nil {
+		t.Fatalf("admin CREATE whatsmeow_bumped (SERIAL schema bump): %v", err)
+	}
+	resetRole()
+
+	// --- runtime: nextval works on both grant paths ---------------------------
+	setRole("wa_session_runtime")
+
+	// Default-privilege path: a plain INSERT into the BIGSERIAL column drives
+	// nextval('whatsmeow_bumped_id_seq') under the hood. Without 0002's sequence
+	// grant this fails 42501; with it, it succeeds.
+	var gotID int64
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO whatsmeow_bumped (data) VALUES ('x') RETURNING id`).Scan(&gotID); err != nil {
+		t.Fatalf("runtime INSERT whatsmeow_bumped (default-priv sequence nextval): %v", err)
+	}
+	if gotID < 1 {
+		t.Fatalf("runtime INSERT returned id %d, want >= 1 (sequence allocated)", gotID)
+	}
+	// Direct nextval on the same sequence must also be allowed.
+	if _, err := conn.Exec(ctx, `SELECT nextval('whatsmeow_bumped_id_seq')`); err != nil {
+		t.Fatalf("runtime nextval whatsmeow_bumped_id_seq (default-priv): %v", err)
+	}
+
+	// Grant-loop path: the pre-existing sequence must be usable too.
+	if _, err := conn.Exec(ctx, `SELECT nextval('whatsmeow_preexisting_seq')`); err != nil {
+		t.Fatalf("runtime nextval whatsmeow_preexisting_seq (grant loop): %v", err)
+	}
+	// SELECT (currval/last_value) is granted alongside USAGE.
+	var lastVal int64
+	if err := conn.QueryRow(ctx,
+		`SELECT last_value FROM whatsmeow_preexisting_seq`).Scan(&lastVal); err != nil {
+		t.Fatalf("runtime SELECT last_value whatsmeow_preexisting_seq: %v", err)
+	}
+
+	// --- runtime: still NO sequence DDL --------------------------------------
+	_, err = conn.Exec(ctx, `CREATE SEQUENCE whatsmeow_runtime_made_seq`)
+	expectPrivDenied(t, err, "runtime CREATE SEQUENCE")
+
+	// ALTER SEQUENCE requires ownership; runtime is not the owner → denied.
+	_, err = conn.Exec(ctx, `ALTER SEQUENCE whatsmeow_bumped_id_seq RESTART WITH 1000`)
+	expectPrivDenied(t, err, "runtime ALTER SEQUENCE")
+	resetRole()
+}
+
+// TestWASessionRuntimeSequenceDeniedWithout0002 is the negative control proving
+// the 0002 grant is load-bearing: on a database where ONLY 0001 (roles + table
+// grants) has run, a runtime INSERT into a SERIAL column the admin created
+// fails 42501 because the runtime has no USAGE on the underlying sequence.
+// This is the exact failure SIN-66311 prevents. Uses a fresh DB so the
+// per-database default privileges from other tests do not leak in.
+func TestWASessionRuntimeSequenceDeniedWithout0002(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db := harness.DB(t)
+	su := db.SuperuserPool()
+
+	applyWASessionRoles(t, ctx, su) // NOTE: 0002 deliberately NOT applied.
+
+	conn, err := su.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire superuser conn: %v", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SET ROLE wa_session_admin"); err != nil {
+		t.Fatalf("SET ROLE wa_session_admin: %v", err)
+	}
+	if _, err := conn.Exec(ctx,
+		`CREATE TABLE whatsmeow_bumped_nctrl (id BIGSERIAL PRIMARY KEY, data text)`); err != nil {
+		t.Fatalf("admin CREATE whatsmeow_bumped_nctrl: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "RESET ROLE"); err != nil {
+		t.Fatalf("RESET ROLE: %v", err)
+	}
+
+	if _, err := conn.Exec(ctx, "SET ROLE wa_session_runtime"); err != nil {
+		t.Fatalf("SET ROLE wa_session_runtime: %v", err)
+	}
+	// The TABLE grant (0001) lets runtime address the table, but without 0002 it
+	// has no USAGE on the sequence the BIGSERIAL default calls → nextval denied.
+	_, err = conn.Exec(ctx, `INSERT INTO whatsmeow_bumped_nctrl (data) VALUES ('x')`)
+	expectPrivDenied(t, err, "runtime INSERT without 0002 (sequence nextval denied)")
+	if _, err := conn.Exec(ctx, "RESET ROLE"); err != nil {
+		t.Fatalf("RESET ROLE: %v", err)
+	}
+}
+
+// TestWASessionSequencesMigrationIsIdempotent re-applies 0002 and expects no
+// error (idempotent ALTER DEFAULT PRIVILEGES + grant loop), matching the 0001
+// convention. Requires 0001's roles to exist first.
+func TestWASessionSequencesMigrationIsIdempotent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	db := harness.DB(t)
+	su := db.SuperuserPool()
+	applyWASessionRoles(t, ctx, su)
+	applyWASessionSequences(t, ctx, su)
+	applyWASessionSequences(t, ctx, su) // second run must not error
+}
+
+// applyWASessionSequencesDown runs 0002's down migration as the cluster
+// superuser.
+func applyWASessionSequencesDown(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	path := filepath.Join(harness.MigrationsDir(), "wa_session", "0002_wa_session_runtime_sequences.down.sql")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if _, err := pool.Exec(ctx, string(body)); err != nil {
+		t.Fatalf("apply wa_session sequences down migration: %v", err)
+	}
+}
+
+// TestWASessionSequencesDownReverses proves 0002's down migration revokes the
+// sequence grant: after it runs, a runtime nextval on an admin-created sequence
+// is denied again, and the down is idempotent (re-runnable). Uses a fresh DB so
+// the per-database default-privilege change does not leak into other tests.
+func TestWASessionSequencesDownReverses(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db := harness.DB(t)
+	su := db.SuperuserPool()
+
+	applyWASessionRoles(t, ctx, su)
+	applyWASessionSequences(t, ctx, su)
+	applyWASessionSequencesDown(t, ctx, su)
+
+	conn, err := su.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire superuser conn: %v", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SET ROLE wa_session_admin"); err != nil {
+		t.Fatalf("SET ROLE wa_session_admin: %v", err)
+	}
+	if _, err := conn.Exec(ctx,
+		`CREATE TABLE whatsmeow_bumped_down (id BIGSERIAL PRIMARY KEY, data text)`); err != nil {
+		t.Fatalf("admin CREATE whatsmeow_bumped_down: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "RESET ROLE"); err != nil {
+		t.Fatalf("RESET ROLE: %v", err)
+	}
+
+	if _, err := conn.Exec(ctx, "SET ROLE wa_session_runtime"); err != nil {
+		t.Fatalf("SET ROLE wa_session_runtime: %v", err)
+	}
+	// The default-privilege grant was revoked, so the sequence created after the
+	// down migration is no longer reachable by runtime → nextval denied.
+	_, err = conn.Exec(ctx, `INSERT INTO whatsmeow_bumped_down (data) VALUES ('x')`)
+	expectPrivDenied(t, err, "runtime INSERT after 0002 down (sequence grant revoked)")
+	if _, err := conn.Exec(ctx, "RESET ROLE"); err != nil {
+		t.Fatalf("RESET ROLE: %v", err)
+	}
+
+	applyWASessionSequencesDown(t, ctx, su) // idempotent: down again is a no-op
+}
