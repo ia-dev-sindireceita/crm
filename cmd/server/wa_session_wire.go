@@ -50,6 +50,7 @@ import (
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
 	"github.com/pericles-luz/crm/internal/inbox"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
+	"github.com/pericles-luz/crm/internal/obs"
 	"github.com/pericles-luz/crm/internal/wasession"
 	"github.com/pericles-luz/crm/internal/wasession/whatsmeowdev"
 )
@@ -104,8 +105,18 @@ func (w *waSessionWiring) RouteOutbound(primary inbox.OutboundChannel) inbox.Out
 // Returns nil — "skip mounting the session" — when the global flag is
 // off or any required dependency is missing, matching the fail-soft
 // pattern of the other cmd/server wires.
-func buildWASessionWiring(ctx context.Context, getenv func(string) string) *waSessionWiring {
+// metricsOpt is an optional trailing dependency (same backward-compatible
+// variadic pattern the inbound pump uses for its QR sink): production passes
+// the boot-time *obs.Metrics so status transitions increment
+// wa_session_status_transitions_total, while the pre-Fase-5 unit call sites
+// that omit it keep compiling and run with no metric (a nil observer is an
+// inert pass-through tee). Only the first value is honoured.
+func buildWASessionWiring(ctx context.Context, getenv func(string) string, metricsOpt ...*obs.Metrics) *waSessionWiring {
 	logger := slog.Default()
+	var statusObs waStatusObserver
+	if len(metricsOpt) > 0 && metricsOpt[0] != nil {
+		statusObs = metricsOpt[0]
+	}
 	if !waSessionGloballyEnabled(getenv) {
 		log.Printf("crm: wa session disabled (FEATURE_WA_SESSION_ENABLED != 1)")
 		return nil
@@ -168,7 +179,13 @@ func buildWASessionWiring(ctx context.Context, getenv func(string) string) *waSe
 	tenants := parseWASessionTenants(getenv)
 	pumpCtx, pumpCancel := context.WithCancel(context.Background())
 	start := func() {
-		go pumpWASessionInbound(pumpCtx, manager.Events(), adapter, logger, qrCache)
+		// SIN-66260 Fase 5: tee the Manager's event stream through the
+		// status-transition metric before the inbound pump consumes it, so
+		// to="banned"/"disconnected" become production-observable
+		// (WASessionBanned alert). observeWAStatus is a transparent
+		// forwarder when statusObs is nil, so the pump's contract is
+		// unchanged and the flag-off boot stays inert.
+		go pumpWASessionInbound(pumpCtx, observeWAStatus(pumpCtx, manager.Events(), statusObs), adapter, logger, qrCache)
 		for _, t := range tenants {
 			if err := manager.StartSession(context.Background(), t); err != nil {
 				logger.Warn("wa_session.start_failed",
@@ -238,6 +255,56 @@ func assembleWASessionAdapter(
 // Fase 2 *wa_session.Adapter satisfies it; tests inject a recording fake.
 type sessionInboundReceiver interface {
 	Receive(ctx context.Context, msg wasessionchan.SessionMessage) error
+}
+
+// waStatusObserver is the narrow metric seam observeWAStatus drives: one
+// call per session status transition (ADR 0107 / SIN-66260 Fase 5). The
+// boot *obs.Metrics satisfies it via WASessionStatusTransition; tests inject
+// a counting fake. Kept tiny so cmd/server stays unaware of the prometheus
+// surface beyond this one method.
+type waStatusObserver interface {
+	WASessionStatusTransition(to string)
+}
+
+// observeWAStatus tees the Manager's event stream: it increments the
+// status-transition metric on every EventStatus, then forwards EVERY event
+// (inbound, status, QR) downstream to the inbound pump in order. This keeps
+// the ban-observability concern in the composition root — the pump and its
+// existing tests stay untouched — while guaranteeing that a terminal
+// to="banned" transition is recorded for the WASessionBanned alert.
+//
+// A nil obs makes it a transparent pass-through (the source channel is
+// returned unwrapped), so flag-off / metric-less boots add no goroutine and
+// no behaviour change. Manager.Events() is never closed, so the relay exits
+// only when ctx (the pump context) is cancelled at shutdown; the returned
+// channel is closed on exit so the pump's range/select terminates cleanly.
+func observeWAStatus(ctx context.Context, src <-chan wasession.Event, obs waStatusObserver) <-chan wasession.Event {
+	if obs == nil {
+		return src
+	}
+	out := make(chan wasession.Event, 1)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-src:
+				if !ok {
+					return
+				}
+				if ev.Kind == wasession.EventStatus && ev.Status != nil {
+					obs.WASessionStatusTransition(ev.Status.To.String())
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out
 }
 
 // pumpWASessionInbound drains the Manager's fan-out channel and translates

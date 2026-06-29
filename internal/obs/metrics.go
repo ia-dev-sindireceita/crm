@@ -89,6 +89,19 @@ type Metrics struct {
 	// metric is per-process, not per-tenant, so cardinality stays
 	// constant regardless of customer count.
 	TenantThemeCacheHits *prometheus.CounterVec
+	// WASessionStatusTransitions counts lifecycle transitions of the
+	// non-official WhatsApp Web session (whatsmeow, ADR 0107 / SIN-66260
+	// Fase 5). The single "to" label is the destination status — a closed
+	// enum: unpaired | pairing | connected | disconnected | banned — so
+	// cardinality stays bounded. tenant_id is intentionally absent (same
+	// PII-safety / low-cardinality convention as AuthRateLimitDenies): the
+	// banned/disconnected tenant lives in the wa_session.status log line,
+	// not the metric. This is the production ban-observability signal the
+	// Fase 5 AC requires; the alert WASessionBanned (deploy/prometheus/
+	// alerts.yml) fires on increase(...{to="banned"}[5m]) > 0 because a
+	// banned session is terminal (no auto-reconnect) and means the
+	// tenant's number may be banned (board-accepted ToS risk).
+	WASessionStatusTransitions *prometheus.CounterVec
 }
 
 // NewMetrics builds a fresh registry plus the three SIN-62218
@@ -127,8 +140,12 @@ func NewMetrics() *Metrics {
 			Name: "tenant_theme_cache_hits_total",
 			Help: "Theme middleware lookups partitioned by outcome (hit|miss|no_tenant|error). Hit ratio = hit / (hit + miss); SIN-63085 AC #5 targets > 95%.",
 		}, []string{"result"}),
+		WASessionStatusTransitions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wa_session_status_transitions_total",
+			Help: "Lifecycle transitions of the non-official WhatsApp Web session (whatsmeow), partitioned by destination status to (unpaired|pairing|connected|disconnected|banned). to=\"banned\" is terminal and pages oncall (ADR 0107 / SIN-66260 Fase 5).",
+		}, []string{"to"}),
 	}
-	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies, m.WebhookTimestampWindowDrops, m.AIConsentTotal, m.TenantThemeCacheHits)
+	reg.MustRegister(m.HTTPRequests, m.HTTPDuration, m.RLSMisses, m.AuthRateLimitDenies, m.WebhookTimestampWindowDrops, m.AIConsentTotal, m.TenantThemeCacheHits, m.WASessionStatusTransitions)
 	return m
 }
 
@@ -168,6 +185,20 @@ func (m *Metrics) AIConsent(scopeKind, outcome string) {
 		return
 	}
 	m.AIConsentTotal.WithLabelValues(scopeKind, outcome).Inc()
+}
+
+// WASessionStatusTransition increments the WhatsApp Web session
+// transition counter for the destination status (ADR 0107 / SIN-66260
+// Fase 5). to is a wasession.Status string ("unpaired" | "pairing" |
+// "connected" | "disconnected" | "banned"). Safe with a nil receiver so
+// the inbound pump can call it unconditionally even when wireup omits
+// Metrics (tests, flag-off boots). This is the production ban signal:
+// the WASessionBanned alert keys on the {to="banned"} series.
+func (m *Metrics) WASessionStatusTransition(to string) {
+	if m == nil {
+		return
+	}
+	m.WASessionStatusTransitions.WithLabelValues(to).Inc()
 }
 
 // AIConsentOutcome label values. Closed enum so the registry stays
