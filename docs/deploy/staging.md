@@ -1198,6 +1198,97 @@ very first password on a cold/DR-rebuilt host. This §5f is that bootstrap step,
 and it precedes the first rotation: provision here once, then rotate on the
 normal cadence per `docs/ops/secrets-rotation.md`.
 
+### 5g. Provision the WhatsApp-session (whatsmeow) DB roles (`wa_session_*`)
+
+> Only required when the non-official WhatsApp session transport is enabled
+> (`FEATURE_WA_SESSION_ENABLED=1`) and `WA_SESSION_DATABASE_URL` is set. The
+> transport is deny-by-default; skip this section entirely if it is off.
+
+The whatsmeow session credential store lives in a **dedicated** Postgres pointed
+at by `WA_SESSION_DATABASE_URL` (ADR 0107 D3), separate from the app DB. Its
+session keys are bearer credentials for the tenant's WhatsApp number, so the
+runtime DSN authenticates as a **least-privilege, DML-only** role distinct from
+`app_runtime` (ADR-0108 / SIN-66298). Two roles, created by
+`migrations/wa_session/0001_wa_session_roles.up.sql`:
+
+| Role                 | Privileges | Used by |
+|----------------------|-----------|---------|
+| `wa_session_runtime` | `USAGE` on schema + `SELECT/INSERT/UPDATE/DELETE` on `whatsmeow_*` only. **No DDL.** | the app boot DSN (`WA_SESSION_DATABASE_URL`) |
+| `wa_session_admin`   | `USAGE`+`CREATE` on schema; owns the `whatsmeow_*` tables. Runs the schema `Upgrade` (DDL). | the one-shot `Upgrade` deploy step below |
+
+Like the app roles, both are created **without a password**; ops injects them
+here. The split exists so a compromised `wa_session_runtime` cannot drop or alter
+the credential schema — it can only read/write session rows.
+
+**1) Apply the role migration (superuser DSN on the WA session cluster).**
+`CREATE ROLE` is superuser-only and cluster-scoped, so this runs with a superuser
+DSN against the WA session DB, not `app_admin`:
+
+```bash
+migrate -path migrations/wa_session \
+        -database "$WA_SESSION_SUPERUSER_DATABASE_URL" up
+```
+
+**2) Set login passwords on both roles** (hex — no `@:/?` that break DSN
+parsing; SECRETS — store in the password manager, never commit/paste):
+
+```bash
+openssl rand -hex 32   # WA_SESSION_RUNTIME_PASSWORD
+openssl rand -hex 32   # WA_SESSION_ADMIN_PASSWORD
+
+# Run as the WA session cluster superuser. :'pw' keeps the literal out of the
+# SQL text. Re-running just rotates the password (idempotent).
+psql -v ON_ERROR_STOP=1 "$WA_SESSION_SUPERUSER_DATABASE_URL" \
+     -v pw="REPLACE_WITH_WA_SESSION_RUNTIME_PASSWORD" \
+  -c "ALTER ROLE wa_session_runtime LOGIN PASSWORD :'pw';"
+psql -v ON_ERROR_STOP=1 "$WA_SESSION_SUPERUSER_DATABASE_URL" \
+     -v pw="REPLACE_WITH_WA_SESSION_ADMIN_PASSWORD" \
+  -c "ALTER ROLE wa_session_admin LOGIN PASSWORD :'pw';"
+```
+
+**3) Run the whatsmeow schema `Upgrade` ONCE, as `wa_session_admin`.** The app
+opens the store with `sqlstore.New`, which would run the schema `Upgrade` (DDL)
+on first contact — but `wa_session_runtime` is intentionally not allowed to run
+DDL. Run the `Upgrade` ahead of the app boot, connected as the admin role, so
+the boot path stays DDL-free. The `ALTER DEFAULT PRIVILEGES` set in step 1 means
+the tables this step creates auto-grant DML to `wa_session_runtime` — no second
+grant pass is needed. The key invariant is **the connection that creates/upgrades
+the `whatsmeow_*` tables is `wa_session_admin`, not the runtime role.**
+
+> **Re-run step 3 before every deploy that bumps the whatsmeow library version.**
+> A pending schema upgrade is DDL; if the app boots on a newer schema version as
+> `wa_session_runtime` before the admin `Upgrade` has run, boot fails closed
+> (insufficient privilege). On an already-current schema the boot `Upgrade` is a
+> read-only no-op and succeeds under `wa_session_runtime` (ADR-0108, verified by
+> `internal/adapter/db/postgres/wa_session_roles_migration_test.go`).
+
+**4) Point the app at the runtime role.** Build the runtime DSN from the
+`wa_session_runtime` password and write it into `/opt/crm/stg/.env.stg` (edit the
+file; never pass inline):
+
+```dotenv
+# WhatsApp session credential store — least-privilege, DML-only role (ADR-0108).
+# SECRET — never commit the real password.
+WA_SESSION_DATABASE_URL=postgres://wa_session_runtime:REPLACE_WITH_WA_SESSION_RUNTIME_PASSWORD@<wa-session-host>:5432/<wa_session_db>?sslmode=require
+```
+
+`sslmode=require` (or stricter) keeps the credential transport TLS-only, per the
+R1.1 controls. The `wa_session_admin` DSN is used **only** for step 3 and is not
+persisted into the app's runtime env.
+
+**Validation.** Confirm the runtime role authenticates and is DML-only:
+
+```bash
+# Authenticates + can read a whatsmeow_* table:
+PGPASSWORD="REPLACE_WITH_WA_SESSION_RUNTIME_PASSWORD" \
+  psql -v ON_ERROR_STOP=1 -h <wa-session-host> -U wa_session_runtime -d <wa_session_db> \
+  -c "SELECT count(*) FROM whatsmeow_device;"
+# Must FAIL with 'permission denied' — runtime has no DDL:
+PGPASSWORD="REPLACE_WITH_WA_SESSION_RUNTIME_PASSWORD" \
+  psql -h <wa-session-host> -U wa_session_runtime -d <wa_session_db> \
+  -c "CREATE TABLE should_fail (x int);" || echo "OK: runtime DDL correctly denied"
+```
+
 ### 6. Capturing the staging host key
 
 The runner verifies the VPS host key via `STG_HOST_KEY` to avoid TOFU. Capture
