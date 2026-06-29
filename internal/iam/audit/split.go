@@ -90,6 +90,22 @@ const (
 	// literal — extending the constant requires extending that migration
 	// first.
 	SecurityEventMasterSessionHardCapHit SecurityEvent = "master.session.hard_cap_hit"
+
+	// SIN-66305 (R3 / SIN-66292, from SIN-66260 Fase 5): tamper-evident
+	// audit of a WhatsApp-session terminal status transition. Emitted by the
+	// inbound pump when a per-tenant session transitions to "banned" (a
+	// number was logged out / banned by WhatsApp — terminal, supervisor
+	// stops reconnecting) or "disconnected". STRIDE lens: Repudiation +
+	// Logging/Monitoring. The actor is the reserved system principal
+	// (iam.SystemPrincipalID — the ban is an actor-less async event);
+	// tenant_id is the session's tenant. Target jsonb carries {from, to,
+	// reason, transport:"wa_session"} and — LGPD PII-minimization, gate 5 —
+	// NEVER the MSISDN/phone (the StatusChange event carries no phone). The
+	// CHECK clause in migration 0127 mirrors these two literals (the system
+	// principal actor is seeded by 0126) — extending the constants requires
+	// extending that migration first.
+	SecurityEventWASessionBanned       SecurityEvent = "wa_session.banned"
+	SecurityEventWASessionDisconnected SecurityEvent = "wa_session.disconnected"
 )
 
 // DataEvent is the controlled vocabulary of audit_log_data rows.
@@ -133,6 +149,8 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEvent2FARecoveryRegenerated:   {},
 	SecurityEventLogout:                   {},
 	SecurityEventMasterSessionHardCapHit:  {},
+	SecurityEventWASessionBanned:          {},
+	SecurityEventWASessionDisconnected:    {},
 }
 
 var allDataEvents = map[DataEvent]struct{}{

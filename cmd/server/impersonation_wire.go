@@ -130,6 +130,14 @@ func (c *pgMasterChecker) IsMaster(ctx context.Context, userID uuid.UUID) (bool,
 	if userID == uuid.Nil {
 		return false, nil
 	}
+	// SIN-66305 gate 2 (defense in depth): the reserved system principal is
+	// seeded role='master' (it is a master-context row), so refuse it here
+	// before the role read — it must never be honoured as an impersonation
+	// master, closing the is_master amplification vector even though it can
+	// never authenticate (gate 1) to reach this check.
+	if iam.IsSystemPrincipal(userID) {
+		return false, nil
+	}
 	var roleStr string
 	err := postgresadapter.WithMasterOps(ctx, c.pool, userID, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx,

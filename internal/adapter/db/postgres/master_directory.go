@@ -39,7 +39,9 @@ func (d *MasterDirectory) EmailFor(ctx context.Context, userID uuid.UUID) (strin
 	var email string
 	err := WithMasterOps(ctx, d.pool, d.actorID, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT email FROM users WHERE id = $1 AND is_master = true`,
+			// SIN-66305 gate 2: exclude the reserved system principal so its
+			// reserved address is never surfaced by the master MFA label path.
+			`SELECT email FROM users WHERE id = $1 AND is_master = true AND is_system = false`,
 			userID,
 		).Scan(&email)
 	})

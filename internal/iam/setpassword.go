@@ -56,6 +56,15 @@ func (s *Service) SetPassword(ctx context.Context, tenantID, userID uuid.UUID, p
 	if s.PasswordWriter == nil {
 		return ErrPasswordWriteUnavailable
 	}
+	// SIN-66305 gate 2 (central default-exclusion): the reserved system
+	// principal must never be made loginnable. Refuse before hashing or
+	// touching the store — a DB-read-free guard keyed on the fixed UUID.
+	// (The tenant-scoped UPDATE could not reach the tenant-NULL principal
+	// under RLS anyway; this fails closed at the domain boundary so the
+	// invariant does not depend on the storage role.)
+	if IsSystemPrincipal(userID) {
+		return ErrSystemPrincipalProtected
+	}
 	if err := s.PasswordPolicy.PolicyCheck(ctx, plain, pctx); err != nil {
 		return err
 	}

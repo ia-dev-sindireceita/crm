@@ -48,6 +48,8 @@ import (
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
 	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
+	"github.com/pericles-luz/crm/internal/iam"
+	"github.com/pericles-luz/crm/internal/iam/audit"
 	"github.com/pericles-luz/crm/internal/inbox"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	"github.com/pericles-luz/crm/internal/obs"
@@ -176,6 +178,18 @@ func buildWASessionWiring(ctx context.Context, getenv func(string) string, metri
 		return nil
 	}
 
+	// SIN-66305 (R3): tamper-evident audit of terminal session transitions.
+	// Built over the app_runtime pool (the auditor pins app.tenant_id via
+	// WithTenant so the background write satisfies RLS) and attributed to the
+	// reserved system principal. Fail-soft: a construction error disables the
+	// audit tee but still mounts the transport, matching the wire's pattern.
+	var transitionAuditor waTransitionAuditor
+	if a, err := pgpool.NewWASessionTransitionAuditor(pool, iam.SystemPrincipalID()); err != nil {
+		log.Printf("crm: wa session transition audit disabled — auditor: %v", err)
+	} else {
+		transitionAuditor = a
+	}
+
 	tenants := parseWASessionTenants(getenv)
 	pumpCtx, pumpCancel := context.WithCancel(context.Background())
 	start := func() {
@@ -185,7 +199,13 @@ func buildWASessionWiring(ctx context.Context, getenv func(string) string, metri
 		// (WASessionBanned alert). observeWAStatus is a transparent
 		// forwarder when statusObs is nil, so the pump's contract is
 		// unchanged and the flag-off boot stays inert.
-		go pumpWASessionInbound(pumpCtx, observeWAStatus(pumpCtx, manager.Events(), statusObs), adapter, logger, qrCache)
+		//
+		// SIN-66305 (R3): a second tee (auditWAStatus) records the
+		// tamper-evident audit row on ban/disconnect, then forwards every
+		// event to the pump. Chained after the metric tee so both observe
+		// the same stream; nil auditor is a transparent pass-through.
+		events := auditWAStatus(pumpCtx, observeWAStatus(pumpCtx, manager.Events(), statusObs), transitionAuditor, logger)
+		go pumpWASessionInbound(pumpCtx, events, adapter, logger, qrCache)
 		for _, t := range tenants {
 			if err := manager.StartSession(context.Background(), t); err != nil {
 				logger.Warn("wa_session.start_failed",
@@ -305,6 +325,84 @@ func observeWAStatus(ctx context.Context, src <-chan wasession.Event, obs waStat
 		}
 	}()
 	return out
+}
+
+// waTransitionAuditor is the narrow audit seam auditWAStatus drives: one
+// tamper-evident audit_log_security row per TERMINAL session transition
+// (SIN-66305 / R3). The postgres *WASessionTransitionAuditor satisfies it;
+// tests inject a recording fake. Kept tiny so cmd/server stays unaware of
+// the audit storage surface beyond this one method.
+type waTransitionAuditor interface {
+	RecordTransition(ctx context.Context, tenantID uuid.UUID, evt audit.SecurityEvent, from, to, reason string) error
+}
+
+// auditWAStatus tees the event stream a second time (after observeWAStatus):
+// on a transition to "banned" or "disconnected" it writes ONE audit row,
+// then forwards EVERY event downstream to the inbound pump in order. The
+// audit concern lives here in the composition root so the pump and its
+// existing tests stay untouched (the pump signature is unchanged).
+//
+// Only ban/disconnect are audited — the LGPD-grade non-repudiation case the
+// security review (SIN-66260 R3) asked for. connected/pairing/unpaired carry
+// no comparable repudiation weight and stay metric-only (#432). A nil auditor
+// makes this a transparent pass-through (the source channel is returned
+// unwrapped), so flag-off / audit-less boots add no goroutine.
+//
+// A failed audit write is logged and the event is STILL forwarded — losing
+// the inbound stream because the audit DB hiccuped would be a worse failure
+// than a gap in the trail (which the structured log + metric still cover).
+// The write is synchronous (non-repudiation) but bounded by ctx, which is
+// the pump context cancelled at shutdown.
+func auditWAStatus(ctx context.Context, src <-chan wasession.Event, auditor waTransitionAuditor, logger *slog.Logger) <-chan wasession.Event {
+	if auditor == nil {
+		return src
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	out := make(chan wasession.Event, 1)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-src:
+				if !ok {
+					return
+				}
+				if ev.Kind == wasession.EventStatus && ev.Status != nil {
+					if evt, ok := waTerminalAuditEvent(ev.Status.To); ok {
+						if err := auditor.RecordTransition(ctx, ev.TenantID, evt,
+							ev.Status.From.String(), ev.Status.To.String(), ev.Status.Reason); err != nil {
+							logger.Warn("wa_session.transition_audit_failed",
+								slog.String("tenant_id", ev.TenantID.String()),
+								slog.String("to", ev.Status.To.String()))
+						}
+					}
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out
+}
+
+// waTerminalAuditEvent maps the terminal session states to their audit
+// SecurityEvent. Non-terminal transitions return ok=false (not audited).
+func waTerminalAuditEvent(to wasession.Status) (audit.SecurityEvent, bool) {
+	switch to {
+	case wasession.StatusBanned:
+		return audit.SecurityEventWASessionBanned, true
+	case wasession.StatusDisconnected:
+		return audit.SecurityEventWASessionDisconnected, true
+	default:
+		return "", false
+	}
 }
 
 // pumpWASessionInbound drains the Manager's fan-out channel and translates
