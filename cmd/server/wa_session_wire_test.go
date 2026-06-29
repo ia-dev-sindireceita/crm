@@ -385,6 +385,43 @@ func TestProviderRoutingOutbound(t *testing.T) {
 	})
 }
 
+// TestProviderRoutingOutbound_EmptyAllowlistFailsClosed wires the REAL
+// EnvFeatureFlag (not a fake) with the global flag on but no tenant
+// allowlist, and proves the outbound fan-out is closed (SIN-66276): an
+// accidental empty FEATURE_WA_SESSION_TENANTS must NOT route the whole
+// fleet's WhatsApp onto the unofficial session — every tenant falls
+// through to the primary (official) channel.
+func TestProviderRoutingOutbound_EmptyAllowlistFailsClosed(t *testing.T) {
+	t.Parallel()
+	flag := wasessionchan.NewEnvFeatureFlag(func(k string) string {
+		if k == wasessionchan.EnvSessionEnabled {
+			return "1" // globally on, but FEATURE_WA_SESSION_TENANTS unset
+		}
+		return ""
+	})
+	primary := &recordingOutbound{tag: "primary"}
+	session := &recordingOutbound{tag: "session"}
+	r := providerRoutingOutbound{primary: primary, session: session, flag: flag}
+
+	for _, tenant := range []uuid.UUID{uuid.New(), uuid.New()} {
+		id, err := r.SendMessage(context.Background(), inbox.OutboundMessage{
+			TenantID: tenant, Channel: wasessionchan.Channel, ToExternalID: "+55", Body: "x",
+		})
+		if err != nil {
+			t.Fatalf("SendMessage(%s): %v", tenant, err)
+		}
+		if id != "primary" {
+			t.Fatalf("tenant %s routed to %q, want primary (fan-out must be closed)", tenant, id)
+		}
+	}
+	if session.called != 0 {
+		t.Fatalf("session channel invoked %d times on empty allowlist, want 0", session.called)
+	}
+	if primary.called != 2 {
+		t.Fatalf("primary channel invoked %d times, want 2", primary.called)
+	}
+}
+
 func TestWaSessionWiring_RouteOutbound(t *testing.T) {
 	t.Parallel()
 	tenant := uuid.New()
@@ -439,6 +476,30 @@ func TestBuildWASessionWiring_DisabledWhenSessionDSNMissing(t *testing.T) {
 	})
 	if got != nil {
 		t.Fatal("expected nil wiring when WA_SESSION_DATABASE_URL unset")
+	}
+}
+
+// TestBuildWASessionWiring_DisabledWhenTenantsEmpty proves the
+// composition-root fail-closed guard (SIN-66276): with the global flag on
+// and BOTH DSNs present, an empty FEATURE_WA_SESSION_TENANTS still refuses
+// to mount the transport (returns nil) — and does so before dialing the
+// pool, so the test needs no DB. This is the wire-level half of the
+// defense-in-depth pair with EnvFeatureFlag.Enabled.
+func TestBuildWASessionWiring_DisabledWhenTenantsEmpty(t *testing.T) {
+	t.Parallel()
+	got := buildWASessionWiring(context.Background(), func(k string) string {
+		switch k {
+		case wasessionchan.EnvSessionEnabled:
+			return "1"
+		case pgDSNEnvForTest():
+			return "postgres://x"
+		case envWASessionDSN:
+			return "postgres://y"
+		}
+		return "" // FEATURE_WA_SESSION_TENANTS empty
+	})
+	if got != nil {
+		t.Fatal("expected nil wiring when globally enabled but FEATURE_WA_SESSION_TENANTS empty (fail-closed)")
 	}
 }
 
