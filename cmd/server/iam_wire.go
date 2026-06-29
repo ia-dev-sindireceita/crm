@@ -118,6 +118,14 @@ var iamRoutes = []string{
 	"/settings/privacy/dpa.md",
 	"/settings/ai-policy",
 	"/settings/ai-policy/",
+	// SIN-66259 / Fase 4 — WhatsApp non-official session provisioning.
+	// The exact "/settings/whatsapp-session" matches the page GET; the
+	// "/settings/whatsapp-session/" subtree catches the status / consent /
+	// connect / disconnect routes. Without these on the stdlib mux the
+	// custom-domain catch-all at "/" would shadow the surface (the
+	// chi-enumeration route-miss failure mode) and chi never sees them.
+	"/settings/whatsapp-session",
+	"/settings/whatsapp-session/",
 	"/catalog",
 	"/catalog/",
 	"/campaigns",
@@ -330,6 +338,14 @@ type iamHandlerOpts struct {
 	// unmounted (chi emits 404); cmd/server tests that don't
 	// exercise the surface keep their pre-PR behaviour.
 	WebWallet http.Handler
+
+	// WebWASession is the SIN-66259 / Fase 4 WhatsApp non-official
+	// session provisioning handler built by wa_session_ui_wire.go on
+	// top of the Fase 1 Manager + QR cache and the audited consent
+	// registry. Nil keeps every /settings/whatsapp-session* route
+	// unmounted (chi emits 404); the wire returns nil unless the
+	// session transport is mounted and the consent registry builds.
+	WebWASession http.Handler
 
 	// Theme is the SIN-63085 per-tenant theme middleware, built by
 	// branding_ui_wire.go on top of the same PaletteStore that backs
@@ -664,6 +680,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebAIPanel:          opts.WebAIPanel,
 		WebDashboard:        opts.WebDashboard,
 		WebWallet:           opts.WebWallet,
+		WebWASession:        opts.WebWASession,
 		Theme:               opts.Theme,
 		Metrics:             opts.Metrics,
 		UserMFA:             userMFARoutes,
