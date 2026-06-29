@@ -70,3 +70,48 @@ groups:
             volume is typically a probing attempt (BOLA / IDOR) or a runaway
             client. Investigate per docs/ops/runbook-probing-alert.md.
           runbook: https://internal/runbooks/probing-alert
+
+  # SIN-66260 Fase 5 — non-official WhatsApp Web session (whatsmeow, ADR
+  # 0107) ban observability. The board accepted the ToS/ban risk on
+  # 2026-06-29: when WhatsApp logs a session out it is TERMINAL (the
+  # Manager does not auto-reconnect) and the tenant's number may be banned.
+  # WASessionBanned is the production ban signal the Fase 5 AC requires.
+  # Metric provenance: internal/obs/metrics.go
+  # (wa_session_status_transitions_total{to}); the offending tenant_id is
+  # in the wa_session.status log line, not the metric (low-cardinality /
+  # PII-safe convention, same as auth_ratelimit_deny_total).
+  - name: crm-wa-session
+    interval: 30s
+    rules:
+      - alert: WASessionBanned
+        expr: increase(wa_session_status_transitions_total{to="banned"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          channel: alerts
+        annotations:
+          summary: "WhatsApp (unofficial session) banned / logged out"
+          description: |
+            wa_session_status_transitions_total{to="banned"} grew by
+            {{ $value }} in the last 5 minutes. A tenant's non-official
+            WhatsApp Web session was logged out (ban or remote logout). This
+            is TERMINAL — the supervisor does not auto-reconnect; the operator
+            must re-pair. The tenant's number may be banned by Meta
+            (board-accepted ToS risk, ADR 0107). Identify the tenant from the
+            wa_session.status log line, notify them, and confirm whether the
+            number is recoverable.
+          runbook: https://internal/runbooks/wa-session-ban
+      - alert: WASessionReconnectFlapping
+        expr: increase(wa_session_status_transitions_total{to="disconnected"}[15m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          channel: alerts
+        annotations:
+          summary: "WhatsApp (unofficial session) reconnect flapping"
+          description: |
+            More than 5 disconnect transitions in 15m for the non-official
+            WhatsApp session. Sustained flapping is unstable carrier
+            connectivity OR pre-ban throttling by Meta — inspect before it
+            escalates to a WASessionBanned. See the wa-session-ban runbook.
+          runbook: https://internal/runbooks/wa-session-ban

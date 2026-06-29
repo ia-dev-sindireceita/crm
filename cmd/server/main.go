@@ -229,6 +229,15 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		wa.Register(mux)
 	}
 
+	// SIN-63105 — process-wide obs.Metrics constructed once at boot and
+	// shared by the SIN-63085 theme middleware (via buildBrandingStack),
+	// the SIN-62218 /metrics scrape endpoint + per-route HTTPMetrics
+	// middleware (via httpapi.Deps.Metrics), and the SIN-66260 WhatsApp
+	// session ban-observability tee below. Built here (ahead of the wa
+	// session wiring) so wa_session_status_transitions_total lands on the
+	// same registry that backs /metrics.
+	metrics := obs.NewMetrics()
+
 	// SIN-66258 WhatsApp session (non-official, whatsmeow) — Fase 3.
 	// Coexists with the official Meta Cloud channel above: deny-by-default
 	// (FEATURE_WA_SESSION_ENABLED=1 required) and opt-in per tenant
@@ -236,7 +245,11 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	// behaviour unchanged. No HTTP routes: the session is a whatsmeow
 	// WebSocket client driven by the Manager, so we Start the inbound pump
 	// and per-tenant sessions instead of registering on the mux.
-	was := buildWASessionWiring(ctx, getenv)
+	// SIN-66260 Fase 5: the boot obs.Metrics is passed so every per-tenant
+	// session status transition (notably to="banned", which is terminal and
+	// stops auto-reconnect) increments wa_session_status_transitions_total —
+	// the production ban signal the WASessionBanned alert keys on.
+	was := buildWASessionWiring(ctx, getenv, metrics)
 	var waSessionProv *managerProvisioner
 	if was != nil {
 		defer was.Cleanup()
@@ -336,15 +349,9 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	webFunnelRulesHandler, webFunnelRulesCleanup := buildWebFunnelRulesHandler(ctx, getenv)
 	defer webFunnelRulesCleanup()
 
-	// SIN-63105 — process-wide obs.Metrics constructed once at boot
-	// and shared by the SIN-63085 theme middleware (via
-	// buildBrandingStack) and the SIN-62218 /metrics scrape endpoint
-	// + per-route HTTPMetrics middleware (via httpapi.Deps.Metrics).
-	// One instance keeps tenant_theme_cache_hits_total reachable on
-	// the same /metrics endpoint that already exposes
-	// http_requests_total et al.
-	metrics := obs.NewMetrics()
-
+	// metrics (the process-wide obs.Metrics) is constructed earlier, just
+	// ahead of the WhatsApp session wiring (SIN-66260), and is reused here.
+	//
 	// SIN-63084 + SIN-63085 + SIN-63101 — HTMX branding admin AND the
 	// per-tenant theme middleware. Both halves share the in-memory
 	// PaletteStore so a SIN-63084 save is visible to the next theme-

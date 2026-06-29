@@ -188,6 +188,47 @@ func TestMetrics_NilReceiver_IncRLSMiss_NoPanic(t *testing.T) {
 	m.IncRLSMiss() // must not panic
 }
 
+// SIN-66260 Fase 5 — the WhatsApp Web session ban-observability counter.
+// This is the regression test for the AC "observabilidade de ban em
+// produção": it asserts the metric is registered on the /metrics registry
+// and that the to="banned" series increments. It fails against the
+// pre-Fase-5 code (no such instrument).
+func TestMetrics_WASessionStatusTransition(t *testing.T) {
+	t.Parallel()
+	m := obs.NewMetrics()
+
+	m.WASessionStatusTransition("banned")
+	m.WASessionStatusTransition("banned")
+	m.WASessionStatusTransition("disconnected")
+
+	if got := testutil.ToFloat64(m.WASessionStatusTransitions.WithLabelValues("banned")); got != 2 {
+		t.Errorf("wa_session_status_transitions_total{to=banned}: got %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(m.WASessionStatusTransitions.WithLabelValues("disconnected")); got != 1 {
+		t.Errorf("wa_session_status_transitions_total{to=disconnected}: got %v, want 1", got)
+	}
+
+	mfs, err := m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var found bool
+	for _, mf := range mfs {
+		if mf.GetName() == "wa_session_status_transitions_total" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("wa_session_status_transitions_total not registered on the /metrics registry")
+	}
+}
+
+func TestMetrics_NilReceiver_WASessionStatusTransition_NoPanic(t *testing.T) {
+	t.Parallel()
+	var m *obs.Metrics
+	m.WASessionStatusTransition("banned") // must not panic
+}
+
 // Compile-time assertion that the package-level Counter satisfies the
 // minimal interface we use (catch silent type drift in client_golang
 // upgrades).

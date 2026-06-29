@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -321,6 +322,96 @@ func TestPumpWASessionInbound_ReceiverErrorDoesNotStop(t *testing.T) {
 	pumpWASessionInbound(context.Background(), ch, rcv, nil)
 	if len(rcv.msgs) != 2 {
 		t.Fatalf("pump should keep draining after a receiver error, got %d", len(rcv.msgs))
+	}
+}
+
+// --- observeWAStatus (SIN-66260 Fase 5 ban observability) ------------
+
+type countingStatusObserver struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (c *countingStatusObserver) WASessionStatusTransition(to string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.counts == nil {
+		c.counts = map[string]int{}
+	}
+	c.counts[to]++
+}
+
+func (c *countingStatusObserver) get(to string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[to]
+}
+
+// observeWAStatus must increment the metric on a terminal banned
+// transition AND forward every event downstream unchanged. This is the
+// regression test for the AC ban signal at the wiring seam: it fails
+// against pre-Fase-5 code where the pump consumed manager.Events()
+// directly with no metric tee.
+func TestObserveWAStatus_RecordsBanAndForwardsAllEvents(t *testing.T) {
+	t.Parallel()
+	tenant := uuid.New()
+	counter := &countingStatusObserver{}
+	src := make(chan wasession.Event, 4)
+	src <- wasession.Event{Kind: wasession.EventStatus, TenantID: tenant, Status: &wasession.StatusChange{To: wasession.StatusConnected}}
+	src <- wasession.Event{Kind: wasession.EventInbound, TenantID: tenant, Inbound: &wasession.InboundMessage{ExternalID: "a"}}
+	src <- wasession.Event{Kind: wasession.EventStatus, TenantID: tenant, Status: &wasession.StatusChange{To: wasession.StatusBanned}}
+	src <- wasession.Event{Kind: wasession.EventQR, TenantID: tenant, QR: &wasession.QRCode{}}
+	close(src)
+
+	out := observeWAStatus(context.Background(), src, counter)
+
+	var got []wasession.EventKind
+	for ev := range out {
+		got = append(got, ev.Kind)
+	}
+
+	if len(got) != 4 {
+		t.Fatalf("tee dropped events: forwarded %d of 4 (%v)", len(got), got)
+	}
+	if counter.get("banned") != 1 {
+		t.Errorf("banned transition not recorded: got %d, want 1", counter.get("banned"))
+	}
+	if counter.get("connected") != 1 {
+		t.Errorf("connected transition not recorded: got %d, want 1", counter.get("connected"))
+	}
+	// QR and inbound carry no status — must not be miscounted.
+	if counter.get("") != 0 {
+		t.Errorf("non-status event miscounted as a transition: got %d", counter.get(""))
+	}
+}
+
+// A nil observer makes observeWAStatus a transparent pass-through: it
+// returns the SAME channel (no extra goroutine), so flag-off / metric-less
+// boots are inert.
+func TestObserveWAStatus_NilObserverIsPassThrough(t *testing.T) {
+	t.Parallel()
+	src := make(chan wasession.Event)
+	out := observeWAStatus(context.Background(), src, nil)
+	if out != (<-chan wasession.Event)(src) {
+		t.Fatal("nil observer must return the source channel unwrapped (no goroutine)")
+	}
+}
+
+// The relay goroutine must exit when the pump context is cancelled even
+// though Manager.Events() is never closed, so shutdown does not leak it.
+func TestObserveWAStatus_StopsOnContextCancel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	src := make(chan wasession.Event) // never closed, mirrors Manager.Events()
+	out := observeWAStatus(ctx, src, &countingStatusObserver{})
+	cancel()
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("expected closed output, got a value")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tee did not stop on context cancel")
 	}
 }
 
