@@ -45,6 +45,14 @@ func NewMasterCredentialReader(pool *pgxpool.Pool, actorID uuid.UUID) (*MasterCr
 // tenant user row (even one with a mis-typed role='master', which the
 // users table allows — no CHECK constraint, SIN-63340) can never be
 // resolved as the master operator: tenant rows carry a non-NULL tenant_id.
+//
+// SIN-66305 gate 2 (central default-exclusion): the lookup also pins
+// is_system = false so the reserved system principal (the WhatsApp-session
+// audit actor, seeded by migration 0126) is never a login candidate. This
+// is THE login-resolution choke point — excluding it here makes the
+// principal unreachable by every post-login master surface (MFA enroll,
+// recovery codes, lockout, session), so the exclusion need not be scattered
+// across those adapters.
 func (r *MasterCredentialReader) LookupMasterCredentials(ctx context.Context, email string) (uuid.UUID, string, error) {
 	var (
 		id   uuid.UUID
@@ -56,7 +64,8 @@ func (r *MasterCredentialReader) LookupMasterCredentials(ctx context.Context, em
 			   FROM users
 			  WHERE lower(email) = lower($1)
 			    AND is_master = true
-			    AND tenant_id IS NULL`,
+			    AND tenant_id IS NULL
+			    AND is_system = false`,
 			email,
 		).Scan(&id, &hash)
 	})

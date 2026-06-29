@@ -67,6 +67,12 @@ func freshDBWithMasterMFA(t *testing.T) *testpg.DB {
 		"0004_create_tenant.up.sql",
 		"0005_create_users.up.sql",
 		"0086_master_mfa.up.sql",
+		// SIN-66305: adds users.is_system + the reserved system principal.
+		// The master credential reader / directory now filter is_system, so
+		// the column must exist for those adapters to run here. Audit-CHECK
+		// (0127) is intentionally NOT applied — this helper has no
+		// audit_log_security table and the readers don't touch it.
+		"0126_wa_session_transition_audit.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
