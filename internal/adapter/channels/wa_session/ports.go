@@ -102,4 +102,11 @@ var (
 	// outbound rate limit is exceeded; the send-outbound use case maps
 	// it to the message's failed state.
 	ErrRateLimited = errors.New("wa_session: outbound rate limit exceeded")
+	// ErrInboundRateLimited is returned by Receive when the per-tenant
+	// inbound volume cap is exceeded (SIN-66262 F1). It is a genuine
+	// rejection — the event is NOT persisted, so the per-tenant DB write
+	// amplification is bounded — and is distinct from the inbound border
+	// drops (which return nil) so the caller can tell backpressure apart
+	// from a malformed event.
+	ErrInboundRateLimited = errors.New("wa_session: inbound rate limit exceeded")
 )

@@ -52,11 +52,16 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithConfig overrides the default Config (rate cap, deliver timeout).
+// WithConfig overrides the default Config (rate caps, deliver timeout).
+// Each field overrides only when positive, so a partially-populated
+// Config keeps the package defaults for the fields it leaves at zero.
 func WithConfig(cfg Config) Option {
 	return func(a *Adapter) {
 		if cfg.RateMaxPerMin > 0 {
 			a.cfg.RateMaxPerMin = cfg.RateMaxPerMin
+		}
+		if cfg.InboundRateMaxPerMin > 0 {
+			a.cfg.InboundRateMaxPerMin = cfg.InboundRateMaxPerMin
 		}
 		if cfg.DeliverTimeout > 0 {
 			a.cfg.DeliverTimeout = cfg.DeliverTimeout
@@ -146,6 +151,27 @@ func (a *Adapter) Receive(ctx context.Context, msg SessionMessage) error {
 			slog.String("tenant_id", msg.TenantID.String()),
 			slog.String("message_id", messageID))
 		return nil
+	}
+
+	// SIN-66262 F1: per-tenant inbound volume cap. Everything below this
+	// point reaches HandleInbound, which writes to the DB (contact
+	// upsert, conversation find/create, message insert). The check sits
+	// after the border drops so malformed/echo/group events that never
+	// touch the DB do not consume a tenant's budget; it mirrors the
+	// outbound limiter (same RateLimiter port) but on its own key and
+	// cap so inbound and outbound throttle independently. Over the cap we
+	// reject (no persist) rather than drop silently, bounding the
+	// per-tenant DB write amplification from a high-volume or defective
+	// redelivering session.
+	allowed, _, err := a.rate.Allow(ctx, "wa_session:in:"+msg.TenantID.String(), rateWindow, a.cfg.InboundRateMaxPerMin)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		a.logger.Warn("wa_session.inbound_rate_limited",
+			slog.String("tenant_id", msg.TenantID.String()),
+			slog.String("message_id", messageID))
+		return ErrInboundRateLimited
 	}
 
 	ev := inbox.InboundEvent{
