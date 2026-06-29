@@ -1,0 +1,44 @@
+# WhatsApp session (whatsmeow) database migrations
+
+These migrations target the **dedicated** WhatsApp-session Postgres pointed at
+by `WA_SESSION_DATABASE_URL` (ADR 0107 D3), **not** the app database. They are
+kept in their own golang-migrate source directory so the app's
+`migrate -path migrations` run never applies them to the app DB and vice-versa.
+
+See `docs/adr/0108-wa-session-credential-at-rest.md` for the decision and
+`docs/deploy/staging.md` §5g for the operator runbook.
+
+## Roles (`0001_wa_session_roles`)
+
+Creates two least-privilege roles on the WA session cluster:
+
+| Role                 | Privileges                                              | Used by |
+|----------------------|---------------------------------------------------------|---------|
+| `wa_session_admin`   | `USAGE`+`CREATE` on schema; owns/`ALTER`/`DROP` `whatsmeow_*`. Runs the whatsmeow `Upgrade` (DDL). | one-shot deploy step |
+| `wa_session_runtime` | `USAGE` on schema; `SELECT/INSERT/UPDATE/DELETE` on `whatsmeow_*` only. **No DDL.** | the app boot DSN (`WA_SESSION_DATABASE_URL`) |
+
+`CREATE ROLE` is superuser-only and cluster-scoped, so this migration must be
+applied with a **superuser** DSN on the WA session cluster.
+
+## Deploy order (per environment / per whatsmeow version bump)
+
+1. **Roles** — apply this migration as a superuser:
+   ```bash
+   migrate -path migrations/wa_session -database "$WA_SESSION_SUPERUSER_DATABASE_URL" up
+   ```
+2. **Passwords** — ops sets a login password on each role (never in the
+   migration); see `docs/deploy/staging.md` §5g.
+3. **Schema `Upgrade` as admin** — run the whatsmeow `sqlstore` `Upgrade` once,
+   connected as `wa_session_admin`, to create/upgrade the `whatsmeow_*` tables.
+   Because the up migration sets `ALTER DEFAULT PRIVILEGES FOR ROLE
+   wa_session_admin`, the newly created tables auto-grant DML to
+   `wa_session_runtime` — no second grant pass is needed.
+4. **App boot as runtime** — the app connects via `WA_SESSION_DATABASE_URL`
+   using `wa_session_runtime`. On an already-current schema the library's boot
+   `Upgrade` is a read-only no-op (it issues no DDL); see ADR-0108 "Boot
+   behaviour under the runtime role".
+
+> Step 3 MUST precede booting an app build that carries a newer whatsmeow
+> schema version: a pending schema upgrade is DDL, which `wa_session_runtime`
+> is intentionally not allowed to run. Running the admin `Upgrade` first keeps
+> the boot path DDL-free.
