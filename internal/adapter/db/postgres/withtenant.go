@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/pericles-luz/crm/internal/obs"
 )
 
 // TxBeginner is the minimal surface WithTenant / WithMasterOps need to start
@@ -55,6 +57,16 @@ func WithTenant(ctx context.Context, db TxBeginner, tenantID uuid.UUID, fn func(
 		return ErrNilPool
 	}
 	if tenantID == uuid.Nil {
+		// SIN-66295 — record the security canary BEFORE returning. A
+		// uuid.Nil tenant reaching WithTenant is exactly the
+		// "RLS bypass attempt / missing tenant scoping" event the
+		// rls_misses_total counter and the RLSMissDetected alert name
+		// (OWASP A09 — security logging & monitoring). The helper is a
+		// no-op until cmd/server calls obs.SetDefault at boot, so the
+		// postgres package stays decoupled from a concrete *obs.Metrics
+		// (Hexagonal: obs is the observability port, IncRLSMiss the seam).
+		// Enforcement is unchanged: we still deny by returning ErrZeroTenant.
+		obs.IncRLSMiss()
 		return ErrZeroTenant
 	}
 	if fn == nil {

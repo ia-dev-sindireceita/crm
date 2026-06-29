@@ -9,8 +9,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
+	"github.com/pericles-luz/crm/internal/obs"
 )
 
 // Pure-Go unit tests for WithTenant / WithMasterOps error paths that the
@@ -117,6 +119,41 @@ func TestWithTenant_CommitError_RollsBack(t *testing.T) {
 	}
 	if !tx.rolledBack {
 		t.Error("expected rollback after commit failure (defer)")
+	}
+}
+
+// TestWithTenant_ZeroTenant_IncrementsRLSCanary is the SIN-66295 end-to-end
+// regression: it proves Break A + Break B are fixed together. It wires a real
+// *obs.Metrics as the package default (Break B — without obs.SetDefault the
+// helper is a permanent no-op and this test fails), then drives WithTenant with
+// uuid.Nil and asserts that (a) enforcement is intact — ErrZeroTenant is still
+// returned and fn never runs — and (b) the rls_misses_total canary went 0->1
+// (Break A — the detector in the uuid.Nil branch). Cleanup resets the default
+// to nil so no other test in the package sees a stale instance.
+func TestWithTenant_ZeroTenant_IncrementsRLSCanary(t *testing.T) {
+	// NOT t.Parallel(): obs.SetDefault mutates package-global state, so
+	// running alongside other tests that wire metrics would race.
+	m := obs.NewMetrics()
+	obs.SetDefault(m)
+	t.Cleanup(func() { obs.SetDefault(nil) })
+
+	if got := testutil.ToFloat64(m.RLSMisses); got != 0 {
+		t.Fatalf("precondition: rls_misses_total = %v, want 0", got)
+	}
+
+	// A non-nil beginner so we reach the uuid.Nil guard rather than
+	// ErrNilPool; the guard returns before BeginTx is ever called, so the
+	// stub needs no tx.
+	beginner := &stubBeginner{}
+	err := postgresadapter.WithTenant(context.Background(), beginner, uuid.Nil, func(pgx.Tx) error {
+		t.Fatal("fn must not run for a uuid.Nil tenant")
+		return nil
+	})
+	if !errors.Is(err, postgresadapter.ErrZeroTenant) {
+		t.Errorf("err: got %v, want ErrZeroTenant (enforcement must not regress)", err)
+	}
+	if got := testutil.ToFloat64(m.RLSMisses); got != 1 {
+		t.Errorf("rls_misses_total: got %v, want 1 (canary must fire on uuid.Nil)", got)
 	}
 }
 

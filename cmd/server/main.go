@@ -352,6 +352,15 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	// metrics (the process-wide obs.Metrics) is constructed earlier, just
 	// ahead of the WhatsApp session wiring (SIN-66260), and is reused here.
 	//
+	// SIN-66295 — wire that SAME boot instance as the package-level default so
+	// the adapter-side canary helpers (obs.IncRLSMiss in postgres.WithTenant,
+	// obs.WebhookTimestampWindowDrop in the webhook adapters) stop being
+	// permanent no-ops. Without this call rls_misses_total is structurally
+	// flat-zero in production (SIN-62524 / PR #60 never wired it). SetDefault
+	// does NOT create a second instance: it stores the very pointer that
+	// already backs /metrics and the branding stack below, so /metrics keeps
+	// scraping the same registry.
+	obs.SetDefault(metrics)
 	// SIN-63084 + SIN-63085 + SIN-63101 — HTMX branding admin AND the
 	// per-tenant theme middleware. Both halves share the in-memory
 	// PaletteStore so a SIN-63084 save is visible to the next theme-
