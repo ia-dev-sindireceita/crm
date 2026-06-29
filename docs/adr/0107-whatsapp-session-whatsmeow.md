@@ -263,3 +263,53 @@ risco antes de concluir a configuração.
 | SQLite por tenant (store local) | Não sobrevive restart de pod; inviável em Postgres-only stack |
 | Worker Kubernetes separado desde v1 | Over-engineering; threshold de necessidade é >200 tenants |
 | Fork privado de whatsmeow | Viola MPL-2.0; manutenção de fork privado é dívida permanente |
+
+---
+
+## Addendum — 2026-06-29 (SIN-66267): `go.mau.fi/libsignal` é GPL-3.0
+
+> Este addendum corrige uma premissa do ADR original. Refs:
+> [SIN-66264](/SIN/issues/SIN-66264) (achado em review de supply-chain),
+> [SIN-66265](/SIN/issues/SIN-66265) (decisão do CEO — Opção 1),
+> [SIN-66266](/SIN/issues/SIN-66266), [SIN-66267](/SIN/issues/SIN-66267) (este fix).
+
+**Achado.** A análise D2 trata corretamente a licença do **próprio** `go.mau.fi/whatsmeow`
+(MPL-2.0). O que a premissa original **não** capturou: `whatsmeow` puxa transitivamente
+`go.mau.fi/libsignal` **v0.2.2**, que é licenciada sob **GPL-3.0** — GPLv3 integral, **sem
+exceção LGPL / de linking** (é um fork de `RadicalApp/libsignal-protocol-go`). GPLv3, ao
+contrário de MPL-2.0, é copyleft **forte**: linkar estaticamente e **distribuir** o binário
+combinado obriga todo o binário sob GPLv3.
+
+**Distinção jurídica decisiva — GPLv3 ≠ AGPLv3.** Sob GPLv3, dar **acesso via rede** a um
+software (SaaS) **não** é "conveying" (distribuição) e portanto **não** dispara a obrigação de
+copyleft. É a AGPLv3 que estende o copyleft ao uso em rede — e `libsignal` é GPLv3, **não**
+AGPLv3. Logo:
+
+- **Shape SaaS (atual): seguro.** Servimos o CRM pela rede; não distribuímos o binário. Sem
+  obrigação de abrir o código-fonte do CRM.
+- **Distribuição / on-prem / download / imagem entregue ao tenant: NÃO permitido** enquanto o
+  código que linka `libsignal` (o transporte WhatsApp/whatsmeow) fizer parte do binário. Isso
+  obrigaria o binário combinado inteiro sob GPLv3.
+
+**Decisão (CEO, SIN-66265 — Opção 1: risk-accept + guard-rail automatizado).** Aceitamos a
+dependência GPL-3.0 **estritamente para o shape SaaS**, com dois mecanismos de enforcement:
+
+1. **Gate de CI de licença** (`.github/workflows/license-scan.yml` +
+   `scripts/ci/check-licenses.py`): falha o build em qualquer módulo da família GPL/AGPL, com
+   **allowlist de uma única entrada** — `go.mau.fi/libsignal` — comentada inline com o link da
+   decisão. Qualquer **nova** transitiva GPL/AGPL falha o build. É a layer 2 ao lado do
+   `govulncheck` (que cobre só CVE, não licença).
+2. **Política de deployment** (`docs/policy/deployment-licensing.md`): proíbe distribuir/
+   shippar on-prem qualquer artefato que linke `libsignal` enquanto a isolação (Opção 2) não
+   existir.
+
+**Opção 2 (caminho planejado, se/quando um modelo distribuído ou on-prem for proposto):**
+isolar o código que linka `whatsmeow`/`libsignal` em um **serviço separado, isolado por rede,
+arms-length**, comunicando-se com o CRM via API — de modo que o binário distribuível do CRM
+não linke GPLv3. Não implementado agora; pré-requisito para qualquer deployment não-SaaS.
+
+### Dívida técnica registrada (adendo)
+
+| ID | Item | Threshold |
+|---|---|---|
+| DT-WA-04 | Isolar transporte whatsmeow/libsignal em serviço arms-length (Opção 2) | Se/quando deployment distribuído ou on-prem for seriamente proposto |

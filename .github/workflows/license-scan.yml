@@ -1,0 +1,90 @@
+# CI license gate for SIN-66267 (parent SIN-66266; decision SIN-66265).
+#
+# Background. go.mau.fi/whatsmeow (MPL-2.0) pulls in go.mau.fi/libsignal
+# transitively, and libsignal is GPL-3.0 (full GPLv3, no LGPL/linking
+# exception). govulncheck.yml gates *CVEs* and is blind to licenses; nothing in
+# this repo caught the GPL-3.0 pull-in until it was found by hand during the
+# SIN-66264 supply-chain review. This workflow is layer 2 of defense-in-depth:
+# it gates *licenses*.
+#
+# Behaviour.
+#   1. `go-licenses report ./...` enumerates the license of every module in the
+#      build's dependency tree (stdout CSV: module,url,license-name).
+#   2. scripts/ci/check-licenses.py fails the job on any GPL/AGPL-family module
+#      except the single allowlisted, risk-accepted go.mau.fi/libsignal
+#      (SIN-66265, SaaS-only). The allowlist entry is the machine-enforced
+#      record of that acceptance; any *new* GPL/AGPL transitive fails loudly.
+#   3. The checker's own self-test runs first so the gate logic cannot silently
+#      regress.
+#
+# Failure mode is fail-closed (the secure default): if go-licenses cannot run
+# or produces no rows, the checker exits non-zero and the job fails.
+#
+# Out of scope (separate gates/tickets): CVEs (govulncheck.yml), secrets
+# (gitleaks.yml), SBOM, CodeQL, LGPL/weak-copyleft policy.
+
+name: license-scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  license-scan:
+    name: license-scan
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned per SIN-62303/62306 convention (matches the rest of the repo).
+      # Bump SHA + trailing version comment together when upgrading.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # Self-test the gate logic before trusting it (no toolchain/network
+      # needed; pure CSV fixtures asserting both directions).
+      - name: license-gate self-test
+        run: bash scripts/ci/check-licenses.test.sh
+
+      # go install is version-pinned (not a third-party Action, so no SHA pin);
+      # bump the version deliberately.
+      - name: install go-licenses
+        run: go install github.com/google/go-licenses@v1.6.0  # pinned
+
+      - name: download modules
+        run: go mod download
+
+      # go-licenses can exit non-zero merely because some module's license is
+      # Unknown; that must not abort before our checker, which is the policy
+      # authority and fails-closed on an empty report. Capture stdout (CSV) and
+      # stderr (warnings) separately; surface the warnings; then gate.
+      - name: scan licenses and gate
+        run: |
+          set -o pipefail
+          "$(go env GOPATH)/bin/go-licenses" report ./... \
+            > license-report.csv 2> license-report.err || true
+          echo "::group::go-licenses warnings"
+          cat license-report.err || true
+          echo "::endgroup::"
+          echo "::group::license report (module,url,license)"
+          cat license-report.csv || true
+          echo "::endgroup::"
+          python3 scripts/ci/check-licenses.py < license-report.csv
+
+      # Keep the full report as evidence for ADR residual-risk / audit, mirroring
+      # govulncheck.yml's verbose-artifact pattern.
+      - name: upload license report
+        if: ${{ !cancelled() }}
+        # SHA-pinned per SIN-62303. Bump SHA + version comment together.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: license-report
+          path: license-report.csv
+          if-no-files-found: warn
+          retention-days: 30
