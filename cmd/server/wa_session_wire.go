@@ -113,6 +113,17 @@ func buildWASessionWiring(ctx context.Context, getenv func(string) string) *waSe
 		log.Printf("crm: wa session disabled (WA_SESSION_DATABASE_URL unset)")
 		return nil
 	}
+	// Fail-closed (SIN-66276): globally enabled but no tenant allowlist is
+	// an operator misconfiguration, not a fleet-wide enable. Refuse to mount
+	// the transport — this is the composition-root half of the
+	// defense-in-depth pair with EnvFeatureFlag.Enabled, so a stray empty
+	// FEATURE_WA_SESSION_TENANTS can never route outbound WhatsApp for the
+	// whole fleet onto the unofficial session. Checked before opening any
+	// pool/whatsmeow store so the misconfig fails fast and cheap.
+	if len(parseWASessionTenants(getenv)) == 0 {
+		log.Printf("crm: wa session disabled — FEATURE_WA_SESSION_ENABLED=1 but FEATURE_WA_SESSION_TENANTS empty (fail-closed; name the tenants to enable)")
+		return nil
+	}
 	pool, err := pgpool.New(ctx, appDSN)
 	if err != nil {
 		log.Printf("crm: wa session disabled — pg connect: %v", err)
@@ -156,10 +167,9 @@ func buildWASessionWiring(ctx context.Context, getenv func(string) string) *waSe
 					slog.String("tenant_id", t.String()))
 			}
 		}
-		if len(tenants) == 0 {
-			logger.Warn("wa_session.no_tenants",
-				slog.String("hint", "FEATURE_WA_SESSION_TENANTS empty — transport mounted but no session provisioned"))
-		}
+		// No empty-allowlist branch here: buildWASessionWiring refuses to
+		// mount when FEATURE_WA_SESSION_TENANTS is empty (fail-closed,
+		// SIN-66276), so tenants is always non-empty by this point.
 	}
 	cleanup := func() {
 		pumpCancel()

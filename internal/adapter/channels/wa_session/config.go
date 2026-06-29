@@ -107,8 +107,9 @@ type EnvFeatureFlag struct {
 
 // NewEnvFeatureFlag parses FEATURE_WA_SESSION_ENABLED ("1" enables the
 // transport) and FEATURE_WA_SESSION_TENANTS (comma-separated tenant
-// UUID allowlist). globalOn with an empty allowlist means "all tenants
-// enabled"; invalid UUIDs are silently dropped.
+// UUID allowlist). The flag is fail-closed: globalOn with an empty
+// allowlist enables NOBODY (see Enabled) — operators must name the
+// tenants to turn the channel on. Invalid UUIDs are silently dropped.
 func NewEnvFeatureFlag(getenv func(string) string) *EnvFeatureFlag {
 	if getenv == nil {
 		return &EnvFeatureFlag{}
@@ -129,15 +130,19 @@ func NewEnvFeatureFlag(getenv func(string) string) *EnvFeatureFlag {
 	return &EnvFeatureFlag{globalOn: on, allowed: allow}
 }
 
-// Enabled implements FeatureFlag. globalOn=false → off. globalOn with an
-// empty allowlist → on for every tenant. globalOn with a populated
-// allowlist → on iff tenantID is listed.
+// Enabled implements FeatureFlag, fail-closed. globalOn=false → off.
+// globalOn with an EMPTY allowlist → off for every tenant: the session
+// channel is a ToS/ban-risk transport, so "globally enabled but unscoped"
+// is treated as an operator misconfiguration and disabled rather than
+// fanned out to the whole fleet (SIN-66276). globalOn with a populated
+// allowlist → on iff tenantID is listed. To enable the channel an
+// operator MUST name the tenants in FEATURE_WA_SESSION_TENANTS.
 func (f *EnvFeatureFlag) Enabled(_ context.Context, tenantID uuid.UUID) (bool, error) {
 	if f == nil || !f.globalOn {
 		return false, nil
 	}
 	if len(f.allowed) == 0 {
-		return true, nil
+		return false, nil
 	}
 	_, ok := f.allowed[tenantID]
 	return ok, nil

@@ -51,7 +51,7 @@ func TestEnvFeatureFlag(t *testing.T) {
 	}{
 		{"nil getenv → off", nil, tenant, false},
 		{"global off → off", envFrom(map[string]string{EnvSessionEnabled: "0"}), tenant, false},
-		{"global on, empty allowlist → on", envFrom(map[string]string{EnvSessionEnabled: "1"}), tenant, true},
+		{"global on, empty allowlist → off (fail-closed)", envFrom(map[string]string{EnvSessionEnabled: "1"}), tenant, false},
 		{
 			name:   "global on, allowlisted → on",
 			getenv: envFrom(map[string]string{EnvSessionEnabled: "1", EnvSessionTenantAllow: tenant.String()}),
@@ -90,6 +90,27 @@ func TestEnvFeatureFlag_NilReceiver(t *testing.T) {
 	got, err := f.Enabled(context.Background(), uuid.New())
 	if err != nil || got {
 		t.Fatalf("nil flag Enabled = (%v,%v), want (false,nil)", got, err)
+	}
+}
+
+// TestEnvFeatureFlag_EmptyAllowlistFailClosed pins the SIN-66276 contract:
+// with the global flag on but FEATURE_WA_SESSION_TENANTS empty, the channel
+// is enabled for NOBODY — not the whole fleet. Checked across several
+// distinct tenant IDs so a future "empty == match all" regression fails here.
+func TestEnvFeatureFlag_EmptyAllowlistFailClosed(t *testing.T) {
+	f := NewEnvFeatureFlag(envFrom(map[string]string{EnvSessionEnabled: "1"}))
+	for _, id := range []uuid.UUID{
+		uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+		uuid.MustParse("22222222-2222-2222-2222-222222222222"),
+		uuid.New(),
+	} {
+		on, err := f.Enabled(context.Background(), id)
+		if err != nil {
+			t.Fatalf("Enabled(%s): %v", id, err)
+		}
+		if on {
+			t.Errorf("Enabled(%s) = true, want false (empty allowlist must fail closed)", id)
+		}
 	}
 }
 
