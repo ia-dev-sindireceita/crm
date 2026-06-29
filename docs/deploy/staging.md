@@ -1220,6 +1220,11 @@ Like the app roles, both are created **without a password**; ops injects them
 here. The split exists so a compromised `wa_session_runtime` cannot drop or alter
 the credential schema — it can only read/write session rows.
 
+A second migration, `migrations/wa_session/0002_wa_session_runtime_sequences.up.sql`,
+extends the runtime grant to **sequences** (`USAGE`+`SELECT` only — see the
+schema-bump note under step 3). `migrate … up` in step 1 applies both `0001`
+and `0002` in order, so no extra command is needed.
+
 **1) Apply the role migration (superuser DSN on the WA session cluster).**
 `CREATE ROLE` is superuser-only and cluster-scoped, so this runs with a superuser
 DSN against the WA session DB, not `app_admin`:
@@ -1261,6 +1266,23 @@ the `whatsmeow_*` tables is `wa_session_admin`, not the runtime role.**
 > (insufficient privilege). On an already-current schema the boot `Upgrade` is a
 > read-only no-op and succeeds under `wa_session_runtime` (ADR-0108, verified by
 > `internal/adapter/db/postgres/wa_session_roles_migration_test.go`).
+
+> **Sequences introduced by a schema bump (SIN-66311).** Today's whatsmeow
+> schema has no `SERIAL`/`IDENTITY` columns, so there are no sequences. If a
+> future library bump adds one, the runtime's `INSERT` needs `USAGE` on the new
+> sequence to call `nextval()`. Migration `0002` already default-grants
+> `USAGE`+`SELECT` on sequences `wa_session_admin` creates (this step 3
+> `Upgrade`), so the bump is a non-event — no manual grant. The only case that
+> needs a manual grant is a sequence created **outside** that default-privilege
+> scope (restored by another role, or not `whatsmeow_`-prefixed); for that, run
+> as a superuser:
+> ```sql
+> GRANT USAGE, SELECT ON SEQUENCE <seq> TO wa_session_runtime;
+> ```
+> Never grant `UPDATE` (setval) or any DDL — the runtime never needs them, and
+> sequence DDL stays admin-only. Verified by
+> `internal/adapter/db/postgres/wa_session_roles_migration_test.go`
+> (`TestWASessionRuntimeSequencePrivilege`).
 
 **4) Point the app at the runtime role.** Build the runtime DSN from the
 `wa_session_runtime` password and write it into `/opt/crm/stg/.env.stg` (edit the
