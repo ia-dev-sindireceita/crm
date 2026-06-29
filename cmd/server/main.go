@@ -229,6 +229,19 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		wa.Register(mux)
 	}
 
+	// SIN-66258 WhatsApp session (non-official, whatsmeow) — Fase 3.
+	// Coexists with the official Meta Cloud channel above: deny-by-default
+	// (FEATURE_WA_SESSION_ENABLED=1 required) and opt-in per tenant
+	// (FEATURE_WA_SESSION_TENANTS). Flag off => nil wiring, no goroutines,
+	// behaviour unchanged. No HTTP routes: the session is a whatsmeow
+	// WebSocket client driven by the Manager, so we Start the inbound pump
+	// and per-tenant sessions instead of registering on the mux.
+	was := buildWASessionWiring(ctx, getenv)
+	if was != nil {
+		defer was.Cleanup()
+		was.Start()
+	}
+
 	// SIN-62844 Messenger inbound webhook + outbound sender (F2-10 follow-up).
 	ms := buildMessengerWiring(ctx, getenv)
 	if ms != nil {
