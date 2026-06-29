@@ -94,8 +94,18 @@ func e164ToJID(e164 string) (types.JID, error) {
 	}
 	for _, r := range digits {
 		if r < '0' || r > '9' {
-			return types.JID{}, fmt.Errorf("whatsmeowdev: recipient phone is not numeric: %q", e164)
+			// The raw recipient number is PII (LGPD) and must never be echoed
+			// into an error string that may be logged downstream. Report only a
+			// redacted, length-bounded marker — enough to diagnose a malformed
+			// input without leaking the number itself.
+			return types.JID{}, fmt.Errorf("whatsmeowdev: recipient phone is not numeric: %s", redactPhone(e164))
 		}
 	}
 	return types.NewJID(digits, types.DefaultUserServer), nil
+}
+
+// redactPhone returns a non-PII marker for a phone-shaped value, safe to embed
+// in an error string. It discloses only the length, never any digit.
+func redactPhone(s string) string {
+	return fmt.Sprintf("[redacted len=%d]", len(s))
 }
