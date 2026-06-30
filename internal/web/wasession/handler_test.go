@@ -156,6 +156,22 @@ func TestPage_NotConsented_ShowsConsentForm(t *testing.T) {
 	}
 }
 
+// TestPage_LoadsHTMX guards the SIN-66307 regression: the provisioning page is
+// driven entirely by hx-* attributes (consent / connect / disconnect / status
+// poll). Without the htmx script the whole panel is inert and the consent form
+// falls back to a native GET submit (?accept_risk=on), looping the operator on
+// the consent screen forever. The shell does not inject htmx — each surface
+// must load it in head_extra, like contacts/funnel do.
+func TestPage_LoadsHTMX(t *testing.T) {
+	t.Parallel()
+	h := newHandler(t, &fakeProvisioner{}, &fakeConsent{})
+	rec := serve(t, h, http.MethodGet, BasePath, "", true)
+	body := rec.Body.String()
+	if !strings.Contains(body, "/static/vendor/htmx/2.0.9/htmx.min.js") {
+		t.Error("provisioning page must load htmx, else hx-post forms fall back to native GET (SIN-66307)")
+	}
+}
+
 func TestPage_Consented_ShowsControls(t *testing.T) {
 	t.Parallel()
 	gate := &fakeConsent{state: ConsentState{Granted: true, Version: NoticeVersion, At: time.Now()}}
