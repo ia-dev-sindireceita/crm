@@ -142,6 +142,18 @@ services:
       # .env, or RLS is silently OFF and tenants see each other's rows
       # (SIN-65580). With this flag set the app refuses to boot in that state.
       DB_ENFORCE_RLS_ROLE: ${DB_ENFORCE_RLS_ROLE:-1}
+      # SIN-66324 — defense-in-depth: hard-fail boot if a Postgres DSN
+      # (DATABASE_URL / WA_SESSION_DATABASE_URL) disables TLS-in-transit
+      # (sslmode in disable/allow/prefer, or absent → libpq `prefer`, which
+      # falls back to cleartext). The guard ALWAYS WARNs in that case; this
+      # flag turns the warning into a hard boot failure. Default "0" because
+      # the compose default DATABASE_URL targets the bundled same-host
+      # `postgres` service, which serves no TLS (traffic stays on the docker
+      # bridge — the in-transit risk the operator accepted in SIN-66301).
+      # Flip to "1" once DATABASE_URL points at a TLS-capable Postgres
+      # (sslmode=require, verify-full when a CA bundle is available). At-rest
+      # encryption (LUKS) is out of scope for this guard.
+      DB_ENFORCE_DB_TLS: ${DB_ENFORCE_DB_TLS:-0}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Default ON. Flip to "false" to globally disable on-demand TLS.
       CUSTOMDOMAIN_ASK_ENABLED: ${CUSTOMDOMAIN_ASK_ENABLED:-true}
