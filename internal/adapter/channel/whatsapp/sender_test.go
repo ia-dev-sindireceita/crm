@@ -286,11 +286,22 @@ func TestSendMessage_401_AuthFailed_NoRetry(t *testing.T) {
 	t.Parallel()
 
 	var hits int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
+		// Fully drain the request body before responding so the server never
+		// has to discard an unread body to keep the connection alive — the
+		// post-handler drain is the source of a race-only transient read
+		// error on the client (see SIN-66365).
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"message":"Invalid OAuth access token","type":"OAuthException","code":190}}`))
 	}))
+	// Disable HTTP keep-alives: each request gets a fresh connection that the
+	// server closes after the response, removing the connection-reuse race
+	// that, under -race + parallel httptest, occasionally surfaced a spurious
+	// ErrChannelTransient and triggered a retry (hits=2). The no-retry-on-4xx
+	// semantics under the default 3-attempt budget stay the assertion. SIN-66365.
+	srv.Config.SetKeepAlivesEnabled(false)
 	defer srv.Close()
 
 	s := mustSender(t, "tok-revoked", stubLookup(whatsapp.TenantConfig{
@@ -340,11 +351,17 @@ func TestSendMessage_400_Rejected_NoRetry(t *testing.T) {
 	t.Parallel()
 
 	var hits int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
+		// Drain before responding — see SIN-66365 (avoids the post-handler
+		// body-discard race that produced a race-only transient retry).
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":{"message":"Message failed to send because more than 24 hours have passed since the customer last replied to this number","code":131047}}`))
 	}))
+	// Fresh connection per request, server-closed after response — removes the
+	// keep-alive reuse race that spuriously retried a deterministic 4xx. SIN-66365.
+	srv.Config.SetKeepAlivesEnabled(false)
 	defer srv.Close()
 
 	s := mustSender(t, "tok", stubLookup(whatsapp.TenantConfig{
@@ -371,10 +388,17 @@ func TestSendMessage_429_Rejected_NoRetry(t *testing.T) {
 	t.Parallel()
 
 	var hits int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
+		// Drain before responding — see SIN-66365 (avoids the post-handler
+		// body-discard race that produced a race-only transient retry).
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
+	// Fresh connection per request, server-closed after response — removes the
+	// keep-alive reuse race. 429 is a deterministic 4xx → ErrChannelRejected with
+	// no retry; under the default 3-attempt budget hits must stay 1. SIN-66365.
+	srv.Config.SetKeepAlivesEnabled(false)
 	defer srv.Close()
 
 	s := mustSender(t, "tok", stubLookup(whatsapp.TenantConfig{
