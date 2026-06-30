@@ -129,6 +129,18 @@ services:
     environment:
       HTTP_ADDR: ":8080"
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # SIN-66332 — AUDIT_DATABASE_URL (role app_audit, BYPASSRLS, INSERT-only)
+      # backs the SplitAuditLogger so audit INSERTs succeed regardless of the
+      # per-tenant app.tenant_id GUC (NULL-tenant master rows + the 2FA-enroll
+      # audit row that 500'd on the NOBYPASSRLS runtime pool / SQLSTATE 42501).
+      # NOT listed as an explicit `environment:` key on purpose: an inline
+      # `${AUDIT_DATABASE_URL:-}` would resolve against the compose-dir .env
+      # (not the service env_file) and OVERRIDE the .env.stg value with empty
+      # on every force-recreate. It is sourced via `env_file: .env.stg` exactly
+      # like MASTER_OPS_DATABASE_URL — set it there:
+      #   AUDIT_DATABASE_URL=postgres://app_audit:...@postgres:5432/crm?sslmode=disable
+      # The audit-role boot guard fails boot if it is missing while APP_ENV is
+      # staging/production and DATABASE_URL is set (audit is non-repudiation).
       # SIN-65590 — defense-in-depth: hard-fail boot if the runtime DB role
       # bypasses RLS (SUPERUSER/BYPASSRLS). The compose default composes
       # DATABASE_URL from POSTGRES_USER (the bootstrap superuser `crm`); if

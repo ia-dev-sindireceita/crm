@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgconsent "github.com/pericles-luz/crm/internal/adapter/db/postgres/consent"
@@ -35,7 +36,9 @@ import (
 // it unset.
 const envConsentCookieInsecure = "CONSENT_COOKIE_INSECURE"
 
-func buildConsentHandler(ctx context.Context, getenv func(string) string) (http.Handler, func()) {
+// auditPool is the SIN-66332 dedicated app_audit pool (nil in dev); when nil
+// the consent audit writer falls back to this wire's own runtime pool.
+func buildConsentHandler(ctx context.Context, getenv func(string) string, auditPool *pgxpool.Pool) (http.Handler, func()) {
 	noop := func() {}
 	dsn := getenv(postgresadapter.EnvDSN)
 	if dsn == "" {
@@ -53,7 +56,7 @@ func buildConsentHandler(ctx context.Context, getenv func(string) string) (http.
 		log.Printf("crm: web/consent disabled — store: %v", err)
 		return nil, noop
 	}
-	splitLogger, err := postgresadapter.NewSplitAuditLogger(pool)
+	splitLogger, err := postgresadapter.NewSplitAuditLogger(auditExecutorOr(auditPool, pool))
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/consent disabled — audit logger: %v", err)

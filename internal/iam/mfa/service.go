@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -360,10 +361,17 @@ func (s *Service) ConsumeRecovery(ctx context.Context, userID uuid.UUID, submitt
 func (s *Service) alertFailure(ctx context.Context, userID uuid.UUID, route string, cause error) {
 	// LogMFARequired carries route + reason fields we can repurpose
 	// to surface "alerter degraded" without adding a new audit method.
-	// Any error here is double-trouble (audit AND alert failed); we
-	// drop it on the floor — the master_ops_audit DB trail still
-	// captures the underlying mutations.
-	_ = s.audit.LogMFARequired(ctx, userID, route, "alerter_failed:"+cause.Error())
+	// Any error here is double-trouble (audit AND alert failed); the
+	// underlying mutations are still captured by the master_ops_audit DB
+	// trail, so the swallow is intentional — but SIN-66332 requires it to
+	// be explicitly logged rather than dropped silently (OWASP A09: a
+	// silent audit-write drop is the failure mode the dedicated audit pool
+	// exists to prevent). Best-effort log only; never escalated to the
+	// caller (this is already the degraded path).
+	if err := s.audit.LogMFARequired(ctx, userID, route, "alerter_failed:"+cause.Error()); err != nil {
+		log.Printf("level=WARN component=mfa event=audit_alert_degraded route=%q msg=%q err=%v",
+			route, "audit AND alerter both failed; underlying mutation persisted, this diagnostic row was not", err)
+	}
 }
 
 // RegenerateRecovery mints a fresh set of 10 recovery codes for the

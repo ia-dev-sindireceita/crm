@@ -404,6 +404,16 @@ type iamHandlerOpts struct {
 	// router skips every /master/tenants/* and /master/grants* route
 	// cleanly per reference_crm_router_nil_dep_silent_skip.
 	MasterTenants httpapi.MasterTenantsRoutes
+
+	// AuditPool is the SIN-66332 dedicated app_audit pool (LOGIN,
+	// BYPASSRLS, INSERT-only). When non-nil it backs every
+	// SplitAuditLogger built in this tree (logout, audited authorizer,
+	// LGPD, impersonation, and the usermfa/2FA-enroll writer) so audit
+	// INSERTs succeed regardless of app.tenant_id — the fix for the
+	// 2FA-enroll 500 (RLS 42501). Nil in dev: each call site falls back to
+	// the runtime pool, which there is SUPERUSER/BYPASSRLS. main.go builds
+	// it once and fails the boot when it is required (stg/prod) but unset.
+	AuditPool *pgxpool.Pool
 }
 
 // buildIAMHandler assembles the IAM deps and returns the chi handler plus a
@@ -478,7 +488,14 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	// + the authz_* Prometheus counters. Failure to build the wrapper
 	// is fatal at boot: F10 is a security-bar finding and silently
 	// running without audit coverage is worse than refusing to serve.
-	audited, err := newAuditedAuthorizer(pool, prometheus.DefaultRegisterer, getenv, logger)
+	// SIN-66332 — resolve the audit executor once for the whole IAM tree:
+	// the dedicated app_audit pool (BYPASSRLS) when wired, else the runtime
+	// pool (dev fallback; SUPERUSER/BYPASSRLS there). Every SplitAuditLogger
+	// below writes through this so audit INSERTs are not coupled to the
+	// per-tenant RLS scope (the 2FA-enroll 500 / 42501 fix).
+	auditDB := auditExecutorOr(opts.AuditPool, pool)
+
+	audited, err := newAuditedAuthorizer(auditDB, prometheus.DefaultRegisterer, getenv, logger)
 	if err != nil {
 		pool.Close()
 		cleanup()
@@ -494,7 +511,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	// A constructor failure is fatal at boot for the same reason the
 	// authz audit wrap is — silently running without the logout audit
 	// row would degrade the security ledger.
-	logoutAudit, err := postgresadapter.NewSplitAuditLogger(pool)
+	logoutAudit, err := postgresadapter.NewSplitAuditLogger(auditDB)
 	if err != nil {
 		pool.Close()
 		cleanup()
@@ -542,7 +559,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	lgpdRoutes := opts.WebLGPD
 	lgpdCleanup := func() {}
 	if lgpdRoutes.Export == nil || lgpdRoutes.Delete == nil {
-		stack := buildLGPDStack(ctx, pool, rdb, getenv)
+		stack := buildLGPDStack(ctx, pool, rdb, getenv, auditDB)
 		lgpdRoutes = stack.Routes
 		lgpdCleanup = stack.Cleanup
 	}
@@ -571,7 +588,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 	impersonationRoutes := opts.Impersonation
 	impersonationCleanup := func() {}
 	if impersonationRoutes.Start == nil {
-		stack := buildImpersonationStack(ctx, pool, tenants, getenv)
+		stack := buildImpersonationStack(ctx, pool, tenants, getenv, auditDB)
 		impersonationRoutes = stack.Routes
 		impersonationCleanup = stack.Cleanup
 	}

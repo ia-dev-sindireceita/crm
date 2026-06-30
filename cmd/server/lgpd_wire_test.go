@@ -43,7 +43,7 @@ func TestBuildLGPDStack_NilPoolOrRedis_ReturnsNoop(t *testing.T) {
 			// Pool requires a real *pgxpool.Pool to be non-nil. We
 			// only exercise the nil-path here; the master-DSN missing
 			// path is covered by TestBuildLGPDStack_MasterDSNUnset.
-			stack := buildLGPDStack(context.Background(), nil, rdb, func(string) string { return "" })
+			stack := buildLGPDStack(context.Background(), nil, rdb, func(string) string { return "" }, nil)
 			if stack.Routes.Export != nil || stack.Routes.Delete != nil {
 				t.Fatalf("expected noop stack, got Export=%v Delete=%v", stack.Routes.Export, stack.Routes.Delete)
 			}
@@ -64,7 +64,7 @@ func TestBuildLGPDStack_MasterDSNUnset_ReturnsNoop(t *testing.T) {
 	// panics on the missing-env path.
 	rdb := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:0"})
 	defer rdb.Close()
-	stack := buildLGPDStack(context.Background(), nil, rdb, func(string) string { return "" })
+	stack := buildLGPDStack(context.Background(), nil, rdb, func(string) string { return "" }, nil)
 	if stack.Routes.Export != nil || stack.Routes.Delete != nil {
 		t.Fatalf("expected noop stack, got Export=%v Delete=%v", stack.Routes.Export, stack.Routes.Delete)
 	}
