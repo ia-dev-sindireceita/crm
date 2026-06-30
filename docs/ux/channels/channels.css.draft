@@ -1,0 +1,138 @@
+/*
+ * SIN-66390 — Channel-management surface stylesheet (DRAFT prototype).
+ * Token-only. Load order: tokens.css -> components.css -> channels.css.
+ * Dark via [data-theme="dark"] (inherits component flips).
+ */
+
+.channels-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-5);
+}
+
+.channels-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.channels-page__header h1 {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.channels-list {
+  width: 100%;
+}
+
+.channels-list thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-1);
+}
+
+.channels-row__name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--font-medium);
+}
+
+.channels-row__glyph {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.channels-row__identity {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-default);
+}
+
+.channels-row--inactive .channels-row__identity,
+.channels-row--inactive .channels-access-summary {
+  color: var(--text-muted);
+}
+
+.channels-access-summary {
+  text-decoration: none;
+}
+
+.channels-row__actions {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.channels-row__actions .btn {
+  min-height: var(--hit-target-min);
+}
+
+/* ---- Roster primitive (shared P2 create form + P3 maintenance) -------- */
+.channels-roster {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin: 0;
+}
+
+.channels-roster__legend {
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+  padding: 0 var(--space-1);
+}
+
+.channels-roster__bulk {
+  display: inline-flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.channels-roster__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--hit-target-min);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.channels-roster__row:hover {
+  background: var(--surface-2);
+}
+
+.channels-roster__row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.channels-roster__name {
+  font-weight: var(--font-medium);
+  color: var(--text-default);
+}
+
+.channels-roster__role {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-line);
+  color: var(--text-muted);
+}
+
+.channels-roster__count {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.channels-connect {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}

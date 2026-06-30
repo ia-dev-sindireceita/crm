@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Novo canal</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/channels.css">
+</head>
+<body style="background: var(--surface-1);">
+  <main class="channels-page" role="main">
+    <div class="modal">
+      <div class="modal__dialog" role="dialog" aria-modal="true" aria-labelledby="channels-modal-title">
+        <h2 class="modal__title" id="channels-modal-title">Novo canal</h2>
+        <form action="/settings/channels" method="post">
+          <!-- Section A: identity -->
+          <div class="field">
+            <label class="field__label" for="ch-name">Nome de exibição</label>
+            <input class="field__input" id="ch-name" name="name" type="text" required autofocus>
+            <p class="field__help">Como este canal aparece para a equipe.</p>
+          </div>
+          <div class="field">
+            <label class="field__label" for="ch-type">Tipo</label>
+            <select class="field__select" id="ch-type" name="type">
+              <option>WhatsApp</option>
+              <option>Telegram</option>
+              <option>Instagram</option>
+              <option>Webchat</option>
+              <option>E-mail</option>
+            </select>
+          </div>
+          <div class="field" id="channel-identity-field">
+            <label class="field__label" for="ch-identity">Número (com DDI)</label>
+            <input class="field__input" id="ch-identity" name="identity" type="text" inputmode="tel" placeholder="+55 11 ·····-····">
+            <p class="field__help">Informe o número com DDI, ex: +55 11 ·····-····</p>
+          </div>
+
+          <!-- Section B: access roster -->
+          <fieldset class="channels-roster" id="access-roster">
+            <legend class="channels-roster__legend">Quem atende este canal</legend>
+            <p class="field__help">Todos os atendentes ativos começam marcados. Desmarque quem não deve ver estas conversas.</p>
+            <div class="channels-roster__bulk">
+              <button class="btn btn--ghost" type="button">Marcar todos</button>
+              <button class="btn btn--ghost" type="button">Desmarcar todos</button>
+            </div>
+            <label class="channels-roster__row">
+              <input type="checkbox" name="user_ids" value="u1" checked>
+              <span class="channels-roster__name">Ana Lima</span>
+              <span class="channels-roster__role">Atendente</span>
+            </label>
+            <label class="channels-roster__row">
+              <input type="checkbox" name="user_ids" value="u2" checked>
+              <span class="channels-roster__name">Bruno Costa</span>
+              <span class="channels-roster__role">Atendente</span>
+            </label>
+            <label class="channels-roster__row">
+              <input type="checkbox" name="user_ids" value="u3" checked>
+              <span class="channels-roster__name">Carla Dias</span>
+              <span class="channels-roster__role">Líder de equipe</span>
+            </label>
+            <p class="channels-roster__count" id="access-count" aria-live="polite">3 de 3 atendentes com acesso</p>
+          </fieldset>
+
+          <div class="modal__actions">
+            <button class="btn btn--ghost" type="button">Cancelar</button>
+            <button class="btn btn--primary" type="submit">Salvar canal</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
