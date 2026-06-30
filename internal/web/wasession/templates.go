@@ -213,6 +213,7 @@ var layoutTmpl = func() *template.Template {
 {{define "title"}}WhatsApp (sessão) — provisionamento{{end}}
 {{define "head_extra"}}
   <link rel="stylesheet" href="/static/css/wa-session.css">
+  <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{shellCSPNonce .}}" defer></script>
 {{end}}
 {{define "content"}}
   <div class="wa-session" data-testid="wa-session">
