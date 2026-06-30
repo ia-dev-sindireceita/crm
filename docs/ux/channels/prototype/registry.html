@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Canais</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/channels.css">
+</head>
+<body style="background: var(--surface-1);">
+  <main class="channels-page" role="main">
+    <div class="channels-page__header">
+      <h1>Canais</h1>
+      <a class="btn btn--primary" href="/settings/channels/new">+ Novo canal</a>
+    </div>
+
+    <div id="channels-toast" aria-live="polite"></div>
+
+    <div class="card">
+      <table class="table channels-list" id="channels-list">
+        <thead>
+          <tr>
+            <th scope="col">Canal</th>
+            <th scope="col">Tipo</th>
+            <th scope="col">Identidade</th>
+            <th scope="col">Acesso</th>
+            <th scope="col">Status</th>
+            <th scope="col">Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="channels-row" id="channel-row-1">
+            <td><span class="channels-row__name"><svg class="channels-row__glyph" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/></svg>Suporte Vendas</span></td>
+            <td style="color: var(--text-muted);">WhatsApp</td>
+            <td><span class="channels-row__identity">+55 ·· ····-··88</span></td>
+            <td><a class="channels-access-summary badge" href="/settings/channels/1/access">Todos</a></td>
+            <td><span class="badge badge--success">Ativo</span></td>
+            <td><span class="channels-row__actions"><a class="btn btn--ghost" href="/settings/channels/1/edit">Editar</a><button class="btn btn--ghost" type="button">Desativar</button></span></td>
+          </tr>
+          <tr class="channels-row" id="channel-row-2">
+            <td><span class="channels-row__name"><svg class="channels-row__glyph" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="currentColor"/></svg>Atendimento Geral</span></td>
+            <td style="color: var(--text-muted);">Telegram</td>
+            <td><span class="channels-row__identity">@····dler</span></td>
+            <td><a class="channels-access-summary badge badge--info" href="/settings/channels/2/access">3 atendentes</a></td>
+            <td><span class="badge badge--success">Ativo</span></td>
+            <td><span class="channels-row__actions"><a class="btn btn--ghost" href="/settings/channels/2/edit">Editar</a><button class="btn btn--ghost" type="button">Desativar</button></span></td>
+          </tr>
+          <tr class="channels-row channels-row--inactive" id="channel-row-3">
+            <td><span class="channels-row__name"><svg class="channels-row__glyph" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8 L8 2 L14 8 L8 14 Z" fill="currentColor"/></svg>Campanha Antiga</span></td>
+            <td style="color: var(--text-muted);">Instagram</td>
+            <td><span class="channels-row__identity">@····loja</span></td>
+            <td><span class="channels-access-summary badge">2 atendentes</span></td>
+            <td><span class="badge">Inativo</span></td>
+            <td><span class="channels-row__actions"><a class="btn btn--ghost" href="/settings/channels/3/edit">Editar</a><button class="btn btn--ghost" type="button">Ativar</button></span></td>
+          </tr>
+          <tr class="channels-row" id="channel-row-4">
+            <td><span class="channels-row__name"><svg class="channels-row__glyph" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/></svg>Novo WhatsApp</span></td>
+            <td style="color: var(--text-muted);">WhatsApp</td>
+            <td><span class="channels-row__identity">—</span></td>
+            <td><span class="channels-access-summary badge">Todos</span></td>
+            <td><span class="badge badge--warning">Conectando…</span></td>
+            <td><span class="channels-row__actions channels-connect"><button class="btn btn--ghost" type="button">Conectar</button></span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</body>
+</html>
