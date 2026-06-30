@@ -307,3 +307,128 @@ func EnforceRuntimeRLSRoleFromEnv(ctx context.Context, getenv func(string) strin
 	defer pool.Close()
 	return assertRuntimeRLSRole(ctx, pool, enforce, log.Printf)
 }
+
+// EnvAuditDSN names the env var holding the DSN for the dedicated audit
+// pool (SIN-66332). It MUST connect as role app_audit — LOGIN, BYPASSRLS,
+// INSERT-only on the split audit tables (migration 0078). The writer
+// (SplitAuditLogger) supplies tenant_id explicitly and legitimately
+// persists NULL-tenant master/impersonation rows, so it cannot depend on
+// the per-tenant app.tenant_id GUC the runtime pool's RLS keys on.
+const EnvAuditDSN = "AUDIT_DATABASE_URL"
+
+// EnvAppEnv mirrors the cmd/server APP_ENV knob (staging|production|...).
+// Audit is a non-repudiation control, so when AUDIT_DATABASE_URL is unset
+// in a non-dev environment the audit-role guard fails the boot rather than
+// silently degrading the security ledger.
+const EnvAppEnv = "APP_ENV"
+
+// ErrAuditRoleEnforcesRLS is the inverse of ErrRuntimeRoleBypassesRLS: the
+// audit pool MUST bypass RLS so audit INSERTs succeed regardless of
+// app.tenant_id. A NOBYPASSRLS audit role re-introduces the 42501 the
+// dedicated role exists to close (the 2FA-enroll-500 root cause). Hard-fails
+// only when DB_ENFORCE_RLS_ROLE=1; otherwise WARNs (dev parity).
+var ErrAuditRoleEnforcesRLS = errors.New("postgres: audit DB role does not bypass RLS")
+
+// ErrAuditDSNRequired is returned by the audit-role guard when
+// AUDIT_DATABASE_URL is unset in a non-dev environment (APP_ENV in
+// {staging, production}). Audit is a non-repudiation control; booting
+// stg/prod without the dedicated app_audit pool would route audit writes
+// through the NOBYPASSRLS runtime pool and drop (or 500 on) every write.
+var ErrAuditDSNRequired = errors.New("postgres: AUDIT_DATABASE_URL is required in staging/production")
+
+// NewAuditFromEnv builds the dedicated app_audit pool from AUDIT_DATABASE_URL.
+// Returns (nil, ErrEmptyDSN) when unset so the caller can fall back to the
+// runtime pool in dev (where the bootstrap role is SUPERUSER/BYPASSRLS and
+// RLS is off, so audit INSERTs still succeed). In stg/prod the unset case is
+// rejected at boot by EnforceAuditRLSRoleFromEnv before this is reached.
+// Callers MUST Close the returned pool on shutdown.
+func NewAuditFromEnv(ctx context.Context, getenv func(string) string) (*pgxpool.Pool, error) {
+	if getenv == nil {
+		return nil, ErrEmptyDSN
+	}
+	return New(ctx, getenv(EnvAuditDSN))
+}
+
+// assertAuditRLSRole is the inverse of assertRuntimeRLSRole: the audit role
+// is correct precisely when it bypasses RLS (SUPERUSER or BYPASSRLS). A
+// NOBYPASSRLS audit role ALWAYS WARNs and hard-fails only when enforce is
+// true. Reads only current_user / pg_roles attributes — never the DSN or any
+// secret. A query/scan error is conservative: fail (wrapped) when enforce,
+// else WARN and return nil so a transient catalog hiccup never bricks a boot.
+func assertAuditRLSRole(ctx context.Context, q rlsRoleQuerier, enforce bool, logf func(string, ...any)) error {
+	const query = `SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`
+	var rolname string
+	var super, bypass bool
+	if err := q.QueryRow(ctx, query).Scan(&rolname, &super, &bypass); err != nil {
+		if enforce {
+			return fmt.Errorf("postgres: audit RLS-role guard: read pg_roles: %w", err)
+		}
+		logf("level=WARN component=postgres event=audit_role_check_failed enforce=false err=%q msg=%q",
+			err.Error(),
+			"could not verify the audit DB role bypasses RLS; continuing (set DB_ENFORCE_RLS_ROLE=1 to fail-fast)")
+		return nil
+	}
+	if super || bypass {
+		return nil
+	}
+	logf("level=WARN component=postgres event=audit_role_enforces_rls role=%q rolsuper=%t rolbypassrls=%t enforce=%t msg=%q",
+		rolname, super, bypass, enforce,
+		"audit DB role does NOT bypass Row-Level Security; audit INSERTs will fail (SQLSTATE 42501) for NULL-tenant or out-of-WithTenant writes. AUDIT_DATABASE_URL MUST connect as a BYPASSRLS role (app_audit). See deploy/compose/.env.example.")
+	if enforce {
+		return fmt.Errorf("%w: role %q (rolsuper=%t rolbypassrls=%t); point AUDIT_DATABASE_URL at a BYPASSRLS role (app_audit)",
+			ErrAuditRoleEnforcesRLS, rolname, super, bypass)
+	}
+	return nil
+}
+
+// EnforceAuditRLSRoleFromEnv is the boot-time defense-in-depth guard for the
+// dedicated audit pool (SIN-66332), the inverse of the runtime guard:
+//
+//   - AUDIT_DATABASE_URL unset + DATABASE_URL set + APP_ENV in
+//     {staging, production} → returns ErrAuditDSNRequired (fail-hard: a prod
+//     deployment that talks to a DB but has no dedicated audit pool would
+//     route audit writes through the NOBYPASSRLS runtime pool and 500/drop
+//     them — audit is a non-repudiation control). Gated on DATABASE_URL the
+//     same way the runtime/TLS guards are: with no DB there are no audit
+//     writes to route, so the requirement is moot;
+//   - AUDIT_DATABASE_URL unset + dev/other APP_ENV (or no DATABASE_URL) → nil
+//     (fail-soft; in dev the runtime pool is SUPERUSER/BYPASSRLS and absorbs
+//     audit writes);
+//   - AUDIT_DATABASE_URL set → opens a short-lived pool and delegates to
+//     assertAuditRLSRole, which WARNs always and hard-fails (ErrAuditRoleEnforcesRLS)
+//     only when DB_ENFORCE_RLS_ROLE=1;
+//   - connectivity error on a set DSN → WARNs and returns nil (connectivity is
+//     New's ping-retry concern, mirroring EnforceRuntimeRLSRoleFromEnv).
+//
+// It closes its probe pool before returning; the real audit pool is opened
+// separately by NewAuditFromEnv in cmd/server.
+func EnforceAuditRLSRoleFromEnv(ctx context.Context, getenv func(string) string) error {
+	if getenv == nil {
+		return nil
+	}
+	dsn := getenv(EnvAuditDSN)
+	if dsn == "" {
+		// Required only when the app actually connects to a DB in a non-dev
+		// environment; with no DATABASE_URL there are no audit writes to
+		// route (mirrors the runtime/TLS guards, which also no-op without a
+		// DSN), so narrow boot-gate paths are unaffected.
+		if getenv(EnvDSN) != "" {
+			switch getenv(EnvAppEnv) {
+			case "staging", "production":
+				return ErrAuditDSNRequired
+			}
+		}
+		return nil
+	}
+	enforce := getenv(EnvEnforceRLSRole) == "1"
+	pool, err := New(ctx, dsn)
+	if err != nil {
+		log.Printf("level=WARN component=postgres event=audit_role_guard_skipped enforce=%t msg=%q err=%v",
+			enforce,
+			"could not open the audit pool to verify it bypasses RLS; skipping the role guard (connectivity is handled elsewhere)",
+			err)
+		return nil
+	}
+	defer pool.Close()
+	return assertAuditRLSRole(ctx, pool, enforce, log.Printf)
+}

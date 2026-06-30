@@ -255,7 +255,7 @@ func TestPumpWASessionInbound_ClearsQROnBan(t *testing.T) {
 
 func TestBuildWASessionUIHandler_NilProvisioner_Disabled(t *testing.T) {
 	t.Parallel()
-	h, cleanup := buildWASessionUIHandler(context.Background(), func(string) string { return "" }, nil)
+	h, cleanup := buildWASessionUIHandler(context.Background(), func(string) string { return "" }, nil, nil)
 	defer cleanup()
 	if h != nil {
 		t.Fatal("handler non-nil with nil provisioner, want disabled")

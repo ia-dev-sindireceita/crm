@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgconsent "github.com/pericles-luz/crm/internal/adapter/db/postgres/consent"
@@ -163,7 +164,9 @@ func subjectForUser(userID uuid.UUID) consent.Subject {
 // Returns (nil, no-op) when the session transport is not mounted (prov nil)
 // or the consent registry cannot be built — the surface then stays
 // unmounted (deny-by-default).
-func buildWASessionUIHandler(ctx context.Context, getenv func(string) string, prov *managerProvisioner) (http.Handler, func()) {
+// auditPool is the SIN-66332 dedicated app_audit pool (nil in dev); when nil
+// the wa-session consent audit writer falls back to this wire's runtime pool.
+func buildWASessionUIHandler(ctx context.Context, getenv func(string) string, prov *managerProvisioner, auditPool *pgxpool.Pool) (http.Handler, func()) {
 	noop := func() {}
 	if prov == nil {
 		log.Printf("crm: wa session UI disabled (transport not mounted)")
@@ -185,7 +188,7 @@ func buildWASessionUIHandler(ctx context.Context, getenv func(string) string, pr
 		log.Printf("crm: wa session UI disabled — consent store: %v", err)
 		return nil, noop
 	}
-	splitLogger, err := postgresadapter.NewSplitAuditLogger(pool)
+	splitLogger, err := postgresadapter.NewSplitAuditLogger(auditExecutorOr(auditPool, pool))
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: wa session UI disabled — audit logger: %v", err)

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	postgresadapter "github.com/pericles-luz/crm/internal/adapter/db/postgres"
@@ -169,6 +170,88 @@ func TestSplitAuditLogger_WriteSecurity_InsertsRow(t *testing.T) {
 	}
 	if !contains(string(gotTarget), "10.0.0.1") {
 		t.Fatalf("target=%q, want canonical fields", string(gotTarget))
+	}
+}
+
+// SIN-66332 regression — encodes the 2FA-enroll 500 (RLS 42501) root cause
+// and its fix at the adapter boundary.
+//
+// The SplitAuditLogger emits a bare INSERT into audit_log_security with NO
+// surrounding WithTenant, so the app.tenant_id GUC is unset. Migration 0083's
+// tenant_isolation_insert policy is FOR INSERT TO app_runtime WITH CHECK
+// (tenant_id = nullif(current_setting('app.tenant_id', true), ”)::uuid): with
+// the GUC unset that compares against NULL → false → 42501. The dedicated
+// app_audit role (BYPASSRLS) is the fix — the policy never bites it.
+//
+//   - PART A (the bug): the SAME writer over the NOBYPASSRLS app_runtime pool
+//     fails with SQLSTATE 42501 because app.tenant_id is unset.
+//   - PART B (the fix): the writer over the app_audit pool succeeds and the
+//     row persists, even though app.tenant_id is still unset.
+//   - PART C: a NULL-tenant (master) row also persists through the audit pool
+//     — these rows can NEVER satisfy the runtime WITH CHECK and depend on
+//     BYPASSRLS by design.
+func TestSplitAuditLogger_WriteSecurity_AuditPoolBypassesRLSWithoutTenantGUC(t *testing.T) {
+	db := freshDBWithSplitAudit(t)
+	tenantID, userID := seedSplitTenantUser(t, db.DB, "rls-42501")
+	_, masterID := seedTenantUserMaster(t, db.DB)
+	ctx := newCtx(t)
+
+	event := audit.SecurityAuditEvent{
+		Event:       audit.SecurityEventLogin,
+		ActorUserID: userID,
+		TenantID:    &tenantID,
+		Target:      map[string]any{"flow": "2fa-enroll"},
+	}
+
+	// PART A — runtime pool (app_runtime, NOBYPASSRLS): reproduces 42501.
+	runtimeLogger, err := postgresadapter.NewSplitAuditLogger(db.RuntimePool())
+	if err != nil {
+		t.Fatalf("NewSplitAuditLogger(runtime): %v", err)
+	}
+	err = runtimeLogger.WriteSecurity(ctx, event)
+	if err == nil {
+		t.Fatal("runtime-pool WriteSecurity: got nil, want 42501 (RLS bug must reproduce)")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		t.Fatalf("runtime-pool WriteSecurity: got %v, want SQLSTATE 42501", err)
+	}
+
+	// PART B — audit pool (app_audit, BYPASSRLS): the fix. Same event, same
+	// unset GUC, now succeeds.
+	auditLogger, err := postgresadapter.NewSplitAuditLogger(db.auditPool)
+	if err != nil {
+		t.Fatalf("NewSplitAuditLogger(audit): %v", err)
+	}
+	if err := auditLogger.WriteSecurity(ctx, event); err != nil {
+		t.Fatalf("audit-pool WriteSecurity: got %v, want success", err)
+	}
+	var tenantRows int
+	if err := db.AdminPool().QueryRow(ctx,
+		`SELECT count(*) FROM audit_log_security WHERE actor_user_id = $1 AND tenant_id = $2`,
+		userID, tenantID).Scan(&tenantRows); err != nil {
+		t.Fatalf("read back tenant row: %v", err)
+	}
+	if tenantRows != 1 {
+		t.Fatalf("tenant audit rows: got %d, want exactly 1 (runtime insert must have failed, audit insert must have landed)", tenantRows)
+	}
+
+	// PART C — NULL-tenant master row persists through the audit pool.
+	if err := auditLogger.WriteSecurity(ctx, audit.SecurityAuditEvent{
+		Event:       audit.SecurityEventMasterGrant,
+		ActorUserID: masterID,
+		TenantID:    nil,
+	}); err != nil {
+		t.Fatalf("audit-pool WriteSecurity (null tenant): got %v, want success", err)
+	}
+	var nullTenantRows int
+	if err := db.AdminPool().QueryRow(ctx,
+		`SELECT count(*) FROM audit_log_security WHERE actor_user_id = $1 AND tenant_id IS NULL`,
+		masterID).Scan(&nullTenantRows); err != nil {
+		t.Fatalf("read back master row: %v", err)
+	}
+	if nullTenantRows != 1 {
+		t.Fatalf("null-tenant audit rows: got %d, want 1", nullTenantRows)
 	}
 }
 

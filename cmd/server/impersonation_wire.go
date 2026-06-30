@@ -46,14 +46,22 @@ func noopImpersonationStack() impersonationStack {
 //
 // Returns noopImpersonationStack() when MASTER_OPS_DATABASE_URL is unset or
 // any constructor fails.
+// auditDB is the SIN-66332 dedicated app_audit executor (BYPASSRLS); pass the
+// IAM runtime pool as the dev fallback. This call site is the sharpest reason
+// the audit pool must bypass RLS: impersonation_start/stop audit rows carry
+// tenant_id IS NULL (master context), so a NOBYPASSRLS writer rejects them.
 func buildImpersonationStack(
 	ctx context.Context,
 	iamPool *pgxpool.Pool,
 	resolver tenancy.ByIDResolver,
 	getenv func(string) string,
+	auditDB postgresadapter.AuditExecutor,
 ) impersonationStack {
 	if iamPool == nil || resolver == nil {
 		return noopImpersonationStack()
+	}
+	if auditDB == nil {
+		auditDB = iamPool
 	}
 	masterDSN := getenv(envMasterOpsDSN)
 	if masterDSN == "" {
@@ -74,7 +82,7 @@ func buildImpersonationStack(
 		return noopImpersonationStack()
 	}
 
-	auditLogger, err := postgresadapter.NewSplitAuditLogger(iamPool)
+	auditLogger, err := postgresadapter.NewSplitAuditLogger(auditDB)
 	if err != nil {
 		masterPool.Close()
 		log.Printf("crm: impersonation envelope disabled — audit logger: %v", err)

@@ -205,6 +205,31 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		return fmt.Errorf("rls-role boot guard: %w", err)
 	}
 
+	// SIN-66332 inverse boot guard for the dedicated audit pool. The
+	// SplitAuditLogger writes through app_audit (LOGIN, BYPASSRLS,
+	// INSERT-only) so audit INSERTs succeed regardless of app.tenant_id —
+	// including the NULL-tenant master/impersonation rows and any write
+	// outside a WithTenant scope (the 2FA-enroll-500 root cause: a bare
+	// audit INSERT through the NOBYPASSRLS runtime pool hit 42501). This
+	// guard fail-HARDs when AUDIT_DATABASE_URL is unset in stg/prod (audit
+	// is a non-repudiation control) and when the role is NOBYPASSRLS with
+	// DB_ENFORCE_RLS_ROLE=1; it no-ops in dev (runtime role is BYPASSRLS so
+	// audit writes are absorbed) and is fail-soft on connectivity.
+	if err := pgpool.EnforceAuditRLSRoleFromEnv(ctx, getenv); err != nil {
+		return fmt.Errorf("audit-role boot guard: %w", err)
+	}
+
+	// SIN-66332 — the single dedicated app_audit pool, built once and
+	// threaded into every SplitAuditLogger call site (IAM tree, consent,
+	// wa-session). Nil when AUDIT_DATABASE_URL is unset (dev): each call
+	// site then falls back to its runtime pool, which in dev is
+	// SUPERUSER/BYPASSRLS so audit INSERTs still succeed. In stg/prod the
+	// unset case never reaches here — the guard above already failed boot.
+	auditPool := buildAuditPool(ctx, getenv)
+	if auditPool != nil {
+		defer auditPool.Close()
+	}
+
 	// SIN-66324 defense-in-depth boot guard for TLS-in-transit. The compose
 	// defaults bake sslmode=disable for the bundled same-host Postgres; this
 	// guard ALWAYS WARNs when DATABASE_URL (or WA_SESSION_DATABASE_URL) runs
@@ -274,7 +299,7 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	// /settings/whatsapp-session* HTMX surface ONLY when the transport above
 	// is mounted (waSessionProv non-nil) and the audited consent registry
 	// can be built — deny-by-default. Routed below via iamHandlerOpts.
-	webWASessionHandler, webWASessionCleanup := buildWASessionUIHandler(ctx, getenv, waSessionProv)
+	webWASessionHandler, webWASessionCleanup := buildWASessionUIHandler(ctx, getenv, waSessionProv, auditPool)
 	defer webWASessionCleanup()
 
 	// SIN-62844 Messenger inbound webhook + outbound sender (F2-10 follow-up).
@@ -391,7 +416,7 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	webPublicPrivacyHandler, webPublicPrivacyCleanup := buildPublicPrivacyHandler(ctx, getenv)
 	defer webPublicPrivacyCleanup()
 
-	webConsentHandler, webConsentCleanup := buildConsentHandler(ctx, getenv)
+	webConsentHandler, webConsentCleanup := buildConsentHandler(ctx, getenv, auditPool)
 	defer webConsentCleanup()
 
 	// SIN-64974 — HTMX PIX-invoice surface (Fase 4, SIN-62963). The
@@ -464,6 +489,10 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		WebWASession:       webWASessionHandler,
 		Theme:              brandingStack.Theme,
 		Metrics:            metrics,
+		// SIN-66332 — dedicated app_audit pool (nil in dev) threaded to
+		// every SplitAuditLogger in the IAM tree (logout, authz, lgpd,
+		// impersonation, usermfa/2FA-enroll).
+		AuditPool: auditPool,
 		// SIN-63940 / UX-F3 — surface the custom-domain UI gate to
 		// /hello-tenant. The handler itself is built below by
 		// buildCustomDomainHandler; we cannot reuse its `cdHandler !=

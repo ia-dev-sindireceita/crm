@@ -155,9 +155,16 @@ func noopLGPDStack() lgpdStack {
 // router then omits /admin/lgpd/{export,delete} cleanly. The handler
 // constructor panics on nil collaborators (defensive), so every
 // failure path here returns early before reaching weblgpd.New.
-func buildLGPDStack(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client, getenv func(string) string) lgpdStack {
+// auditDB is the SIN-66332 dedicated app_audit executor (BYPASSRLS) used for
+// the SplitAuditLogger; pass the IAM runtime pool as the dev fallback. It is
+// distinct from pool because LGPD audit rows must persist regardless of the
+// per-tenant RLS scope.
+func buildLGPDStack(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client, getenv func(string) string, auditDB postgresadapter.AuditExecutor) lgpdStack {
 	if pool == nil || rdb == nil {
 		return noopLGPDStack()
+	}
+	if auditDB == nil {
+		auditDB = pool
 	}
 	masterDSN := getenv(envMasterOpsDSN)
 	if masterDSN == "" {
@@ -178,7 +185,7 @@ func buildLGPDStack(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client
 		return noopLGPDStack()
 	}
 
-	splitLogger, err := postgresadapter.NewSplitAuditLogger(pool)
+	splitLogger, err := postgresadapter.NewSplitAuditLogger(auditDB)
 	if err != nil {
 		masterPool.Close()
 		log.Printf("crm: web/lgpd handler disabled — audit logger: %v", err)
