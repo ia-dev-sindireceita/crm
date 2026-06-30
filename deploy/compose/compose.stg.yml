@@ -138,6 +138,17 @@ services:
       # state instead of serving cross-tenant data. The fix is to set
       # DATABASE_URL=postgres://app_runtime:...@postgres:5432/crm in .env.stg.
       DB_ENFORCE_RLS_ROLE: ${DB_ENFORCE_RLS_ROLE:-1}
+      # SIN-66324 — defense-in-depth: hard-fail boot if a Postgres DSN
+      # (DATABASE_URL / WA_SESSION_DATABASE_URL) disables TLS-in-transit
+      # (sslmode in disable/allow/prefer, or absent → libpq `prefer`, which
+      # falls back to cleartext). The guard ALWAYS WARNs in that case; this
+      # flag turns the warning into a hard boot failure. Default "0" because
+      # the compose default DATABASE_URL targets the bundled same-host
+      # `postgres` service, which serves no TLS (traffic stays on the docker
+      # bridge — the in-transit risk the operator accepted in SIN-66301).
+      # Flip to "1" in .env.stg once DATABASE_URL points at a TLS-capable
+      # Postgres (sslmode=require, verify-full when a CA bundle is available).
+      DB_ENFORCE_DB_TLS: ${DB_ENFORCE_DB_TLS:-0}
       # SIN-65076 — operator-console hostname. Feeds httpapi.Deps.MasterHost
       # so the /m/* master console is reachable on a dedicated host and that
       # host joins the CSRF Origin/Referer allowlist. Sourced from .env.stg

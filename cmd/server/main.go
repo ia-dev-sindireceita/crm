@@ -205,6 +205,19 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		return fmt.Errorf("rls-role boot guard: %w", err)
 	}
 
+	// SIN-66324 defense-in-depth boot guard for TLS-in-transit. The compose
+	// defaults bake sslmode=disable for the bundled same-host Postgres; this
+	// guard ALWAYS WARNs when DATABASE_URL (or WA_SESSION_DATABASE_URL) runs
+	// the connection in cleartext and HARD-FAILs boot when DB_ENFORCE_DB_TLS=1
+	// (set once the DSN points at a TLS-capable Postgres). It inspects only the
+	// DSN string — no DB round-trip, no credentials touched — so unlike the
+	// RLS guard it can never brick a boot on a transient hiccup. At-rest
+	// encryption (LUKS) is a distinct risk class the operator accepted in
+	// SIN-66301 and is out of scope here.
+	if err := pgpool.AssertDatabaseTLSFromEnv(getenv); err != nil {
+		return fmt.Errorf("db-tls boot guard: %w", err)
+	}
+
 	mux := newMux()
 
 	// SIN-62300 webhook intake — registered before the custom-domain
