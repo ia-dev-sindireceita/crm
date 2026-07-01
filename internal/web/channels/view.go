@@ -31,10 +31,14 @@ const (
 )
 
 // channelTypes is the ordered, closed set of channel families the admin
-// surface knows about. Order drives the <select> option order. It is the
-// full registry used for label lookup; the create form is served a
-// flag-filtered view via channelTypesFor so a gated family never appears
-// unless its flag is on.
+// surface knows about. Order drives the <select> option order. Every entry
+// is always offered in the create form — visibility is no longer gated by
+// any feature flag (SIN-66459/66468): the WhatsApp API vs WhatsApp Web
+// distinction is the deliverable and must be visible at all times. Functional
+// readiness of a family (e.g. the WhatsApp Web QR session) is gated
+// separately at create time, not by hiding the option. typeLabel and
+// knownType both read it so the picker, the label lookup, and the create-time
+// guard never disagree.
 var channelTypes = []channelType{
 	{Key: channelKeyWhatsApp, Label: "WhatsApp API"},
 	{Key: channelKeyWhatsAppWeb, Label: "WhatsApp Web"},
@@ -44,20 +48,11 @@ var channelTypes = []channelType{
 	{Key: "email", Label: "E-mail"},
 }
 
-// channelTypesFor returns the create-form type list filtered to the
-// operator's enabled feature flags. whatsapp_web is only offered when
-// whatsappWebEnabled is true (flag default OFF, prod-safe); every other
-// family is always offered. The returned slice is a fresh copy so callers
-// never mutate the package registry.
-func channelTypesFor(whatsappWebEnabled bool) []channelType {
-	out := make([]channelType, 0, len(channelTypes))
-	for _, t := range channelTypes {
-		if t.Key == channelKeyWhatsAppWeb && !whatsappWebEnabled {
-			continue
-		}
-		out = append(out, t)
-	}
-	return out
+// allChannelTypes returns a fresh copy of the closed registry so the create
+// form always offers every family and callers never mutate the package
+// registry.
+func allChannelTypes() []channelType {
+	return append([]channelType(nil), channelTypes...)
 }
 
 // typeLabel maps a stored channel_key to its operator-facing label,
@@ -75,13 +70,14 @@ func typeLabel(key string) string {
 	return strings.ToUpper(key[:1]) + key[1:]
 }
 
-// validTypeFor reports whether key is an offered channel family given the
-// operator's enabled flags. It shares channelTypesFor's filter so the
-// picker and the create-time guard can never disagree: with the whatsapp_web
-// flag OFF a forged POST for that key is rejected (deny-by-default,
-// secure-by-default API), and it is accepted only once the flag is on.
-func validTypeFor(key string, whatsappWebEnabled bool) bool {
-	for _, t := range channelTypesFor(whatsappWebEnabled) {
+// knownType reports whether key is a member of the closed channel-family
+// set. It is flag-independent: every family in channelTypes is a valid,
+// selectable type (deny-by-default still rejects a forged key outside the
+// set). Functional readiness — e.g. the WhatsApp Web QR session — is gated
+// separately at create time by the WhatsAppWebEnabled flag, not by treating
+// the key as invalid (SIN-66468).
+func knownType(key string) bool {
+	for _, t := range channelTypes {
 		if t.Key == key {
 			return true
 		}

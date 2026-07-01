@@ -10,6 +10,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -115,27 +116,80 @@ func TestWhatsAppWebEnabled_ParsesFlag(t *testing.T) {
 	}
 }
 
+// recordingChannelsStore embeds the no-op memChannelsStore and records
+// whether Create was called, so the wire test can assert that the WhatsApp
+// Web functional-readiness guard persists NOTHING when the flag is OFF.
+type recordingChannelsStore struct {
+	memChannelsStore
+	createCalls int
+	lastKey     string
+}
+
+func (s *recordingChannelsStore) Create(_ context.Context, ch *channels.Channel) error {
+	s.createCalls++
+	if ch != nil {
+		s.lastKey = ch.ChannelKey
+	}
+	return nil
+}
+
 // TestAssembleWebChannelsHandlerFlagged_ThreadsFlag pins that the boot flag
-// reaches the rendered create form: the whatsapp_web option appears only
-// when the assembled handler is flagged on.
+// gates FUNCTIONAL readiness, not visibility (SIN-66459/66468):
+//
+//   - The "whatsapp_web" option is ALWAYS offered in the create form,
+//     regardless of the flag — the WhatsApp API vs WhatsApp Web distinction
+//     is the deliverable and must be visible at all times (AC #1).
+//   - The flag still threads through the functional create path: a POST of
+//     channel_key=whatsapp_web with the flag OFF is bounced with the
+//     "em implementação" message and persists nothing (AC #3); with the flag
+//     ON it falls through to the real create and persists the channel.
 func TestAssembleWebChannelsHandlerFlagged_ThreadsFlag(t *testing.T) {
 	t.Parallel()
 	for _, on := range []bool{false, true} {
-		h, err := assembleWebChannelsHandlerFlagged(memChannelsStore{}, nil, nil, on)
+		store := &recordingChannelsStore{}
+		h, err := assembleWebChannelsHandlerFlagged(store, nil, nil, on)
 		if err != nil {
 			t.Fatalf("assemble(on=%v): %v", on, err)
 		}
 		tenant := &tenancy.Tenant{ID: uuid.New(), Name: "acme", Host: "acme.crm.local"}
-		r := httptest.NewRequest(http.MethodGet, "/settings/channels/new", nil)
-		r = r.WithContext(tenancy.WithContext(r.Context(), tenant))
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, r)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("on=%v: status=%d, want 200", on, rec.Code)
+
+		// (a) The option is always visible, independent of the flag.
+		rNew := httptest.NewRequest(http.MethodGet, "/settings/channels/new", nil)
+		rNew = rNew.WithContext(tenancy.WithContext(rNew.Context(), tenant))
+		recNew := httptest.NewRecorder()
+		h.ServeHTTP(recNew, rNew)
+		if recNew.Code != http.StatusOK {
+			t.Fatalf("on=%v: GET /new status=%d, want 200", on, recNew.Code)
 		}
-		gotOpt := strings.Contains(rec.Body.String(), `value="whatsapp_web"`)
-		if gotOpt != on {
-			t.Fatalf("on=%v: whatsapp_web option present=%v, want %v", on, gotOpt, on)
+		if !strings.Contains(recNew.Body.String(), `value="whatsapp_web"`) {
+			t.Fatalf("on=%v: whatsapp_web option must always be present in the create form", on)
+		}
+
+		// (b) The flag threads through the functional create path.
+		form := url.Values{}
+		form.Set("name", "Suporte WhatsApp Web")
+		form.Set("channel_key", "whatsapp_web")
+		form.Set("identity", "+5511999999999")
+		rPost := httptest.NewRequest(http.MethodPost, "/settings/channels", strings.NewReader(form.Encode()))
+		rPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rPost = rPost.WithContext(tenancy.WithContext(rPost.Context(), tenant))
+		recPost := httptest.NewRecorder()
+		h.ServeHTTP(recPost, rPost)
+
+		if on {
+			if store.createCalls != 1 {
+				t.Fatalf("on=true: whatsapp_web submit must persist a channel; Create calls=%d, want 1", store.createCalls)
+			}
+			if store.lastKey != "whatsapp_web" {
+				t.Fatalf("on=true: persisted channel_key=%q, want whatsapp_web", store.lastKey)
+			}
+		} else {
+			if store.createCalls != 0 {
+				t.Fatalf("on=false: whatsapp_web submit must persist NOTHING; Create calls=%d, want 0", store.createCalls)
+			}
+			if !strings.Contains(recPost.Body.String(), "em implementação") {
+				t.Fatalf("on=false: whatsapp_web submit must bounce with the 'em implementação' readiness message; body=%q", recPost.Body.String())
+			}
 		}
 	}
 }
