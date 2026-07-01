@@ -170,6 +170,35 @@ type CSRFTokenFn func(*http.Request) string
 // gate on it.
 type UserIDFn func(*http.Request) uuid.UUID
 
+// AccessibleChannel is one channel instance the caller may see. It backs
+// the SIN-66378 P4 channel-scope filter chip (name for the option, id for
+// the read-path filter). Kept as a web-local type so the handler package
+// does not import the channels domain — the composition root projects the
+// domain view onto it at the wiring seam.
+type AccessibleChannel struct {
+	ID          uuid.UUID
+	DisplayName string
+}
+
+// ChannelScopeUseCase resolves the caller's accessible channel instances
+// for the inbox list's per-channel access filter + filter chip
+// (SIN-66378 P4). Optional: when the dep is nil the handler applies no
+// channel-access filtering and does not render the chip (legacy
+// behaviour — every conversation tenant RLS exposes is listed). isGerente
+// comes from the request principal via IsGerente; a gerente gets every
+// channel, an atendente only the open channels plus those they hold an
+// explicit grant for.
+type ChannelScopeUseCase interface {
+	AccessibleChannels(ctx context.Context, tenantID, userID uuid.UUID, isGerente bool) ([]AccessibleChannel, error)
+}
+
+// IsGerenteFn reports whether the request principal holds the tenant
+// gerente role. Optional companion to ChannelScope: when nil the caller
+// is treated as a non-gerente (atendente scope), so the channel-access
+// filter fails safe (deny-by-default rather than see-all). The
+// composition root wires it from iam.PrincipalFromContext.
+type IsGerenteFn func(*http.Request) bool
+
 // Deps bundles the handler's collaborators. The core inbox ports
 // (ListConversations / ListMessages / SendOutbound / GetMessage /
 // CSRFToken / UserID) are required; AIAssist is optional — when
@@ -198,6 +227,13 @@ type Deps struct {
 	GetMessage        GetMessageUseCase
 	CSRFToken         CSRFTokenFn
 	UserID            UserIDFn
+	// ChannelScope resolves the caller's accessible channel instances for
+	// the SIN-66378 P4 per-channel access filter + filter chip. Optional:
+	// nil disables channel-access filtering and the chip (the list falls
+	// back to the pre-P4 tenant-wide view). IsGerente is its companion —
+	// nil ⇒ caller treated as a non-gerente (fail-safe / deny-by-default).
+	ChannelScope ChannelScopeUseCase
+	IsGerente    IsGerenteFn
 	// UserLabels resolves the logged-in user's id to the top-bar account
 	// label (SIN-65578). Optional: when nil the shell renders the "Conta"
 	// fallback instead of the email-local-part label. The composition root
@@ -443,6 +479,15 @@ type inboxFilter struct {
 	// keeps the read-side use case (it rejects the unassigned+user combo)
 	// from ever seeing both.
 	Unassigned bool
+	// ChannelID is the channel-scope filter chip selection (SIN-66378 P4):
+	// the id of a single channel *instance* to narrow the list to, or ""
+	// for "all accessible channels". It is a validated UUID string — an
+	// unparseable value degrades to "" (all) rather than erroring the swap,
+	// mirroring the Channel carrier sanitisation. buildListRegion drops a
+	// value that is not among the caller's accessible channels so an
+	// out-of-scope id can neither leak rows nor render a phantom chip
+	// selection.
+	ChannelID string
 }
 
 // inboxFilterChannels mirrors the read-model's known carriers
@@ -486,11 +531,23 @@ func parseInboxFilter(r *http.Request) inboxFilter {
 	// "me" → my conversations, "unassigned" → the unattended queue,
 	// anything else (incl. absent / "all") → no assignment filter.
 	assigned := strings.ToLower(strings.TrimSpace(q.Get("assigned")))
+
+	// channel_id is the P4 channel-scope chip. It is validated as a UUID
+	// here (parse-or-drop); buildListRegion further constrains it to the
+	// caller's accessible set. An empty / unparseable value degrades to
+	// "" (all accessible channels).
+	channelID := ""
+	if raw := strings.TrimSpace(q.Get("channel_id")); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil && id != uuid.Nil {
+			channelID = id.String()
+		}
+	}
 	return inboxFilter{
 		State:      state,
 		Channel:    channel,
 		AssignedMe: assigned == "me",
 		Unassigned: assigned == "unassigned",
+		ChannelID:  channelID,
 	}
 }
 
@@ -518,6 +575,9 @@ func (f inboxFilter) query() string {
 	v.Set("state", f.State)
 	v.Set("channel", f.Channel)
 	v.Set("assigned", f.AssignedParam())
+	if f.ChannelID != "" {
+		v.Set("channel_id", f.ChannelID)
+	}
 	return "?" + v.Encode()
 }
 
@@ -527,7 +587,7 @@ func (f inboxFilter) query() string {
 // link); the default + zero rows means the tenant simply has no
 // conversations yet.
 func (f inboxFilter) nonDefault() bool {
-	return f.State != "open" || f.Channel != "" || f.AssignedMe || f.Unassigned
+	return f.State != "open" || f.Channel != "" || f.AssignedMe || f.Unassigned || f.ChannelID != ""
 }
 
 // buildListRegion runs the read side and assembles the listRegionData the
@@ -579,6 +639,16 @@ func (h *Handler) buildListRegion(r *http.Request, tenantID uuid.UUID, f inboxFi
 		assignedUserID = h.deps.UserID(r)
 	}
 
+	// SIN-66378 P4: resolve the caller's per-channel access scope + the
+	// chip options/selection. scope stays nil (no channel-access filter)
+	// when ChannelScope is not wired (legacy) or the caller is a gerente;
+	// an atendente gets a concrete (possibly empty) set. chipChannelID is
+	// the sanitised chip selection, constrained to the accessible set.
+	scope, chipChannelID, err := h.resolveChannelScope(r, tenantID, &region, f)
+	if err != nil {
+		return listRegionData{}, err
+	}
+
 	res, err := h.deps.ListSummaries.Execute(r.Context(), inboxusecase.ListConversationSummariesInput{
 		TenantID: tenantID,
 		State:    f.State,
@@ -588,6 +658,8 @@ func (h *Handler) buildListRegion(r *http.Request, tenantID uuid.UUID, f inboxFi
 		// never sees the combination it rejects.
 		AssignedUserID: assignedUserID,
 		Unassigned:     f.Unassigned,
+		ChannelScope:   scope,
+		ChannelID:      chipChannelID,
 	})
 	if err != nil {
 		return listRegionData{}, err
@@ -612,6 +684,75 @@ func (h *Handler) buildListRegion(r *http.Request, tenantID uuid.UUID, f inboxFi
 		region.Items = append(region.Items, row)
 	}
 	return region, nil
+}
+
+// resolveChannelScope computes the caller's per-channel access scope for
+// the live inbox read path plus the filter-chip options/selection
+// (SIN-66378 P4). It also mutates region in place: it fills
+// ChannelOptions (the chip's option list) and, when the requested chip
+// value is not among the caller's accessible channels, drops it from
+// Filters/FilterQuery so an out-of-scope id neither renders a phantom
+// selection nor lingers in the row links.
+//
+// Return contract:
+//
+//   - scope == nil  → no channel-access restriction. This is the case
+//     when ChannelScope is not wired (legacy surface) or the caller is a
+//     gerente (sees every channel). The read model applies no channel_id
+//     predicate.
+//   - scope != nil  → restrict to the pointed-to set (the atendente's
+//     accessible ids). An empty set is legitimate — the caller has no
+//     accessible channels — and yields an empty listing (deny-by-default).
+//   - chipChannelID  → the sanitised single-instance narrowing, uuid.Nil
+//     when absent or dropped as out-of-scope.
+func (h *Handler) resolveChannelScope(r *http.Request, tenantID uuid.UUID, region *listRegionData, f inboxFilter) (*[]uuid.UUID, uuid.UUID, error) {
+	if h.deps.ChannelScope == nil {
+		return nil, uuid.Nil, nil
+	}
+	// IsGerente is optional; a missing resolver fails safe to non-gerente
+	// so the access filter denies by default rather than leaking every
+	// channel.
+	isGerente := h.deps.IsGerente != nil && h.deps.IsGerente(r)
+	userID := h.deps.UserID(r)
+
+	accessible, err := h.deps.ChannelScope.AccessibleChannels(r.Context(), tenantID, userID, isGerente)
+	if err != nil {
+		return nil, uuid.Nil, err
+	}
+	region.ChannelOptions = accessible
+
+	// Build the accessible-id set for scope + chip validation.
+	ids := make([]uuid.UUID, 0, len(accessible))
+	allowed := make(map[uuid.UUID]struct{}, len(accessible))
+	for _, ch := range accessible {
+		ids = append(ids, ch.ID)
+		allowed[ch.ID] = struct{}{}
+	}
+
+	// Validate the chip selection against the accessible set: an
+	// out-of-scope value is dropped so it can neither leak rows nor render
+	// a stale chip. Keep Filters/FilterQuery in sync.
+	var chipChannelID uuid.UUID
+	if f.ChannelID != "" {
+		if id, perr := uuid.Parse(f.ChannelID); perr == nil {
+			if _, ok := allowed[id]; ok {
+				chipChannelID = id
+			}
+		}
+		if chipChannelID == uuid.Nil {
+			region.Filters.ChannelID = ""
+			region.FilterQuery = region.Filters.query()
+			region.HasFilters = region.Filters.nonDefault()
+		}
+	}
+
+	// A gerente sees every channel: no channel-access restriction on the
+	// read path (scope nil). An atendente is confined to the accessible
+	// set — including the empty set, which is a legitimate deny-all.
+	if isGerente {
+		return nil, chipChannelID, nil
+	}
+	return &ids, chipChannelID, nil
 }
 
 // view renders a single conversation pane (thread + compose form +
@@ -1435,11 +1576,17 @@ type listRow struct {
 // filters and the row set. FilterQuery is the encoded "?state=…" the row
 // links append so opening a conversation preserves the active filters.
 type listRegionData struct {
-	Filters     inboxFilter
-	Items       []listRow
-	HasFilters  bool   // non-default filters active → "none with filters" empty copy
-	OOB         bool   // render the wrapper with hx-swap-oob="true"
-	FilterQuery string // "?state=…&channel=…&assigned=…" for row links
+	Filters    inboxFilter
+	Items      []listRow
+	HasFilters bool // non-default filters active → "none with filters" empty copy
+	OOB        bool // render the wrapper with hx-swap-oob="true"
+	// ChannelOptions are the caller's accessible channel instances for the
+	// SIN-66378 P4 channel-scope filter chip. Empty when the ChannelScope
+	// dep is not wired or the tenant has a single channel — the chip is not
+	// rendered in that case, so a single-channel tenant sees no redundant
+	// control.
+	ChannelOptions []AccessibleChannel
+	FilterQuery    string // "?state=…&channel=…&assigned=…&channel_id=…" for row links
 }
 
 // layoutData drives the full-page inbox shell template. SIN-65104 wraps

@@ -35,13 +35,18 @@ var inboxTableNames = []string{
 }
 
 // freshDBWithInboxContacts applies 0004 (tenants) → 0005 (users) → 0088
-// (this migration) → 0092 (message.media jsonb, [SIN-62805] F2-05d
-// integration: scanMessage now SELECTs media) on top of the harness
-// default 0001-0003.
+// (this migration) → 0094 (message.media scan_status) → 0128 (channel
+// instances: tenant_channels, channel_access, conversation.channel_id +
+// backfill) on top of the harness default 0001-0003.
 //
-// 0092 is purely additive (ADD COLUMN IF NOT EXISTS media jsonb on the
-// message table) — every existing test stays passing because the column
-// is nullable and unreferenced by their query paths.
+// 0094 and 0128 are purely additive relative to 0088 — 0094 adds a
+// nullable message column, 0128 adds two tables + a nullable
+// conversation.channel_id column (and backfills it). 0128 is required
+// here because the inbox adapter now writes conversation.channel_id on
+// CreateConversation and filters ListConversationSummaries by it
+// (SIN-66378 P4 routing + per-channel access); without it every
+// CreateConversation call would fail on the missing column, which is the
+// same schema production carries once 0128 has run.
 func freshDBWithInboxContacts(t *testing.T) *testpg.DB {
 	t.Helper()
 	db := harness.DB(t)
@@ -52,6 +57,7 @@ func freshDBWithInboxContacts(t *testing.T) *testpg.DB {
 		"0005_create_users.up.sql",
 		"0088_inbox_contacts.up.sql",
 		"0094_message_media_scan_status.up.sql",
+		"0128_channel_instances.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)

@@ -1236,3 +1236,118 @@ func TestInboxUserDirectory_TenantIsolation(t *testing.T) {
 		t.Errorf("tenant B resolved tenant A's user: %q", got[userA])
 	}
 }
+
+// insertTenantChannel inserts a tenant_channels row (migration 0128)
+// under the admin pool and returns its id, so conversations can be routed
+// to a real channel instance (the conversation.channel_id FK requires it).
+func insertTenantChannel(t *testing.T, db *testpg.DB, tenantID uuid.UUID, channelKey, externalID string) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := db.AdminPool().QueryRow(context.Background(),
+		`INSERT INTO tenant_channels (tenant_id, channel_key, external_id, display_name)
+		 VALUES ($1, $2, $3, $4) RETURNING id`,
+		tenantID, channelKey, externalID, channelKey).Scan(&id); err != nil {
+		t.Fatalf("insert tenant_channel: %v", err)
+	}
+	return id
+}
+
+// TestInboxAdapter_ListConversationSummaries_ChannelScope is the SIN-66378
+// P4 per-channel access filter on the live read path. It proves:
+//   - a nil ChannelScope lists every conversation (gerente / legacy);
+//   - a non-nil scope restricts to conversations whose channel_id is in
+//     the set, and excludes both out-of-scope and NULL channel_id rows
+//     (deny-by-default);
+//   - an empty (non-nil) scope yields nothing;
+//   - the ChannelID chip narrows to a single instance and AND-s with the
+//     scope so an out-of-scope chip value leaks nothing;
+//   - conversation.channel_id round-trips through CreateConversation.
+func TestInboxAdapter_ListConversationSummaries_ChannelScope(t *testing.T) {
+	db := freshDBWithInboxContacts(t)
+	store := newInboxStore(t, db)
+	ctx := context.Background()
+	tenant := seedContactsTenant(t, db)
+	contact := seedInboxContact(t, db, tenant)
+
+	chA := insertTenantChannel(t, db, tenant, "whatsapp", "+5511111110000")
+	chB := insertTenantChannel(t, db, tenant, "whatsapp", "+5511222220000")
+
+	// Two conversations on A, one on B, one unrouted (nil channel_id).
+	mk := func(chID *uuid.UUID) uuid.UUID {
+		c, err := inbox.NewConversation(tenant, contact.ID, "whatsapp")
+		if err != nil {
+			t.Fatalf("NewConversation: %v", err)
+		}
+		if chID != nil {
+			c.RouteToChannel(*chID)
+		}
+		if err := store.CreateConversation(ctx, c); err != nil {
+			t.Fatalf("CreateConversation: %v", err)
+		}
+		return c.ID
+	}
+	a1 := mk(&chA)
+	a2 := mk(&chA)
+	b1 := mk(&chB)
+	_ = mk(nil) // unrouted
+
+	ids := func(items []inbox.ConversationListItem) map[uuid.UUID]bool {
+		m := map[uuid.UUID]bool{}
+		for _, it := range items {
+			m[it.ID] = true
+		}
+		return m
+	}
+
+	// nil scope → everything (all 4).
+	all, err := store.ListConversationSummaries(ctx, tenant, inbox.ConversationFilter{}, 50)
+	if err != nil {
+		t.Fatalf("nil scope: %v", err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("nil scope count = %d, want 4", len(all))
+	}
+
+	// scope {A} → only a1, a2; not b1, not the unrouted one.
+	scopeA := []uuid.UUID{chA}
+	gotA, err := store.ListConversationSummaries(ctx, tenant, inbox.ConversationFilter{ChannelScope: &scopeA}, 50)
+	if err != nil {
+		t.Fatalf("scope A: %v", err)
+	}
+	setA := ids(gotA)
+	if len(setA) != 2 || !setA[a1] || !setA[a2] {
+		t.Errorf("scope {A} = %v, want {a1,a2}", setA)
+	}
+	if setA[b1] {
+		t.Error("scope {A} leaked a channel-B conversation")
+	}
+
+	// empty (non-nil) scope → nothing (deny-by-default).
+	empty := []uuid.UUID{}
+	gotEmpty, err := store.ListConversationSummaries(ctx, tenant, inbox.ConversationFilter{ChannelScope: &empty}, 50)
+	if err != nil {
+		t.Fatalf("empty scope: %v", err)
+	}
+	if len(gotEmpty) != 0 {
+		t.Errorf("empty scope count = %d, want 0", len(gotEmpty))
+	}
+
+	// ChannelID chip narrows to B alone.
+	chipB := chB
+	gotChip, err := store.ListConversationSummaries(ctx, tenant, inbox.ConversationFilter{ChannelID: &chipB}, 50)
+	if err != nil {
+		t.Fatalf("chip B: %v", err)
+	}
+	if len(gotChip) != 1 || gotChip[0].ID != b1 {
+		t.Errorf("chip B = %v, want only b1", ids(gotChip))
+	}
+
+	// scope {A} AND chip B → intersection empty (no leak).
+	gotCross, err := store.ListConversationSummaries(ctx, tenant, inbox.ConversationFilter{ChannelScope: &scopeA, ChannelID: &chipB}, 50)
+	if err != nil {
+		t.Fatalf("scope A + chip B: %v", err)
+	}
+	if len(gotCross) != 0 {
+		t.Errorf("scope {A} + chip B count = %d, want 0 (out-of-scope chip)", len(gotCross))
+	}
+}

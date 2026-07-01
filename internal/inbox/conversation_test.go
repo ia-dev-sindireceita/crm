@@ -55,6 +55,29 @@ func TestNewConversation_LowercasesChannel(t *testing.T) {
 	}
 }
 
+func TestConversation_RouteToChannel(t *testing.T) {
+	c, err := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Fresh conversation starts unrouted.
+	if c.ChannelID != nil {
+		t.Fatalf("ChannelID = %v, want nil on a fresh conversation", c.ChannelID)
+	}
+	// A uuid.Nil route is a no-op — the conversation stays unrouted rather
+	// than referencing a phantom instance.
+	c.RouteToChannel(uuid.Nil)
+	if c.ChannelID != nil {
+		t.Errorf("RouteToChannel(Nil) set ChannelID = %v, want nil", c.ChannelID)
+	}
+	// A real instance id binds the conversation.
+	chID := uuid.New()
+	c.RouteToChannel(chID)
+	if c.ChannelID == nil || *c.ChannelID != chID {
+		t.Errorf("ChannelID = %v, want %v", c.ChannelID, chID)
+	}
+}
+
 func TestConversation_AssignTo(t *testing.T) {
 	c, _ := inbox.NewConversation(uuid.New(), uuid.New(), "whatsapp")
 	user := uuid.New()

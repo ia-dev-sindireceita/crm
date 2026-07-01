@@ -407,17 +407,17 @@ var inboxFiltersTmpl = template.Must(template.New("inbox_filters").Funcs(templat
       hx-get="/inbox" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">
   <div class="inbox-filters__group" role="group" aria-label="Estado">
     <a class="inbox-filters__pill{{if eq .Filters.State "open"}} is-active{{end}}"
-       href="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
+       href="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}&channel_id={{.Filters.ChannelID}}"
        {{if eq .Filters.State "open"}}aria-current="true"{{end}}
-       hx-get="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Abertas</a>
+       hx-get="/inbox?state=open&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}&channel_id={{.Filters.ChannelID}}">Abertas</a>
     <a class="inbox-filters__pill{{if eq .Filters.State "closed"}} is-active{{end}}"
-       href="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
+       href="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}&channel_id={{.Filters.ChannelID}}"
        {{if eq .Filters.State "closed"}}aria-current="true"{{end}}
-       hx-get="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Fechadas</a>
+       hx-get="/inbox?state=closed&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}&channel_id={{.Filters.ChannelID}}">Fechadas</a>
     <a class="inbox-filters__pill{{if eq .Filters.State ""}} is-active{{end}}"
-       href="/inbox?state=&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}"
+       href="/inbox?state=&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}&channel_id={{.Filters.ChannelID}}"
        {{if eq .Filters.State ""}}aria-current="true"{{end}}
-       hx-get="/inbox?state=&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}">Todas</a>
+       hx-get="/inbox?state=&channel={{.Filters.Channel}}&assigned={{.Filters.AssignedParam}}&channel_id={{.Filters.ChannelID}}">Todas</a>
   </div>
   <label class="inbox-filters__field">
     <span class="visually-hidden">Canal</span>
@@ -429,6 +429,17 @@ var inboxFiltersTmpl = template.Must(template.New("inbox_filters").Funcs(templat
       <option value="webchat"{{if eq .Filters.Channel "webchat"}} selected{{end}}>Webchat</option>
     </select>
   </label>
+  {{if gt (len .ChannelOptions) 1}}
+  <label class="inbox-filters__field inbox-filters__field--channel-scope">
+    <span class="visually-hidden">Instância de canal</span>
+    <select name="channel_id" class="inbox-filters__select" aria-label="Instância de canal" hx-trigger="change" hx-get="/inbox" hx-include="closest form" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">
+      <option value=""{{if eq .Filters.ChannelID ""}} selected{{end}}>Todas as instâncias</option>
+      {{range .ChannelOptions}}
+      <option value="{{.ID}}"{{if eq $.Filters.ChannelID .ID.String}} selected{{end}}>{{.DisplayName}}</option>
+      {{end}}
+    </select>
+  </label>
+  {{end}}
   <label class="inbox-filters__field">
     <span class="visually-hidden">Fila de atribuição</span>
     <select name="assigned" class="inbox-filters__select" aria-label="Fila de atribuição" hx-trigger="change" hx-get="/inbox" hx-include="closest form" hx-target="#conversation-list-region" hx-swap="outerHTML" hx-push-url="true">

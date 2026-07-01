@@ -116,6 +116,9 @@ func assembleWhatsAppAdapter(ctx context.Context, cfg whatsapp.Config, pool *pgx
 	if err != nil {
 		return nil, nil, err
 	}
+	// SIN-66378 P4 — route new conversations to the tenant channel
+	// instance resolved from the inbound identity (channel_id). Soft-fail.
+	wireChannelResolver(receiver, pool)
 	// SIN-62959 — attribution hook. Failure to build the campaigns
 	// adapter (e.g. migration 0102 not yet applied in this env) is
 	// non-fatal: the inbox keeps working with the marker-extractor

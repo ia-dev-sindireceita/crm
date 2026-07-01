@@ -67,6 +67,9 @@ func buildWebchatHandler(pool *pgxpool.Pool, getenv func(string) string) (http.H
 	if err != nil {
 		return nil, err
 	}
+	// SIN-66378 P4 — route new conversations to the tenant channel
+	// instance resolved from the inbound identity (channel_id). Soft-fail.
+	wireChannelResolver(receiver, pool)
 
 	adapter, err := webchat.New(
 		receiver,

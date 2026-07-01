@@ -35,6 +35,7 @@ var (
 	_ channels.Repository          = (*Store)(nil)
 	_ channels.ChannelAccessPolicy = (*Store)(nil)
 	_ channels.AccessRepository    = (*Store)(nil)
+	_ channels.ChannelResolver     = (*Store)(nil)
 )
 
 // rosterRoles are the tenant roles eligible to attend a channel — the
@@ -311,6 +312,48 @@ func (s *Store) ListAccessibleChannelIDs(ctx context.Context, tenantID, userID u
 	})
 	if err != nil {
 		return nil, fmt.Errorf("channels/postgres: ListAccessibleChannelIDs: %w", err)
+	}
+	return out, nil
+}
+
+// ResolveChannelID maps an inbound identity (carrier + tenant-side
+// destination address) to the tenant's channel instance id under RLS.
+// See channels.ChannelResolver for the contract. When externalID is
+// non-empty the match is exact on (tenant, channel_key, external_id); an
+// empty externalID falls back to the tenant's instance for the carrier,
+// preferring an active row (is_active DESC) and ordering deterministically
+// (external_id, id) so the choice is stable across calls. No matching row
+// yields (uuid.Nil, nil) — the caller records the conversation unrouted
+// rather than failing the delivery.
+func (s *Store) ResolveChannelID(ctx context.Context, tenantID uuid.UUID, channelKey, externalID string) (uuid.UUID, error) {
+	if tenantID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("channels/postgres: ResolveChannelID: tenant id is nil")
+	}
+	channelKey = strings.ToLower(strings.TrimSpace(channelKey))
+	if channelKey == "" {
+		return uuid.Nil, fmt.Errorf("channels/postgres: ResolveChannelID: channel key is empty")
+	}
+	externalID = strings.TrimSpace(externalID)
+	var out uuid.UUID
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `
+			SELECT id FROM tenant_channels
+			 WHERE channel_key = $1
+			   AND ($2 = '' OR external_id = $2)
+			 ORDER BY is_active DESC, external_id, id
+			 LIMIT 1
+		`, channelKey, externalID)
+		if err := row.Scan(&out); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				out = uuid.Nil
+				return nil
+			}
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("channels/postgres: ResolveChannelID: %w", err)
 	}
 	return out, nil
 }

@@ -121,6 +121,9 @@ func assembleInstagramAdapter(ctx context.Context, cfg instagram.Config, pool *p
 	if err != nil {
 		return nil, nil, err
 	}
+	// SIN-66378 P4 — route new conversations to the tenant channel
+	// instance resolved from the inbound identity (channel_id). Soft-fail.
+	wireChannelResolver(receiver, pool)
 	// SIN-62959 — attribution hook. Same soft-fail pattern as
 	// whatsapp_wire / messenger_wire: linker construction failure →
 	// warn + skip; the inbox keeps working without the [crm:<click_id>]

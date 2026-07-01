@@ -34,15 +34,25 @@ import (
 // the carrier payload carries attachments; the worker patches the
 // row to "clean" / "infected" once a verdict lands. Text-only events
 // leave it false and the persisted message has a NULL media column.
+// DestinationExternalID is the tenant-side address the message arrived
+// on — the WhatsApp number / Instagram handle the carrier delivered to,
+// i.e. which of the tenant's channel *instances* received it. The
+// receive-inbound use case feeds it to the channel resolver so the
+// conversation references the right tenant_channels row and two numbers
+// of the same carrier do not collide (SIN-66378 P4). It is optional:
+// carriers that do not yet surface the receiver address (and
+// single-instance tenants) leave it empty, and routing falls back to the
+// tenant's sole instance for the carrier — no regression.
 type InboundEvent struct {
-	TenantID          uuid.UUID
-	Channel           string
-	ChannelExternalID string
-	SenderExternalID  string
-	SenderDisplayName string
-	Body              string
-	OccurredAt        time.Time
-	HasAttachments    bool
+	TenantID              uuid.UUID
+	Channel               string
+	ChannelExternalID     string
+	SenderExternalID      string
+	SenderDisplayName     string
+	DestinationExternalID string
+	Body                  string
+	OccurredAt            time.Time
+	HasAttachments        bool
 }
 
 // InboundChannel is the seam that lets the receive-inbound use case

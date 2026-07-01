@@ -289,6 +289,88 @@ func TestAccessService_AccessibleChannelIDs_PropagatesErrors(t *testing.T) {
 	}
 }
 
+// TestAccessService_AccessibleChannels is the SIN-66378 P4 richer
+// projection: same access rule as AccessibleChannelIDs, but returns
+// id + display name for the inbox filter chip. It verifies the two views
+// stay in lock-step (AccessibleChannelIDs delegates to this) and that the
+// display name rides along.
+func TestAccessService_AccessibleChannels(t *testing.T) {
+	tenant := uuid.New()
+	atendente := uuid.New()
+
+	open := Hydrate(uuid.New(), tenant, "whatsapp", "a", "Suporte", true, false, timeZero())
+	restrictedGranted := Hydrate(uuid.New(), tenant, "whatsapp", "c", "Vendas VIP", true, true, timeZero())
+	restrictedDenied := Hydrate(uuid.New(), tenant, "whatsapp", "d", "Financeiro", true, true, timeZero())
+
+	repo := newFakePolicyRepo()
+	for _, c := range []*Channel{open, restrictedGranted, restrictedDenied} {
+		repo.add(c)
+	}
+	grants := newFakeGrants()
+	grants.grant(restrictedGranted.ID, atendente)
+	svc := mustService(t, repo, grants)
+	ctx := context.Background()
+
+	// Atendente: open + granted restricted, never the denied one; names ride along.
+	views, err := svc.AccessibleChannels(ctx, tenant, atendente, false)
+	if err != nil {
+		t.Fatalf("AccessibleChannels(atendente): %v", err)
+	}
+	names := map[uuid.UUID]string{}
+	for _, v := range views {
+		names[v.ID] = v.DisplayName
+	}
+	if names[open.ID] != "Suporte" || names[restrictedGranted.ID] != "Vendas VIP" {
+		t.Errorf("display names not carried: %v", names)
+	}
+	if _, leaked := names[restrictedDenied.ID]; leaked {
+		t.Errorf("atendente leaked denied restricted channel: %v", views)
+	}
+	if len(views) != 2 {
+		t.Errorf("atendente view count = %d, want 2 (%v)", len(views), views)
+	}
+
+	// The id-only view is derived from the same rule.
+	ids, err := svc.AccessibleChannelIDs(ctx, tenant, atendente, false)
+	if err != nil {
+		t.Fatalf("AccessibleChannelIDs(atendente): %v", err)
+	}
+	if len(ids) != len(views) {
+		t.Errorf("id/view count drift: ids=%d views=%d", len(ids), len(views))
+	}
+
+	// Gerente: every channel regardless of grant/restriction.
+	gerViews, err := svc.AccessibleChannels(ctx, tenant, uuid.Nil, true)
+	if err != nil {
+		t.Fatalf("AccessibleChannels(gerente): %v", err)
+	}
+	if len(gerViews) != 3 {
+		t.Errorf("gerente view count = %d, want 3 (%v)", len(gerViews), gerViews)
+	}
+
+	// Nil tenant is a clean error on both views.
+	if _, err := svc.AccessibleChannels(ctx, uuid.Nil, atendente, false); err == nil {
+		t.Error("AccessibleChannels nil tenant err = nil, want error")
+	}
+}
+
+func TestAccessService_AccessibleChannels_PropagatesErrors(t *testing.T) {
+	tenant := uuid.New()
+	repo := newFakePolicyRepo()
+	repo.listErr = errors.New("list boom")
+	if _, err := mustService(t, repo, newFakeGrants()).AccessibleChannels(context.Background(), tenant, uuid.New(), false); err == nil {
+		t.Error("repo.List error swallowed")
+	}
+
+	repo2 := newFakePolicyRepo()
+	repo2.add(Hydrate(uuid.New(), tenant, "whatsapp", "a", "R", true, true, timeZero()))
+	grants := newFakeGrants()
+	grants.listErr = errors.New("grant list boom")
+	if _, err := mustService(t, repo2, grants).AccessibleChannels(context.Background(), tenant, uuid.New(), false); err == nil {
+		t.Error("grant list error swallowed")
+	}
+}
+
 func contains(ids []uuid.UUID, want uuid.UUID) bool {
 	for _, id := range ids {
 		if id == want {

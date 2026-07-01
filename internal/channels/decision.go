@@ -130,18 +130,49 @@ func (s *AccessService) canAccess(ctx context.Context, tenantID, userID, channel
 //
 // isGerente is threaded in for the same reason as CanAccessChannel.
 func (s *AccessService) AccessibleChannelIDs(ctx context.Context, tenantID, userID uuid.UUID, isGerente bool) ([]uuid.UUID, error) {
+	views, err := s.AccessibleChannels(ctx, tenantID, userID, isGerente)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uuid.UUID, 0, len(views))
+	for _, v := range views {
+		out = append(out, v.ID)
+	}
+	return out, nil
+}
+
+// ChannelView is the id + display-name projection of a channel instance
+// the caller may act on. It backs the P4 inbox channel-scope filter chip:
+// AccessibleChannels returns it so the web layer renders the chip options
+// (name) and applies the read-path filter (id) from a single call,
+// without a second query for names.
+type ChannelView struct {
+	ID          uuid.UUID
+	DisplayName string
+}
+
+// AccessibleChannels returns every channel instance userID may act on
+// within tenantID as an id + display-name projection, ordered by the
+// Repository's deterministic listing. It applies the same rule as
+// AccessibleChannelIDs (which delegates here): a gerente gets every
+// channel; an atendente gets every open (non-restricted) channel plus the
+// restricted channels they hold an explicit grant for. This is the
+// primitive the P4 inbox read path + filter chip consume.
+//
+// isGerente is threaded in for the same reason as CanAccessChannel.
+func (s *AccessService) AccessibleChannels(ctx context.Context, tenantID, userID uuid.UUID, isGerente bool) ([]ChannelView, error) {
 	if tenantID == uuid.Nil {
-		return nil, fmt.Errorf("channels: AccessibleChannelIDs: tenant id is nil")
+		return nil, fmt.Errorf("channels: AccessibleChannels: tenant id is nil")
 	}
 	list, err := s.repo.List(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]uuid.UUID, 0, len(list))
+	out := make([]ChannelView, 0, len(list))
 	if isGerente {
 		for _, ch := range list {
 			if ch != nil {
-				out = append(out, ch.ID)
+				out = append(out, ChannelView{ID: ch.ID, DisplayName: ch.DisplayName})
 			}
 		}
 		return out, nil
@@ -159,11 +190,11 @@ func (s *AccessService) AccessibleChannelIDs(ctx context.Context, tenantID, user
 			continue
 		}
 		if !ch.Restricted {
-			out = append(out, ch.ID)
+			out = append(out, ChannelView{ID: ch.ID, DisplayName: ch.DisplayName})
 			continue
 		}
 		if _, ok := granted[ch.ID]; ok {
-			out = append(out, ch.ID)
+			out = append(out, ChannelView{ID: ch.ID, DisplayName: ch.DisplayName})
 		}
 	}
 	return out, nil

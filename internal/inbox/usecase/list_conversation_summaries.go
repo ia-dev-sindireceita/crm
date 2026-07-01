@@ -49,6 +49,21 @@ type ListConversationSummariesInput struct {
 	// Limit caps the page size; a zero or negative limit defaults to
 	// defaultListLimit so the handler need not hardcode pagination policy.
 	Limit int
+	// ChannelScope is the per-channel access filter (SIN-66378 P4). nil
+	// means "no channel-access restriction" — a gerente sees every
+	// channel. A non-nil pointer restricts the listing to conversations
+	// whose channel_id is in the set (the ids from
+	// channels.AccessService.AccessibleChannelIDs for an atendente); an
+	// empty (non-nil) slice yields an empty result — deny-by-default. The
+	// handler sources it from the caller's role + grants, never from the
+	// request body.
+	ChannelScope *[]uuid.UUID
+	// ChannelID is the channel-scope filter chip: uuid.Nil means "all
+	// accessible channels", a concrete id narrows to that single instance.
+	// It is AND-ed with ChannelScope in the read model, so a chip value
+	// outside the caller's accessible set yields an empty result rather
+	// than a leak.
+	ChannelID uuid.UUID
 }
 
 // ListConversationSummariesResult is the use-case return. Items carry the
@@ -107,11 +122,18 @@ func (u *ListConversationSummaries) Execute(ctx context.Context, in ListConversa
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
+	var channelID *uuid.UUID
+	if in.ChannelID != uuid.Nil {
+		id := in.ChannelID
+		channelID = &id
+	}
 	rows, err := u.read.ListConversationSummaries(ctx, in.TenantID, inbox.ConversationFilter{
 		State:          state,
 		Channel:        channel,
 		AssignedUserID: in.AssignedUserID,
 		UnassignedOnly: in.Unassigned,
+		ChannelScope:   in.ChannelScope,
+		ChannelID:      channelID,
 	}, limit)
 	if err != nil {
 		return ListConversationSummariesResult{}, err
