@@ -251,3 +251,40 @@ func TestUpdate_NoAuditorIsNoOp(t *testing.T) {
 		t.Fatalf("update did not apply without an auditor")
 	}
 }
+
+// TestUpdate_RestrictedAuditedWhenReplaceAccessFails pins SIN-66411: when the
+// restricted flag commits (SetRestricted) but the later, non-atomic
+// ReplaceAccess write fails, the committed open->restricted flip must still be
+// audit-logged (A09). The handler 500s, the restricted line is recorded, and
+// no roster grant/revoke line leaks (ReplaceAccess never committed).
+func TestUpdate_RestrictedAuditedWhenReplaceAccessFails(t *testing.T) {
+	actor := uuid.New()
+	repo := newFakeRepo()
+	acc := newFakeAccess(rosterUser("ana", "tenant_atendente"))
+	ch := mkChannel(t, repo, "whatsapp", "+5511900000000", "Suporte", true)
+	ch.Restricted = false    // start open; form flips to restricted
+	acc.replaceErr = errBoom // second write fails after SetRestricted commits
+
+	aud := &recordingAuditor{}
+	mux := newAuditHandler(t, repo, acc, aud, actor)
+
+	form := url.Values{"name": {"Suporte"}, "restricted": {"true"}}
+	rec := do(t, mux, http.MethodPost, "/settings/channels/"+ch.ID.String(), form)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500", rec.Code)
+	}
+
+	got := aud.only("restricted")
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one restricted line, got %d (%+v)", len(got), aud.lines)
+	}
+	if got[0].from != false || got[0].to != true {
+		t.Errorf("restricted from/to = %v/%v, want false/true", got[0].from, got[0].to)
+	}
+	if got[0].actor != actor || got[0].channel != ch.ID || got[0].tenant != testTenant.ID {
+		t.Errorf("restricted line identity mismatch: %+v", got[0])
+	}
+	if n := len(aud.only("grant")) + len(aud.only("revoke")); n != 0 {
+		t.Fatalf("roster lines emitted despite ReplaceAccess failure: %d (%+v)", n, aud.lines)
+	}
+}

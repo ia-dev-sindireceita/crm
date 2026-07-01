@@ -272,16 +272,20 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, "set channel restricted", err)
 		return
 	}
+	// SIN-66411 (A09): emit the restricted-flip line immediately after
+	// SetRestricted commits, BEFORE the non-atomic ReplaceAccess write. An
+	// error on ReplaceAccess must not leave a committed privilege change
+	// without a trail. auditRestrictedChange is a no-op when from==to, so a
+	// no-op save still records nothing.
+	actor := h.actorID(r)
+	h.auditRestrictedChange(r.Context(), actor, tenant.ID, ch.ID, beforeRestricted, restricted)
 	if err := h.deps.Access.ReplaceAccess(r.Context(), tenant.ID, ch.ID, userIDs); err != nil {
 		h.fail(w, "grant channel access", err)
 		return
 	}
-	// Emit privilege-event audit lines after the writes commit. The
-	// restricted flip is always auditable from the loaded flag; the roster
-	// diff is skipped when the before-read failed so a transient read error
-	// never mislabels the whole roster as freshly granted.
-	actor := h.actorID(r)
-	h.auditRestrictedChange(r.Context(), actor, tenant.ID, ch.ID, beforeRestricted, restricted)
+	// Roster diff emits only after ReplaceAccess commits (nothing to diff
+	// until then), and is skipped when the before-read failed so a transient
+	// read error never mislabels the whole roster as freshly granted.
 	if beforeOK {
 		h.auditAccessReplace(r.Context(), actor, tenant.ID, ch.ID, beforeGrants, userIDs)
 	}
