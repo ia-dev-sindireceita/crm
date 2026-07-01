@@ -1,0 +1,37 @@
+# delta-compiles-against-upstream-main — SIN-66431 / SIN-66432
+#
+# Closes the PR #200 failure class: a cherry-pick that drags in a file coupled
+# to an undeployed stack compiles when restricted to cmd/server but fails on
+# `go build ./...`. This workflow resolves the merge-ref (base main + PR applied)
+# and compiles every package, catching undefined symbols outside cmd/server.
+#
+# On a tier-2 deploy PR the base is upstream main, so a green run means
+# "this delta compiles against upstream main" — exactly what the deploy requires.
+
+name: delta-compiles-against-upstream-main
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  delta-compiles-against-upstream-main:
+    name: delta-compiles-against-upstream-main
+    runs-on: ubuntu-latest
+    steps:
+      # pull_request events resolve refs/pull/N/merge = base main + PR applied.
+      # That is exactly "delta applied onto main" — no ref override needed.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
+        with:
+          go-version: '1.26.4'
+          cache: true
+      - name: go build ./...
+        run: go build ./...
+      - name: go vet ./...
+        run: go vet ./...
