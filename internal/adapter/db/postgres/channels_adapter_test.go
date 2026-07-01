@@ -297,6 +297,71 @@ func TestChannelsAdapter_CRUD(t *testing.T) {
 	}
 }
 
+// TestChannelsAdapter_SetRestricted proves the P3 restricted toggle
+// persists under the tenant scope, is reversible, does not touch the
+// stored access grants, and maps guard/unknown cases correctly.
+func TestChannelsAdapter_SetRestricted(t *testing.T) {
+	db := freshDBWithChannels(t)
+	ctx := context.Background()
+	tenant := seedChannelsTenant(t, db)
+	user := seedChannelsUser(t, db, tenant)
+	store := newChannelsStore(t, db)
+
+	ch, err := channels.New(tenant, "whatsapp", "+5511900001111", "Suporte")
+	if err != nil {
+		t.Fatalf("domain New: %v", err)
+	}
+	if err := store.Create(ctx, ch); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A channel starts open (restricted=false) and carries a grant.
+	if err := store.ReplaceAccess(ctx, tenant, ch.ID, []uuid.UUID{user}); err != nil {
+		t.Fatalf("ReplaceAccess: %v", err)
+	}
+
+	// Nil-tenant / nil-id guards.
+	if err := store.SetRestricted(ctx, uuid.Nil, ch.ID, true); err == nil {
+		t.Error("SetRestricted(nil tenant) err = nil, want error")
+	}
+	if err := store.SetRestricted(ctx, tenant, uuid.Nil, true); !errors.Is(err, channels.ErrNotFound) {
+		t.Errorf("SetRestricted(nil id) err = %v, want ErrNotFound", err)
+	}
+	if err := store.SetRestricted(ctx, tenant, uuid.New(), true); !errors.Is(err, channels.ErrNotFound) {
+		t.Errorf("SetRestricted(unknown) err = %v, want ErrNotFound", err)
+	}
+
+	// Enable restricted, then confirm the flag flipped and the grant is intact.
+	if err := store.SetRestricted(ctx, tenant, ch.ID, true); err != nil {
+		t.Fatalf("SetRestricted(true): %v", err)
+	}
+	got, err := store.Get(ctx, tenant, ch.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Restricted {
+		t.Error("channel should be restricted after SetRestricted(true)")
+	}
+	ids, err := store.ChannelUserIDs(ctx, tenant, ch.ID)
+	if err != nil {
+		t.Fatalf("ChannelUserIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != user {
+		t.Errorf("grants after toggle = %v, want [%s] (toggle must not touch grants)", ids, user)
+	}
+
+	// Reverse it — open→restricted→open round-trips.
+	if err := store.SetRestricted(ctx, tenant, ch.ID, false); err != nil {
+		t.Fatalf("SetRestricted(false): %v", err)
+	}
+	got2, err := store.Get(ctx, tenant, ch.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got2.Restricted {
+		t.Error("channel should be open after SetRestricted(false)")
+	}
+}
+
 // TestChannelsAdapter_Create_Conflict proves the UNIQUE(tenant, key,
 // external) constraint maps to channels.ErrChannelConflict.
 func TestChannelsAdapter_Create_Conflict(t *testing.T) {

@@ -31,6 +31,9 @@ func (memChannelsStore) Rename(_ context.Context, _, _ uuid.UUID, _ string) erro
 func (memChannelsStore) SetActive(_ context.Context, _, _ uuid.UUID, _ bool) error {
 	return channels.ErrNotFound
 }
+func (memChannelsStore) SetRestricted(_ context.Context, _, _ uuid.UUID, _ bool) error {
+	return channels.ErrNotFound
+}
 func (memChannelsStore) Get(_ context.Context, _, _ uuid.UUID) (*channels.Channel, error) {
 	return nil, channels.ErrNotFound
 }
