@@ -58,7 +58,19 @@ func buildWebChannelsHandler(ctx context.Context, getenv func(string) string) (h
 	} else {
 		userDir = dir
 	}
-	handler, err := assembleWebChannelsHandler(store, userDir, slog.Default())
+	// Channel access-change events (grant / revoke / restricted-flip) are
+	// privilege events that must land in audit_log_security (SIN-66405).
+	// Route them through the same SplitLogger the other privilege events
+	// use, on the RLS-gated runtime pool. A logger-build failure degrades
+	// to no audit emission rather than disabling the surface — the writes
+	// still commit; only the trail is best-effort.
+	var auditor webchannels.AccessAuditor
+	if splitLogger, aerr := pgpool.NewSplitAuditLogger(pool); aerr != nil {
+		log.Printf("crm: web/channels — access audit disabled: %v", aerr)
+	} else {
+		auditor = newChannelAccessAuditor(splitLogger, slog.Default())
+	}
+	handler, err := assembleWebChannelsHandler(store, userDir, slog.Default(), auditor)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/channels disabled — assemble: %v", err)
@@ -79,12 +91,20 @@ type channelsStore interface {
 // assembleWebChannelsHandler is the pure assembly seam. Tests call it
 // directly with a stub store so the wire is exercised without booting the
 // whole server.
-func assembleWebChannelsHandler(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger) (http.Handler, error) {
+// The variadic auditor keeps the pre-SIN-66405 3-arg call sites (tests)
+// source-compatible while letting the composition root inject the access
+// auditor as a 4th argument. Only the first auditor is used; extra args
+// are ignored.
+func assembleWebChannelsHandler(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger, auditor ...webchannels.AccessAuditor) (http.Handler, error) {
 	if store == nil {
 		return nil, errors.New("channels_wire: store is nil")
 	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var accessAuditor webchannels.AccessAuditor
+	if len(auditor) > 0 {
+		accessAuditor = auditor[0]
 	}
 	h, err := webchannels.New(webchannels.Deps{
 		Channels:   store,
@@ -92,6 +112,7 @@ func assembleWebChannelsHandler(store channelsStore, userLabels userlabel.Direct
 		CSRFToken:  csrfTokenFromSessionContext,
 		UserID:     userIDFromSessionContext,
 		UserLabels: userLabels,
+		Audit:      accessAuditor,
 		Logger:     logger,
 	})
 	if err != nil {
