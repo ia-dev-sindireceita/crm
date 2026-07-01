@@ -31,7 +31,8 @@ import (
 // freshDBWithInboxAndAIAssist applies the migrations the reset cascade
 // touches: tenants + users (FK targets and assignable atendentes),
 // inbox_contacts (conversation/message/contact + assigned_user_id),
-// the message media column, and 0098 (ai_summary). The chain matches
+// the message media column, 0098 (ai_summary), and 0128
+// (channel_instances — adds conversation.channel_id). The chain matches
 // production deploy order.
 func freshDBWithInboxAndAIAssist(t *testing.T) *testpg.DB {
 	t.Helper()
@@ -44,6 +45,7 @@ func freshDBWithInboxAndAIAssist(t *testing.T) *testpg.DB {
 		"0088_inbox_contacts.up.sql",
 		"0094_message_media_scan_status.up.sql",
 		"0098_ai_policy_ai_summary_product_argument.up.sql",
+		"0128_channel_instances.up.sql",
 	)
 	return db
 }
