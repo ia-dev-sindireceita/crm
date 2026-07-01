@@ -46,6 +46,8 @@ func freshDBWithDefaultLead(t *testing.T) *testpg.DB {
 		// fixture need the schema applied (SIN-62848).
 		"0094_message_media_scan_status.up.sql",
 		"0095_tenants_default_lead_user_id.up.sql",
+		// 0128 adds conversation.channel_id — CreateConversation now writes it.
+		"0128_channel_instances.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)
