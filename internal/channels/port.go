@@ -38,6 +38,16 @@ type Repository interface {
 	// (tenantID, id). Returns ErrNotFound when no row matches the scope.
 	SetActive(ctx context.Context, tenantID, id uuid.UUID, active bool) error
 
+	// SetRestricted flips the restricted flag of the channel identified
+	// by (tenantID, id). Returns ErrNotFound when no row matches the
+	// scope. The flag is the per-resource access-policy input consumed by
+	// AccessService: false = open to the whole tenant, true = limited to
+	// the users holding an explicit channel_access grant (plus the
+	// gerente override). Toggling it never touches the stored grant
+	// roster, so a channel can be flipped open→restricted→open without
+	// re-authoring who has access.
+	SetRestricted(ctx context.Context, tenantID, id uuid.UUID, restricted bool) error
+
 	// Get returns the channel with the given id under the tenant scope,
 	// or ErrNotFound when no row matches.
 	Get(ctx context.Context, tenantID, id uuid.UUID) (*Channel, error)

@@ -15,6 +15,7 @@ inside the affected ADR, never via renumbering.
 
 | ADR  | Title                                                                                                            |
 |------|------------------------------------------------------------------------------------------------------------------|
+| 0109 | [Per-channel access — two-layer authz](./0109-per-channel-access-two-layer-authz.md) — surface-role gate + per-resource membership gate (extends 0090) |
 | 0021 | [Webchat embed — segurança](./0021-webchat-embed-seguranca.md) — CSP/CORS/CSRF, assinatura de origem, rate limit |
 | 0020 | [Merge de identidade](./0020-merge-de-identidade.md) — sinais, auto-merge vs `MergeProposal`, split              |
 

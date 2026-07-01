@@ -216,6 +216,23 @@ func (s *Store) SetActive(ctx context.Context, tenantID, id uuid.UUID, active bo
 	`, id, active)
 }
 
+// SetRestricted flips the restricted flag of the channel identified by
+// (tenantID, id). Returns channels.ErrNotFound when the UPDATE affects no
+// row. Toggling the flag leaves the channel_access grant roster untouched
+// (see channels.Repository.SetRestricted) so an open→restricted flip
+// immediately enforces the already-authored roster.
+func (s *Store) SetRestricted(ctx context.Context, tenantID, id uuid.UUID, restricted bool) error {
+	if tenantID == uuid.Nil {
+		return fmt.Errorf("channels/postgres: SetRestricted: tenant id is nil")
+	}
+	if id == uuid.Nil {
+		return channels.ErrNotFound
+	}
+	return s.execAffectingOne(ctx, tenantID, "SetRestricted", `
+		UPDATE tenant_channels SET restricted = $2 WHERE id = $1
+	`, id, restricted)
+}
+
 // execAffectingOne runs an UPDATE expected to touch exactly one row under
 // the tenant scope; a zero rowcount becomes channels.ErrNotFound.
 func (s *Store) execAffectingOne(ctx context.Context, tenantID uuid.UUID, op, sql string, args ...any) error {
