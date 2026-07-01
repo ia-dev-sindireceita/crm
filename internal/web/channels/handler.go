@@ -30,6 +30,13 @@ const (
 	MaxIdentityLen = 120
 )
 
+// whatsAppWebNotReadyMsg is the pt-BR bounce shown when an operator submits
+// the WhatsApp Web family before its backend (QR session, SIN-66252) is
+// enabled. The option is always visible (SIN-66468) so operators can see the
+// distinction, but a submit is refused with this explanation instead of
+// silently persisting a broken channel.
+const whatsAppWebNotReadyMsg = "WhatsApp Web (sessão QR) está em implementação e estará disponível em breve — SIN-66252."
+
 // CSRFTokenFn / UserIDFn mirror the dashboard / wasession surfaces:
 // optional app-shell chrome collaborators sourced from the session by the
 // auth middleware. UserID is only used for the shell user-menu label
@@ -55,14 +62,17 @@ type Deps struct {
 	// fail-soft wiring, but production always provides it.
 	Audit  AccessAuditor
 	Logger *slog.Logger
-	// WhatsAppWebEnabled gates the "WhatsApp Web" channel type behind a
-	// boot-time feature flag (default OFF, prod-safe). It is threaded as a
-	// plain input from cmd/server (FEATURE_WHATSAPP_WEB_ENABLED) rather than
-	// read via os.Getenv inside this package — the flag is an input, not a
-	// side-effect in the core (hexagonal). Flag OFF: the type is neither
-	// offered in the picker nor accepted by the create-time guard; the real
-	// QR-session onboarding lands under SIN-66252 and turning the flag on is
-	// the explicit act that integrates it.
+	// WhatsAppWebEnabled gates the FUNCTIONAL readiness of the "WhatsApp Web"
+	// channel family behind a boot-time feature flag (default OFF, prod-safe).
+	// It is threaded as a plain input from cmd/server
+	// (FEATURE_WHATSAPP_WEB_ENABLED) rather than read via os.Getenv inside this
+	// package — the flag is an input, not a side-effect in the core
+	// (hexagonal). It no longer gates VISIBILITY: the "WhatsApp Web" option is
+	// always offered in the picker so the API-vs-Web distinction is visible
+	// (SIN-66459/66468). Flag OFF: a submit of whatsapp_web is bounced with
+	// whatsAppWebNotReadyMsg and nothing is persisted, so prod never creates a
+	// broken/half-wired QR channel. Flag ON (once SIN-66252 lands the QR
+	// onboarding): the submit proceeds to a real create.
 	WhatsAppWebEnabled bool
 }
 
@@ -86,17 +96,21 @@ func New(deps Deps) (*Handler, error) {
 	return &Handler{deps: deps}, nil
 }
 
-// availableTypes is the create-form <select> option list, filtered to the
-// handler's enabled feature flags (whatsapp_web only when its flag is on).
+// availableTypes is the create-form <select> option list. It offers every
+// family in the closed set, unconditionally: visibility is not gated by any
+// feature flag (SIN-66468). The WhatsApp Web option is always shown so the
+// API-vs-Web distinction is visible; functional readiness is enforced at
+// create time (see create + whatsAppWebNotReadyMsg).
 func (h *Handler) availableTypes() []channelType {
-	return channelTypesFor(h.deps.WhatsAppWebEnabled)
+	return allChannelTypes()
 }
 
-// validType reports whether key is a create-time-acceptable channel family
-// under the handler's enabled flags. Shares availableTypes' filter so the
-// picker and the guard cannot drift.
+// validType reports whether key is a member of the closed channel-family set
+// (deny-by-default for a forged key). It is flag-independent; the
+// WhatsAppWebEnabled flag gates functional readiness at create time, not type
+// validity.
 func (h *Handler) validType(key string) bool {
-	return validTypeFor(key, h.deps.WhatsAppWebEnabled)
+	return knownType(key)
 }
 
 // Routes registers every endpoint on mux. Go 1.22 method+pattern syntax
@@ -185,11 +199,19 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "Identidade muito longa (até 120 caracteres).")
 		return
 	}
-	// TODO(SIN-66252): hook QR-session onboarding for key == whatsapp_web.
-	// The flag guard above means this path only runs for whatsapp_web when
-	// the operator explicitly enabled FEATURE_WHATSAPP_WEB_ENABLED; prod
-	// (flag OFF) can never reach here with that key, so no broken/half-wired
-	// QR channel is ever created silently.
+	// Functional-readiness guard for WhatsApp Web (SIN-66468). The option is
+	// always visible, but the QR-session backend (SIN-66252) is gated behind
+	// FEATURE_WHATSAPP_WEB_ENABLED. With the flag OFF, bounce the modal with a
+	// clear "em implementação" message and persist NOTHING, so prod never
+	// creates a broken/half-wired QR channel. With the flag ON the submit falls
+	// through to the real create/onboarding path below.
+	if key == channelKeyWhatsAppWeb && !h.deps.WhatsAppWebEnabled {
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "type", whatsAppWebNotReadyMsg)
+		return
+	}
+	// TODO(SIN-66252): hook QR-session onboarding for key == whatsapp_web when
+	// the flag is ON. Until then, an ON flag persists a plain channel row with
+	// channel_key=whatsapp_web (no QR handshake yet).
 	ch, err := channels.New(tenant.ID, key, identity, name)
 	if err != nil {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "Não foi possível criar o canal. Verifique os dados.")

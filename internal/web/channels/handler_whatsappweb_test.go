@@ -10,8 +10,8 @@ import (
 )
 
 // newHandlerFlag builds a channels handler with the WhatsApp-Web feature
-// flag set explicitly, so the flag-gated create form / guard can be
-// exercised in both states. It mirrors newHandler (flag OFF) but threads
+// flag set explicitly, so the flag-gated create guard can be exercised in
+// both states. It mirrors newHandler (flag OFF) but threads
 // WhatsAppWebEnabled through Deps.
 func newHandlerFlag(t *testing.T, repo *fakeRepo, acc *fakeAccess, wsWeb bool) http.Handler {
 	t.Helper()
@@ -28,17 +28,18 @@ func newHandlerFlag(t *testing.T, repo *fakeRepo, acc *fakeAccess, wsWeb bool) h
 	return mux
 }
 
-// TestNewForm_WhatsAppWebFlagGate pins AC 1/2: the create <select> shows
-// "WhatsApp API" always, and offers "WhatsApp Web" only when the flag is
-// on. Table-driven over the flag state × the option strings expected.
-func TestNewForm_WhatsAppWebFlagGate(t *testing.T) {
+// TestNewForm_WhatsAppWebAlwaysVisible pins AC #1 (SIN-66459/66468): the
+// "WhatsApp Web" option is ALWAYS offered in the create <select>, separate
+// from "WhatsApp API", regardless of the FEATURE_WHATSAPP_WEB_ENABLED flag.
+// Visibility is decoupled from functional readiness — the flag gates the
+// create guard (see TestCreate_WhatsAppWebFunctionalGate), never the picker.
+func TestNewForm_WhatsAppWebAlwaysVisible(t *testing.T) {
 	cases := []struct {
-		name       string
-		wsWeb      bool
-		wantWebOpt bool
+		name  string
+		wsWeb bool
 	}{
-		{name: "flag off hides whatsapp_web", wsWeb: false, wantWebOpt: false},
-		{name: "flag on shows whatsapp_web", wsWeb: true, wantWebOpt: true},
+		{name: "flag off still shows whatsapp_web", wsWeb: false},
+		{name: "flag on shows whatsapp_web", wsWeb: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -52,24 +53,24 @@ func TestNewForm_WhatsAppWebFlagGate(t *testing.T) {
 			if !strings.Contains(body, "WhatsApp API") {
 				t.Fatalf("expected WhatsApp API option, body=%s", body)
 			}
-			gotWebOpt := strings.Contains(body, `value="whatsapp_web"`)
-			if gotWebOpt != tc.wantWebOpt {
-				t.Fatalf("whatsapp_web option present=%v, want %v\nbody=%s", gotWebOpt, tc.wantWebOpt, body)
+			// "WhatsApp Web" option + human label are present in both flag states.
+			if !strings.Contains(body, `value="whatsapp_web"`) {
+				t.Fatalf("expected whatsapp_web option regardless of flag, body=%s", body)
 			}
-			// The human "WhatsApp Web" label tracks the option presence.
-			if strings.Contains(body, ">WhatsApp Web<") != tc.wantWebOpt {
-				t.Fatalf("WhatsApp Web label present=%v, want %v", !tc.wantWebOpt, tc.wantWebOpt)
+			if !strings.Contains(body, ">WhatsApp Web<") {
+				t.Fatalf("expected WhatsApp Web label regardless of flag, body=%s", body)
 			}
 		})
 	}
 }
 
-// TestCreate_WhatsAppWebFlagGate pins AC 2/3: with the flag OFF a POST
-// forging channel_key=whatsapp_web is rejected (deny-by-default, nothing
-// persisted); with the flag ON it persists a channel whose stored
-// channel_key is exactly "whatsapp_web". The legacy "whatsapp" key keeps
-// working in both states (zero data migration).
-func TestCreate_WhatsAppWebFlagGate(t *testing.T) {
+// TestCreate_WhatsAppWebFunctionalGate pins AC #2/#3 (SIN-66468): with the
+// flag OFF, a POST for channel_key=whatsapp_web is bounced with a clear
+// "em implementação" message and NOTHING is persisted (no broken/half-wired
+// QR channel silently created); with the flag ON it persists a channel whose
+// stored channel_key is exactly "whatsapp_web". The legacy "whatsapp" key
+// keeps working in both states (zero data migration).
+func TestCreate_WhatsAppWebFunctionalGate(t *testing.T) {
 	cases := []struct {
 		name       string
 		wsWeb      bool
@@ -77,7 +78,7 @@ func TestCreate_WhatsAppWebFlagGate(t *testing.T) {
 		wantCreate bool
 		wantKey    string
 	}{
-		{name: "flag off rejects whatsapp_web", wsWeb: false, key: "whatsapp_web", wantCreate: false},
+		{name: "flag off bounces whatsapp_web", wsWeb: false, key: "whatsapp_web", wantCreate: false},
 		{name: "flag on accepts whatsapp_web", wsWeb: true, key: "whatsapp_web", wantCreate: true, wantKey: "whatsapp_web"},
 		{name: "flag off still accepts whatsapp", wsWeb: false, key: "whatsapp", wantCreate: true, wantKey: "whatsapp"},
 		{name: "flag on still accepts whatsapp", wsWeb: true, key: "whatsapp", wantCreate: true, wantKey: "whatsapp"},
@@ -103,12 +104,42 @@ func TestCreate_WhatsAppWebFlagGate(t *testing.T) {
 				}
 			} else {
 				if len(repo.created) != 0 {
-					t.Fatalf("flag-gated type must not create, got %d", len(repo.created))
+					t.Fatalf("flag-gated whatsapp_web must not create, got %d", len(repo.created))
 				}
-				if !strings.Contains(rec.Body.String(), "tipo de canal válido") {
-					t.Fatalf("expected type-validation error, body=%s", rec.Body.String())
+				// The bounce shows the readiness message, NOT the invalid-type
+				// error (whatsapp_web is a valid, visible type — it's just not
+				// functionally ready yet).
+				if !strings.Contains(rec.Body.String(), "em implementação") {
+					t.Fatalf("expected 'em implementação' readiness message, body=%s", rec.Body.String())
+				}
+				if strings.Contains(rec.Body.String(), "tipo de canal válido") {
+					t.Fatalf("whatsapp_web must not read as an invalid type, body=%s", rec.Body.String())
 				}
 			}
 		})
+	}
+}
+
+// TestCreate_ForgedUnknownType keeps deny-by-default coverage: a channel_key
+// outside the closed set is still rejected as an invalid type and nothing is
+// persisted, independent of the WhatsApp-Web flag.
+func TestCreate_ForgedUnknownType(t *testing.T) {
+	for _, wsWeb := range []bool{false, true} {
+		repo := newFakeRepo()
+		mux := newHandlerFlag(t, repo, newFakeAccess(rosterUser("ana", "tenant_atendente")), wsWeb)
+		form := url.Values{}
+		form.Set("name", "Canal")
+		form.Set("channel_key", "sms_forged")
+		form.Set("identity", "+5511900000000")
+		rec := do(t, mux, http.MethodPost, "/settings/channels", form)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d", rec.Code)
+		}
+		if len(repo.created) != 0 {
+			t.Fatalf("forged type must not create (wsWeb=%v), got %d", wsWeb, len(repo.created))
+		}
+		if !strings.Contains(rec.Body.String(), "tipo de canal válido") {
+			t.Fatalf("expected invalid-type error for forged key (wsWeb=%v), body=%s", wsWeb, rec.Body.String())
+		}
 	}
 }
