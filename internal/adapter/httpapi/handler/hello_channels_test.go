@@ -34,6 +34,29 @@ func TestNewHelloTenant_ChannelsSurface_GerenteSeesLink(t *testing.T) {
 	}
 }
 
+// SIN-66444 — the board reported "não tem a opção no menu": the surface
+// was TopNav:false, so Canais rendered only as a body card (scrolled off
+// screen) and never in the persistent left-nav. It must appear in the
+// shell nav for gerente, at parity with Branding/Faturas.
+func TestNewHelloTenant_ChannelsSurface_InShellNav(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	handler.NewHelloTenant(channelsEnabledDeps())(rec, roleHelloRequest(t, iam.RoleTenantGerente))
+	body := rec.Body.String()
+	navStart := strings.Index(body, `id="app-shell-nav"`)
+	if navStart < 0 {
+		t.Fatalf("shell nav block absent\nbody=%s", body)
+	}
+	navEnd := strings.Index(body[navStart:], "</nav>")
+	if navEnd < 0 {
+		t.Fatalf("shell nav block unterminated")
+	}
+	nav := body[navStart : navStart+navEnd]
+	if !strings.Contains(nav, `<a href="/settings/channels">Canais</a>`) {
+		t.Fatalf("Canais missing from left-nav (SIN-66444)\nnav=%s", nav)
+	}
+}
+
 func TestNewHelloTenant_ChannelsSurface_AtendenteHidden(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
