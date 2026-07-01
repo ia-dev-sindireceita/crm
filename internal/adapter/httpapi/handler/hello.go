@@ -371,8 +371,7 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 				Available:    deps.Extended.ChannelsEnabled,
 				Description:  "Cadastrar os canais que o tenant atende (WhatsApp, Telegram, etc.) e definir quem vê cada conversa.",
 				Roles:        gerenteOnly,
-				// TopNav: false — configuration surface; body-only per AC §2
-				// so the top bar stays scannable.
+				TopNav:       true, // gerente nav — parity with Branding/Faturas (SIN-66444)
 			},
 			helloSurfaceRow{
 				Path:         "/billing/invoices",
@@ -476,6 +475,7 @@ var shortNavLabels = map[string]string{
 	"/funnel/rules":           "Regras",
 	"/catalog":                "Catálogo",
 	"/campaigns":              "Campanhas",
+	"/settings/channels":      "Canais",
 	"/settings/privacy":       "Privacidade",
 	"/settings/ai-policy":     "IA",
 	"/consent/cookies-banner": "Consentimento",
