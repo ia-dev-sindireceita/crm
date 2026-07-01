@@ -290,6 +290,34 @@ func TestNewForm_AllChecked(t *testing.T) {
 	}
 }
 
+// TestRosterCount_NoFalseLiveRegion pins the SIN-66402 a11y fix: the
+// access-count line is server-rendered per full form render and the
+// roster checkboxes carry no hx-* wiring, so its text never changes on a
+// client-side toggle. It therefore must NOT advertise itself as an
+// aria-live region — a live region that never updates is a false promise
+// to assistive tech. The count text itself must still render (it is
+// accurate at render time). Re-adding aria-live is only legitimate
+// alongside an hx-get count refresh triggered by the checkbox change
+// event, at which point this assertion should move to cover that wiring.
+func TestRosterCount_NoFalseLiveRegion(t *testing.T) {
+	u1, u2 := rosterUser("ana", "tenant_atendente"), rosterUser("bia", "tenant_gerente")
+	mux := newHandler(t, newFakeRepo(), newFakeAccess(u1, u2))
+	rec := do(t, mux, http.MethodGet, "/settings/channels/new", nil)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	// The count still renders, server-side and accurate at render time.
+	if !strings.Contains(body, "2 de 2 com acesso") {
+		t.Fatalf("count text missing, body=%s", body)
+	}
+	// `id="access-count">` — the `>` immediately after the id proves no
+	// attribute (aria-live or otherwise) trails it: not a live region.
+	if !strings.Contains(body, `id="access-count">`) {
+		t.Fatalf("access-count must not carry a trailing aria-live region, body=%s", body)
+	}
+}
+
 func TestCreate_Success_WritesRosterAndRefreshes(t *testing.T) {
 	repo := newFakeRepo()
 	u1, u2 := rosterUser("ana", "tenant_atendente"), rosterUser("bia", "tenant_gerente")
