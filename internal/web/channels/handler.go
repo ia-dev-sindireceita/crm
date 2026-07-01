@@ -49,7 +49,12 @@ type Deps struct {
 	CSRFToken  CSRFTokenFn
 	UserID     UserIDFn
 	UserLabels userlabel.Directory
-	Logger     *slog.Logger
+	// Audit records channel access-change privilege events (grant / revoke
+	// / restricted-flip) into audit_log_security (SIN-66405). Optional: a
+	// nil Auditor disables emission so the surface still renders under
+	// fail-soft wiring, but production always provides it.
+	Audit  AccessAuditor
+	Logger *slog.Logger
 }
 
 // Handler serves the SIN-66391 channel-management admin surface.
@@ -175,6 +180,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, "grant channel access", err)
 		return
 	}
+	// Audit the initial roster + a restricted-on creation as privilege
+	// events (SIN-66405). A fresh channel starts open with no grants, so
+	// before is empty and from=false.
+	actor := h.actorID(r)
+	h.auditAccessReplace(r.Context(), actor, tenant.ID, ch.ID, nil, userIDs)
+	h.auditRestrictedChange(r.Context(), actor, tenant.ID, ch.ID, false, restricted)
 	h.renderRefresh(w, r, tenant.ID, "Canal criado.")
 }
 
@@ -248,6 +259,11 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, "rename channel", err)
 		return
 	}
+	// Capture the pre-mutation roster + restricted flag so the audit diff
+	// (SIN-66405) reports true grant/revoke deltas and an actual flip.
+	// ch was loaded fresh above, so ch.Restricted is the stored value.
+	beforeRestricted := ch.Restricted
+	beforeGrants, beforeOK := h.beforeGrants(r.Context(), tenant.ID, ch.ID)
 	if err := h.deps.Channels.SetRestricted(r.Context(), tenant.ID, ch.ID, restricted); err != nil {
 		if errors.Is(err, channels.ErrNotFound) {
 			http.NotFound(w, r)
@@ -259,6 +275,15 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if err := h.deps.Access.ReplaceAccess(r.Context(), tenant.ID, ch.ID, userIDs); err != nil {
 		h.fail(w, "grant channel access", err)
 		return
+	}
+	// Emit privilege-event audit lines after the writes commit. The
+	// restricted flip is always auditable from the loaded flag; the roster
+	// diff is skipped when the before-read failed so a transient read error
+	// never mislabels the whole roster as freshly granted.
+	actor := h.actorID(r)
+	h.auditRestrictedChange(r.Context(), actor, tenant.ID, ch.ID, beforeRestricted, restricted)
+	if beforeOK {
+		h.auditAccessReplace(r.Context(), actor, tenant.ID, ch.ID, beforeGrants, userIDs)
 	}
 	h.renderRefresh(w, r, tenant.ID, "Canal atualizado.")
 }

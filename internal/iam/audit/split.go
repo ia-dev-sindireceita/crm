@@ -106,6 +106,29 @@ const (
 	// extending that migration first.
 	SecurityEventWASessionBanned       SecurityEvent = "wa_session.banned"
 	SecurityEventWASessionDisconnected SecurityEvent = "wa_session.disconnected"
+
+	// SIN-66405 (from SIN-66378 P3 security review, SIN-66392): per-channel
+	// access-change privilege events emitted by the channel-management admin
+	// surface (internal/web/channels). OWASP A09 (logging/monitoring) +
+	// least-privilege observability: granting or revoking a user's access to
+	// a channel, and flipping the channel's open↔restricted mode, are
+	// privilege changes that must leave a tamper-evident trail before GA.
+	//
+	//   * channel.access_granted     — a user was added to a channel's
+	//                                  access roster. Target carries
+	//                                  {channel_id, user_id}.
+	//   * channel.access_revoked     — a user was removed from the roster.
+	//                                  Target carries {channel_id, user_id}.
+	//   * channel.restricted_changed — the channel's restricted flag flipped.
+	//                                  Target carries {channel_id, from, to}.
+	//
+	// The actor is the authenticated gerente (the route is
+	// ActionTenantChannelsManage-gated); tenant_id is the channel's tenant.
+	// The CHECK clause in migration 0129 mirrors these three literals —
+	// extending the constants requires extending that migration first.
+	SecurityEventChannelAccessGranted     SecurityEvent = "channel.access_granted"
+	SecurityEventChannelAccessRevoked     SecurityEvent = "channel.access_revoked"
+	SecurityEventChannelRestrictedChanged SecurityEvent = "channel.restricted_changed"
 )
 
 // DataEvent is the controlled vocabulary of audit_log_data rows.
@@ -151,6 +174,9 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEventMasterSessionHardCapHit:  {},
 	SecurityEventWASessionBanned:          {},
 	SecurityEventWASessionDisconnected:    {},
+	SecurityEventChannelAccessGranted:     {},
+	SecurityEventChannelAccessRevoked:     {},
+	SecurityEventChannelRestrictedChanged: {},
 }
 
 var allDataEvents = map[DataEvent]struct{}{
