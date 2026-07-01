@@ -78,7 +78,13 @@ const partialDefs = `
   {{- else}}
   <p class="channels-roster__empty">Nenhum atendente ativo neste tenant.</p>
   {{- end}}
-  <p class="channels-roster__count" id="access-count" aria-live="polite">{{.Checked}} de {{.Total}} com acesso</p>
+  {{- /* No aria-live here: the count is server-rendered per full form
+         render and the checkboxes carry no hx-* wiring, so toggling a box
+         never mutates this node's text. A live region that never updates
+         is a false promise to assistive tech (SIN-66402). Re-add aria-live
+         only alongside an hx-get count refresh triggered by the checkbox
+         change event under strict CSP (no inline handlers). */}}
+  <p class="channels-roster__count" id="access-count">{{.Checked}} de {{.Total}} com acesso</p>
 </fieldset>
 {{end}}
 
