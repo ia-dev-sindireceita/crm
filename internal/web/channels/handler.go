@@ -55,6 +55,15 @@ type Deps struct {
 	// fail-soft wiring, but production always provides it.
 	Audit  AccessAuditor
 	Logger *slog.Logger
+	// WhatsAppWebEnabled gates the "WhatsApp Web" channel type behind a
+	// boot-time feature flag (default OFF, prod-safe). It is threaded as a
+	// plain input from cmd/server (FEATURE_WHATSAPP_WEB_ENABLED) rather than
+	// read via os.Getenv inside this package — the flag is an input, not a
+	// side-effect in the core (hexagonal). Flag OFF: the type is neither
+	// offered in the picker nor accepted by the create-time guard; the real
+	// QR-session onboarding lands under SIN-66252 and turning the flag on is
+	// the explicit act that integrates it.
+	WhatsAppWebEnabled bool
 }
 
 // Handler serves the SIN-66391 channel-management admin surface.
@@ -75,6 +84,19 @@ func New(deps Deps) (*Handler, error) {
 		deps.Logger = slog.Default()
 	}
 	return &Handler{deps: deps}, nil
+}
+
+// availableTypes is the create-form <select> option list, filtered to the
+// handler's enabled feature flags (whatsapp_web only when its flag is on).
+func (h *Handler) availableTypes() []channelType {
+	return channelTypesFor(h.deps.WhatsAppWebEnabled)
+}
+
+// validType reports whether key is a create-time-acceptable channel family
+// under the handler's enabled flags. Shares availableTypes' filter so the
+// picker and the guard cannot drift.
+func (h *Handler) validType(key string) bool {
+	return validTypeFor(key, h.deps.WhatsAppWebEnabled)
 }
 
 // Routes registers every endpoint on mux. Go 1.22 method+pattern syntax
@@ -119,11 +141,12 @@ func (h *Handler) newForm(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, "load roster", err)
 		return
 	}
+	types := h.availableTypes()
 	h.render(w, modalTmpl, modalData{
 		IsNew:      true,
 		Action:     BasePath,
-		ChannelKey: channelTypes[0].Key,
-		Types:      channelTypes,
+		ChannelKey: types[0].Key,
+		Types:      types,
 		Roster:     roster,
 	})
 }
@@ -154,7 +177,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "name", "Informe um nome de exibição (até 120 caracteres).")
 		return
 	}
-	if !validType(key) {
+	if !h.validType(key) {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "type", "Selecione um tipo de canal válido.")
 		return
 	}
@@ -162,6 +185,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "Identidade muito longa (até 120 caracteres).")
 		return
 	}
+	// TODO(SIN-66252): hook QR-session onboarding for key == whatsapp_web.
+	// The flag guard above means this path only runs for whatsapp_web when
+	// the operator explicitly enabled FEATURE_WHATSAPP_WEB_ENABLED; prod
+	// (flag OFF) can never reach here with that key, so no broken/half-wired
+	// QR channel is ever created silently.
 	ch, err := channels.New(tenant.ID, key, identity, name)
 	if err != nil {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "Não foi possível criar o canal. Verifique os dados.")
@@ -457,8 +485,9 @@ func (h *Handler) renderCreateModal(w http.ResponseWriter, r *http.Request, tena
 		h.fail(w, "load roster", err)
 		return
 	}
-	if !validType(key) {
-		key = channelTypes[0].Key
+	types := h.availableTypes()
+	if !h.validType(key) {
+		key = types[0].Key
 	}
 	h.render(w, modalTmpl, modalData{
 		IsNew:        true,
@@ -466,7 +495,7 @@ func (h *Handler) renderCreateModal(w http.ResponseWriter, r *http.Request, tena
 		Name:         name,
 		ChannelKey:   key,
 		Identity:     identity,
-		Types:        channelTypes,
+		Types:        types,
 		Roster:       roster,
 		Restricted:   restricted,
 		FieldError:   field,

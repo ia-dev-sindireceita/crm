@@ -19,6 +19,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgchannels "github.com/pericles-luz/crm/internal/adapter/db/postgres/channels"
@@ -70,7 +71,7 @@ func buildWebChannelsHandler(ctx context.Context, getenv func(string) string) (h
 	} else {
 		auditor = newChannelAccessAuditor(splitLogger, slog.Default())
 	}
-	handler, err := assembleWebChannelsHandler(store, userDir, slog.Default(), auditor)
+	handler, err := assembleWebChannelsHandlerFlagged(store, userDir, slog.Default(), whatsappWebEnabled(getenv), auditor)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/channels disabled — assemble: %v", err)
@@ -96,6 +97,27 @@ type channelsStore interface {
 // auditor as a 4th argument. Only the first auditor is used; extra args
 // are ignored.
 func assembleWebChannelsHandler(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger, auditor ...webchannels.AccessAuditor) (http.Handler, error) {
+	return assembleWebChannelsHandlerFlagged(store, userLabels, logger, false, auditor...)
+}
+
+// EnvWhatsAppWebEnabled gates the "WhatsApp Web" (unofficial QR-session)
+// channel type. Default OFF; set to "1" to offer + accept the type in a
+// tenant's create form. Mirrors the FEATURE_WEBCHAT_ENABLED convention.
+const EnvWhatsAppWebEnabled = "FEATURE_WHATSAPP_WEB_ENABLED"
+
+// whatsappWebEnabled reads the WhatsApp-Web feature flag from the
+// environment at boot (input, not side-effect in the web core).
+func whatsappWebEnabled(getenv func(string) string) bool {
+	if getenv == nil {
+		return false
+	}
+	return strings.TrimSpace(getenv(EnvWhatsAppWebEnabled)) == "1"
+}
+
+// assembleWebChannelsHandlerFlagged is the flag-aware assembly seam. The
+// wsWebEnabled input threads FEATURE_WHATSAPP_WEB_ENABLED from the boot
+// environment into the handler's WhatsAppWebEnabled field.
+func assembleWebChannelsHandlerFlagged(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger, wsWebEnabled bool, auditor ...webchannels.AccessAuditor) (http.Handler, error) {
 	if store == nil {
 		return nil, errors.New("channels_wire: store is nil")
 	}
@@ -107,13 +129,14 @@ func assembleWebChannelsHandler(store channelsStore, userLabels userlabel.Direct
 		accessAuditor = auditor[0]
 	}
 	h, err := webchannels.New(webchannels.Deps{
-		Channels:   store,
-		Access:     store,
-		CSRFToken:  csrfTokenFromSessionContext,
-		UserID:     userIDFromSessionContext,
-		UserLabels: userLabels,
-		Audit:      accessAuditor,
-		Logger:     logger,
+		Channels:           store,
+		Access:             store,
+		CSRFToken:          csrfTokenFromSessionContext,
+		UserID:             userIDFromSessionContext,
+		UserLabels:         userLabels,
+		Audit:              accessAuditor,
+		Logger:             logger,
+		WhatsAppWebEnabled: wsWebEnabled,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("channels_wire: build handler: %w", err)
