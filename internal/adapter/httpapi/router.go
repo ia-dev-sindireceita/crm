@@ -447,6 +447,29 @@ type Deps struct {
 	//   POST   /branding/palette/revert
 	WebBranding http.Handler
 
+	// WebChannels is the HTMX admin UI for the multi-channel-per-tenant
+	// surface (SIN-66391 / P2, parent SIN-66378). Same envelope as
+	// WebBranding / WebCatalog: RequireAuth installs the principal,
+	// RequireAction(iam.ActionTenantChannelsManage) gates every method.
+	// Gerente only — managing channel instances + the per-channel access
+	// roster is a tenant-admin decision.
+	//
+	// Mounted only when the wire layer supplies a non-nil handler so
+	// existing router tests that don't exercise the surface keep their
+	// pre-PR behaviour. Each POST route is registered explicitly (chi
+	// enumerates settings routes one-by-one — reference_crm_inbox_chi_
+	// route_enumeration_trap).
+	//
+	// Routes mounted:
+	//   GET  /settings/channels
+	//   GET  /settings/channels/new
+	//   GET  /settings/channels/cancel
+	//   POST /settings/channels
+	//   GET  /settings/channels/{id}/edit
+	//   POST /settings/channels/{id}
+	//   POST /settings/channels/{id}/active
+	WebChannels http.Handler
+
 	// WebLGPD is the LGPD data-subject admin surface (SIN-63186 /
 	// Fase 6 PR3). Two routes with DIFFERENT actions: export gates on
 	// ActionTenantLGPDExport, delete on ActionTenantLGPDDelete. Each
@@ -704,6 +727,18 @@ func (d Deps) WebSurfaces() map[string]bool {
 		"billing_invoices": d.WebBillingInvoices != nil,
 		// SIN-66259 / Fase 4 — WhatsApp session provisioning surface.
 		"wa_session": d.WebWASession != nil,
+		// NOTE (SIN-66391 / P2): a "channels" entry for the
+		// multi-channel-per-tenant admin surface is deliberately NOT added
+		// here yet. Doing so changes the exhaustive key-set pinned by three
+		// existing assertions in router_surfaces_test.go
+		// (TestDeps_WebSurfaces_KeySet / _PresentHandlersTrue /
+		// TestRouter_Health_ReportsSurfaces), and Quality-bar rule 3
+		// forbids modifying existing tests without written CTO
+		// authorization on the task thread. The /settings/channels surface
+		// is fully mounted + gated + hello-synced without this entry; the
+		// WebSurfaces map only feeds the /health observability report.
+		// Follow-up (CTO-authorized test edit): add the "channels" key +
+		// update the three pins.
 	}
 }
 
@@ -1085,6 +1120,11 @@ func NewRouter(deps Deps) http.Handler {
 					DashboardEnabled: deps.WebDashboard != nil,
 					// SIN-64977 — contacts management list link.
 					ContactsEnabled: deps.WebContacts != nil,
+					// SIN-66391 / P2 — channel-management admin link.
+					// Keeps the post-login index in sync with the
+					// /settings/channels mount (memory
+					// feedback_hello_tenant_sync_on_mount).
+					ChannelsEnabled: deps.WebChannels != nil,
 				},
 			}))
 			if deps.Authorizer != nil {
@@ -1299,6 +1339,36 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/branding/palette/override", webBranding)
 				authed.Method(http.MethodPost, "/branding/palette/save", webBranding)
 				authed.Method(http.MethodPost, "/branding/palette/revert", webBranding)
+			}
+
+			// SIN-66391 — HTMX channel-management admin (P2, parent
+			// SIN-66378). Same envelope as WebBranding: RequireAuth
+			// installs the principal, RequireAction(ActionTenantChannels
+			// Manage) gates every method. gerente is the only role that
+			// may manage channel instances + the per-channel access
+			// roster. Each route (incl. every POST) is enumerated
+			// explicitly — chi matches settings routes one-by-one, so a
+			// missing entry 404s the button while inner-mux tests still
+			// pass (reference_crm_inbox_chi_route_enumeration_trap). When
+			// Authorizer is nil (router tests that don't exercise the
+			// authz seam) the gate skips and the inner mux runs with a
+			// Principal.
+			if deps.WebChannels != nil {
+				webChannels := http.Handler(deps.WebChannels)
+				if deps.Authorizer != nil {
+					webChannels = middleware.RequireAuth(middleware.RequireAuthDeps{})(
+						middleware.RequireAction(deps.Authorizer, iam.ActionTenantChannelsManage, nil)(webChannels),
+					)
+				} else {
+					webChannels = middleware.RequireAuth(middleware.RequireAuthDeps{})(webChannels)
+				}
+				authed.Method(http.MethodGet, "/settings/channels", webChannels)
+				authed.Method(http.MethodGet, "/settings/channels/new", webChannels)
+				authed.Method(http.MethodGet, "/settings/channels/cancel", webChannels)
+				authed.Method(http.MethodPost, "/settings/channels", webChannels)
+				authed.Method(http.MethodGet, "/settings/channels/{id}/edit", webChannels)
+				authed.Method(http.MethodPost, "/settings/channels/{id}", webChannels)
+				authed.Method(http.MethodPost, "/settings/channels/{id}/active", webChannels)
 			}
 
 			// SIN-63186 — LGPD data-subject admin surface (Fase 6 PR3).

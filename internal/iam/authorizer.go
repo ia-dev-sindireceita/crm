@@ -133,6 +133,21 @@ const (
 	// the gate; master reaches it only via impersonation (inherits gerente)
 	// per ADR 0090.
 	ActionTenantWASessionManage Action = "tenant.wa_session.manage"
+
+	// SIN-66391 (parent SIN-66378 / SIN-66375) — multi-channel-per-tenant
+	// admin surface. Gates every /settings/channels* route (registry
+	// list, create/edit form with the in-form access roster, activate /
+	// deactivate toggle). Gerente only: a channel instance carries the
+	// tenant's inbound addressing and the per-channel access roster that
+	// decides which atendentes see which conversations, so managing it is
+	// a tenant-admin decision — the same gerente-only posture as branding /
+	// catalog / whatsapp-session admin. Atendente / common are denied at
+	// the gate; master reaches it only via impersonation (inherits gerente)
+	// per ADR 0090. The per-resource access *enforcement* contract (who may
+	// read a restricted channel's conversations) is a separate concern
+	// owned by SIN-66392 (P3, SecurityEngineer loop-in) — this action only
+	// guards the management UI.
+	ActionTenantChannelsManage Action = "tenant.channels.manage"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -295,6 +310,12 @@ func defaultRolesByAction() map[Action][]Role {
 		// SIN-66259 — WhatsApp non-official session provisioning. Gerente
 		// only; see the constant declaration for the ban-risk rationale.
 		ActionTenantWASessionManage: {RoleTenantGerente},
+
+		// SIN-66391 — multi-channel-per-tenant admin surface. Gerente
+		// only; see the constant declaration for the rationale (managing
+		// channel instances + per-channel access roster is a tenant-admin
+		// decision).
+		ActionTenantChannelsManage: {RoleTenantGerente},
 	}
 }
 
