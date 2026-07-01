@@ -136,34 +136,36 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.renderCreateModal(w, r, tenant.ID, "", "", "", nil, "", "Não foi possível processar o formulário.")
+		h.renderCreateModal(w, r, tenant.ID, "", "", "", nil, false, "", "Não foi possível processar o formulário.")
 		return
 	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	key := strings.TrimSpace(r.PostFormValue("channel_key"))
 	identity := strings.TrimSpace(r.PostFormValue("identity"))
 	userIDs := parseUserIDs(r.PostForm["user_ids"])
+	restricted := parseRestricted(r)
 
 	if name == "" || len(name) > MaxNameLen {
-		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, "name", "Informe um nome de exibição (até 120 caracteres).")
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "name", "Informe um nome de exibição (até 120 caracteres).")
 		return
 	}
 	if !validType(key) {
-		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, "type", "Selecione um tipo de canal válido.")
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "type", "Selecione um tipo de canal válido.")
 		return
 	}
 	if len(identity) > MaxIdentityLen {
-		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, "identity", "Identidade muito longa (até 120 caracteres).")
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "Identidade muito longa (até 120 caracteres).")
 		return
 	}
 	ch, err := channels.New(tenant.ID, key, identity, name)
 	if err != nil {
-		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, "identity", "Não foi possível criar o canal. Verifique os dados.")
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "Não foi possível criar o canal. Verifique os dados.")
 		return
 	}
+	ch.SetRestricted(restricted)
 	if err := h.deps.Channels.Create(r.Context(), ch); err != nil {
 		if errors.Is(err, channels.ErrChannelConflict) {
-			h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, "identity", "Já existe um canal com esse tipo e identidade.")
+			h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "Já existe um canal com esse tipo e identidade.")
 			return
 		}
 		h.fail(w, "create channel", err)
@@ -206,10 +208,12 @@ func (h *Handler) editForm(w http.ResponseWriter, r *http.Request) {
 		Identity:   maskIdentity(ch.ExternalID),
 		Types:      channelTypes,
 		Roster:     roster,
+		Restricted: ch.Restricted,
 	})
 }
 
-// update renames the channel and replaces its access roster. Type +
+// update renames the channel, toggles its restricted flag, and replaces
+// its access roster. Type +
 // identity are immutable on edit (changing a live channel's addressing
 // would orphan its conversations) so they are ignored here.
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +231,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	userIDs := parseUserIDs(r.PostForm["user_ids"])
+	restricted := parseRestricted(r)
 	if name == "" || len(name) > MaxNameLen {
 		h.renderEditError(w, r, tenant.ID, ch, "name", "Informe um nome de exibição (até 120 caracteres).")
 		return
@@ -241,6 +246,14 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.fail(w, "rename channel", err)
+		return
+	}
+	if err := h.deps.Channels.SetRestricted(r.Context(), tenant.ID, ch.ID, restricted); err != nil {
+		if errors.Is(err, channels.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		h.fail(w, "set channel restricted", err)
 		return
 	}
 	if err := h.deps.Access.ReplaceAccess(r.Context(), tenant.ID, ch.ID, userIDs); err != nil {
@@ -332,6 +345,7 @@ func rowFromChannel(ch *channels.Channel, grantCount, rosterTotal int) channelRo
 		Active:         ch.IsActive,
 		AccessSummary:  summary,
 		AccessAll:      all,
+		Restricted:     ch.Restricted,
 	}
 }
 
@@ -404,7 +418,7 @@ func (h *Handler) renderRefresh(w http.ResponseWriter, r *http.Request, tenantID
 // selected so a validation bounce never silently loses their edits. key
 // falls back to the first offered type when the submitted one is invalid
 // so the <select> always has a valid selection.
-func (h *Handler) renderCreateModal(w http.ResponseWriter, r *http.Request, tenantID uuid.UUID, name, key, identity string, userIDs []uuid.UUID, field, msg string) {
+func (h *Handler) renderCreateModal(w http.ResponseWriter, r *http.Request, tenantID uuid.UUID, name, key, identity string, userIDs []uuid.UUID, restricted bool, field, msg string) {
 	granted := make(map[uuid.UUID]struct{}, len(userIDs))
 	for _, id := range userIDs {
 		granted[id] = struct{}{}
@@ -425,6 +439,7 @@ func (h *Handler) renderCreateModal(w http.ResponseWriter, r *http.Request, tena
 		Identity:     identity,
 		Types:        channelTypes,
 		Roster:       roster,
+		Restricted:   restricted,
 		FieldError:   field,
 		ErrorMessage: msg,
 	})
@@ -451,6 +466,7 @@ func (h *Handler) renderEditError(w http.ResponseWriter, r *http.Request, tenant
 		Identity:     maskIdentity(ch.ExternalID),
 		Types:        channelTypes,
 		Roster:       roster,
+		Restricted:   parseRestricted(r),
 		FieldError:   field,
 		ErrorMessage: msg,
 	})
@@ -525,6 +541,15 @@ func parseUserIDs(raw []string) []uuid.UUID {
 		out = append(out, id)
 	}
 	return out
+}
+
+// parseRestricted reads the "restricted" checkbox from the submitted
+// form. An HTML checkbox only submits its value when checked, so any
+// non-empty value means the gerente asked for restricted (membership
+// enforced); an absent field means open (every atendente sees the
+// channel). r.ParseForm must have been called by the caller.
+func parseRestricted(r *http.Request) bool {
+	return strings.TrimSpace(r.PostFormValue("restricted")) != ""
 }
 
 // buildNavItems / buildUserMenu mirror the wasession / dashboard chrome so

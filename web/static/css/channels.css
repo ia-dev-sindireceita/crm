@@ -64,6 +64,16 @@
   text-decoration: none;
 }
 
+/* Access-mode badge (P3): "Aberto" (neutral) / "Restrito" (info). The
+   text label always carries the meaning, so the colour is decorative. */
+.channels-access-mode {
+  margin-left: var(--space-1);
+}
+
+.channels-row--inactive .channels-access-mode {
+  color: var(--text-muted);
+}
+
 .channels-row__actions {
   display: inline-flex;
   gap: var(--space-2);
@@ -97,6 +107,20 @@
   font-weight: var(--font-semibold);
   color: var(--text-strong);
   margin-bottom: var(--space-2);
+}
+
+/* Restricted toggle (P3 maintenance): the access-mode switch sits above
+   the roster it governs. Row is a ≥44px hit target via padding. */
+.channels-form__restricted {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2) 0;
+  cursor: pointer;
+}
+
+.channels-form__restricted input[type="checkbox"] {
+  margin-top: 0.2em;
 }
 
 /* ---- Roster primitive (shared: P2 create/edit form; P3 maintenance) ---- */

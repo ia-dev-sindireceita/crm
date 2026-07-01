@@ -39,7 +39,7 @@ const partialDefs = `
   <td class="channels-row__name">{{.Name}}</td>
   <td class="channels-row__type">{{.TypeLabel}}</td>
   <td class="channels-row__identity">{{.MaskedIdentity}}</td>
-  <td><span class="badge{{if not .AccessAll}} badge--info{{end}} channels-access-summary">{{.AccessSummary}}</span></td>
+  <td><span class="badge{{if not .AccessAll}} badge--info{{end}} channels-access-summary">{{.AccessSummary}}</span> {{if .Restricted}}<span class="badge badge--info channels-access-mode" title="Somente os atendentes marcados (e gerentes) veem este canal.">Restrito</span>{{else}}<span class="badge channels-access-mode" title="Todos os atendentes ativos veem este canal.">Aberto</span>{{end}}</td>
   <td>{{if .Active}}<span class="badge badge--success">Ativo</span>{{else}}<span class="badge">Inativo</span>{{end}}</td>
   <td class="channels-row__actions">
     <button type="button" class="btn btn--ghost" hx-get="/settings/channels/{{.ID}}/edit" hx-target="#channels-modal" hx-swap="innerHTML">Editar</button>
@@ -114,6 +114,13 @@ const partialDefs = `
       </div>
       <div class="field channels-form__roster">
         <span class="field__legend">Acesso da equipe</span>
+        {{- if not .IsNew}}
+        <label class="channels-form__restricted">
+          <input type="checkbox" name="restricted" value="true"{{if .Restricted}} checked{{end}}>
+          <span>Acesso restrito — somente os atendentes marcados abaixo (e gerentes) veem este canal</span>
+        </label>
+        <p class="field__help">Deixe desmarcado para que todos os atendentes ativos vejam o canal. A lista abaixo passa a valer quando o acesso é restrito.</p>
+        {{- end}}
         {{template "channels.roster" .Roster}}
       </div>
       <div class="modal__actions">

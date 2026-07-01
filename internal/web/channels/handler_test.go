@@ -19,22 +19,25 @@ import (
 // covered by the postgres adapter integration tests) --------------------
 
 type fakeRepo struct {
-	chans     map[uuid.UUID]*channels.Channel
-	createErr error
-	renameErr error
-	listErr   error
-	getErr    error
-	activeErr error
-	created   []*channels.Channel
-	renamed   map[uuid.UUID]string
-	active    map[uuid.UUID]bool
+	chans         map[uuid.UUID]*channels.Channel
+	createErr     error
+	renameErr     error
+	listErr       error
+	getErr        error
+	activeErr     error
+	restrictedErr error
+	created       []*channels.Channel
+	renamed       map[uuid.UUID]string
+	active        map[uuid.UUID]bool
+	restricted    map[uuid.UUID]bool
 }
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		chans:   map[uuid.UUID]*channels.Channel{},
-		renamed: map[uuid.UUID]string{},
-		active:  map[uuid.UUID]bool{},
+		chans:      map[uuid.UUID]*channels.Channel{},
+		renamed:    map[uuid.UUID]string{},
+		active:     map[uuid.UUID]bool{},
+		restricted: map[uuid.UUID]bool{},
 	}
 }
 
@@ -89,6 +92,19 @@ func (f *fakeRepo) SetActive(_ context.Context, _ uuid.UUID, id uuid.UUID, a boo
 	}
 	c.IsActive = a
 	f.active[id] = a
+	return nil
+}
+
+func (f *fakeRepo) SetRestricted(_ context.Context, _ uuid.UUID, id uuid.UUID, restricted bool) error {
+	if f.restrictedErr != nil {
+		return f.restrictedErr
+	}
+	c, ok := f.chans[id]
+	if !ok {
+		return channels.ErrNotFound
+	}
+	c.Restricted = restricted
+	f.restricted[id] = restricted
 	return nil
 }
 

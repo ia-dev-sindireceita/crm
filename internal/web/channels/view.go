@@ -113,6 +113,11 @@ type channelRow struct {
 	// neutral "Todos" badge); false renders the informational "N
 	// atendentes" badge.
 	AccessAll bool
+	// Restricted mirrors the channel's restricted flag: true renders the
+	// "Restrito" access-mode badge (membership is enforced), false renders
+	// "Aberto" (every atendente of the tenant sees the channel). It is the
+	// visible signal that the roster below is actually enforced.
+	Restricted bool
 }
 
 // rosterEntry is one checkbox row in the shared access-roster primitive.
@@ -232,6 +237,11 @@ type modalData struct {
 	Identity   string
 	Types      []channelType
 	Roster     rosterView
+	// Restricted drives the "Acesso restrito" checkbox state. On the new
+	// form it defaults false (open, zero-regression); on edit it mirrors
+	// the stored flag; on a validation bounce it echoes the submitted
+	// value so the operator's toggle is never silently lost.
+	Restricted bool
 	// FieldError names the field that failed validation ("name",
 	// "identity", "type") so the template renders the inline error next to
 	// it; empty means no field-level error.
