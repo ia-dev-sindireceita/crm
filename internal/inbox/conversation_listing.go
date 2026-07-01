@@ -88,11 +88,28 @@ func UserLabelFromEmail(email string) string {
 //	                 non-nil AssignedUserID (the use case rejects the combo);
 //	                 the adapter applies both predicates with AND so a stray
 //	                 combination yields an empty set rather than a leak.
+//	ChannelScope   — the per-channel access filter (SIN-66378 P4). nil means
+//	                 "no channel-access restriction" (a gerente sees every
+//	                 channel). A non-nil pointer restricts the listing to
+//	                 conversations whose channel_id is in the set: a gerente
+//	                 passes nil, an atendente passes the ids from
+//	                 channels.AccessService.AccessibleChannelIDs. An empty
+//	                 (but non-nil) slice is the natural "no accessible
+//	                 channels" outcome and yields an empty result —
+//	                 deny-by-default, never a leak. Rows with a NULL
+//	                 channel_id are excluded from a scoped listing.
+//	ChannelID      — the channel-scope filter chip (SIN-66378 P4). nil means
+//	                 "all accessible channels"; a non-nil id narrows to that
+//	                 single instance. It is AND-ed with ChannelScope so a
+//	                 chip value outside the caller's accessible set yields an
+//	                 empty result rather than a leak.
 type ConversationFilter struct {
 	State          ConversationState
 	Channel        string
 	AssignedUserID uuid.UUID
 	UnassignedOnly bool
+	ChannelScope   *[]uuid.UUID
+	ChannelID      *uuid.UUID
 }
 
 // ConversationListItem is the flat read-model projection backing the

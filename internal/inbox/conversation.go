@@ -34,10 +34,18 @@ var now = func() time.Time { return time.Now().UTC() }
 // invariants we care about (LastMessageAt, AssignedUserID coherence
 // with State). Treat Conversation as immutable-from-outside.
 type Conversation struct {
-	ID             uuid.UUID
-	TenantID       uuid.UUID
-	ContactID      uuid.UUID
-	Channel        string
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	ContactID uuid.UUID
+	Channel   string
+	// ChannelID references the tenant's channel *instance*
+	// (tenant_channels, migration 0128) the conversation belongs to, so
+	// two conversations on different numbers of the same carrier do not
+	// collide and the per-channel access filter (SIN-66378 P4) can scope
+	// the live inbox read path. Nil for legacy rows that predate routing
+	// or when the resolver could not map the inbound identity to an
+	// instance; NewConversation leaves it nil and RouteToChannel sets it.
+	ChannelID      *uuid.UUID
 	State          ConversationState
 	AssignedUserID *uuid.UUID
 	LastMessageAt  time.Time
@@ -71,6 +79,22 @@ func NewConversation(tenantID, contactID uuid.UUID, channel string) (*Conversati
 		State:     ConversationStateOpen,
 		CreatedAt: t,
 	}, nil
+}
+
+// RouteToChannel binds the conversation to the tenant channel instance
+// channelID resolved from the inbound identity (SIN-66378 P4). It is
+// called on a freshly-created conversation before the first persist so
+// conversation.channel_id references the instance rather than the bare
+// carrier string. A uuid.Nil argument is a no-op (the resolver found no
+// instance — the conversation stays unrouted rather than referencing a
+// phantom id), keeping the flow non-fatal for single-carrier tenants
+// that have not registered a named instance yet.
+func (c *Conversation) RouteToChannel(channelID uuid.UUID) {
+	if channelID == uuid.Nil {
+		return
+	}
+	id := channelID
+	c.ChannelID = &id
 }
 
 // HydrateConversation rebuilds a Conversation from stored fields

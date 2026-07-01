@@ -60,6 +60,59 @@ func (f *fakeDirectory) LabelsByID(_ context.Context, _ uuid.UUID, ids []uuid.UU
 
 func ptrUUID(id uuid.UUID) *uuid.UUID { return &id }
 
+// TestListConversationSummaries_ChannelScopePassthrough asserts the P4
+// per-channel access filter + chip selection are forwarded verbatim to
+// the read model: a non-nil ChannelScope becomes the filter's ChannelScope
+// pointer, and a concrete ChannelID becomes a non-nil filter pointer.
+func TestListConversationSummaries_ChannelScopePassthrough(t *testing.T) {
+	t.Parallel()
+	tenant := uuid.New()
+	chA, chB := uuid.New(), uuid.New()
+	scope := []uuid.UUID{chA, chB}
+
+	read := &fakeReadModel{}
+	uc := usecase.MustNewListConversationSummaries(read, nil)
+
+	if _, err := uc.Execute(context.Background(), usecase.ListConversationSummariesInput{
+		TenantID:     tenant,
+		ChannelScope: &scope,
+		ChannelID:    chA,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if read.gotFilter.ChannelScope == nil {
+		t.Fatal("filter.ChannelScope = nil, want the accessible-id set")
+	}
+	if got := *read.gotFilter.ChannelScope; len(got) != 2 || got[0] != chA || got[1] != chB {
+		t.Errorf("filter.ChannelScope = %v, want %v", got, scope)
+	}
+	if read.gotFilter.ChannelID == nil || *read.gotFilter.ChannelID != chA {
+		t.Errorf("filter.ChannelID = %v, want %v", read.gotFilter.ChannelID, chA)
+	}
+}
+
+// TestListConversationSummaries_NoChannelScopeIsNil asserts the gerente /
+// legacy path leaves both channel axes unset (nil), so the read model
+// applies no channel_id predicate.
+func TestListConversationSummaries_NoChannelScopeIsNil(t *testing.T) {
+	t.Parallel()
+	read := &fakeReadModel{}
+	uc := usecase.MustNewListConversationSummaries(read, nil)
+
+	if _, err := uc.Execute(context.Background(), usecase.ListConversationSummariesInput{
+		TenantID: uuid.New(),
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if read.gotFilter.ChannelScope != nil {
+		t.Errorf("filter.ChannelScope = %v, want nil", read.gotFilter.ChannelScope)
+	}
+	if read.gotFilter.ChannelID != nil {
+		t.Errorf("filter.ChannelID = %v, want nil", read.gotFilter.ChannelID)
+	}
+}
+
 func TestNewListConversationSummaries_RejectsNilReadModel(t *testing.T) {
 	t.Parallel()
 	if _, err := usecase.NewListConversationSummaries(nil, nil); err == nil {

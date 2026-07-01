@@ -251,7 +251,14 @@ func buildWASessionReceiver(pool *pgxpool.Pool) (*inboxusecase.ReceiveInbound, e
 	if err != nil {
 		return nil, err
 	}
-	return inboxusecase.NewReceiveInbound(inboxStore, inboxStore, contactsUC)
+	receiver, err := inboxusecase.NewReceiveInbound(inboxStore, inboxStore, contactsUC)
+	if err != nil {
+		return nil, err
+	}
+	// SIN-66378 P4 — route new conversations to the tenant channel
+	// instance resolved from the inbound identity (channel_id). Soft-fail.
+	wireChannelResolver(receiver, pool)
+	return receiver, nil
 }
 
 // assembleWASessionAdapter constructs the inbox adapter from already-built

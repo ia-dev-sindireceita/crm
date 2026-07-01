@@ -618,3 +618,68 @@ func TestChannelsBackfill_GrantAll(t *testing.T) {
 		t.Errorf("cross-tenant grant leak = %d, want 0", leaked)
 	}
 }
+
+// TestChannelsAdapter_ResolveChannelID exercises the SIN-66378 P4 routing
+// resolver against real rows: exact (carrier, external_id) match,
+// carrier-only fallback preferring an active instance, no-match →
+// (uuid.Nil, nil), tenant RLS isolation, and the guard rails.
+func TestChannelsAdapter_ResolveChannelID(t *testing.T) {
+	db := freshDBWithChannels(t)
+	ctx := context.Background()
+	tenant := seedChannelsTenant(t, db)
+	other := seedChannelsTenant(t, db)
+	store := newChannelsStore(t, db)
+
+	// Two WhatsApp instances (different numbers) + one Instagram.
+	waA, _ := channels.New(tenant, "whatsapp", "+5511111110000", "Suporte")
+	waB, _ := channels.New(tenant, "whatsapp", "+5511222220000", "Vendas")
+	ig, _ := channels.New(tenant, "instagram", "@acme", "Social")
+	for _, c := range []*channels.Channel{waA, waB, ig} {
+		if err := store.Create(ctx, c); err != nil {
+			t.Fatalf("Create %s: %v", c.DisplayName, err)
+		}
+	}
+
+	// Exact destination-address match resolves to that instance — two
+	// numbers on the same carrier do not collide.
+	if got, err := store.ResolveChannelID(ctx, tenant, "whatsapp", "+5511222220000"); err != nil || got != waB.ID {
+		t.Errorf("Resolve(whatsapp,+5511222220000) = (%v,%v), want (%v,nil)", got, err, waB.ID)
+	}
+	if got, err := store.ResolveChannelID(ctx, tenant, "instagram", "@acme"); err != nil || got != ig.ID {
+		t.Errorf("Resolve(instagram,@acme) = (%v,%v), want (%v,nil)", got, err, ig.ID)
+	}
+
+	// Unknown destination address for a known carrier → no match.
+	if got, err := store.ResolveChannelID(ctx, tenant, "whatsapp", "+5599999990000"); err != nil || got != uuid.Nil {
+		t.Errorf("Resolve(unknown addr) = (%v,%v), want (Nil,nil)", got, err)
+	}
+
+	// Carrier-only fallback (empty external id) prefers an active instance
+	// and resolves deterministically. Deactivate waA so waB (active) wins
+	// regardless of external_id ordering.
+	if err := store.SetActive(ctx, tenant, waA.ID, false); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+	if got, err := store.ResolveChannelID(ctx, tenant, "whatsapp", ""); err != nil || got != waB.ID {
+		t.Errorf("Resolve(whatsapp, active-fallback) = (%v,%v), want (%v,nil)", got, err, waB.ID)
+	}
+
+	// Unknown carrier → no match.
+	if got, err := store.ResolveChannelID(ctx, tenant, "telegram", ""); err != nil || got != uuid.Nil {
+		t.Errorf("Resolve(telegram) = (%v,%v), want (Nil,nil)", got, err)
+	}
+
+	// Tenant RLS isolation: another tenant cannot resolve this tenant's
+	// instance even with the exact address.
+	if got, err := store.ResolveChannelID(ctx, other, "whatsapp", "+5511222220000"); err != nil || got != uuid.Nil {
+		t.Errorf("Resolve under other tenant = (%v,%v), want (Nil,nil)", got, err)
+	}
+
+	// Guard rails.
+	if _, err := store.ResolveChannelID(ctx, uuid.Nil, "whatsapp", ""); err == nil {
+		t.Error("Resolve(nil tenant) err = nil, want error")
+	}
+	if _, err := store.ResolveChannelID(ctx, tenant, "  ", ""); err == nil {
+		t.Error("Resolve(empty carrier) err = nil, want error")
+	}
+}

@@ -82,3 +82,27 @@ type ChannelAccessPolicy interface {
 	// outcome.
 	ListAccessibleChannelIDs(ctx context.Context, tenantID, userID uuid.UUID) ([]uuid.UUID, error)
 }
+
+// ChannelResolver maps an inbound identity to the tenant's channel
+// instance id. It is the routing seam for SIN-66378 P4: the
+// receive-inbound use case calls it so a new conversation references the
+// tenant_channels row rather than the bare carrier string, which is what
+// lets two numbers of the same carrier live side by side without
+// colliding.
+//
+// The concrete adapter (internal/adapter/db/postgres/channels) reads
+// tenant_channels under tenant RLS. Passing uuid.Nil for the tenant is a
+// clean error, never a cross-tenant leak.
+type ChannelResolver interface {
+	// ResolveChannelID returns the id of the tenant channel instance for
+	// the given carrier (channelKey, e.g. "whatsapp") that received the
+	// message on externalID (the tenant-side destination address). An
+	// empty externalID means the carrier did not surface a receiver
+	// address; the resolver then falls back to the tenant's instance for
+	// that carrier (single-instance tenants, or the migration-0128
+	// placeholder), preferring an active row and ordering deterministically
+	// so the choice is stable. Returns uuid.Nil (nil error) when no
+	// instance matches, so the caller records the conversation with a NULL
+	// channel_id rather than failing the inbound delivery.
+	ResolveChannelID(ctx context.Context, tenantID uuid.UUID, channelKey, externalID string) (uuid.UUID, error)
+}

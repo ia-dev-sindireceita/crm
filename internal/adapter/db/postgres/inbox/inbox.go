@@ -102,9 +102,9 @@ func (s *Store) CreateConversation(ctx context.Context, c *domain.Conversation) 
 	return postgres.WithTenant(ctx, s.pool, c.TenantID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO conversation
-			  (id, tenant_id, contact_id, channel, state, assigned_user_id, last_message_at, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		`, c.ID, c.TenantID, c.ContactID, c.Channel, string(c.State),
+			  (id, tenant_id, contact_id, channel, channel_id, state, assigned_user_id, last_message_at, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, c.ID, c.TenantID, c.ContactID, c.Channel, c.ChannelID, string(c.State),
 			c.AssignedUserID, nullTime(c.LastMessageAt), created)
 		if err != nil {
 			return fmt.Errorf("inbox/postgres: CreateConversation: %w", err)
@@ -448,6 +448,25 @@ func (s *Store) ListConversationSummaries(ctx context.Context, tenantID uuid.UUI
 		id := filter.AssignedUserID
 		assigned = &id
 	}
+	// ChannelScope is the per-channel access filter (SIN-66378 P4). A nil
+	// pointer disables the axis (gerente sees every channel); a non-nil
+	// pointer restricts to the set, and an empty (non-nil) set yields an
+	// empty result — deny-by-default. Threaded as an interface{} so a nil
+	// pointer reaches Postgres as SQL NULL (axis off) while a real slice —
+	// even empty — reaches it as a uuid[] the ANY() predicate evaluates
+	// against; rows with a NULL channel_id never match a scoped listing.
+	var scopeArg any
+	if filter.ChannelScope != nil {
+		scope := *filter.ChannelScope
+		if scope == nil {
+			scope = []uuid.UUID{}
+		}
+		scopeArg = scope
+	}
+	// ChannelID is the filter chip: an optional single instance the caller
+	// narrowed to. AND-ed with the scope so an out-of-scope value cannot
+	// leak.
+	var channelID *uuid.UUID = filter.ChannelID
 	var out []domain.ConversationListItem
 	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
@@ -470,9 +489,11 @@ func (s *Store) ListConversationSummaries(ctx context.Context, tenantID uuid.UUI
 			   AND ($2::text = '' OR c.channel = $2)
 			   AND ($3::uuid IS NULL OR c.assigned_user_id = $3)
 			   AND (NOT $4::bool OR c.assigned_user_id IS NULL)
+			   AND ($6::uuid[] IS NULL OR c.channel_id = ANY($6))
+			   AND ($7::uuid IS NULL OR c.channel_id = $7)
 			 ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id ASC
 			 LIMIT $5
-		`, string(filter.State), filter.Channel, assigned, filter.UnassignedOnly, limit)
+		`, string(filter.State), filter.Channel, assigned, filter.UnassignedOnly, limit, scopeArg, channelID)
 		if err != nil {
 			return err
 		}

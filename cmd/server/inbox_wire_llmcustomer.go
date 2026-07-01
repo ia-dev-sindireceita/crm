@@ -128,6 +128,13 @@ type inboxLLMCustomerDeps struct {
 	// AI-assist Summarizer so summaries are voided even when the LLM key
 	// is absent.
 	SummaryInvalidator inboxusecase.SummaryInvalidator
+	// ChannelScope resolves the caller's accessible channel instances for
+	// the SIN-66378 P4 per-channel access filter + filter chip on the live
+	// inbox read path. nil disables the filter and the chip (the pre-P4
+	// tenant-wide list). IsGerente is its companion — nil ⇒ the caller is
+	// treated as a non-gerente (fail-safe / deny-by-default).
+	ChannelScope webinbox.ChannelScopeUseCase
+	IsGerente    webinbox.IsGerenteFn
 	// Logger receives the bootstrap audit lines. nil falls back to
 	// slog.Default with a "wire=inbox_llmcustomer" attribute.
 	Logger *slog.Logger
@@ -351,6 +358,8 @@ func assembleInboxLLMCustomerHandler(deps inboxLLMCustomerDeps) (http.Handler, f
 		ReopenConversation:   reopenUC,
 		UnassignConversation: unassignUC,
 		AIAssist:             deps.AIAssist,
+		ChannelScope:         deps.ChannelScope,
+		IsGerente:            deps.IsGerente,
 		CSRFToken:            csrfTokenFromSessionContext,
 		UserID:               userIDFromSessionContext,
 		// SIN-65578: the same UserDirectory that labels the assignment
@@ -469,6 +478,11 @@ func assembleLLMCustomerFromPool(pool *pgxpool.Pool, getenv func(string) string)
 		// the cached summary on reset.
 		AssignmentClearer:  assignmentClearerAdapter{store: inboxStore},
 		SummaryInvalidator: summaryInvalidator,
+		// SIN-66378 P4 — per-channel access scope on the live read path.
+		// Soft-degrade: a build fault disables the filter + chip (nil) but
+		// never downs the inbox; IsGerente reads the request principal.
+		ChannelScope: buildInboxChannelScope(pool),
+		IsGerente:    isGerenteFromSessionContext,
 		// Logger left at the production default (slog.Default).
 	})
 	if err != nil {

@@ -54,6 +54,19 @@ type ContactUpserter interface {
 	Execute(ctx context.Context, in contactsusecase.Input) (contactsusecase.Result, error)
 }
 
+// ChannelResolver maps an inbound identity (carrier + tenant-side
+// destination address) to the tenant's channel instance id so a new
+// conversation references the tenant_channels row rather than the bare
+// carrier string (SIN-66378 P4 routing). It is the narrow view of
+// channels.ChannelResolver the receive-inbound flow needs; the production
+// wiring binds it to the channels adapter's ResolveChannelID. Wired via
+// SetChannelResolver after construction so the existing constructors stay
+// backwards-compatible — nil disables routing and conversations are
+// created with a NULL channel_id (pre-P4 behaviour).
+type ChannelResolver interface {
+	ResolveChannelID(ctx context.Context, tenantID uuid.UUID, channelKey, externalID string) (uuid.UUID, error)
+}
+
 // ReceiveInbound orchestrates a webhook-style inbound delivery:
 //
 //  1. Claim the (channel, channel_external_id) pair on the global dedup
@@ -101,6 +114,13 @@ type ReceiveInbound struct {
 	// publishInboundMessage for the soft-fail contract).
 	inboundPublisher       InboundMessagePublisher
 	inboundPublisherLogger *slog.Logger
+	// channelResolver is the SIN-66378 P4 routing port — wired by the
+	// composition root via SetChannelResolver after construction so the
+	// existing constructors stay backwards-compatible. Nil disables
+	// routing (the conversation is created with a NULL channel_id, the
+	// pre-P4 behaviour). See routeConversation for the soft-fail contract.
+	channelResolver       ChannelResolver
+	channelResolverLogger *slog.Logger
 }
 
 // NewReceiveInbound wires the use case to its dependencies. nil port
@@ -289,6 +309,13 @@ func (u *ReceiveInbound) Execute(ctx context.Context, ev inbox.InboundEvent) (Re
 		if err != nil {
 			return ReceiveInboundResult{}, err
 		}
+		// SIN-66378 P4: bind the new conversation to the tenant channel
+		// instance resolved from the inbound identity so channel_id
+		// references the instance (multiple numbers of the same carrier do
+		// not collide) and the per-channel access filter can scope it.
+		// Soft-fail: an unresolved / erroring route leaves channel_id NULL
+		// rather than dropping the message.
+		u.routeConversation(ctx, conv, channel, strings.TrimSpace(ev.DestinationExternalID))
 		if err := u.repo.CreateConversation(ctx, conv); err != nil {
 			return ReceiveInboundResult{}, err
 		}
