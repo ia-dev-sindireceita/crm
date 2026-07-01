@@ -727,18 +727,11 @@ func (d Deps) WebSurfaces() map[string]bool {
 		"billing_invoices": d.WebBillingInvoices != nil,
 		// SIN-66259 / Fase 4 — WhatsApp session provisioning surface.
 		"wa_session": d.WebWASession != nil,
-		// NOTE (SIN-66391 / P2): a "channels" entry for the
-		// multi-channel-per-tenant admin surface is deliberately NOT added
-		// here yet. Doing so changes the exhaustive key-set pinned by three
-		// existing assertions in router_surfaces_test.go
-		// (TestDeps_WebSurfaces_KeySet / _PresentHandlersTrue /
-		// TestRouter_Health_ReportsSurfaces), and Quality-bar rule 3
-		// forbids modifying existing tests without written CTO
-		// authorization on the task thread. The /settings/channels surface
-		// is fully mounted + gated + hello-synced without this entry; the
-		// WebSurfaces map only feeds the /health observability report.
-		// Follow-up (CTO-authorized test edit): add the "channels" key +
-		// update the three pins.
+		// SIN-66391 / P2 — multi-channel-per-tenant admin surface
+		// (/settings/channels). Added to the inventory in SIN-66403 under
+		// CTO Rule-3 authorization to update the three router_surfaces_test
+		// pins; mirrors the gate on the mount below (deps.WebChannels != nil).
+		"channels": d.WebChannels != nil,
 	}
 }
 
