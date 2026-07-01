@@ -151,6 +151,17 @@ const (
 	DataEventConsentRevoke DataEvent = "consent_revoke"
 )
 
+// allSecurityEvents is the authoritative in-code copy of the
+// audit_log_security.event_type controlled vocabulary. It MUST stay in
+// lockstep with the DB CHECK constraint (latest: migration 0129). A
+// constant added here but not to the CHECK passes IsKnown() and every
+// unit test, yet its INSERT is rejected at runtime by the CHECK — and
+// because WriteSecurity is best-effort (warn-logged, never propagated)
+// the privilege event is silently dropped from the ledger (OWASP A09).
+// TestSecurityVocabulary_MatchesLatestCheckMigration
+// (split_vocab_drift_test.go, SIN-66410) fails the build the moment this
+// map and the CHECK diverge in either direction. When a future migration
+// extends the CHECK, bump that test's latestCheckMigration path.
 var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEventLogin:                    {},
 	SecurityEventLoginFail:                {},
