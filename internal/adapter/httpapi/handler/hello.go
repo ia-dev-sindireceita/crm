@@ -74,6 +74,14 @@ type HelloTenantExtendedDeps struct {
 	// subtree MUST update this index or the post-login landing silently
 	// loses the link).
 	DashboardEnabled bool
+	// ChannelsEnabled mirrors deps.WebChannels != nil in router.go
+	// (SIN-66391 / P2 — the multi-channel-per-tenant admin surface).
+	// True renders the "Canais" surface link live; false renders the
+	// disabled "Indisponível neste ambiente" hint so the gap is visible
+	// to the gerente (memory hello_tenant_sync_on_mount — a mounted
+	// subtree MUST update this index or the post-login landing silently
+	// loses the link).
+	ChannelsEnabled bool
 }
 
 // NewHelloTenant returns the post-login landing handler with a typed
@@ -355,6 +363,16 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 				Description:  "Ajustar logo e paleta de cores que aparecem para o cliente nas páginas do tenant.",
 				Roles:        gerenteOnly,
 				TopNav:       true, // AC §2 — gerente nav
+			},
+			helloSurfaceRow{
+				Path:         "/settings/channels",
+				SurfaceLabel: "Canais",
+				CardLabel:    "Canais de atendimento",
+				Available:    deps.Extended.ChannelsEnabled,
+				Description:  "Cadastrar os canais que o tenant atende (WhatsApp, Telegram, etc.) e definir quem vê cada conversa.",
+				Roles:        gerenteOnly,
+				// TopNav: false — configuration surface; body-only per AC §2
+				// so the top bar stays scannable.
 			},
 			helloSurfaceRow{
 				Path:         "/billing/invoices",

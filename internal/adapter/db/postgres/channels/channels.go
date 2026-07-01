@@ -26,13 +26,25 @@ import (
 
 	"github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	"github.com/pericles-luz/crm/internal/channels"
+	"github.com/pericles-luz/crm/internal/inbox"
 )
 
-// Compile-time assertions that Store satisfies both ports. If a port
-// grows or shrinks, the build fails here before any caller notices.
+// Compile-time assertions that Store satisfies every channels port. If a
+// port grows or shrinks, the build fails here before any caller notices.
 var (
 	_ channels.Repository          = (*Store)(nil)
 	_ channels.ChannelAccessPolicy = (*Store)(nil)
+	_ channels.AccessRepository    = (*Store)(nil)
+)
+
+// rosterRoles are the tenant roles eligible to attend a channel — the
+// same {atendente, gerente} set the inbox assignee dropdown uses
+// (inbox.Store.ListAssignable). Kept as SQL-side literals so the role
+// gate is a single indexed predicate; the canonical Go names live in
+// internal/iam.
+const (
+	roleTenantAtendente = "tenant_atendente"
+	roleTenantGerente   = "tenant_gerente"
 )
 
 // pgUniqueViolation is the SQLSTATE for unique-violation. tenant_channels
@@ -284,4 +296,154 @@ func (s *Store) ListAccessibleChannelIDs(ctx context.Context, tenantID, userID u
 		return nil, fmt.Errorf("channels/postgres: ListAccessibleChannelIDs: %w", err)
 	}
 	return out, nil
+}
+
+// ListRosterUsers returns the tenant's assignable users (roles
+// tenant_atendente / tenant_gerente) ordered by e-mail so the access
+// roster renders stably. DisplayName is derived from the e-mail via
+// inbox.UserLabelFromEmail (no display-name column on users), matching
+// the inbox assignee dropdown so the roster and the badge read
+// identically. The query runs under WithTenant, so RLS restricts the
+// users table to the tenant scope; the role predicate narrows further.
+func (s *Store) ListRosterUsers(ctx context.Context, tenantID uuid.UUID) ([]channels.RosterUser, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("channels/postgres: ListRosterUsers: tenant id is nil")
+	}
+	var out []channels.RosterUser
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, email::text, role
+			  FROM users
+			 WHERE role IN ($1, $2)
+			 ORDER BY email ASC
+		`, roleTenantAtendente, roleTenantGerente)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				id    uuid.UUID
+				email string
+				role  string
+			)
+			if err := rows.Scan(&id, &email, &role); err != nil {
+				return err
+			}
+			out = append(out, channels.RosterUser{
+				ID:          id,
+				DisplayName: inbox.UserLabelFromEmail(email),
+				Role:        role,
+			})
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("channels/postgres: ListRosterUsers: %w", err)
+	}
+	return out, nil
+}
+
+// ChannelUserIDs returns the ids of the users currently granted access
+// to channelID within tenantID, ordered for determinism. It backs the
+// edit form's pre-check state and the registry access summary. It does
+// NOT verify the channel exists — a non-existent / RLS-hidden channel
+// simply has no grants and yields an empty slice; callers that need the
+// existence signal use Get.
+func (s *Store) ChannelUserIDs(ctx context.Context, tenantID, channelID uuid.UUID) ([]uuid.UUID, error) {
+	if tenantID == uuid.Nil {
+		return nil, fmt.Errorf("channels/postgres: ChannelUserIDs: tenant id is nil")
+	}
+	if channelID == uuid.Nil {
+		return nil, nil
+	}
+	var out []uuid.UUID
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT user_id FROM channel_access
+			 WHERE channel_id = $1
+			 ORDER BY user_id
+		`, channelID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			out = append(out, id)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("channels/postgres: ChannelUserIDs: %w", err)
+	}
+	return out, nil
+}
+
+// ReplaceAccess sets channelID's access roster to exactly userIDs in a
+// single tenant-scoped transaction (verify-exists → delete-all →
+// re-insert the de-duplicated set). A nil/empty slice clears every
+// grant. Returns channels.ErrNotFound when the channel does not resolve
+// under the tenant scope (unknown id or RLS-hidden) so the caller maps
+// it to a 404 instead of writing orphan grants against a channel it
+// cannot see. The channel_access.user_id foreign key rejects any id that
+// is not a real tenant user, so a forged roster entry fails the whole
+// transaction rather than granting phantom access.
+func (s *Store) ReplaceAccess(ctx context.Context, tenantID, channelID uuid.UUID, userIDs []uuid.UUID) error {
+	if tenantID == uuid.Nil {
+		return fmt.Errorf("channels/postgres: ReplaceAccess: tenant id is nil")
+	}
+	if channelID == uuid.Nil {
+		return channels.ErrNotFound
+	}
+	// De-duplicate while preserving determinism: the UNIQUE(channel_id,
+	// user_id) constraint would reject dupes anyway, but filtering here
+	// keeps the INSERT count honest and the error path clean.
+	unique := make([]uuid.UUID, 0, len(userIDs))
+	seen := make(map[uuid.UUID]struct{}, len(userIDs))
+	for _, id := range userIDs {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	err := postgres.WithTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		var exists bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM tenant_channels WHERE id = $1)
+		`, channelID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return channels.ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM channel_access WHERE channel_id = $1
+		`, channelID); err != nil {
+			return err
+		}
+		for _, userID := range unique {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO channel_access (tenant_id, channel_id, user_id)
+				VALUES ($1, $2, $3)
+			`, tenantID, channelID, userID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, channels.ErrNotFound) {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("channels/postgres: ReplaceAccess: %w", err)
+	}
+	return nil
 }

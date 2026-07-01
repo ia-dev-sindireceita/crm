@@ -126,6 +126,14 @@ var iamRoutes = []string{
 	// chi-enumeration route-miss failure mode) and chi never sees them.
 	"/settings/whatsapp-session",
 	"/settings/whatsapp-session/",
+	// SIN-66391 / P2 — multi-channel-per-tenant admin surface. The exact
+	// "/settings/channels" matches the registry GET + create POST; the
+	// "/settings/channels/" subtree catches new / cancel / {id}/edit /
+	// {id} / {id}/active. Without both on the stdlib mux the custom-domain
+	// catch-all at "/" would shadow the surface (the chi-enumeration
+	// route-miss failure mode) and chi never sees them.
+	"/settings/channels",
+	"/settings/channels/",
 	"/catalog",
 	"/catalog/",
 	"/campaigns",
@@ -282,6 +290,12 @@ type iamHandlerOpts struct {
 	// has no DB dependency and only returns nil on a programmer error
 	// in webbranding.New.
 	WebBranding http.Handler
+
+	// WebChannels is the SIN-66391 (P2) HTMX channel-management admin mux.
+	// Nil keeps the /settings/channels* routes unmounted; the wire in
+	// channels_ui_wire.go returns nil when DATABASE_URL is unset (fail-
+	// soft, like the other DB-backed web surfaces).
+	WebChannels http.Handler
 
 	// WebLGPD carries the SIN-63186 admin handlers + lgpd_admin rate
 	// limit produced by buildLGPDStack. Built inside buildIAMHandler
@@ -689,6 +703,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebCampaignPublic:   webCampaignPublic,
 		WebChat:             webChat,
 		WebBranding:         opts.WebBranding,
+		WebChannels:         opts.WebChannels,
 		WebLGPD:             lgpdRoutes,
 		WebPublicPrivacy:    opts.WebPublicPrivacy,
 		WebConsent:          opts.WebConsent,
