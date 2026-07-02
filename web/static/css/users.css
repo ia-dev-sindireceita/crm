@@ -1,0 +1,116 @@
+/*
+ * SIN-66499 — Tenant user-management surface (/settings/users).
+ * Token-only (composes tokens.css + components.css). Load order in the
+ * shell head: tokens.css -> components.css -> users.css. No literal
+ * colours so the surface flips for free under [data-theme="dark"] (this
+ * sheet authors no per-class dark override — mirrors channels.css).
+ */
+
+.users-page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: var(--space-5);
+}
+
+.users-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.users-page__title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-line);
+  font-weight: var(--font-semibold);
+  color: var(--text-strong);
+}
+
+.users-page__lede {
+  margin: 0 0 var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  max-width: 70ch;
+}
+
+.users-card {
+  padding: var(--space-3);
+}
+
+.users-list {
+  width: 100%;
+}
+
+.users-list thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-1);
+}
+
+.users-row__email {
+  font-weight: var(--font-medium);
+  color: var(--text-strong);
+}
+
+.users-row__role {
+  color: var(--text-default);
+}
+
+.users-row--inactive .users-row__email,
+.users-row--inactive .users-row__role {
+  color: var(--text-muted);
+}
+
+.users-row__pending {
+  margin-left: var(--space-2);
+}
+
+.users-row__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.users-toast {
+  margin-bottom: var(--space-3);
+}
+
+/* Modal-scoped layout for the create / edit form + one-time credential. */
+.users-modal,
+.users-credential {
+  max-width: 34rem;
+}
+
+.users-form .field {
+  margin-bottom: var(--space-3);
+}
+
+.users-credential__grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-3);
+  align-items: center;
+  margin: var(--space-3) 0;
+}
+
+.users-credential__grid dt {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.users-credential__grid dd {
+  margin: 0;
+}
+
+.users-credential__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--surface-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-strong);
+  user-select: all;
+}
