@@ -152,6 +152,13 @@ var iamRoutes = []string{
 	// inside the tenanted group. The custom-domain catch-all at "/"
 	// still loses to the more-specific "/c/" prefix on every request.
 	"/c/",
+	// SIN-66510 — public invite / set-password endpoint. The stdlib mux
+	// dispatches "/invite/" (subtree) to the chi router, which re-matches
+	// the Go 1.22 method+pattern "GET|POST /invite/{token}" inside the
+	// tenanted group but OUTSIDE the authed sub-group (the token IS the
+	// credential — no session). Without this prefix the custom-domain
+	// catch-all at "/" would shadow the page and it would 404.
+	"/invite/",
 	// SIN-63186 — LGPD admin surface (Fase 6 PR3). The stdlib mux
 	// dispatches "/admin/lgpd/" (subtree) to the chi router, which then
 	// re-matches "GET /admin/lgpd/export" and "POST /admin/lgpd/delete"
@@ -309,6 +316,16 @@ type iamHandlerOpts struct {
 	// tenanted group but outside the authed sub-group — the redirect
 	// is unauthenticated by design (AC #1).
 	WebCampaignPublic http.Handler
+
+	// WebInvite is the SIN-66510 public /invite/{token} set-password
+	// handler, pre-wrapped with its per-IP + per-token-prefix rate limit
+	// by invite_wire.go. Nil keeps the route unmounted (e.g. when
+	// DATABASE_URL / REDIS_URL is unset). Mounted inside the tenanted
+	// group but outside the authed sub-group — the token is the
+	// credential, so the page is unauthenticated by design. A non-nil
+	// value supplied by the caller wins over the wire-built handler so
+	// tests can inject a stub.
+	WebInvite http.Handler
 
 	// WebChat is the SIN-64972 webchat widget handler (ADR-0021),
 	// pre-assembled with the ReceiveInbound stack + per-tenant origin
@@ -581,6 +598,21 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		}
 	}
 
+	// SIN-66510 — public invite / set-password endpoint. Built here so
+	// it reuses the IAM pool + Redis (no second pgxpool / goredis client
+	// opened). A build failure is non-fatal — the router simply omits
+	// /invite/{token} and the rest of IAM keeps serving. opts.WebInvite,
+	// when set by the caller, wins over the wire-built handler (tests
+	// rely on this).
+	webInvite := opts.WebInvite
+	if webInvite == nil {
+		if h, err := buildWebInviteHandler(pool, rdb, getenv); err != nil {
+			log.Printf("crm: invite/public handler disabled — %v", err)
+		} else {
+			webInvite = h
+		}
+	}
+
 	// SIN-64972 — public webchat widget surface (ADR-0021). Built here
 	// so it reuses the IAM pool (no second pgxpool). A build failure is
 	// non-fatal — the router simply omits /widget/v1/* and the rest of
@@ -723,6 +755,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebCampaigns:              opts.WebCampaigns,
 		WebFunnelRules:            opts.WebFunnelRules,
 		WebCampaignPublic:         webCampaignPublic,
+		WebInvite:                 webInvite,
 		WebChat:                   webChat,
 		WebBranding:               opts.WebBranding,
 		WebChannels:               opts.WebChannels,
