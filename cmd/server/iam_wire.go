@@ -118,6 +118,14 @@ var iamRoutes = []string{
 	"/settings/privacy/dpa.md",
 	"/settings/ai-policy",
 	"/settings/ai-policy/",
+	// SIN-66496 — HTMX tenant user-management surface. The exact
+	// "/settings/users" matches the list GET + create POST; the
+	// "/settings/users/" subtree catches new / {id}/edit / {id} (PATCH) /
+	// {id}/deactivate / {id}/reactivate. Without both on the stdlib mux the
+	// custom-domain catch-all at "/" would shadow the surface (the
+	// chi-enumeration route-miss failure mode) and chi never sees them.
+	"/settings/users",
+	"/settings/users/",
 	// SIN-66259 / Fase 4 — WhatsApp non-official session provisioning.
 	// The exact "/settings/whatsapp-session" matches the page GET; the
 	// "/settings/whatsapp-session/" subtree catches the status / consent /
@@ -250,6 +258,12 @@ type iamHandlerOpts struct {
 	// ai_policy_wire.go owns its own pgxpool and returns nil when the
 	// DB / aipolicy store cannot be built.
 	WebAIPolicy http.Handler
+
+	// WebUsers is the SIN-66496 HTMX tenant user-management mux. Nil keeps
+	// the /settings/users* routes unmounted; the wire in users_wire.go owns
+	// its own pgxpool and returns nil when the DB / tenantusers store /
+	// audit logger cannot be built.
+	WebUsers http.Handler
 
 	// WebCatalog is the SIN-62907 HTMX catalog admin UI mux. Nil keeps
 	// the /catalog* routes unmounted; the wire in catalog_wire.go
@@ -697,6 +711,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebFunnel:           opts.WebFunnel,
 		WebPrivacy:          opts.WebPrivacy,
 		WebAIPolicy:         opts.WebAIPolicy,
+		WebUsers:            opts.WebUsers,
 		WebCatalog:          opts.WebCatalog,
 		WebCampaigns:        opts.WebCampaigns,
 		WebFunnelRules:      opts.WebFunnelRules,
