@@ -168,6 +168,34 @@ func TestTokenContrastDarkAA(t *testing.T) {
 	runContrastCases(t, "dark", dark, cases)
 }
 
+// SIN-66516 — solid-fill component pairs the -strong/-soft cases above did
+// NOT cover. axe-core on /settings/users flagged two AA misses that live in
+// tokens.css/components.css (not the surface): white text on the dark
+// .btn--primary fill (--text-on-primary × --color-primary = 4.23:1) and
+// white text on the light .badge--warning fill (--color-warning-text ×
+// --color-warning = 3.98:1). These guards assert the actual button/badge
+// foreground-on-fill token pairs in BOTH themes so a future token edit that
+// re-lowers either solid fill fails deterministically, browser-free.
+func TestSolidFillContrastLightAA(t *testing.T) {
+	light, _ := loadTokens(t)
+	cases := []contrastCase{
+		// .btn--primary — white label on the primary fill.
+		{"text-on-primary on color-primary", "text-on-primary", "color-primary"},
+		// .badge--warning — white label on the amber warning fill.
+		{"color-warning-text on color-warning", "color-warning-text", "color-warning"},
+	}
+	runContrastCases(t, "light", light, cases)
+}
+
+func TestSolidFillContrastDarkAA(t *testing.T) {
+	_, dark := loadTokens(t)
+	cases := []contrastCase{
+		{"text-on-primary on color-primary (dark)", "text-on-primary", "color-primary"},
+		{"color-warning-text on color-warning (dark)", "color-warning-text", "color-warning"},
+	}
+	runContrastCases(t, "dark", dark, cases)
+}
+
 func runContrastCases(t *testing.T, theme string, tokens map[string]string, cases []contrastCase) {
 	t.Helper()
 	for _, c := range cases {
