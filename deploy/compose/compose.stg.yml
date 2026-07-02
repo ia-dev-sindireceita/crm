@@ -204,7 +204,7 @@ services:
       test: ["CMD", "drill", "@127.0.0.1", "-p", "5353", "example.com"]
 
   # SIN-63195 — encrypted Postgres backup pipeline as a compose sidecar.
-  # Replaces the legacy host-installed `lmhost-backup.service` +
+  # Replaces the legacy host-installed `sindireceita-backup.service` +
   # `.timer` pair (lost in the 2026-05-09 fork reset per ADR 0085, preserved
   # on tag `main-legacy-pre-reconcile-20260509`). Pipeline:
   #   pg_dump (custom format) | age -R infra/age-backup.pub | aws s3 cp
@@ -231,7 +231,7 @@ services:
     restart: unless-stopped
     networks: [crm]
     # Run as nobody:nobody (65534:65534). Maps to legacy
-    # `User=lmhost-backup` on the systemd unit.
+    # `User=sindireceita-backup` on the systemd unit.
     user: "65534:65534"
     # Container root FS is read-only — image's own contents only.
     # Maps to legacy `ProtectSystem=strict`.

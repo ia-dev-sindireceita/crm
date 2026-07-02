@@ -670,7 +670,7 @@ func TestComposeBackupSidecarDeniesPrivateKey(t *testing.T) {
 //
 // Each invariant absence has a concrete failure mode:
 //   - `user: "65534:65534"` missing → container runs as root (legacy:
-//     `User=lmhost-backup` on the systemd unit)
+//     `User=sindireceita-backup` on the systemd unit)
 //   - `read_only: true` missing → image filesystem writable (legacy:
 //     `ProtectSystem=strict`)
 //   - `cap_drop:` not dropping ALL → setuid/setgid attack surface preserved
