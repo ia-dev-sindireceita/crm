@@ -20,7 +20,8 @@ in [SIN-63195](/SIN/issues/SIN-63195) (see [ADR-0102](../adr/0102-backup-compose
 
 | Path | Role |
 |------|------|
-| `infra/age-backup.pub` | Public recipient. Committed (placeholder). Used by `backup.sh` via the compose service env `BACKUP_AGE_RECIPIENTS`. |
+| `infra/age-backup.pub` | Public recipient **placeholder**, committed and baked into the image as the fallback default. CI pins it to the placeholder (`TestPublicRecipientParses`). The real recipient is injected at runtime (SIN-66537) — see the host path below. |
+| `/etc/lmhost/age-backup.pub` | Real public recipient on the **staging/prod host**. Mode `0640`, owner `root:lmhost-backup`. Bind-mounted read-only into the scheduled `backup` service and pointed to by `BACKUP_AGE_RECIPIENTS`; overrides the baked placeholder. Public key material only — never the private key. NEVER committed. See [ADR-0110](../adr/0110-backup-age-recipient-runtime-mount.md). |
 | `infra/sops/age-backup.key.enc` | SOPS-encrypted private key. Committed (ciphertext). |
 | `infra/backup/Dockerfile` | Sidecar image: Alpine + postgres-client + age + aws-cli + supercronic. |
 | `infra/backup/crontab` | supercronic crontab — fires `/usr/local/bin/backup.sh` at 03:15 America/Sao_Paulo. |
@@ -105,25 +106,47 @@ step assumes a shell with `sudo` on the host.
    > pass the path explicitly to `docker compose run -v
    > /etc/lmhost/age-backup.key:...:ro`.
 
-5. **REPLACE `infra/age-backup.pub` with the bootstrap recipient emitted by
-   `scripts/generate-backup-key.sh`. The committed placeholder is
-   non-functional by design — `age -R` against it fails hard, which is the
-   rotation gate.** This edit is host-local: never push the real recipient
-   back to git. CI asserts the committed file is exactly the placeholder
-   (`TestPublicRecipientParses` in `internal/backup`); a PR that contains a
-   real recipient is automatically rejected.
+5. **Write the real recipient to the host at `/etc/lmhost/age-backup.pub`
+   ([SIN-66537](/SIN/issues/SIN-66537)).** The recipient printed by
+   `scripts/generate-backup-key.sh` in step 4 is injected into the sidecar
+   **at runtime** via a read-only host mount — it is *not* baked into the
+   signed image. Use the pinned placeholder image as-is; **no image rebuild
+   or re-bake is required.**
+   ```bash
+   # Paste the recipient line printed by generate-backup-key.sh in step 4:
+   printf '%s\n' 'age1...<your real recipient>' \
+     | sudo install -m 0640 -o root -g lmhost-backup /dev/stdin \
+       /etc/lmhost/age-backup.pub
+   ```
+   The `backup` service in `compose.stg.yml` bind-mounts this file read-only
+   at the same in-container path and points `BACKUP_AGE_RECIPIENTS` at it, so
+   the mount overrides the placeholder that ships inside the image
+   (`infra/age-backup.pub`, kept as a non-functional fallback default). File
+   mode `0640 root:lmhost-backup` places the recipient in the same
+   `/etc/lmhost` trust boundary as the private key (created in step 2), but it
+   is only *public* key material — the scheduled sidecar never reads the
+   private key.
 
-   The recipient is baked into the sidecar image at
-   `/opt/lmhost/infra/age-backup.pub`, so a host-local edit on the
-   VPS does **not** affect the running container — you must rebuild and
-   re-push the backup image (via `build-backup-image.yml`) with the new
-   recipient file, then bump `BACKUP_IMAGE=` in `.env.stg` to the new
-   digest. This is intentional: the recipient is part of the image
-   manifest, audited via cosign signature, not a mutable host-side file.
+   Rationale (see [ADR-0110](../adr/0110-backup-age-recipient-runtime-mount.md)):
+   the committed `infra/age-backup.pub` stays the placeholder forever — CI
+   asserts it (`TestPublicRecipientParses` in `internal/backup`) and only
+   upstream `pericles-luz/crm` may push the cosign-signed image to GHCR, so
+   the real recipient cannot reach the image anyway. Injecting it at runtime
+   dissolves that gap with zero changes to the build/sign pipeline, and makes
+   recipient rotation an operator file swap (see § "Rotação de chave") rather
+   than an image rebuild.
 
-   Until this rebuild-and-bump cycle happens, the sidecar fails at the
-   `age -R` stage and the cron run exits non-zero (logged at `level=err`,
-   `stage=preflight`, `reason=recipients-not-readable` or similar).
+   If `/etc/lmhost/age-backup.pub` is missing when the scheduled sidecar runs
+   with the profile activated, the container start fails on the missing bind
+   source (config render still succeeds — the file only has to exist at run
+   time), so a forgotten recipient fails loud rather than silently encrypting
+   to the non-functional placeholder.
+
+   > **Restore path unchanged.** This step covers only the *public* recipient.
+   > The *private* key stays at `/etc/lmhost/age-backup.key`
+   > (`0440 root:lmhost-backup`, step 4) and is bind-mounted read-only **only**
+   > for the out-of-band restore drill via `--user 0:0` — see § "Restore drill
+   > (Fase 6)". The scheduled sidecar never mounts it.
 
 6. **SOPS-encrypt the private key** so a fresh host can be re-bootstrapped
    from git without out-of-band copying:
@@ -375,22 +398,31 @@ new public keys in `infra/age-backup.pub` for one rotation cycle so either
 private key decrypts new dumps. `age -R` reads every non-comment line of
 the recipients file and encrypts to all of them.
 
-> **Container-specific step.** Because the recipient is baked into the
-> sidecar image (not bind-mounted from the host), every change to
-> `infra/age-backup.pub` requires a new backup-image build + push (via
-> `.github/workflows/build-backup-image.yml`) followed by a
-> `BACKUP_IMAGE=` digest bump in `.env.stg` and `docker compose pull && up`.
-> A host-local edit on the VPS has no effect on the running container.
+> **Container-specific step ([SIN-66537](/SIN/issues/SIN-66537)).** The
+> recipient is bind-mounted read-only from the host at
+> `/etc/lmhost/age-backup.pub` (not baked into the signed image), so rotating
+> it is a **host file swap** — edit that file, then restart the sidecar
+> (`docker compose --profile backup up -d backup`) so it re-reads the mount.
+> **No image rebuild or `BACKUP_IMAGE=` digest bump is required**, and the
+> committed `infra/age-backup.pub` stays the placeholder (CI enforces it). See
+> [ADR-0110](../adr/0110-backup-age-recipient-runtime-mount.md).
 
 1. **On the host with sudo**, generate the new keypair:
    ```bash
    sudo BACKUP_AGE_KEY=/etc/lmhost/age-backup.key.new \
      ./scripts/generate-backup-key.sh
    ```
-2. **Append** the new public key as a second line in `infra/age-backup.pub`
-   — do not delete the old line yet. Commit. Push. `build-backup-image.yml`
-   builds and publishes the new image; copy the digest from its job summary
-   into `BACKUP_IMAGE=` in `.env.stg` on the VPS. `docker compose pull && up`.
+2. **Append** the new public key as a second line in the host recipient file
+   `/etc/lmhost/age-backup.pub` — do not delete the old line yet. `age -R`
+   encrypts to every non-comment line, so dumps become decryptable by either
+   private key during the transition:
+   ```bash
+   printf '%s\n' 'age1...<new recipient>' \
+     | sudo tee -a /etc/lmhost/age-backup.pub >/dev/null
+   # Restart the sidecar so it re-reads the mounted recipient file:
+   sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
+     --env-file /opt/crm/stg/.env.stg --profile backup up -d backup
+   ```
 3. SOPS-encrypt the new private key:
    ```bash
    sudo sops --encrypt --age "$SOPS_AGE_RECIPIENT" \
@@ -430,17 +462,18 @@ the recipients file and encrypts to all of them.
         /etc/lmhost/age-backup.key.new /etc/lmhost/age-backup.key
    sudo rm /etc/lmhost/age-backup.key.new
    ```
-   Edit `infra/age-backup.pub` to remove the old recipient line; commit;
-   re-trigger `build-backup-image.yml`; bump `BACKUP_IMAGE=` to the new
-   digest.
+   Edit the host recipient file `/etc/lmhost/age-backup.pub` to remove the old
+   recipient line, then restart the sidecar so it re-reads the mount
+   (`docker compose --profile backup up -d backup`). No image rebuild or
+   `BACKUP_IMAGE=` bump is required.
 7. Continue to retain the old private key in the cofre until the longest
    retention window for any dump still encrypted to it has elapsed.
 
 If you must do a hard cutover (incident: the old key is compromised), skip
-the dual-recipient phase: replace the line in `infra/age-backup.pub`,
-rebuild + bump the image, run a backup against the new recipient, and
-treat any old dumps as forensic evidence to be decrypted only under
-controlled conditions.
+the dual-recipient phase: replace the line in the host recipient file
+`/etc/lmhost/age-backup.pub`, restart the sidecar, run a backup against the
+new recipient, and treat any old dumps as forensic evidence to be decrypted
+only under controlled conditions.
 
 ## Cofre offline (2nd-tier secret store)
 
