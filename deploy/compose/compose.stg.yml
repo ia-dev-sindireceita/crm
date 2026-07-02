@@ -293,13 +293,28 @@ services:
       # S3 / Backblaze B2 bucket name. AWS credentials and AWS_ENDPOINT_URL
       # come from `.env.stg` (env_file above).
       BACKUP_BUCKET: ${BACKUP_BUCKET:?BACKUP_BUCKET not set in /opt/crm/stg/.env.stg}
-      BACKUP_AGE_RECIPIENTS: /opt/lmhost/infra/age-backup.pub
+      # SIN-66537 — the age *public* recipient is injected at runtime via the
+      # read-only host mount below, NOT baked into the signed image. The image
+      # still ships infra/age-backup.pub as a placeholder default (see the
+      # Dockerfile COPY + internal/backup.TestPublicRecipientParses), but this
+      # env knob repoints the script (scripts/backup.sh:131) at the mounted
+      # real recipient. See docs/adr/0110-backup-age-recipient-runtime-mount.md.
+      BACKUP_AGE_RECIPIENTS: /etc/lmhost/age-backup.pub
       BACKUP_NODE_ID: ${BACKUP_NODE_ID:-stg}
       BACKUP_STATE_DIR: /var/lib/lmhost
     volumes:
       # Backup-state durability across image upgrades. The script writes
       # backup-last-success.json here for the size-threshold check.
       - lmhost-backup-state:/var/lib/lmhost
+      # SIN-66537 — real age PUBLIC recipient, injected at runtime from the host.
+      # Read-only, single-file bind of the public recipient ONLY (never the whole
+      # secrets directory, which would expose the private key — see
+      # internal/backup.TestComposeBackupSidecarKeyIsolationFromVolumes). This is
+      # public key material only; the scheduled sidecar still cannot read the age
+      # private key. Operator writes the recipient to this host path
+      # (0640 root:lmhost-backup, in the secrets dir from SIN-66525) during first
+      # install — see docs/operations/backup-restore.md.
+      - /etc/lmhost/age-backup.pub:/etc/lmhost/age-backup.pub:ro
     depends_on:
       postgres: { condition: service_healthy }
 

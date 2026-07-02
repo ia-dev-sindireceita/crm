@@ -820,8 +820,62 @@ func TestComposeBackupSidecarKeyIsolationFromVolumes(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(root, composeRel)
 			block := readBackupServiceBlock(t, path)
-			if bytes.Contains(block, []byte("/etc/lmhost")) {
-				t.Fatalf("compose service `backup` in %s mounts /etc/lmhost (any path under it) — the scheduled service must not see host secrets. Block:\n%s",
+			// SIN-66537: the ONLY permitted /etc/lmhost path in the scheduled
+			// service is the PUBLIC age recipient, /etc/lmhost/age-backup.pub —
+			// injected at runtime, not baked into the signed image (see
+			// ADR-0110). It appears twice: once as a read-only single-file bind
+			// mount and once as the BACKUP_AGE_RECIPIENTS env value. That file
+			// is public key material; it does not expose the private key. Strip
+			// every occurrence of that exact path, then assert no OTHER
+			// /etc/lmhost reference survives — a whole-directory `- /etc/lmhost:`
+			// bind, or the private key path under /etc/lmhost, would expose host
+			// secrets to the scheduled service and MUST still fail here.
+			const allowedPubPath = "/etc/lmhost/age-backup.pub"
+			residual := bytes.ReplaceAll(block, []byte(allowedPubPath), nil)
+			if bytes.Contains(residual, []byte("/etc/lmhost")) {
+				t.Fatalf("compose service `backup` in %s references /etc/lmhost beyond the read-only public recipient %q — the scheduled service must not see host secrets (e.g. a whole-dir bind or the private key). Block:\n%s",
+					path, allowedPubPath, block)
+			}
+		})
+	}
+}
+
+// TestComposeBackupSidecarMountsRuntimeRecipient is the SIN-66537 regression:
+// the age *public* recipient is injected at runtime via a read-only host mount
+// rather than baked into the cosign-signed image (which CI pins to the
+// infra/age-backup.pub placeholder — see TestPublicRecipientParses). Both the
+// staging and dev compose files MUST bind-mount the real recipient read-only at
+// /etc/lmhost/age-backup.pub and repoint BACKUP_AGE_RECIPIENTS at that mounted
+// path (scripts/backup.sh:131 reads that env knob, defaulting to the baked
+// placeholder when unset). The private key path/token must still be absent from
+// the scheduled service block. See ADR-0110.
+func TestComposeBackupSidecarMountsRuntimeRecipient(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	for _, composeRel := range []string{
+		"deploy/compose/compose.stg.yml",
+		"deploy/compose/compose.yml",
+	} {
+		composeRel := composeRel
+		t.Run(composeRel, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(root, composeRel)
+			block := readBackupServiceBlock(t, path)
+			const pubMount = "- /etc/lmhost/age-backup.pub:/etc/lmhost/age-backup.pub:ro"
+			if !bytes.Contains(block, []byte(pubMount)) {
+				t.Errorf("compose service `backup` in %s must bind-mount the real age public recipient read-only via %q so the recipient is injected at runtime, not baked into the signed image (SIN-66537). Block:\n%s",
+					path, pubMount, block)
+			}
+			const recipientEnv = "BACKUP_AGE_RECIPIENTS: /etc/lmhost/age-backup.pub"
+			if !bytes.Contains(block, []byte(recipientEnv)) {
+				t.Errorf("compose service `backup` in %s must set %q so scripts/backup.sh encrypts to the mounted runtime recipient, overriding the baked placeholder (SIN-66537). Block:\n%s",
+					path, recipientEnv, block)
+			}
+			// The private key must never reach the scheduled sidecar, runtime
+			// recipient mount notwithstanding (defense in depth vs
+			// TestComposeBackupSidecarDeniesPrivateKey).
+			if bytes.Contains(block, []byte("age-backup.key")) {
+				t.Errorf("compose service `backup` in %s references age-backup.key — the private key must stay unreachable from the scheduled sidecar (SIN-66537). Block:\n%s",
 					path, block)
 			}
 		})
