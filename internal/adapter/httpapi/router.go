@@ -2021,6 +2021,18 @@ func buildLoginRateLimit(deps Deps) func(http.Handler) http.Handler {
 // intentionally minimal: it logs status, method, path, and request id —
 // nothing that depends on a body parse, since that would interfere with
 // the body-form interop pattern documented on handler.LoginConfig.
+//
+// The "path" attribute is populated from the matched chi route pattern
+// (httpRouteOf), NOT the raw r.URL.Path. This is a defense-in-depth
+// redaction: routes that carry a secret in a path segment — e.g.
+// GET|POST /invite/{token}, where the token IS the unauthenticated
+// set-password credential (SIN-66510) — would otherwise leak the
+// plaintext credential into the access log (CWE-532). Logging the
+// pattern "/invite/{token}" keeps the endpoint observable while
+// redacting the secret, and also lowers log cardinality. The log line
+// is emitted AFTER next.ServeHTTP, so chi's RouteContext is populated
+// and httpRouteOf returns the matched pattern; unmatched requests (404)
+// fall back to the raw path, which has no secret segment to leak.
 func slogRequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2029,7 +2041,7 @@ func slogRequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			logger.LogAttrs(r.Context(), slog.LevelInfo, "http: request",
 				slog.String("request_id", chimw.GetReqID(r.Context())),
 				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
+				slog.String("path", httpRouteOf(r)),
 				slog.Int("status", ww.Status()),
 			)
 		})
