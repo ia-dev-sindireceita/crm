@@ -144,6 +144,12 @@ func TestTokenContrastLightAA(t *testing.T) {
 		{"warning-strong on warning-surface", "color-warning-strong", "color-warning-surface"},
 		// A3 — accent text on the primary-soft tint (selected nav / badges).
 		{"A3 on-primary-soft on primary-soft", "color-on-primary-soft", "color-primary-soft"},
+		// SIN-66515 — solid fills of the shared .btn--primary / .badge--warning
+		// components (white text on the primary/warning fill). Previously
+		// unguarded (the guard only covered the -strong TEXT variants), which
+		// let the axe-core gate catch them post-merge.
+		{"SIN-66515 btn--primary text-on-primary on color-primary", "text-on-primary", "color-primary"},
+		{"SIN-66515 badge--warning warning-text on color-warning", "color-warning-text", "color-warning"},
 		// Sanity guards for the existing text/link tokens we rely on.
 		{"text-default on surface-1", "text-default", "surface-1"},
 		{"text-strong on surface-1", "text-strong", "surface-1"},
@@ -164,6 +170,10 @@ func TestTokenContrastDarkAA(t *testing.T) {
 		{"text-muted on surface-1 (dark)", "text-muted", "surface-1"},
 		{"color-link on surface-1 (dark)", "color-link", "surface-1"},
 		{"text-default on surface-1 (dark)", "text-default", "surface-1"},
+		// SIN-66515 — dark solid fills of .btn--primary (white text on the
+		// dark primary) and .badge--warning (dark text on the dark warning).
+		{"SIN-66515 btn--primary text-on-primary on color-primary (dark)", "text-on-primary", "color-primary"},
+		{"SIN-66515 badge--warning warning-text on color-warning (dark)", "color-warning-text", "color-warning"},
 	}
 	runContrastCases(t, "dark", dark, cases)
 }

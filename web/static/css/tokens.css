@@ -125,7 +125,7 @@
   --color-success-strong: #16794d;   /* success-colored TEXT on light surfaces, 4.97:1 AA on --surface-1 */
   --color-success-surface: #e5f4ec;  /* green-50  */
 
-  --color-warning: #ac7420;          /* amber-600 */
+  --color-warning: #99661d;          /* amber-700 — darkened so white badge text clears AA: #fff on #99661d = 4.92:1 (SIN-66515; was #ac7420 = 3.98:1) */
   --color-warning-text: #ffffff;
   --color-warning-strong: #8a5a00;   /* warning-colored TEXT on light surfaces: 5.43:1 on --surface-1, 5.33:1 on --color-warning-surface (AA) */
   --color-warning-surface: #fbf2df;  /* amber-50  */
@@ -236,7 +236,7 @@
   --border-subtle: #1f242e;
   --border-strong: #353b49;
 
-  --color-primary: #6970dd;    /* accent lifted */
+  --color-primary: #5f66d6;    /* accent — darkened so white btn text clears AA: #fff on #5f66d6 = 4.82:1 (SIN-66515; was #6970dd = 4.23:1). Also focus/border: 3.87:1 vs --surface-1, still >=3:1 non-text. */
   --color-secondary: #9ba3b2;
   --color-accent: #7c84e8;
 
