@@ -320,11 +320,22 @@ services:
       # Dev default bucket points at the local MinIO instance.
       BACKUP_BUCKET: ${BACKUP_BUCKET:-lmhost-backup-dev}
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-http://minio:9000}
-      BACKUP_AGE_RECIPIENTS: /opt/lmhost/infra/age-backup.pub
+      # SIN-66537 — parity with staging: the age public recipient is injected at
+      # runtime via the read-only host mount below, not baked into the image. The
+      # image still ships infra/age-backup.pub as the placeholder default; this
+      # knob repoints scripts/backup.sh at the mounted recipient. A dev box that
+      # never wrote /etc/lmhost/age-backup.pub can still `docker compose config`;
+      # only an actual `--profile backup` run needs the file present.
+      BACKUP_AGE_RECIPIENTS: /etc/lmhost/age-backup.pub
       BACKUP_NODE_ID: ${BACKUP_NODE_ID:-dev}
       BACKUP_STATE_DIR: /var/lib/lmhost
     volumes:
       - lmhost-backup-state:/var/lib/lmhost
+      # SIN-66537 — real age PUBLIC recipient injected at runtime (read-only,
+      # single-file bind of the public recipient only; never the whole secrets
+      # directory). Public key material only; the scheduled sidecar still cannot
+      # read the age private key. See docs/operations/backup-restore.md.
+      - /etc/lmhost/age-backup.pub:/etc/lmhost/age-backup.pub:ro
     depends_on:
       postgres: { condition: service_healthy }
 
