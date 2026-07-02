@@ -34,7 +34,7 @@ volumes:
   # (LAST_SUCCESS_FLOOR_FRACTION_PCT) has prior-day data to compare against.
   # Named volume so the state survives image upgrades (ephemeral image,
   # durable state — matches the same pattern postgres-data uses).
-  sindireceita-backup-state: {}
+  lmhost-backup-state: {}
 
 x-healthdefaults: &hd
   interval: 5s
@@ -204,7 +204,7 @@ services:
       test: ["CMD", "drill", "@127.0.0.1", "-p", "5353", "example.com"]
 
   # SIN-63195 — encrypted Postgres backup pipeline as a compose sidecar.
-  # Replaces the legacy host-installed `sindireceita-backup.service` +
+  # Replaces the legacy host-installed `lmhost-backup.service` +
   # `.timer` pair (lost in the 2026-05-09 fork reset per ADR 0085, preserved
   # on tag `main-legacy-pre-reconcile-20260509`). Pipeline:
   #   pg_dump (custom format) | age -R infra/age-backup.pub | aws s3 cp
@@ -216,9 +216,9 @@ services:
   # The private age key lives offline (cofre fisico + SOPS-encrypted blob at
   # infra/sops/age-backup.key.enc). The scheduled service NEVER mounts the
   # private key — only the manual restore-drill invocation does, via
-  # `docker compose run --rm -v /etc/sindireceita/age-backup.key:...:ro backup
+  # `docker compose run --rm -v /etc/lmhost/age-backup.key:...:ro backup
   # /usr/local/bin/restore-drill.sh`. This preserves the legacy
-  # `InaccessiblePaths=/etc/sindireceita/age-backup.key` invariant and is
+  # `InaccessiblePaths=/etc/lmhost/age-backup.key` invariant and is
   # enforced by internal/backup.TestComposeBackupSidecarDeniesPrivateKey.
   backup:
     # BACKUP_IMAGE is bootstrapped once into /opt/crm/stg/.env.stg after the
@@ -231,7 +231,7 @@ services:
     restart: unless-stopped
     networks: [crm]
     # Run as nobody:nobody (65534:65534). Maps to legacy
-    # `User=sindireceita-backup` on the systemd unit.
+    # `User=lmhost-backup` on the systemd unit.
     user: "65534:65534"
     # Container root FS is read-only — image's own contents only.
     # Maps to legacy `ProtectSystem=strict`.
@@ -268,13 +268,13 @@ services:
       # S3 / Backblaze B2 bucket name. AWS credentials and AWS_ENDPOINT_URL
       # come from `.env.stg` (env_file above).
       BACKUP_BUCKET: ${BACKUP_BUCKET:?BACKUP_BUCKET not set in /opt/crm/stg/.env.stg}
-      BACKUP_AGE_RECIPIENTS: /opt/sindireceita/infra/age-backup.pub
+      BACKUP_AGE_RECIPIENTS: /opt/lmhost/infra/age-backup.pub
       BACKUP_NODE_ID: ${BACKUP_NODE_ID:-stg}
-      BACKUP_STATE_DIR: /var/lib/sindireceita
+      BACKUP_STATE_DIR: /var/lib/lmhost
     volumes:
       # Backup-state durability across image upgrades. The script writes
       # backup-last-success.json here for the size-threshold check.
-      - sindireceita-backup-state:/var/lib/sindireceita
+      - lmhost-backup-state:/var/lib/lmhost
     depends_on:
       postgres: { condition: service_healthy }
 

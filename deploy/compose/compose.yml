@@ -25,7 +25,7 @@ volumes:
   # service definition parity-clean with stg so a dev who DOES exercise the
   # backup script with `docker compose run --rm backup /usr/local/bin/backup.sh`
   # gets the same on-disk layout.
-  sindireceita-backup-state: {}
+  lmhost-backup-state: {}
 
 x-healthdefaults: &hd
   interval: 5s
@@ -310,13 +310,13 @@ services:
       TZ: ${BACKUP_TZ:-America/Sao_Paulo}
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
       # Dev default bucket points at the local MinIO instance.
-      BACKUP_BUCKET: ${BACKUP_BUCKET:-sindireceita-backup-dev}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-lmhost-backup-dev}
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-http://minio:9000}
-      BACKUP_AGE_RECIPIENTS: /opt/sindireceita/infra/age-backup.pub
+      BACKUP_AGE_RECIPIENTS: /opt/lmhost/infra/age-backup.pub
       BACKUP_NODE_ID: ${BACKUP_NODE_ID:-dev}
-      BACKUP_STATE_DIR: /var/lib/sindireceita
+      BACKUP_STATE_DIR: /var/lib/lmhost
     volumes:
-      - sindireceita-backup-state:/var/lib/sindireceita
+      - lmhost-backup-state:/var/lib/lmhost
     depends_on:
       postgres: { condition: service_healthy }
 
