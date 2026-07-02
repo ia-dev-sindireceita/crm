@@ -827,3 +827,36 @@ func TestComposeBackupSidecarKeyIsolationFromVolumes(t *testing.T) {
 		})
 	}
 }
+
+// TestComposeBackupSidecarIsOptInProfile is the SIN-66535 regression: the
+// scheduled `backup` service in both the staging and dev compose files MUST be
+// guarded by the `backup` compose profile so a default `docker compose up`
+// excludes it. Without the profile, the staging service's
+// `image: ${BACKUP_IMAGE:?...}` interpolation hard-fails the entire
+// `docker compose up` on any host where backups were never provisioned (no
+// key, no group→volume, no BACKUP_IMAGE in .env.stg) — which is exactly the
+// state of the crm-stg VPS that blocked the SIN-65737 rename deploy.
+//
+// Making the sidecar opt-in must NOT weaken the security posture asserted by
+// TestComposeBackupSidecarHardeningInvariants (read_only, cap_drop: ALL,
+// no-new-privileges:true, user 65534, tmpfs /tmp) — the two tests run against
+// the same service block, so any regression there fails independently.
+func TestComposeBackupSidecarIsOptInProfile(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	for _, composeRel := range []string{
+		"deploy/compose/compose.stg.yml",
+		"deploy/compose/compose.yml",
+	} {
+		composeRel := composeRel
+		t.Run(composeRel, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(root, composeRel)
+			block := readBackupServiceBlock(t, path)
+			if !bytes.Contains(block, []byte(`profiles: ["backup"]`)) {
+				t.Fatalf("compose service `backup` in %s must declare `profiles: [\"backup\"]` so it is excluded from the default `docker compose up` (SIN-66535). Block:\n%s",
+					path, block)
+			}
+		})
+	}
+}

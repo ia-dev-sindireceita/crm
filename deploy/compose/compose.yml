@@ -279,6 +279,14 @@ services:
   # See ADR 0102 for the full architecture and the hardening-invariant
   # mapping vs the legacy host systemd unit.
   backup:
+    # SIN-66535 — opt-in sidecar, mirroring compose.stg.yml. Local dev did not
+    # hard-fail here (this file builds `crm-backup:dev` rather than requiring a
+    # `${BACKUP_IMAGE:?}` digest), but the profile is added for parity so
+    # `docker compose up` never builds/starts the backup image unless the dev
+    # opts in with `docker compose --profile backup up` (or COMPOSE_PROFILES).
+    # The ad-hoc `docker compose run --rm backup /usr/local/bin/backup.sh`
+    # invocation auto-enables the `backup` profile, so it keeps working.
+    profiles: ["backup"]
     image: crm-backup:dev
     build:
       context: ../..
