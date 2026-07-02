@@ -470,6 +470,26 @@ type Deps struct {
 	//   POST /settings/channels/{id}/active
 	WebChannels http.Handler
 
+	// WebTenantUsers is the HTMX admin UI for the tenant user-management
+	// surface (SIN-66499, parent SIN-66492). Same envelope as WebChannels:
+	// RequireAuth installs the principal, then per-route RequireAction gates
+	// each verb to RoleTenantGerente (list/create/update/deactivate). Gerente
+	// only — managing who logs into the tenant is a tenant-admin decision.
+	//
+	// Mounted only when the wire layer supplies a non-nil handler. Each POST
+	// route is registered explicitly (chi enumerates settings routes one-by-
+	// one — reference_crm_inbox_chi_route_enumeration_trap).
+	//
+	// Routes mounted:
+	//   GET  /settings/users
+	//   GET  /settings/users/new
+	//   GET  /settings/users/cancel
+	//   POST /settings/users
+	//   GET  /settings/users/{id}/edit
+	//   POST /settings/users/{id}/role
+	//   POST /settings/users/{id}/deactivate
+	WebTenantUsers http.Handler
+
 	// WebLGPD is the LGPD data-subject admin surface (SIN-63186 /
 	// Fase 6 PR3). Two routes with DIFFERENT actions: export gates on
 	// ActionTenantLGPDExport, delete on ActionTenantLGPDDelete. Each
@@ -1118,6 +1138,10 @@ func NewRouter(deps Deps) http.Handler {
 					// /settings/channels mount (memory
 					// feedback_hello_tenant_sync_on_mount).
 					ChannelsEnabled: deps.WebChannels != nil,
+					// SIN-66499 — tenant user-management admin link. Keeps
+					// the post-login index in sync with the /settings/users
+					// mount (memory feedback_hello_tenant_sync_on_mount).
+					UsersEnabled: deps.WebTenantUsers != nil,
 				},
 			}))
 			if deps.Authorizer != nil {
@@ -1362,6 +1386,37 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodGet, "/settings/channels/{id}/edit", webChannels)
 				authed.Method(http.MethodPost, "/settings/channels/{id}", webChannels)
 				authed.Method(http.MethodPost, "/settings/channels/{id}/active", webChannels)
+			}
+
+			// SIN-66499 — tenant user-management admin surface. Each verb is
+			// gated with its own ADR-0090 action (list/create/update/
+			// deactivate); all four map to RoleTenantGerente today, but the
+			// distinct actions give precise deny reasons + audit granularity.
+			// When Authorizer is nil (router tests) the gate skips and the
+			// inner mux runs with a Principal. Each route (incl. every POST)
+			// is enumerated explicitly (reference_crm_inbox_chi_route_
+			// enumeration_trap).
+			if deps.WebTenantUsers != nil {
+				base := http.Handler(deps.WebTenantUsers)
+				gate := func(action iam.Action) http.Handler {
+					if deps.Authorizer != nil {
+						return middleware.RequireAuth(middleware.RequireAuthDeps{})(
+							middleware.RequireAction(deps.Authorizer, action, nil)(base),
+						)
+					}
+					return middleware.RequireAuth(middleware.RequireAuthDeps{})(base)
+				}
+				usersList := gate(iam.ActionTenantUserList)
+				usersCreate := gate(iam.ActionTenantUserCreate)
+				usersUpdate := gate(iam.ActionTenantUserUpdate)
+				usersDeactivate := gate(iam.ActionTenantUserDeactivate)
+				authed.Method(http.MethodGet, "/settings/users", usersList)
+				authed.Method(http.MethodGet, "/settings/users/new", usersCreate)
+				authed.Method(http.MethodGet, "/settings/users/cancel", usersList)
+				authed.Method(http.MethodPost, "/settings/users", usersCreate)
+				authed.Method(http.MethodGet, "/settings/users/{id}/edit", usersUpdate)
+				authed.Method(http.MethodPost, "/settings/users/{id}/role", usersUpdate)
+				authed.Method(http.MethodPost, "/settings/users/{id}/deactivate", usersDeactivate)
 			}
 
 			// SIN-63186 — LGPD data-subject admin surface (Fase 6 PR3).

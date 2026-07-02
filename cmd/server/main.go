@@ -381,6 +381,12 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	webChannelsHandler, webChannelsCleanup := buildWebChannelsHandler(ctx, getenv)
 	defer webChannelsCleanup()
 
+	// SIN-66499 — HTMX tenant user-management admin UI. Same fail-soft
+	// pattern: nil handler leaves /settings/users* unmounted when the
+	// runtime DSN is missing or the pgxpool fails.
+	webTenantUsersHandler, webTenantUsersCleanup := buildWebTenantUsersHandler(ctx, getenv)
+	defer webTenantUsersCleanup()
+
 	// SIN-62962 — HTMX campaign dashboard (Fase 4). Same fail-soft
 	// pattern: nil handler leaves /campaigns* unmounted when the
 	// runtime DSN is missing or the pgxpool fails to open.
@@ -483,6 +489,7 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		WebAIPolicy:        webAIPolicyHandler,
 		WebCatalog:         webCatalogHandler,
 		WebChannels:        webChannelsHandler,
+		WebTenantUsers:     webTenantUsersHandler,
 		WebCampaigns:       webCampaignsHandler,
 		WebFunnelRules:     webFunnelRulesHandler,
 		WebBranding:        brandingStack.Handler,

@@ -82,6 +82,13 @@ type HelloTenantExtendedDeps struct {
 	// subtree MUST update this index or the post-login landing silently
 	// loses the link).
 	ChannelsEnabled bool
+	// UsersEnabled mirrors deps.WebTenantUsers != nil in router.go
+	// (SIN-66499 — the tenant user-management admin surface). True renders
+	// the "Usuários" surface link live; false renders the disabled hint so
+	// the gap is visible to the gerente (memory hello_tenant_sync_on_mount —
+	// a mounted subtree MUST update this index or the post-login landing
+	// silently loses the link).
+	UsersEnabled bool
 }
 
 // NewHelloTenant returns the post-login landing handler with a typed
@@ -372,6 +379,15 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 				Description:  "Cadastrar os canais que o tenant atende (WhatsApp, Telegram, etc.) e definir quem vê cada conversa.",
 				Roles:        gerenteOnly,
 				TopNav:       true, // gerente nav — parity with Branding/Faturas (SIN-66444)
+			},
+			helloSurfaceRow{
+				Path:         "/settings/users",
+				SurfaceLabel: "Usuários",
+				CardLabel:    "Usuários do tenant",
+				Available:    deps.Extended.UsersEnabled,
+				Description:  "Criar usuários, alterar papéis (gerente/atendente) e desativar acessos do próprio tenant.",
+				Roles:        gerenteOnly,
+				TopNav:       true, // gerente nav — parity with Canais/Branding (SIN-66499)
 			},
 			helloSurfaceRow{
 				Path:         "/billing/invoices",

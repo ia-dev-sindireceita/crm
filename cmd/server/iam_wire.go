@@ -134,6 +134,13 @@ var iamRoutes = []string{
 	// route-miss failure mode) and chi never sees them.
 	"/settings/channels",
 	"/settings/channels/",
+	// SIN-66499 — tenant user-management admin surface. The exact
+	// "/settings/users" matches the list GET + create POST; the
+	// "/settings/users/" subtree catches new / cancel / {id}/edit /
+	// {id}/role / {id}/deactivate. Both are needed on the stdlib mux so the
+	// custom-domain catch-all at "/" does not shadow the surface.
+	"/settings/users",
+	"/settings/users/",
 	"/catalog",
 	"/catalog/",
 	"/campaigns",
@@ -296,6 +303,12 @@ type iamHandlerOpts struct {
 	// channels_ui_wire.go returns nil when DATABASE_URL is unset (fail-
 	// soft, like the other DB-backed web surfaces).
 	WebChannels http.Handler
+
+	// WebTenantUsers is the SIN-66499 HTMX tenant user-management admin mux.
+	// Nil keeps the /settings/users* routes unmounted; the wire in
+	// tenant_users_ui_wire.go returns nil when DATABASE_URL is unset (fail-
+	// soft, like the other DB-backed web surfaces).
+	WebTenantUsers http.Handler
 
 	// WebLGPD carries the SIN-63186 admin handlers + lgpd_admin rate
 	// limit produced by buildLGPDStack. Built inside buildIAMHandler
@@ -704,6 +717,7 @@ func buildIAMHandler(ctx context.Context, getenv func(string) string, opts iamHa
 		WebChat:             webChat,
 		WebBranding:         opts.WebBranding,
 		WebChannels:         opts.WebChannels,
+		WebTenantUsers:      opts.WebTenantUsers,
 		WebLGPD:             lgpdRoutes,
 		WebPublicPrivacy:    opts.WebPublicPrivacy,
 		WebConsent:          opts.WebConsent,
