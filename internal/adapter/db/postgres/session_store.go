@@ -202,8 +202,17 @@ func (u *UserCredentialReader) LookupCredentials(ctx context.Context, tenantID u
 		hash string
 	)
 	err := WithTenant(ctx, u.pool, tenantID, func(tx pgx.Tx) error {
+		// SIN-66499: a deactivated user (active = false) can no longer
+		// authenticate. Filtering here — rather than in iam.Login — keeps
+		// the login flow and its fakes untouched: a deactivated row simply
+		// resolves to the same (uuid.Nil, "", nil) "not found" sentinel as a
+		// missing email, so Login runs its anti-enumeration dummy-verify and
+		// returns ErrInvalidCredentials with uniform timing. The `active`
+		// column (migration 0130) defaults true, so pre-existing users are
+		// unaffected. Deactivate-not-delete: the row, its role and its
+		// history stay intact and re-activation restores login.
 		return tx.QueryRow(ctx, `
-			SELECT id, password_hash FROM users WHERE email = $1
+			SELECT id, password_hash FROM users WHERE email = $1 AND active
 		`, email).Scan(&id, &hash)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {

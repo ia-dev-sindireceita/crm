@@ -148,6 +148,22 @@ const (
 	// owned by SIN-66392 (P3, SecurityEngineer loop-in) — this action only
 	// guards the management UI.
 	ActionTenantChannelsManage Action = "tenant.channels.manage"
+
+	// SIN-66499 (parent SIN-66492 / SIN-66493) — tenant user-management
+	// surface (/settings/users). The tenant gerente manages the users of
+	// their OWN tenant: list, create (as tenant_gerente or tenant_atendente),
+	// change role, and deactivate (soft-delete). All four actions are
+	// Gerente-only: managing who can log into the tenant and with what role
+	// is the archetypal tenant-admin decision — the same posture as branding
+	// / catalog / channels admin. Atendente / common are denied at the gate;
+	// master reaches the surface only via impersonation (inherits gerente)
+	// per ADR 0090. These are tenant-scope actions; tenant_id is always
+	// derived from the session, never from request input, and RLS on `users`
+	// is the second link of defense-in-depth.
+	ActionTenantUserList       Action = "tenant.user.list"
+	ActionTenantUserCreate     Action = "tenant.user.create"
+	ActionTenantUserUpdate     Action = "tenant.user.update"
+	ActionTenantUserDeactivate Action = "tenant.user.deactivate"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -316,6 +332,15 @@ func defaultRolesByAction() map[Action][]Role {
 		// channel instances + per-channel access roster is a tenant-admin
 		// decision).
 		ActionTenantChannelsManage: {RoleTenantGerente},
+
+		// SIN-66499 — tenant user-management surface (/settings/users).
+		// Gerente only on every verb; see the constant declarations for
+		// the rationale (managing who logs into the tenant and with what
+		// role is a tenant-admin decision). Atendente / common → 403.
+		ActionTenantUserList:       {RoleTenantGerente},
+		ActionTenantUserCreate:     {RoleTenantGerente},
+		ActionTenantUserUpdate:     {RoleTenantGerente},
+		ActionTenantUserDeactivate: {RoleTenantGerente},
 	}
 }
 

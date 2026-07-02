@@ -49,7 +49,7 @@ import (
 // migration restates the entire union (named CHECK constraints are immutable;
 // DROP + ADD is the only path), so the highest-numbered one is the
 // authoritative final state — reading it alone is sufficient.
-const latestCheckMigration = "../../../migrations/0129_audit_log_security_channel_access.up.sql"
+const latestCheckMigration = "../../../migrations/0131_audit_log_security_tenant_user.up.sql"
 
 // checkInListRe captures the parenthesised body of `event_type IN ( ... )`.
 // (?s) lets "." span newlines; the body is non-greedy up to the first

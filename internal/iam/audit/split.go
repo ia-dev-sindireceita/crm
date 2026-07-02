@@ -129,6 +129,24 @@ const (
 	SecurityEventChannelAccessGranted     SecurityEvent = "channel.access_granted"
 	SecurityEventChannelAccessRevoked     SecurityEvent = "channel.access_revoked"
 	SecurityEventChannelRestrictedChanged SecurityEvent = "channel.restricted_changed"
+
+	// SIN-66499 (parent SIN-66492): tenant user-management privilege events
+	// emitted by the /settings/users surface (internal/web/tenantusers).
+	// OWASP A09 + least-privilege observability: creating a user, changing
+	// its role, and deactivating it (soft-delete) are privilege changes that
+	// must leave a tamper-evident trail. The actor is the authenticated
+	// gerente (the routes are gated to RoleTenantGerente); tenant_id is the
+	// acting gerente's tenant.
+	//
+	//   * tenant.user.created      — Target carries {user_id, email, role}.
+	//   * tenant.user.role_changed — Target carries {user_id, from, to}.
+	//   * tenant.user.deactivated  — Target carries {user_id, role}.
+	//
+	// The CHECK clause in migration 0131 mirrors these three literals —
+	// extending the constants requires extending that migration first.
+	SecurityEventTenantUserCreated     SecurityEvent = "tenant.user.created"
+	SecurityEventTenantUserRoleChanged SecurityEvent = "tenant.user.role_changed"
+	SecurityEventTenantUserDeactivated SecurityEvent = "tenant.user.deactivated"
 )
 
 // DataEvent is the controlled vocabulary of audit_log_data rows.
@@ -153,7 +171,7 @@ const (
 
 // allSecurityEvents is the authoritative in-code copy of the
 // audit_log_security.event_type controlled vocabulary. It MUST stay in
-// lockstep with the DB CHECK constraint (latest: migration 0129). A
+// lockstep with the DB CHECK constraint (latest: migration 0131). A
 // constant added here but not to the CHECK passes IsKnown() and every
 // unit test, yet its INSERT is rejected at runtime by the CHECK — and
 // because WriteSecurity is best-effort (warn-logged, never propagated)
@@ -188,6 +206,9 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEventChannelAccessGranted:     {},
 	SecurityEventChannelAccessRevoked:     {},
 	SecurityEventChannelRestrictedChanged: {},
+	SecurityEventTenantUserCreated:        {},
+	SecurityEventTenantUserRoleChanged:    {},
+	SecurityEventTenantUserDeactivated:    {},
 }
 
 var allDataEvents = map[DataEvent]struct{}{
