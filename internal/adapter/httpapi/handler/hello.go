@@ -30,6 +30,7 @@ type HelloTenantDeps struct {
 	CampaignsEnabled   bool
 	PrivacyEnabled     bool
 	AIPolicyEnabled    bool
+	UsersEnabled       bool
 	ConsentEnabled     bool
 
 	// SIN-63940 / UX-F3 — Fase 6 surfaces (inbox, billing, branding,
@@ -82,6 +83,13 @@ type HelloTenantExtendedDeps struct {
 	// subtree MUST update this index or the post-login landing silently
 	// loses the link).
 	ChannelsEnabled bool
+	// UsersEnabled mirrors deps.WebUsers != nil in router.go (SIN-66496 —
+	// the tenant user-management surface /settings/users). True renders the
+	// "Usuários" surface link live; false renders the disabled "Indisponível
+	// neste ambiente" hint so the gap is visible to the gerente (memory
+	// hello_tenant_sync_on_mount — a mounted subtree MUST update this index
+	// or the post-login landing silently loses the link).
+	UsersEnabled bool
 }
 
 // NewHelloTenant returns the post-login landing handler with a typed
@@ -372,6 +380,15 @@ func helloIndexRows(deps HelloTenantDeps, role iam.Role) []helloSurfaceRow {
 				Description:  "Cadastrar os canais que o tenant atende (WhatsApp, Telegram, etc.) e definir quem vê cada conversa.",
 				Roles:        gerenteOnly,
 				TopNav:       true, // gerente nav — parity with Branding/Faturas (SIN-66444)
+			},
+			helloSurfaceRow{
+				Path:         "/settings/users",
+				SurfaceLabel: "Usuários",
+				CardLabel:    "Gestão de usuários",
+				Available:    deps.Extended.UsersEnabled,
+				Description:  "Criar, editar papel e desativar os usuários que acessam o CRM deste tenant.",
+				Roles:        gerenteOnly,
+				TopNav:       true, // gerente nav — parity with Canais/Branding
 			},
 			helloSurfaceRow{
 				Path:         "/billing/invoices",

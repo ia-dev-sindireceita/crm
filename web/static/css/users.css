@@ -1,0 +1,114 @@
+/* users.css — layout for the /settings/users surface (SIN-66496).
+ * Only page-level layout lives here; buttons / badges / table / fields /
+ * alerts / empty-state come from components.css. No new design tokens —
+ * everything references tokens.css. Contrast is measured against
+ * --surface-1 (SIN-66495 A11y note), not white. Dark mode flows through the
+ * tokens under [data-theme="dark"]. */
+
+.users-shell {
+  max-width: min(1040px, 100%);
+  margin: 0 auto;
+  padding: var(--space-6);
+  color: var(--text-default);
+}
+
+.users-header {
+  margin-bottom: var(--space-5);
+}
+
+.users-header h1 {
+  color: var(--text-strong);
+  margin-bottom: var(--space-2);
+}
+
+.users-lede {
+  color: var(--text-muted);
+  max-width: 64ch;
+}
+
+.users-list__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.users-list__bar h2 {
+  color: var(--text-strong);
+  margin: 0;
+}
+
+.users-table {
+  width: 100%;
+}
+
+/* Deactivated rows: reduce emphasis via muted text + surface, NOT opacity,
+ * so text stays AA against --surface-1. */
+.users-row--inactive .users-cell-email {
+  color: var(--text-muted);
+  background: var(--surface-1);
+}
+
+.users-cell-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.users-hint {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.users-form {
+  margin-top: var(--space-5);
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.users-form .field {
+  margin-bottom: var(--space-4);
+}
+
+.users-role-field {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.users-radio {
+  display: block;
+  padding: var(--space-2) 0;
+  min-height: var(--hit-target-min, 44px);
+}
+
+.users-radio__desc {
+  color: var(--text-muted);
+}
+
+.users-form__actions {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: flex-end;
+  margin-top: var(--space-5);
+}
+
+/* Screen-reader-only utility (the 4th "Ações" column header). Kept local to
+ * this surface to avoid a components.css system change. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

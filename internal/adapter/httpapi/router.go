@@ -313,6 +313,22 @@ type Deps struct {
 	//   DELETE /settings/ai-policy/{scope_type}/{scope_id}
 	WebAIPolicy http.Handler
 
+	// WebUsers is the HTMX tenant user-management admin UI from
+	// internal/web/users (SIN-66496). Mounted in the authed group with a
+	// per-route RequireAction gate (all four actions map to
+	// {RoleTenantGerente}), so atendente / common get 403 before the
+	// handler runs. Nil keeps the /settings/users* routes unmounted.
+	//
+	// Routes mounted:
+	//   GET   /settings/users
+	//   GET   /settings/users/new
+	//   GET   /settings/users/{id}/edit
+	//   POST  /settings/users
+	//   PATCH /settings/users/{id}
+	//   POST  /settings/users/{id}/deactivate
+	//   POST  /settings/users/{id}/reactivate
+	WebUsers http.Handler
+
 	// WebCatalog is the HTMX admin UI handler for the per-tenant
 	// product catalog from internal/web/catalog (SIN-62907 / Fase 3
 	// W4C). Mounted in the authed group with the same envelope as
@@ -1087,6 +1103,7 @@ func NewRouter(deps Deps) http.Handler {
 				CampaignsEnabled:   deps.WebCampaigns != nil,
 				PrivacyEnabled:     deps.WebPrivacy != nil,
 				AIPolicyEnabled:    deps.WebAIPolicy != nil,
+				UsersEnabled:       deps.WebUsers != nil,
 				ConsentEnabled:     deps.WebConsent != nil,
 				// SIN-63940 / UX-F3 — Fase 6 surfaces. Each flag reads
 				// the matching dep slot the wire layer fills in
@@ -1118,6 +1135,10 @@ func NewRouter(deps Deps) http.Handler {
 					// /settings/channels mount (memory
 					// feedback_hello_tenant_sync_on_mount).
 					ChannelsEnabled: deps.WebChannels != nil,
+					// SIN-66496 — mirror the /settings/users mount so the
+					// gerente sees the user-management link post-login
+					// (memory feedback_hello_tenant_sync_on_mount).
+					UsersEnabled: deps.WebUsers != nil,
 				},
 			}))
 			if deps.Authorizer != nil {
@@ -1258,6 +1279,39 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/settings/ai-policy", webAIPolicy)
 				authed.Method(http.MethodPatch, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
 				authed.Method(http.MethodDelete, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
+			}
+
+			// SIN-66496 — HTMX tenant user-management admin UI. The whole
+			// surface is gerente-only (SIN-66494 G3): each route carries a
+			// RequireAction gate mapped to {RoleTenantGerente}, so atendente
+			// / common get 403 before the handler runs. Distinct actions per
+			// operation give per-operation audit granularity. Every write
+			// route (POST create, PATCH role, POST deactivate/reactivate) is
+			// enumerated individually — chi does not mount subtrees (the
+			// route-enumeration trap). When Authorizer is nil (router tests
+			// that don't exercise authz) the gate skips and the inner mux
+			// still runs with a Principal.
+			if deps.WebUsers != nil {
+				gate := func(action iam.Action) http.Handler {
+					if deps.Authorizer != nil {
+						return middleware.RequireAuth(middleware.RequireAuthDeps{})(
+							middleware.RequireAction(deps.Authorizer, action, nil)(deps.WebUsers),
+						)
+					}
+					return middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebUsers)
+				}
+				listGate := gate(iam.ActionTenantUserList)
+				createGate := gate(iam.ActionTenantUserCreate)
+				updateGate := gate(iam.ActionTenantUserUpdate)
+				deactivateGate := gate(iam.ActionTenantUserDeactivate)
+
+				authed.Method(http.MethodGet, "/settings/users", listGate)
+				authed.Method(http.MethodGet, "/settings/users/new", createGate)
+				authed.Method(http.MethodGet, "/settings/users/{id}/edit", updateGate)
+				authed.Method(http.MethodPost, "/settings/users", createGate)
+				authed.Method(http.MethodPatch, "/settings/users/{id}", updateGate)
+				authed.Method(http.MethodPost, "/settings/users/{id}/deactivate", deactivateGate)
+				authed.Method(http.MethodPost, "/settings/users/{id}/reactivate", deactivateGate)
 			}
 
 			// SIN-62907 — HTMX catalog admin UI (Fase 3 W4C). Same

@@ -202,8 +202,13 @@ func (u *UserCredentialReader) LookupCredentials(ctx context.Context, tenantID u
 		hash string
 	)
 	err := WithTenant(ctx, u.pool, tenantID, func(tx pgx.Tx) error {
+		// SIN-66496 / SIN-66494 G5: a soft-deactivated user
+		// (deactivated_at IS NOT NULL) must not authenticate. Filtering here
+		// makes the account un-findable, so Login returns the same
+		// ErrInvalidCredentials path as a missing user (no enumeration).
 		return tx.QueryRow(ctx, `
-			SELECT id, password_hash FROM users WHERE email = $1
+			SELECT id, password_hash FROM users
+			WHERE email = $1 AND deactivated_at IS NULL
 		`, email).Scan(&id, &hash)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
