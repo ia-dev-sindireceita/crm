@@ -9,7 +9,7 @@ import (
 // password. It omits visually ambiguous glyphs (0/O, 1/l/I) so the gerente
 // can read the one-time value aloud or copy it without transcription errors,
 // while still spanning upper, lower and digits.
-const tempPasswordAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+const tempPasswordAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789" // gitleaks:allow -- fixed character set, not a secret
 
 // tempPasswordLen is the length of a generated temporary password. 20 chars
 // over the 55-symbol alphabet is ~115 bits of entropy — far beyond any
