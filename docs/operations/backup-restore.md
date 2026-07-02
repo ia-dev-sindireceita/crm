@@ -149,7 +149,41 @@ step assumes a shell with `sudo` on the host.
    exists; subsequent runs raise `min_bytes` to 10% of the last successful
    `dump_bytes` (see § "Dump size threshold and state file").
 
+   The one-shot `docker compose run --rm backup …` above works even before the
+   next step because `run` auto-enables the service's own profile; the
+   *scheduled* sidecar, however, only starts once you activate the profile in
+   step 9.
+9. **Activate the scheduled sidecar (opt-in profile,
+   [SIN-66535](/SIN/issues/SIN-66535)).** The `backup` service is guarded by
+   `profiles: ["backup"]`, so a plain `docker compose up -d` deliberately
+   **skips** it — a host where backups have never been provisioned (no key, no
+   `BACKUP_IMAGE`) can still bring the rest of the stack up. The image line uses
+   the soft `${BACKUP_IMAGE:-…}` default (not the mandatory `:?` form) because
+   Compose interpolates the whole file before applying profiles, so `:?` would
+   otherwise still abort the default `up`. Once steps 1–8 are complete, opt the
+   daily sidecar in explicitly:
+   ```bash
+   sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
+     --env-file /opt/crm/stg/.env.stg \
+     --profile backup up -d backup
+   # Equivalent: export COMPOSE_PROFILES=backup before `docker compose up -d`.
+   ```
+   The container then runs supercronic and fires `backup.sh` on the 03:15
+   America/Sao_Paulo schedule. Until this step runs, the scheduled backup does
+   **not** exist on the host. If you activate `--profile backup` **before**
+   bootstrapping `BACKUP_IMAGE` in `.env.stg`, the pull fails loud with a
+   `manifest unknown` error on the placeholder tag
+   (`crm-backup:SET-BACKUP_IMAGE-IN-ENV-STG`) — set the real digest (step 3)
+   first.
+
 ## Daily operation
+
+> **Opt-in profile ([SIN-66535](/SIN/issues/SIN-66535)).** The scheduled
+> `backup` sidecar only runs when the `backup` compose profile is active (see
+> first-time-setup step 9). A default `docker compose up -d` does not start it;
+> use `docker compose --profile backup up -d` (or `COMPOSE_PROFILES=backup`).
+> The one-shot `docker compose run --rm backup …` commands below auto-enable
+> the profile for their single invocation, so they work regardless.
 
 The supercronic crontab inside the `backup` sidecar fires at 03:15
 America/Sao_Paulo every day (cron line `15 3 * * *` in
