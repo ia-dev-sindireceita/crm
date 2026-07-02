@@ -860,3 +860,35 @@ func TestComposeBackupSidecarIsOptInProfile(t *testing.T) {
 		})
 	}
 }
+
+// TestComposeStgBackupImageIsSoftDefaulted is the SIN-66535 CTO-review
+// follow-up. `profiles: ["backup"]` alone does NOT stop a default
+// `docker compose up` from hard-failing, because Compose v2 interpolates the
+// entire document (including `${BACKUP_IMAGE:?...}`) BEFORE profile filtering
+// drops profile-excluded services. So the staging `backup` image MUST use the
+// soft `${BACKUP_IMAGE:-<default>}` form, never the mandatory `${BACKUP_IMAGE:?`
+// form. The default is a non-existent GHCR tag, so activating the profile
+// without bootstrapping BACKUP_IMAGE fails loud at pull rather than silently
+// running a wrong image.
+//
+// This is asserted only on compose.stg.yml — the dev compose.yml pins
+// `crm-backup:dev` (a locally built image) and never referenced BACKUP_IMAGE.
+func TestComposeStgBackupImageIsSoftDefaulted(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	path := filepath.Join(root, "deploy", "compose", "compose.stg.yml")
+	block := readBackupServiceBlock(t, path)
+
+	// Must NOT use the mandatory `${BACKUP_IMAGE:?...}` form — it interpolates
+	// (and errors) before profiles are applied.
+	if bytes.Contains(block, []byte("${BACKUP_IMAGE:?")) {
+		t.Fatalf("compose service `backup` in %s uses the mandatory `${BACKUP_IMAGE:?...}` form, which hard-fails a default `docker compose up` even behind `profiles` (Compose interpolates before profile filtering). Use `${BACKUP_IMAGE:-<default>}` instead (SIN-66535). Block:\n%s",
+			path, block)
+	}
+	// Must use the soft `${BACKUP_IMAGE:-...}` default so the default `up`
+	// cannot error on an unset BACKUP_IMAGE.
+	if !bytes.Contains(block, []byte("${BACKUP_IMAGE:-")) {
+		t.Fatalf("compose service `backup` in %s must set its image via the soft `${BACKUP_IMAGE:-<default>}` form so a default `docker compose up` never errors when BACKUP_IMAGE is unset (SIN-66535). Block:\n%s",
+			path, block)
+	}
+}

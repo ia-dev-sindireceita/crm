@@ -224,13 +224,17 @@ services:
     # SIN-66535 — opt-in sidecar. The backup feature is NOT installed on every
     # host (no key/group/volume/BACKUP_IMAGE bootstrapped yet), so this service
     # is guarded behind the `backup` compose profile and is EXCLUDED from the
-    # default `docker compose up`. That keeps the `${BACKUP_IMAGE:?...}`
-    # interpolation below from hard-failing the whole stack on hosts where
-    # backups have never been provisioned. Bring the sidecar up explicitly with
+    # default `docker compose up` on hosts where backups have never been
+    # provisioned. Bring the sidecar up explicitly with
     # `docker compose --profile backup up -d` (or `COMPOSE_PROFILES=backup`)
     # once the first-install steps in docs/operations/backup-restore.md are
     # done. A `docker compose run --rm backup ...` invocation auto-enables the
     # profile for that one-shot, so the restore drill is unaffected.
+    #
+    # NOTE the profile is NECESSARY but not SUFFICIENT to keep a default `up`
+    # from erroring: Compose interpolates the whole file before applying
+    # profiles, so the image below also uses the soft `${BACKUP_IMAGE:-…}`
+    # default rather than the mandatory `:?` form (see the image comment).
     profiles: ["backup"]
     # BACKUP_IMAGE is bootstrapped once into /opt/crm/stg/.env.stg after the
     # first `.github/workflows/build-backup-image.yml` run publishes the
@@ -238,7 +242,17 @@ services:
     # documented in docs/deploy/staging.md → "Bumping infra image digests"
     # (PR-reviewed inline edit). Format MUST be:
     #   BACKUP_IMAGE=ghcr.io/pericles-luz/crm-backup@sha256:<64 hex>
-    image: ${BACKUP_IMAGE:?BACKUP_IMAGE must be ghcr.io/pericles-luz/crm-backup@sha256:<digest>}
+    #
+    # SIN-66535 — this uses the `${VAR:-default}` (soft) form, NOT `${VAR:?err}`
+    # (mandatory). Compose v2 interpolates the WHOLE document before profile
+    # filtering drops profile-excluded services, so a `:?` here would still
+    # hard-fail a default `docker compose up` even though the `backup` service
+    # is behind `profiles: ["backup"]`. The soft default keeps the default `up`
+    # from erroring; the placeholder tag does not exist in GHCR, so an operator
+    # who activates `--profile backup up` WITHOUT bootstrapping BACKUP_IMAGE in
+    # .env.stg still fails loud at image pull (manifest not found) — never a
+    # silent wrong image.
+    image: ${BACKUP_IMAGE:-ghcr.io/pericles-luz/crm-backup:SET-BACKUP_IMAGE-IN-ENV-STG}
     restart: unless-stopped
     networks: [crm]
     # Run as nobody:nobody (65534:65534). Maps to legacy
