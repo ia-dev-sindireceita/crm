@@ -89,20 +89,22 @@
   border-color: var(--border-strong);
 }
 
+/* Solid button uses the --color-primary-btn* trio (not the bare accent)
+   so white text clears WCAG AA in every state, including dark. SIN-66517 */
 .btn--primary {
   color: var(--text-on-primary);
-  background-color: var(--color-primary);
-  border-color: var(--color-primary);
+  background-color: var(--color-primary-btn);
+  border-color: var(--color-primary-btn);
 }
 
 .btn--primary:hover {
-  background-color: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
+  background-color: var(--color-primary-btn-hover);
+  border-color: var(--color-primary-btn-hover);
 }
 
 .btn--primary:active {
-  background-color: var(--color-primary-active);
-  border-color: var(--color-primary-active);
+  background-color: var(--color-primary-btn-active);
+  border-color: var(--color-primary-btn-active);
 }
 
 .btn--ghost {
