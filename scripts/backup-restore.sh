@@ -33,7 +33,7 @@
 #                     RESTORE_DATE/BACKUP_PREFIX based path.
 #   BACKUP_PREFIX     object key prefix used by backup.sh.
 #   BACKUP_AGE_KEY    age private-key file (default:
-#                     /etc/sindireceita/age-backup.key).
+#                     /etc/lmhost/age-backup.key).
 #   AWS_ENDPOINT_URL  custom S3 endpoint (e.g. Backblaze B2).
 #   RESTORE_VERIFY_SQL  optional smoke-test query; expected to print a single
 #                       integer >= RESTORE_VERIFY_MIN.
@@ -107,7 +107,7 @@ fi
 
 require_age_v1
 
-key_file=${BACKUP_AGE_KEY:-/etc/sindireceita/age-backup.key}
+key_file=${BACKUP_AGE_KEY:-/etc/lmhost/age-backup.key}
 [[ -r "$key_file" ]] || fail "age key file not readable: $key_file"
 
 if [[ -n "${RESTORE_OBJECT:-}" ]]; then

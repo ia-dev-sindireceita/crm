@@ -492,10 +492,10 @@ test_structured_log_format() {
   run_backup
   assert_eq "$RC" 0 "exit code"                                                  || return 1
   # The done line carries every required token in one record.
-  assert_true "grep -E 'ts=[0-9TZ:.-]+ level=info service=sindireceita-backup.*stage=done' \"$LOG_FILE\" >/dev/null" \
+  assert_true "grep -E 'ts=[0-9TZ:.-]+ level=info service=lmhost-backup.*stage=done' \"$LOG_FILE\" >/dev/null" \
     "done record matches key=value shape"                                        || return 1
-  # No bracketed logger-style records (`[sindireceita-backup] …`) leak through.
-  assert_false "grep -qF '[sindireceita-backup]' \"$LOG_FILE\"" \
+  # No bracketed logger-style records (`[lmhost-backup] …`) leak through.
+  assert_false "grep -qF '[lmhost-backup]' \"$LOG_FILE\"" \
     "no legacy logger -t bracketed records"                                      || return 1
 }
 

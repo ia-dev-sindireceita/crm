@@ -1,4 +1,4 @@
-# Sindireceita backup sidecar — pg_dump | age | aws s3 cp pipeline.
+# LMHost backup sidecar — pg_dump | age | aws s3 cp pipeline.
 #
 # Built and pushed by .github/workflows/build-backup-image.yml on every push
 # that touches `infra/backup/**` or `scripts/backup.sh` / `scripts/backup-restore.sh`.
@@ -24,7 +24,7 @@
 # into the scheduled service; it is only mounted at backup-restore.sh
 # invocation time, AND the invocation MUST pass `--user 0:0` so the
 # UID/GID inside the container matches the host-side `0440 root:*`
-# ownership of `/etc/sindireceita/age-backup.key`. See
+# ownership of `/etc/lmhost/age-backup.key`. See
 # docs/operations/backup-restore.md § "Restore drill" and SIN-63195
 # SE-review BLOCKER #2 for the rationale.
 
@@ -71,14 +71,14 @@ RUN wget -q -O "${SUPERCRONIC_BIN}" "${SUPERCRONIC_URL}" \
  && chmod 0755 "${SUPERCRONIC_BIN}"
 
 # Copy the pipeline into a read-only location. The compose service mounts
-# the source tree read-only on dev (`./scripts:/usr/local/sindireceita/scripts:ro`),
+# the source tree read-only on dev (`./scripts:/usr/local/lmhost/scripts:ro`),
 # but the production image ships its own embedded copy so the sidecar can
 # run with `read_only: true` and zero host filesystem mounts (except tmpfs
 # /tmp and the env file).
 COPY scripts/backup.sh          /usr/local/bin/backup.sh
 COPY scripts/backup-restore.sh  /usr/local/bin/backup-restore.sh
-COPY infra/age-backup.pub       /opt/sindireceita/infra/age-backup.pub
-COPY infra/backup/crontab       /etc/sindireceita/crontab
+COPY infra/age-backup.pub       /opt/lmhost/infra/age-backup.pub
+COPY infra/backup/crontab       /etc/lmhost/crontab
 
 # Ownership: nobody:nobody (65534:65534). All paths are owned by root post-COPY
 # by default; chown to nobody so the unprivileged USER below can stat them.
@@ -87,28 +87,28 @@ COPY infra/backup/crontab       /etc/sindireceita/crontab
 # path is invoked separately with `docker compose run --rm --user 0:0` so
 # the bind-mounted age private key (host-side `0440 root:*`) is readable.
 # The 0555 perms ensure either UID can `exec` the scripts.
-RUN chown -R 65534:65534 /opt/sindireceita \
+RUN chown -R 65534:65534 /opt/lmhost \
  && chmod 0555 /usr/local/bin/backup.sh /usr/local/bin/backup-restore.sh \
- && chmod 0444 /etc/sindireceita/crontab
+ && chmod 0444 /etc/lmhost/crontab
 
-# /var/lib/sindireceita is where backup.sh writes backup-last-success.json.
+# /var/lib/lmhost is where backup.sh writes backup-last-success.json.
 # Compose mounts a named volume here so the per-host state survives image
 # upgrades. Inside the image we ship the directory empty + writable by the
 # nobody user so first-boot does not need root.
-RUN mkdir -p /var/lib/sindireceita \
- && chown -R 65534:65534 /var/lib/sindireceita
+RUN mkdir -p /var/lib/lmhost \
+ && chown -R 65534:65534 /var/lib/lmhost
 
 USER 65534:65534
-WORKDIR /opt/sindireceita
+WORKDIR /opt/lmhost
 
 # Default command is supercronic against the embedded crontab. The crontab
 # fires `/usr/local/bin/backup.sh` at the wall-clock schedule. For a manual
 # one-shot backup the operator runs `docker compose run --rm backup
 # /usr/local/bin/backup.sh`. For the encrypted-restore pipeline the
 # operator runs `docker compose run --rm --user 0:0 -v
-# /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro
+# /etc/lmhost/age-backup.key:/etc/lmhost/age-backup.key:ro
 # backup /usr/local/bin/backup-restore.sh` (the explicit `--user 0:0` is
 # required so the bind-mounted age key — host perms 0440 root:* — is
 # readable inside the container).
 ENTRYPOINT ["/usr/local/bin/supercronic"]
-CMD ["/etc/sindireceita/crontab"]
+CMD ["/etc/lmhost/crontab"]
