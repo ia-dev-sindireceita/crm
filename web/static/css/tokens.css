@@ -109,6 +109,15 @@
   --color-primary-active: #3c43a2;  /* indigo-700 */
   --color-primary-soft: #eeeffb;    /* indigo-50  */
 
+  /* Solid-button fill trio — decoupled from --color-primary so a
+     button's white text can clear AA independently of the fill/border/
+     focus accent. In light these equal the accent (no visual change);
+     in dark they stay darker than the lifted accent so white text holds
+     >=4.5:1 in every state. white 5.04 / 6.50 / 8.34:1. SIN-66517 */
+  --color-primary-btn: #5b63d3;
+  --color-primary-btn-hover: #4a51c0;
+  --color-primary-btn-active: #3c43a2;
+
   /* Text color for use ON --color-primary-soft (selected nav, accent
      badges/tags). --color-primary (#5b63d3) is only 4.4:1 on the soft
      tint — sub-AA — so accent text uses this darker indigo instead. */
@@ -125,7 +134,7 @@
   --color-success-strong: #16794d;   /* success-colored TEXT on light surfaces, 4.97:1 AA on --surface-1 */
   --color-success-surface: #e5f4ec;  /* green-50  */
 
-  --color-warning: #ac7420;          /* amber-600 */
+  --color-warning: #96631a;          /* amber-700 — darkened from #ac7420 so white --color-warning-text clears AA on the fill: 5.13:1 (was 3.98:1). Also lifts .badge--nego text (--color-warning on --color-warning-surface) to 4.61:1. SIN-66517 */
   --color-warning-text: #ffffff;
   --color-warning-strong: #8a5a00;   /* warning-colored TEXT on light surfaces: 5.43:1 on --surface-1, 5.33:1 on --color-warning-surface (AA) */
   --color-warning-surface: #fbf2df;  /* amber-50  */
@@ -243,6 +252,16 @@
   --color-primary-hover: #7c84e8;
   --color-primary-active: #8990ed;
   --color-primary-soft: #1e2236;
+
+  /* Solid-button fill trio (dark). The base accent #6970dd is only
+     4.23:1 with white and its hover/active LIFT (lighter) which drops it
+     further (3.32 / 2.89). The button keeps the darker indigo and
+     darkens on interaction — like light mode — so white text holds
+     >=4.5:1: white 5.04 / 6.50 / 8.34:1. --color-primary stays #6970dd
+     for focus/border/accent. SIN-66517 */
+  --color-primary-btn: #5b63d3;
+  --color-primary-btn-hover: #4a51c0;
+  --color-primary-btn-active: #3c43a2;
 
   /* Dark accent text on --color-primary-soft (#1e2236); lifted indigo
      so it clears AA — the base --color-primary (#6970dd) is only
