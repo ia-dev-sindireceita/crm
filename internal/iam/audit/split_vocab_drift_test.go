@@ -8,7 +8,7 @@ package audit
 //
 //   1. allSecurityEvents in split.go (the SecurityEvent* constants), and
 //   2. the audit_log_security_event_type_check CHECK constraint in the
-//      highest-numbered CHECK-extending migration (latest: 0129).
+//      highest-numbered CHECK-extending migration (latest: 0132).
 //
 // Nothing else fails if a constant is added to the Go side but not to the
 // CHECK: it passes IsKnown() and every unit test, then the INSERT hits the
@@ -49,7 +49,7 @@ import (
 // migration restates the entire union (named CHECK constraints are immutable;
 // DROP + ADD is the only path), so the highest-numbered one is the
 // authoritative final state — reading it alone is sufficient.
-const latestCheckMigration = "../../../migrations/0129_audit_log_security_channel_access.up.sql"
+const latestCheckMigration = "../../../migrations/0132_audit_log_security_user_events.up.sql"
 
 // checkInListRe captures the parenthesised body of `event_type IN ( ... )`.
 // (?s) lets "." span newlines; the body is non-greedy up to the first

@@ -208,6 +208,10 @@ var allSecurityEvents = map[SecurityEvent]struct{}{
 	SecurityEventChannelAccessGranted:     {},
 	SecurityEventChannelAccessRevoked:     {},
 	SecurityEventChannelRestrictedChanged: {},
+	SecurityEventUserCreate:               {},
+	SecurityEventUserDeactivate:           {},
+	SecurityEventUserReactivate:           {},
+	SecurityEventPasswordReset:            {},
 }
 
 var allDataEvents = map[DataEvent]struct{}{
