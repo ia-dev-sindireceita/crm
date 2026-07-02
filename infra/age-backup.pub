@@ -1,4 +1,4 @@
-# Sindireceita backup recipient (age v1, X25519).
+# LMHost backup recipient (age v1, X25519).
 #
 # ============================================================================
 # THIS FILE IS A NON-FUNCTIONAL BOOTSTRAP PLACEHOLDER.
@@ -11,8 +11,8 @@
 #
 # To install:
 #   1. Run `scripts/generate-backup-key.sh` on the backup host. It writes
-#      the private key to /etc/sindireceita/age-backup.key with mode 0440
-#      and ownership root:sindireceita-backup, and prints the matching
+#      the private key to /etc/lmhost/age-backup.key with mode 0440
+#      and ownership root:lmhost-backup, and prints the matching
 #      public key on stdout.
 #   2. Replace the marker line at the bottom of this file with that public
 #      key. Keep the comment header.

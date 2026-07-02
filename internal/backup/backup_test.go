@@ -616,9 +616,9 @@ func readBackupServiceBlock(t *testing.T, composePath string) []byte {
 
 // TestComposeBackupSidecarDeniesPrivateKey is the regression test for the
 // container-equivalent of legacy SIN-62250 MEDIUM #2 (formerly
-// `InaccessiblePaths=/etc/sindireceita/age-backup.key` on the systemd unit).
+// `InaccessiblePaths=/etc/lmhost/age-backup.key` on the systemd unit).
 //
-// The backup sidecar does NOT need /etc/sindireceita/age-backup.key — the
+// The backup sidecar does NOT need /etc/lmhost/age-backup.key — the
 // scheduled service only encrypts via the public recipient. Therefore the
 // service definition MUST NOT bind-mount, env-mount, or otherwise reference
 // the age-backup.key path anywhere in its block. Only `backup-restore.sh`
@@ -630,7 +630,7 @@ func readBackupServiceBlock(t *testing.T, composePath string) []byte {
 // the age private key.)
 //
 // This catches:
-//   - someone adding a `volumes: ["/etc/sindireceita/age-backup.key:..."]`
+//   - someone adding a `volumes: ["/etc/lmhost/age-backup.key:..."]`
 //     line to the backup service to "help with the restore drill"
 //   - someone adding `BACKUP_AGE_KEY=...` as an env var to the backup
 //     service block
@@ -718,10 +718,10 @@ func TestComposeBackupSidecarHardeningInvariants(t *testing.T) {
 // cannot execute:
 //
 //  1. The container runs with `--user 0:0` so the bind-mounted host
-//     private key (host perms `0440 root:sindireceita-backup`) is
+//     private key (host perms `0440 root:lmhost-backup`) is
 //     readable. The scheduled backup service runs as `user: 65534`
 //     (nobody) by compose default; nobody is not in the
-//     sindireceita-backup group, so without the explicit `--user 0:0`
+//     lmhost-backup group, so without the explicit `--user 0:0`
 //     the read fails EACCES and pg_restore never sees the cleartext
 //     dump. The container retains `read_only`, `cap_drop: ALL`,
 //     `no-new-privileges`, and `tmpfs /tmp` from the service
@@ -766,8 +766,8 @@ func TestRunbookRestorePipelineInvocation(t *testing.T) {
 		why    string
 	}{
 		{"--user 0:0",
-			"restore-pipeline container MUST run as root so bind-mounted host key (0440 root:sindireceita-backup) is readable — SIN-63195 SE BLOCKER #2"},
-		{"-v /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro",
+			"restore-pipeline container MUST run as root so bind-mounted host key (0440 root:lmhost-backup) is readable — SIN-63195 SE BLOCKER #2"},
+		{"-v /etc/lmhost/age-backup.key:/etc/lmhost/age-backup.key:ro",
 			"private age key MUST be bind-mounted read-only with the absolute host path"},
 		{"backup /usr/local/bin/backup-restore.sh",
 			"invocation MUST target the inner restore pipeline at /usr/local/bin/backup-restore.sh (NOT restore-drill.sh — the latter is the SIN-63187 outer drill orchestrator)"},
@@ -798,13 +798,13 @@ func TestRunbookRestorePipelineInvocation(t *testing.T) {
 // safety net for BLOCKER #2: even though TestComposeBackupSidecarDeniesPrivateKey
 // already greps for the literal `age-backup.key` token, this test
 // additionally asserts that the scheduled `backup` service in compose
-// declares NO host bind mounts under `/etc/sindireceita/` whatsoever.
-// The named docker volume `sindireceita-backup-state` for state is fine
-// (no host path); a host bind like `- /etc/sindireceita:...` would
+// declares NO host bind mounts under `/etc/lmhost/` whatsoever.
+// The named docker volume `lmhost-backup-state` for state is fine
+// (no host path); a host bind like `- /etc/lmhost:...` would
 // expose the entire secrets directory — including the private key — to
 // the scheduled service even if the literal key path is not named.
 //
-// If you legitimately need to mount /etc/sindireceita into the
+// If you legitimately need to mount /etc/lmhost into the
 // scheduled service for some future reason (you almost certainly do not
 // — restore is out-of-band by design), update this test in the SAME
 // commit and explain why on the PR.
@@ -820,10 +820,75 @@ func TestComposeBackupSidecarKeyIsolationFromVolumes(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(root, composeRel)
 			block := readBackupServiceBlock(t, path)
-			if bytes.Contains(block, []byte("/etc/sindireceita")) {
-				t.Fatalf("compose service `backup` in %s mounts /etc/sindireceita (any path under it) — the scheduled service must not see host secrets. Block:\n%s",
+			if bytes.Contains(block, []byte("/etc/lmhost")) {
+				t.Fatalf("compose service `backup` in %s mounts /etc/lmhost (any path under it) — the scheduled service must not see host secrets. Block:\n%s",
 					path, block)
 			}
 		})
+	}
+}
+
+// TestComposeBackupSidecarIsOptInProfile is the SIN-66535 regression: the
+// scheduled `backup` service in both the staging and dev compose files MUST be
+// guarded by the `backup` compose profile so a default `docker compose up`
+// excludes it. Without the profile, the staging service's
+// `image: ${BACKUP_IMAGE:?...}` interpolation hard-fails the entire
+// `docker compose up` on any host where backups were never provisioned (no
+// key, no group→volume, no BACKUP_IMAGE in .env.stg) — which is exactly the
+// state of the crm-stg VPS that blocked the SIN-65737 rename deploy.
+//
+// Making the sidecar opt-in must NOT weaken the security posture asserted by
+// TestComposeBackupSidecarHardeningInvariants (read_only, cap_drop: ALL,
+// no-new-privileges:true, user 65534, tmpfs /tmp) — the two tests run against
+// the same service block, so any regression there fails independently.
+func TestComposeBackupSidecarIsOptInProfile(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	for _, composeRel := range []string{
+		"deploy/compose/compose.stg.yml",
+		"deploy/compose/compose.yml",
+	} {
+		composeRel := composeRel
+		t.Run(composeRel, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(root, composeRel)
+			block := readBackupServiceBlock(t, path)
+			if !bytes.Contains(block, []byte(`profiles: ["backup"]`)) {
+				t.Fatalf("compose service `backup` in %s must declare `profiles: [\"backup\"]` so it is excluded from the default `docker compose up` (SIN-66535). Block:\n%s",
+					path, block)
+			}
+		})
+	}
+}
+
+// TestComposeStgBackupImageIsSoftDefaulted is the SIN-66535 CTO-review
+// follow-up. `profiles: ["backup"]` alone does NOT stop a default
+// `docker compose up` from hard-failing, because Compose v2 interpolates the
+// entire document (including `${BACKUP_IMAGE:?...}`) BEFORE profile filtering
+// drops profile-excluded services. So the staging `backup` image MUST use the
+// soft `${BACKUP_IMAGE:-<default>}` form, never the mandatory `${BACKUP_IMAGE:?`
+// form. The default is a non-existent GHCR tag, so activating the profile
+// without bootstrapping BACKUP_IMAGE fails loud at pull rather than silently
+// running a wrong image.
+//
+// This is asserted only on compose.stg.yml — the dev compose.yml pins
+// `crm-backup:dev` (a locally built image) and never referenced BACKUP_IMAGE.
+func TestComposeStgBackupImageIsSoftDefaulted(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	path := filepath.Join(root, "deploy", "compose", "compose.stg.yml")
+	block := readBackupServiceBlock(t, path)
+
+	// Must NOT use the mandatory `${BACKUP_IMAGE:?...}` form — it interpolates
+	// (and errors) before profiles are applied.
+	if bytes.Contains(block, []byte("${BACKUP_IMAGE:?")) {
+		t.Fatalf("compose service `backup` in %s uses the mandatory `${BACKUP_IMAGE:?...}` form, which hard-fails a default `docker compose up` even behind `profiles` (Compose interpolates before profile filtering). Use `${BACKUP_IMAGE:-<default>}` instead (SIN-66535). Block:\n%s",
+			path, block)
+	}
+	// Must use the soft `${BACKUP_IMAGE:-...}` default so the default `up`
+	// cannot error on an unset BACKUP_IMAGE.
+	if !bytes.Contains(block, []byte("${BACKUP_IMAGE:-")) {
+		t.Fatalf("compose service `backup` in %s must set its image via the soft `${BACKUP_IMAGE:-<default>}` form so a default `docker compose up` never errors when BACKUP_IMAGE is unset (SIN-66535). Block:\n%s",
+			path, block)
 	}
 }

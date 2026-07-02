@@ -1,6 +1,6 @@
 # Backup & restore (encrypted Postgres dumps)
 
-Sindireceita Postgres backups are encrypted client-side with [age](https://age-encryption.org)
+LMHost Postgres backups are encrypted client-side with [age](https://age-encryption.org)
 before they leave the staging/prod compose stack. Even if Backblaze B2 / S3 credentials leak,
 an attacker who downloads every snapshot still sees nothing but ciphertext.
 
@@ -12,7 +12,7 @@ in [SIN-63195](/SIN/issues/SIN-63195) (see [ADR-0102](../adr/0102-backup-compose
 > **Architecture note.** The pipeline runs as the `backup` compose service
 > in `deploy/compose/compose.stg.yml` (staging) and `deploy/compose/compose.yml`
 > (local dev). Scheduling is handled by supercronic inside the container; the
-> host has no `sindireceita-backup.service` / `.timer` to install or maintain.
+> host has no `lmhost-backup.service` / `.timer` to install or maintain.
 > See [ADR-0102](../adr/0102-backup-compose-sidecar.md) for the decision and
 > the 1:1 hardening-invariant mapping vs the legacy host systemd unit.
 
@@ -24,11 +24,11 @@ in [SIN-63195](/SIN/issues/SIN-63195) (see [ADR-0102](../adr/0102-backup-compose
 | `infra/sops/age-backup.key.enc` | SOPS-encrypted private key. Committed (ciphertext). |
 | `infra/backup/Dockerfile` | Sidecar image: Alpine + postgres-client + age + aws-cli + supercronic. |
 | `infra/backup/crontab` | supercronic crontab — fires `/usr/local/bin/backup.sh` at 03:15 America/Sao_Paulo. |
-| `/etc/sindireceita/age-backup.key` | Decrypted private key on the **staging/prod host**. Mode `0440`, owner `root:sindireceita-backup` (set by `scripts/generate-backup-key.sh`). NEVER committed. NEVER bind-mounted into the scheduled sidecar — only into manual `backup-restore.sh` invocations that pass `--user 0:0` so the container-side UID matches the file's `0440 root:*` ownership. |
+| `/etc/lmhost/age-backup.key` | Decrypted private key on the **staging/prod host**. Mode `0440`, owner `root:lmhost-backup` (set by `scripts/generate-backup-key.sh`). NEVER committed. NEVER bind-mounted into the scheduled sidecar — only into manual `backup-restore.sh` invocations that pass `--user 0:0` so the container-side UID matches the file's `0440 root:*` ownership. |
 | `/opt/crm/stg/.env.stg` | Compose env-file. Holds `BACKUP_IMAGE`, `BACKUP_BUCKET`, `AWS_*`, `DATABASE_URL`, `BACKUP_NODE_ID`. Mode `0600`, owner `crm-deploy:crm-deploy`. NEVER committed. |
-| `sindireceita-backup-state` (named docker volume) | Holds `backup-last-success.json` so the size-threshold check has prior-day data to compare against. |
+| `lmhost-backup-state` (named docker volume) | Holds `backup-last-success.json` so the size-threshold check has prior-day data to compare against. |
 | `scripts/backup.sh` | `pg_dump` → `age -R` → `aws s3 cp` with per-stage exit checks, dump-size threshold, S3 head-object verify, structured stderr logs. Baked into the sidecar image at `/usr/local/bin/backup.sh`. |
-| `scripts/backup-restore.sh` | `aws s3 cp - \| age -d -i KEY \| pg_restore`. Inner restore pipeline. Baked into the sidecar image at `/usr/local/bin/backup-restore.sh`; the private age key is bind-mounted ad-hoc at invocation time AND the invocation passes `--user 0:0` so UID inside container matches the host-side `0440 root:sindireceita-backup` ownership. Uses libpq `PG*` env vars (NOT a URL on argv) so the restore target's password is invisible to `ps aux`. |
+| `scripts/backup-restore.sh` | `aws s3 cp - \| age -d -i KEY \| pg_restore`. Inner restore pipeline. Baked into the sidecar image at `/usr/local/bin/backup-restore.sh`; the private age key is bind-mounted ad-hoc at invocation time AND the invocation passes `--user 0:0` so UID inside container matches the host-side `0440 root:lmhost-backup` ownership. Uses libpq `PG*` env vars (NOT a URL on argv) so the restore target's password is invisible to `ps aux`. |
 | `scripts/restore-drill.sh` | Outer quarterly drill orchestrator (SIN-63187, PR #226). Provisions an isolated docker stack, calls into the inner restore pipeline above for the real (non-synthetic) decrypt path, validates `/health` + DB queries, writes a dated drill report. |
 | `scripts/generate-backup-key.sh` | Bootstraps the keypair. **Runs on the host, not in the container** — the private key never enters the image. |
 | `scripts/tests/backup_test.sh` | Hermetic shell-test harness for `backup.sh` (run with `bash scripts/tests/backup_test.sh`). |
@@ -43,15 +43,15 @@ step assumes a shell with `sudo` on the host.
    [SIN-62215](/SIN/issues/SIN-62215)). The `crm-deploy` user, `/opt/crm/stg`
    directory, and SSH-constrained deploy key are prerequisites for everything
    below; this runbook layers on top of that base install.
-2. **Create the `sindireceita-backup` group and lay down `/etc/sindireceita`**.
+2. **Create the `lmhost-backup` group and lay down `/etc/lmhost`**.
    `scripts/generate-backup-key.sh` writes the private key as
-   `0440 root:sindireceita-backup`; the group MUST exist before that script
+   `0440 root:lmhost-backup`; the group MUST exist before that script
    runs (the script aborts if it does not).
    ```bash
-   sudo groupadd --system sindireceita-backup
-   sudo install -d -m 0750 -o root -g sindireceita-backup /etc/sindireceita
+   sudo groupadd --system lmhost-backup
+   sudo install -d -m 0750 -o root -g lmhost-backup /etc/lmhost
    ```
-   Owner `root`, group `sindireceita-backup` so a future audit can grant a
+   Owner `root`, group `lmhost-backup` so a future audit can grant a
    second human key custodian read access by adding them to that group
    without `sudo`. The container-side restore path uses `--user 0:0`
    instead of group membership (see § "Restore drill") — root inside the
@@ -70,7 +70,7 @@ step assumes a shell with `sudo` on the host.
 
    # Object-store credentials and bucket. Re-used by aws-cli inside the
    # sidecar; never echoed to logs.
-   BACKUP_BUCKET=sindireceita-backups
+   BACKUP_BUCKET=lmhost-backups
    AWS_ACCESS_KEY_ID=...
    AWS_SECRET_ACCESS_KEY=...
    # optional, for Backblaze B2 / non-AWS endpoints:
@@ -90,20 +90,20 @@ step assumes a shell with `sudo` on the host.
    sudo ./scripts/generate-backup-key.sh
    ```
    The script refuses to overwrite an existing key and writes the result to
-   `/etc/sindireceita/age-backup.key` `0440 root:sindireceita-backup`. The
+   `/etc/lmhost/age-backup.key` `0440 root:lmhost-backup`. The
    script also prints the matching public recipient on stdout — capture it
    for the next step.
 
    > **Group note.** The legacy host-systemd unit ran as a dedicated
-   > `sindireceita-backup` Unix group so the unit could read the private
+   > `lmhost-backup` Unix group so the unit could read the private
    > key only via group membership. In the compose model the scheduled
    > sidecar does **not** read the private key at all — only ad-hoc
    > `restore-drill` invocations do, via an explicit `-v` bind mount.
-   > The `sindireceita-backup` group on the host is now only used by
+   > The `lmhost-backup` group on the host is now only used by
    > `generate-backup-key.sh`'s chown step; if you do not have a Unix
    > policy reason to keep it, you may collapse the group to `root` and
    > pass the path explicitly to `docker compose run -v
-   > /etc/sindireceita/age-backup.key:...:ro`.
+   > /etc/lmhost/age-backup.key:...:ro`.
 
 5. **REPLACE `infra/age-backup.pub` with the bootstrap recipient emitted by
    `scripts/generate-backup-key.sh`. The committed placeholder is
@@ -114,7 +114,7 @@ step assumes a shell with `sudo` on the host.
    real recipient is automatically rejected.
 
    The recipient is baked into the sidecar image at
-   `/opt/sindireceita/infra/age-backup.pub`, so a host-local edit on the
+   `/opt/lmhost/infra/age-backup.pub`, so a host-local edit on the
    VPS does **not** affect the running container — you must rebuild and
    re-push the backup image (via `build-backup-image.yml`) with the new
    recipient file, then bump `BACKUP_IMAGE=` in `.env.stg` to the new
@@ -129,7 +129,7 @@ step assumes a shell with `sudo` on the host.
    from git without out-of-band copying:
    ```bash
    sudo sops --encrypt --age "$SOPS_AGE_RECIPIENT" \
-        /etc/sindireceita/age-backup.key \
+        /etc/lmhost/age-backup.key \
         > infra/sops/age-backup.key.enc
    ```
    See `infra/sops/README.md` for `SOPS_AGE_RECIPIENT` and the
@@ -149,7 +149,41 @@ step assumes a shell with `sudo` on the host.
    exists; subsequent runs raise `min_bytes` to 10% of the last successful
    `dump_bytes` (see § "Dump size threshold and state file").
 
+   The one-shot `docker compose run --rm backup …` above works even before the
+   next step because `run` auto-enables the service's own profile; the
+   *scheduled* sidecar, however, only starts once you activate the profile in
+   step 9.
+9. **Activate the scheduled sidecar (opt-in profile,
+   [SIN-66535](/SIN/issues/SIN-66535)).** The `backup` service is guarded by
+   `profiles: ["backup"]`, so a plain `docker compose up -d` deliberately
+   **skips** it — a host where backups have never been provisioned (no key, no
+   `BACKUP_IMAGE`) can still bring the rest of the stack up. The image line uses
+   the soft `${BACKUP_IMAGE:-…}` default (not the mandatory `:?` form) because
+   Compose interpolates the whole file before applying profiles, so `:?` would
+   otherwise still abort the default `up`. Once steps 1–8 are complete, opt the
+   daily sidecar in explicitly:
+   ```bash
+   sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
+     --env-file /opt/crm/stg/.env.stg \
+     --profile backup up -d backup
+   # Equivalent: export COMPOSE_PROFILES=backup before `docker compose up -d`.
+   ```
+   The container then runs supercronic and fires `backup.sh` on the 03:15
+   America/Sao_Paulo schedule. Until this step runs, the scheduled backup does
+   **not** exist on the host. If you activate `--profile backup` **before**
+   bootstrapping `BACKUP_IMAGE` in `.env.stg`, the pull fails loud with a
+   `manifest unknown` error on the placeholder tag
+   (`crm-backup:SET-BACKUP_IMAGE-IN-ENV-STG`) — set the real digest (step 3)
+   first.
+
 ## Daily operation
+
+> **Opt-in profile ([SIN-66535](/SIN/issues/SIN-66535)).** The scheduled
+> `backup` sidecar only runs when the `backup` compose profile is active (see
+> first-time-setup step 9). A default `docker compose up -d` does not start it;
+> use `docker compose --profile backup up -d` (or `COMPOSE_PROFILES=backup`).
+> The one-shot `docker compose run --rm backup …` commands below auto-enable
+> the profile for their single invocation, so they work regardless.
 
 The supercronic crontab inside the `backup` sidecar fires at 03:15
 America/Sao_Paulo every day (cron line `15 3 * * *` in
@@ -194,29 +228,29 @@ aws s3 cp "s3://$BACKUP_BUCKET/$(date -u +%F)/$NODE_ID/dump.pgc.age" - \
 
 Every stage of `backup.sh` emits a `key=value` record on stderr. Docker
 captures stderr verbatim; promtail scrapes the container log stream and
-Loki indexes the records under the `service=sindireceita-backup` label.
+Loki indexes the records under the `service=lmhost-backup` label.
 Filter by stage to debug a slow or failing run:
 
 ```logql
 # Loki / Grafana query
 {compose_service="backup"} | logfmt
-  | service="sindireceita-backup"
+  | service="lmhost-backup"
   | line_format "{{.ts}} {{.level}} {{.stage}} {{.status}}"
 ```
 
 Record shape (one line per record):
 
 ```text
-ts=2026-05-21T03:15:01Z level=info  service=sindireceita-backup stage=start    bootstrap=… min_bytes=… last_bytes=… target=s3://…
-ts=2026-05-21T03:15:02Z level=info  service=sindireceita-backup stage=pg_dump  status=ok dur_ms=… bytes=…
-ts=2026-05-21T03:15:03Z level=info  service=sindireceita-backup stage=encrypt  status=ok dur_ms=… bytes=…
-ts=2026-05-21T03:15:08Z level=info  service=sindireceita-backup stage=upload   status=ok dur_ms=… bytes=…
-ts=2026-05-21T03:15:09Z level=info  service=sindireceita-backup stage=verify   status=ok dur_ms=… bytes=…
-ts=2026-05-21T03:15:09Z level=info  service=sindireceita-backup stage=done     status=ok bytes=… dump_bytes=… target=s3://…
+ts=2026-05-21T03:15:01Z level=info  service=lmhost-backup stage=start    bootstrap=… min_bytes=… last_bytes=… target=s3://…
+ts=2026-05-21T03:15:02Z level=info  service=lmhost-backup stage=pg_dump  status=ok dur_ms=… bytes=…
+ts=2026-05-21T03:15:03Z level=info  service=lmhost-backup stage=encrypt  status=ok dur_ms=… bytes=…
+ts=2026-05-21T03:15:08Z level=info  service=lmhost-backup stage=upload   status=ok dur_ms=… bytes=…
+ts=2026-05-21T03:15:09Z level=info  service=lmhost-backup stage=verify   status=ok dur_ms=… bytes=…
+ts=2026-05-21T03:15:09Z level=info  service=lmhost-backup stage=done     status=ok bytes=… dump_bytes=… target=s3://…
 ```
 
 Failures land at `level=err` with a `reason=…` field; alert on
-`level=err` filtered to `service=sindireceita-backup`. Secrets
+`level=err` filtered to `service=lmhost-backup`. Secrets
 (`DATABASE_URL`, `AWS_*`, dump content) are intentionally never echoed —
 the log surface is metadata only, enforced by
 `scripts/tests/backup_test.sh::test_database_url_not_logged` and
@@ -233,8 +267,8 @@ threshold is dynamic:
   `bootstrap=true`.
 - **Steady state:** `min_bytes = max(1 MiB, 10% of last successful
   dump_bytes)`. The script reads `dump_bytes` from
-  `/var/lib/sindireceita/backup-last-success.json` (the
-  `sindireceita-backup-state` named docker volume; defined in
+  `/var/lib/lmhost/backup-last-success.json` (the
+  `lmhost-backup-state` named docker volume; defined in
   `deploy/compose/compose.stg.yml`).
 
 The state file is written via atomic rename only after every stage —
@@ -248,7 +282,7 @@ schema purge that legitimately shrinks the dump), wipe the named volume
 on the backup host:
 
 ```bash
-sudo -u crm-deploy docker volume rm crm-stg_sindireceita-backup-state
+sudo -u crm-deploy docker volume rm crm-stg_lmhost-backup-state
 # The volume is recreated empty on the next compose up; the next run logs
 # bootstrap=true again.
 sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
@@ -273,7 +307,7 @@ operator runs ad-hoc during incident response.
 # succeeds without sudo. The private key is bind-mounted read-only.
 #
 # --user 0:0 is REQUIRED. The sidecar image runs as nobody (UID 65534)
-# by default; the host-side key is `0440 root:sindireceita-backup`, and
+# by default; the host-side key is `0440 root:lmhost-backup`, and
 # bind mounts preserve host UID/GID — nobody cannot read it. Running the
 # restore container as root inside the namespace lets it read the
 # bind-mounted key. The container still has `read_only: true`, `cap_drop:
@@ -290,11 +324,11 @@ sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
   --env-file /opt/crm/stg/.env.stg \
   run --rm \
     --user 0:0 \
-    -v /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro \
-    -e BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key \
+    -v /etc/lmhost/age-backup.key:/etc/lmhost/age-backup.key:ro \
+    -e BACKUP_AGE_KEY=/etc/lmhost/age-backup.key \
     -e PGHOST=postgres \
     -e PGPORT=5432 \
-    -e PGDATABASE=sindireceita_drill \
+    -e PGDATABASE=lmhost_drill \
     -e PGUSER=drill \
     -e PGPASSWORD="$DRILL_PASSWORD" \
     -e RESTORE_VERIFY_SQL='select count(*) from users' \
@@ -350,7 +384,7 @@ the recipients file and encrypts to all of them.
 
 1. **On the host with sudo**, generate the new keypair:
    ```bash
-   sudo BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key.new \
+   sudo BACKUP_AGE_KEY=/etc/lmhost/age-backup.key.new \
      ./scripts/generate-backup-key.sh
    ```
 2. **Append** the new public key as a second line in `infra/age-backup.pub`
@@ -360,7 +394,7 @@ the recipients file and encrypts to all of them.
 3. SOPS-encrypt the new private key:
    ```bash
    sudo sops --encrypt --age "$SOPS_AGE_RECIPIENT" \
-        /etc/sindireceita/age-backup.key.new \
+        /etc/lmhost/age-backup.key.new \
         > infra/sops/age-backup.key.enc.new
    git mv infra/sops/age-backup.key.enc.new infra/sops/age-backup.key.enc
    ```
@@ -373,8 +407,8 @@ the recipients file and encrypts to all of them.
    sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
      --env-file /opt/crm/stg/.env.stg run --rm \
        --user 0:0 \
-       -v /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro \
-       -e BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key \
+       -v /etc/lmhost/age-backup.key:/etc/lmhost/age-backup.key:ro \
+       -e BACKUP_AGE_KEY=/etc/lmhost/age-backup.key \
        -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE=scratch \
        -e PGUSER=drill -e PGPASSWORD="$DRILL_PASSWORD" \
        backup /usr/local/bin/backup-restore.sh
@@ -383,8 +417,8 @@ the recipients file and encrypts to all of them.
    sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
      --env-file /opt/crm/stg/.env.stg run --rm \
        --user 0:0 \
-       -v /etc/sindireceita/age-backup.key.new:/etc/sindireceita/age-backup.key:ro \
-       -e BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key \
+       -v /etc/lmhost/age-backup.key.new:/etc/lmhost/age-backup.key:ro \
+       -e BACKUP_AGE_KEY=/etc/lmhost/age-backup.key \
        -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE=scratch \
        -e PGUSER=drill -e PGPASSWORD="$DRILL_PASSWORD" \
        backup /usr/local/bin/backup-restore.sh
@@ -392,9 +426,9 @@ the recipients file and encrypts to all of them.
 6. **One retention window later**, when every dump in the bucket can be
    decrypted by the new key alone, swap atomically and drop the old line:
    ```bash
-   sudo install -m 0440 -o root -g sindireceita-backup \
-        /etc/sindireceita/age-backup.key.new /etc/sindireceita/age-backup.key
-   sudo rm /etc/sindireceita/age-backup.key.new
+   sudo install -m 0440 -o root -g lmhost-backup \
+        /etc/lmhost/age-backup.key.new /etc/lmhost/age-backup.key
+   sudo rm /etc/lmhost/age-backup.key.new
    ```
    Edit `infra/age-backup.pub` to remove the old recipient line; commit;
    re-trigger `build-backup-image.yml`; bump `BACKUP_IMAGE=` to the new
@@ -436,7 +470,7 @@ options — and is the same for every host:
   located outside the primary residence. See § Chave perdida for the
   retrieval procedure. Trusted-party identity is captured operationally
   with the placeholder `<TBD: Pericles preenche antes de Fase 4 prod cutoff>`.
-- **4-eyes:** not satisfied by design — Sindireceita is a single-founder
+- **4-eyes:** not satisfied by design — LMHost is a single-founder
   org during Fase 0–4. The formal multi-person procedure activates when
   a 2ª pessoa-chave is hired (see § Offboarding).
 
@@ -499,7 +533,7 @@ Retrieval procedure (B1):
 7. `shred -u` the temp file, prepare a fresh sealed envelope, and rotate
    to a new trusted-party hand-off slot before closing the incident.
 
-> **4-eyes is not satisfied by design** in Fase 0–4 — Sindireceita is a
+> **4-eyes is not satisfied by design** in Fase 0–4 — LMHost is a
 > single-founder org. The formal multi-person retrieval procedure
 > activates when a 2ª pessoa-chave is hired; see § Offboarding for the
 > activation trigger.
@@ -585,7 +619,7 @@ When activated (i.e. once the org has at least two key custodians):
 |--------|------------|
 | AWS/B2 credential leak | yes — attacker downloads ciphertext only |
 | Backup container compromised | partial — attacker has process access to the running sidecar, but the private age key is NOT mounted into the scheduled service. Compromise can stop new backups (denial), but cannot decrypt any past dump. Restore-drill invocations expose the key only for the duration of that one ad-hoc container. |
-| Backup host compromised | partial — attacker can read `/etc/sindireceita/age-backup.key` (perms `0440 root:sindireceita-backup`); rotate + revoke immediately. |
+| Backup host compromised | partial — attacker can read `/etc/lmhost/age-backup.key` (perms `0440 root:lmhost-backup`); rotate + revoke immediately. |
 | Repo credentials leaked (commit access) | yes — only ciphertext + public placeholder + SOPS-encrypted private key in git |
 | SOPS recipient key compromised | partial — attacker can decrypt the SOPS file *if* they also have repo read access; rotate both |
 | Tampering with stored dump | yes — age v1+ MACs the payload (HMAC-SHA-256). `pg_restore` fails if even one byte is flipped. |

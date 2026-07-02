@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Bootstrap and rotate the Sindireceita backup encryption key.
+# Bootstrap and rotate the LMHost backup encryption key.
 #
 # Run on the BACKUP HOST only. Writes the private key to
-# /etc/sindireceita/age-backup.key with mode 0440 and ownership
-# root:sindireceita-backup, so the dedicated backup-service group can read
+# /etc/lmhost/age-backup.key with mode 0440 and ownership
+# root:lmhost-backup, so the dedicated backup-service group can read
 # the key during the restore drill but no other local user can. The operator
 # copies the public key into infra/age-backup.pub (commit it) and
 # SOPS-encrypts the private key into infra/sops/age-backup.key.enc.
@@ -19,9 +19,9 @@ shopt -s inherit_errexit
 log() { printf '[generate-backup-key.sh] %s %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
 fail() { log "ERROR: $*"; exit 1; }
 
-key_path=${BACKUP_AGE_KEY:-/etc/sindireceita/age-backup.key}
+key_path=${BACKUP_AGE_KEY:-/etc/lmhost/age-backup.key}
 key_dir=$(dirname -- "$key_path")
-key_group=${BACKUP_AGE_GROUP:-sindireceita-backup}
+key_group=${BACKUP_AGE_GROUP:-lmhost-backup}
 
 if [[ -e "$key_path" ]]; then
   fail "$key_path already exists; refusing to overwrite. Rotate via the runbook (docs/operations/backup-restore.md)."

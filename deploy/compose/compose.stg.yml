@@ -34,7 +34,7 @@ volumes:
   # (LAST_SUCCESS_FLOOR_FRACTION_PCT) has prior-day data to compare against.
   # Named volume so the state survives image upgrades (ephemeral image,
   # durable state — matches the same pattern postgres-data uses).
-  sindireceita-backup-state: {}
+  lmhost-backup-state: {}
 
 x-healthdefaults: &hd
   interval: 5s
@@ -216,18 +216,43 @@ services:
   # The private age key lives offline (cofre fisico + SOPS-encrypted blob at
   # infra/sops/age-backup.key.enc). The scheduled service NEVER mounts the
   # private key — only the manual restore-drill invocation does, via
-  # `docker compose run --rm -v /etc/sindireceita/age-backup.key:...:ro backup
+  # `docker compose run --rm -v /etc/lmhost/age-backup.key:...:ro backup
   # /usr/local/bin/restore-drill.sh`. This preserves the legacy
-  # `InaccessiblePaths=/etc/sindireceita/age-backup.key` invariant and is
+  # `InaccessiblePaths=/etc/lmhost/age-backup.key` invariant and is
   # enforced by internal/backup.TestComposeBackupSidecarDeniesPrivateKey.
   backup:
+    # SIN-66535 — opt-in sidecar. The backup feature is NOT installed on every
+    # host (no key/group/volume/BACKUP_IMAGE bootstrapped yet), so this service
+    # is guarded behind the `backup` compose profile and is EXCLUDED from the
+    # default `docker compose up` on hosts where backups have never been
+    # provisioned. Bring the sidecar up explicitly with
+    # `docker compose --profile backup up -d` (or `COMPOSE_PROFILES=backup`)
+    # once the first-install steps in docs/operations/backup-restore.md are
+    # done. A `docker compose run --rm backup ...` invocation auto-enables the
+    # profile for that one-shot, so the restore drill is unaffected.
+    #
+    # NOTE the profile is NECESSARY but not SUFFICIENT to keep a default `up`
+    # from erroring: Compose interpolates the whole file before applying
+    # profiles, so the image below also uses the soft `${BACKUP_IMAGE:-…}`
+    # default rather than the mandatory `:?` form (see the image comment).
+    profiles: ["backup"]
     # BACKUP_IMAGE is bootstrapped once into /opt/crm/stg/.env.stg after the
     # first `.github/workflows/build-backup-image.yml` run publishes the
     # initial digest to GHCR. Subsequent bumps follow the same model
     # documented in docs/deploy/staging.md → "Bumping infra image digests"
     # (PR-reviewed inline edit). Format MUST be:
     #   BACKUP_IMAGE=ghcr.io/pericles-luz/crm-backup@sha256:<64 hex>
-    image: ${BACKUP_IMAGE:?BACKUP_IMAGE must be ghcr.io/pericles-luz/crm-backup@sha256:<digest>}
+    #
+    # SIN-66535 — this uses the `${VAR:-default}` (soft) form, NOT `${VAR:?err}`
+    # (mandatory). Compose v2 interpolates the WHOLE document before profile
+    # filtering drops profile-excluded services, so a `:?` here would still
+    # hard-fail a default `docker compose up` even though the `backup` service
+    # is behind `profiles: ["backup"]`. The soft default keeps the default `up`
+    # from erroring; the placeholder tag does not exist in GHCR, so an operator
+    # who activates `--profile backup up` WITHOUT bootstrapping BACKUP_IMAGE in
+    # .env.stg still fails loud at image pull (manifest not found) — never a
+    # silent wrong image.
+    image: ${BACKUP_IMAGE:-ghcr.io/pericles-luz/crm-backup:SET-BACKUP_IMAGE-IN-ENV-STG}
     restart: unless-stopped
     networks: [crm]
     # Run as nobody:nobody (65534:65534). Maps to legacy
@@ -268,13 +293,13 @@ services:
       # S3 / Backblaze B2 bucket name. AWS credentials and AWS_ENDPOINT_URL
       # come from `.env.stg` (env_file above).
       BACKUP_BUCKET: ${BACKUP_BUCKET:?BACKUP_BUCKET not set in /opt/crm/stg/.env.stg}
-      BACKUP_AGE_RECIPIENTS: /opt/sindireceita/infra/age-backup.pub
+      BACKUP_AGE_RECIPIENTS: /opt/lmhost/infra/age-backup.pub
       BACKUP_NODE_ID: ${BACKUP_NODE_ID:-stg}
-      BACKUP_STATE_DIR: /var/lib/sindireceita
+      BACKUP_STATE_DIR: /var/lib/lmhost
     volumes:
       # Backup-state durability across image upgrades. The script writes
       # backup-last-success.json here for the size-threshold check.
-      - sindireceita-backup-state:/var/lib/sindireceita
+      - lmhost-backup-state:/var/lib/lmhost
     depends_on:
       postgres: { condition: service_healthy }
 
