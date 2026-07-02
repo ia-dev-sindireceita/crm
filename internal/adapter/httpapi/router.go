@@ -421,6 +421,24 @@ type Deps struct {
 	//   GET    /c/{slug}
 	WebCampaignPublic http.Handler
 
+	// WebInvite is the SIN-66510 public invite / set-password surface
+	// from internal/web/invite. Mounted inside the tenanted group BUT
+	// outside the authed sub-group — the credential token in the URL IS
+	// the authentication, so there is no session; middleware.TenantScope
+	// resolves the tenant from Host so the credential lookup runs inside
+	// the tenant's RLS envelope. The wire in cmd/server/invite_wire.go
+	// pre-wraps the handler with a per-IP + per-token-prefix rate limit
+	// (G6), so the slot here is the already-throttled http.Handler.
+	//
+	// Nil keeps /invite/{token} unmounted; cmd/server passes nil when
+	// DATABASE_URL or REDIS_URL is unset so partial-stack boots stay
+	// green.
+	//
+	// Routes mounted:
+	//   GET    /invite/{token}
+	//   POST   /invite/{token}
+	WebInvite http.Handler
+
 	// WebChat is the SIN-64972 public webchat widget surface from
 	// internal/adapter/channels/webchat (ADR-0021). Mounted inside the
 	// tenanted group BUT outside the authed sub-group: the visitor is
@@ -977,6 +995,20 @@ func NewRouter(deps Deps) http.Handler {
 		// cmd/server/campaigns_public_wire.go.
 		if deps.WebCampaignPublic != nil {
 			tenanted.Method(http.MethodGet, "/c/{slug}", deps.WebCampaignPublic)
+		}
+
+		// SIN-66510 — public invite / set-password page. Mounted inside
+		// the tenanted group so middleware.TenantScope resolves the Host
+		// to a Tenant BEFORE the handler runs (the credential lookup then
+		// runs inside that tenant's RLS envelope); outside the authed
+		// sub-group because the token IS the credential — there is no
+		// session yet. deps.WebInvite re-dispatches GET vs POST on the
+		// exact method+path it registered, so both routes share one slot.
+		// The wire pre-wraps it with the per-IP + per-token-prefix rate
+		// limit (G6).
+		if deps.WebInvite != nil {
+			tenanted.Method(http.MethodGet, "/invite/{token}", deps.WebInvite)
+			tenanted.Method(http.MethodPost, "/invite/{token}", deps.WebInvite)
 		}
 
 		// SIN-63191 / Fase 6 PR4 — public LGPD-disclosure page.
