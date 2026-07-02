@@ -224,6 +224,25 @@ var iamRoutes = []string{
 	// branding and SIN-64973 ai-policy mounts above.
 	"/dashboard",
 	"/dashboard/",
+	// SIN-66550 (fix SIN-66551) — HTMX PIX-invoice surface (gerente). The
+	// handler is registered inside the chi authed/tenanted group (router.go:
+	// GET /billing/invoices[/{id}[/status]] + /billing/dunning-banner, guarded
+	// by RequireAction(ActionTenantBillingView)) but the prefixes were never
+	// added here, so the stdlib mux dispatched every /billing* request to the
+	// custom-domain catch-all at "/" instead of chi → raw 404 in staging even
+	// though the nav <a href> renders. "/billing/invoices" matches the invoice
+	// GETs; "/billing/" covers /billing/dunning-banner. Identical defect + fix
+	// to the SIN-64975 branding and SIN-65576 dashboard mounts above.
+	"/billing/invoices",
+	"/billing/",
+	// SIN-66550 (fix SIN-66551) — SIN-63942 gerente wallet UI. The handler is
+	// registered inside the chi authed/tenanted group (router.go: GET /wallet +
+	// /wallet/topup|ledger|ledger.csv, guarded by
+	// RequireAction(ActionTenantWalletViewLedger)) but the prefixes were absent
+	// here → 404 through the same custom-domain catch-all path. "/wallet"
+	// matches the root GET; "/wallet/" covers the nested topup/ledger routes.
+	"/wallet",
+	"/wallet/",
 	"/m/",
 	// SIN-63957 — master tenants + grants surface (Fase 2.5 C9/C10 +
 	// SIN-63605 + SIN-63958 impersonation). The "/master/" subtree
