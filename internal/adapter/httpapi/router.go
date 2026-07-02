@@ -766,6 +766,11 @@ func (d Deps) WebSurfaces() map[string]bool {
 		// CTO Rule-3 authorization to update the three router_surfaces_test
 		// pins; mirrors the gate on the mount below (deps.WebChannels != nil).
 		"channels": d.WebChannels != nil,
+		// SIN-66508 — tenant user-management admin surface
+		// (/settings/users, shipped by SIN-66496). Added to the inventory
+		// under CTO Rule-3 authorization to update the router_surfaces_test
+		// pins; mirrors the gate on the mount below (deps.WebUsers != nil).
+		"users": d.WebUsers != nil,
 	}
 }
 
