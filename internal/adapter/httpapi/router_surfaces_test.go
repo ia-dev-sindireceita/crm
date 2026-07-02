@@ -37,6 +37,9 @@ var allSurfaceKeys = []string{
 	// SIN-66391 / P2 — multi-channel-per-tenant admin surface
 	// (/settings/channels), inventoried in SIN-66403.
 	"channels",
+	// SIN-66508 — tenant user-management admin surface
+	// (/settings/users, shipped by SIN-66496).
+	"users",
 }
 
 func TestDeps_WebSurfaces_KeySet(t *testing.T) {
@@ -90,6 +93,7 @@ func TestDeps_WebSurfaces_PresentHandlersTrue(t *testing.T) {
 		WebBillingInvoices: stubHandler,
 		WebWASession:       stubHandler,
 		WebChannels:        stubHandler,
+		WebUsers:           stubHandler,
 	}
 	got := deps.WebSurfaces()
 	if len(got) != len(allSurfaceKeys) {
