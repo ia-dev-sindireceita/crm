@@ -12,12 +12,12 @@ dumps pulled from S3/B2.
 ```bash
 # Encrypt (run on the backup host once after generate-backup-key.sh):
 sops --encrypt --age "$SOPS_AGE_RECIPIENT" \
-     /etc/sindireceita/age-backup.key \
+     /etc/lmhost/age-backup.key \
      > infra/sops/age-backup.key.enc
 
 # Decrypt (CI / disaster recovery only — backup host already has the cleartext):
-sops --decrypt infra/sops/age-backup.key.enc > /etc/sindireceita/age-backup.key
-chmod 0400 /etc/sindireceita/age-backup.key
+sops --decrypt infra/sops/age-backup.key.enc > /etc/lmhost/age-backup.key
+chmod 0400 /etc/lmhost/age-backup.key
 ```
 
 `SOPS_AGE_RECIPIENT` is the public key of a *separate* SOPS keypair (NOT the
@@ -37,7 +37,7 @@ SOPS keypair via the secret-store runbook in `docs/operations/secrets.md` (Fase 
 ## Why two layers?
 
 - **Backup recipient key** (`infra/age-backup.pub`) encrypts the dumps. Lives
-  on the backup host as `/etc/sindireceita/age-backup.key`. The committed
+  on the backup host as `/etc/lmhost/age-backup.key`. The committed
   copy is a non-functional placeholder; the real recipient is host-local.
 - **SOPS recipient key** encrypts the backup recipient *private key* in this
   file so it can be redistributed to a fresh backup host without out-of-band

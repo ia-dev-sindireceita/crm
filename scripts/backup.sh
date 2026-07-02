@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Encrypted Postgres backup for Sindireceita.
+# Encrypted Postgres backup for LMHost.
 #
 # Pipeline: pg_dump (custom format) -> age (X25519 recipient) -> aws s3 cp.
 # The dump is encrypted client-side BEFORE it ever touches the bucket so a
@@ -20,10 +20,10 @@
 # Optional env:
 #   BACKUP_AGE_RECIPIENTS  recipients file (default: infra/age-backup.pub
 #                          baked into the sidecar image at
-#                          /opt/sindireceita/infra/age-backup.pub).
+#                          /opt/lmhost/infra/age-backup.pub).
 #   BACKUP_PREFIX          object key prefix (default: empty -> dated dir).
 #   BACKUP_NODE_ID         per-host segregation (default: hostname -s).
-#   BACKUP_STATE_DIR       state directory (default: /var/lib/sindireceita).
+#   BACKUP_STATE_DIR       state directory (default: /var/lib/lmhost).
 #   BACKUP_TMPDIR          where to stage the dump + ciphertext
 #                          (default: $TMPDIR or /tmp).
 #   AWS_ENDPOINT_URL       custom S3 endpoint (e.g. Backblaze B2).
@@ -49,7 +49,7 @@ set -Eeuo pipefail
 set -o errtrace
 shopt -s inherit_errexit
 
-readonly LOG_TAG="sindireceita-backup"
+readonly LOG_TAG="lmhost-backup"
 readonly MIN_BYTES_FLOOR=$((1 * 1024 * 1024))      # 1 MiB
 readonly LAST_SUCCESS_FLOOR_FRACTION_PCT=10        # 10% of last success
 
@@ -138,7 +138,7 @@ node_id=${BACKUP_NODE_ID:-$(hostname -s)}
 object="${prefix:+$prefix/}$date_dir/$node_id/dump.pgc.age"
 target="s3://${BACKUP_BUCKET}/${object}"
 
-state_dir=${BACKUP_STATE_DIR:-/var/lib/sindireceita}
+state_dir=${BACKUP_STATE_DIR:-/var/lib/lmhost}
 state_file="$state_dir/backup-last-success.json"
 last_bytes=$(read_last_dump_bytes "$state_file")
 [[ "$last_bytes" =~ ^[0-9]+$ ]] || last_bytes=0
@@ -159,7 +159,7 @@ if [[ -n "${AWS_ENDPOINT_URL:-}" ]]; then
 fi
 
 tmp_root=${BACKUP_TMPDIR:-${TMPDIR:-/tmp}}
-tmp_dump=$(mktemp "$tmp_root/sindireceita-dump.XXXXXX.pgc")
+tmp_dump=$(mktemp "$tmp_root/lmhost-dump.XXXXXX.pgc")
 tmp_enc="${tmp_dump}.age"
 
 sblog info "stage=start bootstrap=${bootstrap} min_bytes=${min_size} last_bytes=${last_bytes} target=${target}"

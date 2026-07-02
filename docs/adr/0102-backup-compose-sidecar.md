@@ -122,9 +122,9 @@ scheduled sidecar service. It is invoked manually:
 ```bash
 docker compose run --rm \
   --user 0:0 \
-  -v /etc/sindireceita/age-backup.key:/etc/sindireceita/age-backup.key:ro \
-  --env BACKUP_AGE_KEY=/etc/sindireceita/age-backup.key \
-  --env PGHOST=postgres --env PGDATABASE=sindireceita_drill \
+  -v /etc/lmhost/age-backup.key:/etc/lmhost/age-backup.key:ro \
+  --env BACKUP_AGE_KEY=/etc/lmhost/age-backup.key \
+  --env PGHOST=postgres --env PGDATABASE=lmhost_drill \
   --env PGUSER=drill --env PGPASSWORD="$DRILL_PASSWORD" \
   backup /usr/local/bin/backup-restore.sh
 ```
@@ -132,7 +132,7 @@ docker compose run --rm \
 Three invariants here, asserted by tests:
 
 1. `--user 0:0` is required because the bind-mounted host key is
-   `0440 root:sindireceita-backup`; the container's default UID (65534
+   `0440 root:lmhost-backup`; the container's default UID (65534
    / nobody) is not in that group. Running the restore container as root
    inside the namespace reads the file directly. The container still has
    `read_only: true`, `cap_drop: ALL`, `no-new-privileges:true`, and
