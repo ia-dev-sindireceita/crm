@@ -129,6 +129,26 @@ const (
 	SecurityEventChannelAccessGranted     SecurityEvent = "channel.access_granted"
 	SecurityEventChannelAccessRevoked     SecurityEvent = "channel.access_revoked"
 	SecurityEventChannelRestrictedChanged SecurityEvent = "channel.restricted_changed"
+
+	// SIN-66496 (child of SIN-66493): tenant user-management events emitted
+	// by internal/tenantusers via the /settings/users surface. These are
+	// tenant-initiated (run as app_runtime, NOT app_master_ops), so the
+	// master_ops trigger/GUC does NOT apply — actor_user_id is written
+	// explicitly by Go with ActorUserID = session.UserID (SIN-66494 §3).
+	//
+	//   * user_create      — a gerente created a tenant user (invite issued).
+	//   * user_deactivate  — soft-deactivation (desativar-não-deletar).
+	//   * user_reactivate  — a deactivated user was reactivated.
+	//   * password_reset   — an invite/reset token was consumed / password set.
+	//
+	// role changes reuse the existing role_change literal. The CHECK clause in
+	// migration 0132 mirrors these literals — extending the constants requires
+	// extending that migration first. Target jsonb NEVER carries the token,
+	// password, or hash.
+	SecurityEventUserCreate     SecurityEvent = "user_create"
+	SecurityEventUserDeactivate SecurityEvent = "user_deactivate"
+	SecurityEventUserReactivate SecurityEvent = "user_reactivate"
+	SecurityEventPasswordReset  SecurityEvent = "password_reset"
 )
 
 // DataEvent is the controlled vocabulary of audit_log_data rows.
