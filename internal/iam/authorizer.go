@@ -148,6 +148,16 @@ const (
 	// owned by SIN-66392 (P3, SecurityEngineer loop-in) — this action only
 	// guards the management UI.
 	ActionTenantChannelsManage Action = "tenant.channels.manage"
+
+	// SIN-66496 (child of SIN-66493): tenant user management. The whole
+	// /settings/users surface is gerente-only (SIN-66494 G3). Four distinct
+	// actions give per-operation audit granularity; all map to
+	// {RoleTenantGerente} in defaultRolesByAction (deny-by-default for
+	// atendente / common / master-tenant-context).
+	ActionTenantUserList       Action = "tenant.user.list"
+	ActionTenantUserCreate     Action = "tenant.user.create"
+	ActionTenantUserUpdate     Action = "tenant.user.update"
+	ActionTenantUserDeactivate Action = "tenant.user.deactivate"
 )
 
 // ReasonCode is a stable, low-cardinality classifier for the Decision.
@@ -316,6 +326,13 @@ func defaultRolesByAction() map[Action][]Role {
 		// channel instances + per-channel access roster is a tenant-admin
 		// decision).
 		ActionTenantChannelsManage: {RoleTenantGerente},
+
+		// SIN-66496 — tenant user management surface (/settings/users) is
+		// gerente-only (SIN-66494 G3). atendente / common → deny.
+		ActionTenantUserList:       {RoleTenantGerente},
+		ActionTenantUserCreate:     {RoleTenantGerente},
+		ActionTenantUserUpdate:     {RoleTenantGerente},
+		ActionTenantUserDeactivate: {RoleTenantGerente},
 	}
 }
 

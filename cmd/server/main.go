@@ -374,6 +374,12 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	webAIPolicyHandler, webAIPolicyCleanup := buildWebAIPolicyHandler(ctx, getenv)
 	defer webAIPolicyCleanup()
 
+	// SIN-66496 — HTMX tenant user-management admin UI. Same fail-soft
+	// pattern: a nil handler leaves /settings/users* unmounted when the
+	// pgxpool / tenantusers store / audit logger cannot be built.
+	webUsersHandler, webUsersCleanup := buildWebUsersHandler(ctx, getenv)
+	defer webUsersCleanup()
+
 	// SIN-62907 — HTMX catalog admin UI (Fase 3 W4C). Same fail-soft
 	// pattern: nil handler leaves /catalog* unmounted when either the
 	// runtime DSN or MASTER_OPS_DATABASE_URL is missing.
@@ -485,6 +491,7 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 		WebFunnel:          webFunnelHandler,
 		WebPrivacy:         webPrivacyHandler,
 		WebAIPolicy:        webAIPolicyHandler,
+		WebUsers:           webUsersHandler,
 		WebCatalog:         webCatalogHandler,
 		WebChannels:        webChannelsHandler,
 		WebCampaigns:       webCampaignsHandler,
