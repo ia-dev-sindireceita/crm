@@ -185,6 +185,72 @@ func TestTokenContrastDarkAA(t *testing.T) {
 	runContrastCases(t, "dark", dark, cases)
 }
 
+// selectedTabColorTokenPattern extracts the token referenced by the `color:`
+// property of the `.tabs__tab[aria-selected="true"]` rule in components.css.
+// It pins the match to that exact selector block so an unrelated `color:`
+// elsewhere can't satisfy it.
+var selectedTabColorTokenPattern = regexp.MustCompile(
+	`\.tabs__tab\[aria-selected="true"\]\s*\{[^}]*?\bcolor:\s*var\(--([a-z0-9-]+)\)`)
+
+// selectedTabColorToken reads web/static/css/components.css and returns the
+// name of the token used as the selected-tab label color. The tab label is
+// accent-colored TEXT on the tab-bar surface, so whatever token this is MUST
+// clear WCAG AA 1.4.3 on the surfaces the tab bar can sit on. Coupling the
+// guard to the real CSS means reverting the rule to a sub-AA token (e.g. the
+// raw --color-primary that was #6970dd in dark) turns the assertions below
+// RED — SIN-66519.
+func selectedTabColorToken(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(repoRoot(t), "web", "static", "css", "components.css")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read components.css: %v", err)
+	}
+	m := selectedTabColorTokenPattern.FindStringSubmatch(string(raw))
+	if m == nil {
+		t.Fatalf("components.css: could not find `color: var(--…)` in .tabs__tab[aria-selected=\"true\"] rule")
+	}
+	return m[1]
+}
+
+// TestSelectedTabLabelContrastAA guards the accessible contrast of the
+// selected-tab label (.tabs__tab[aria-selected="true"]) in BOTH themes.
+// The tab component has no fill of its own, so the label sits directly on
+// the tab-bar surface — which can be the app background (surface-1) or a
+// card (surface-0). It reads the token the CSS actually uses so the guard
+// tracks the real rule (SIN-66519).
+func TestSelectedTabLabelContrastAA(t *testing.T) {
+	light, dark := loadTokens(t)
+	tok := selectedTabColorToken(t)
+	surfaces := []string{"surface-1", "surface-0"}
+	for _, tc := range []struct {
+		theme  string
+		tokens map[string]string
+	}{
+		{"light", light},
+		{"dark", dark},
+	} {
+		for _, bg := range surfaces {
+			name := "selected-tab " + tok + " on " + bg + " (" + tc.theme + ")"
+			t.Run(name, func(t *testing.T) {
+				fgHex, ok := tc.tokens[tok]
+				if !ok {
+					t.Fatalf("%s theme: selected-tab token --%s not defined in tokens.css", tc.theme, tok)
+				}
+				bgHex, ok := tc.tokens[bg]
+				if !ok {
+					t.Fatalf("%s theme: token --%s not defined in tokens.css", tc.theme, bg)
+				}
+				ratio := hexToRGB(t, fgHex).Contrast(hexToRGB(t, bgHex))
+				if ratio < aaBody {
+					t.Errorf("%s: selected-tab --%s (%s) on --%s (%s) = %.2f:1, want >= %.1f:1 (WCAG AA body)",
+						tc.theme, tok, fgHex, bg, bgHex, ratio, aaBody)
+				}
+			})
+		}
+	}
+}
+
 func runContrastCases(t *testing.T, theme string, tokens map[string]string, cases []contrastCase) {
 	t.Helper()
 	for _, c := range cases {
