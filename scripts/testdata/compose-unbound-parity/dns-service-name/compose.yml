@@ -1,7 +1,8 @@
-# Fixture: catch-all Caddyfile + matching Unbound sidecar + dns pin.
-# SIN-66592 — the dns pin is unbound's static ipv4_address (an IP literal),
-# not the service name. The lint must exit 0.
-name: ok-fixture
+# Fixture: catch-all Caddyfile + unbound sidecar present, but caddy pins
+# its resolver to the SERVICE NAME (`dns: ["unbound"]`) instead of an IP
+# literal. This is the exact SIN-66592 deploy crash — docker cannot write
+# a service name into /etc/resolv.conf. The lint must catch it: exit 1.
+name: dns-service-name-fixture
 
 networks:
   crm:
@@ -25,7 +26,7 @@ services:
   caddy:
     image: caddy:2-alpine
     networks: [crm]
-    dns: ["172.29.0.53"]
+    dns: ["unbound"]
     volumes:
       - ./caddy:/etc/caddy:ro
     depends_on:

@@ -1,0 +1,14 @@
+# Fixture: catch-all Caddyfile that REQUIRES Unbound parity.
+{
+	on_demand_tls {
+		ask http://app:8081/internal/tls/ask
+		burst 3
+	}
+}
+
+:443 {
+	tls {
+		on_demand
+	}
+	reverse_proxy app:8080
+}
