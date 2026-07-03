@@ -23,6 +23,10 @@ declare -A expected=(
 	[ok]=0
 	[missing-unbound]=1
 	[missing-dns]=1
+	# SIN-66592 — additive case: unbound present but caddy pins the SERVICE
+	# NAME (`dns: ["unbound"]`) instead of an IP literal. The gate must
+	# reject this (the deploy-crash form) → exit 1.
+	[dns-service-name]=1
 )
 
 failures=0
