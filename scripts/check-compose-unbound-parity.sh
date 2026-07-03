@@ -3,7 +3,15 @@
 #
 # Asserts: any compose*.yml whose active Caddyfile turns on the
 # `on_demand_tls` custom-domain catch-all MUST also bring up the Unbound
-# sidecar AND pin Caddy's container DNS resolver to it (`dns: ["unbound"]`).
+# sidecar AND pin Caddy's container DNS resolver to its static ipv4_address
+# (`dns: ["<unbound-ip>"]`).
+#
+# SIN-66592 — the pin MUST be an IP literal that equals the unbound
+# service's `ipv4_address`, NOT the service name `"unbound"`. Docker writes
+# `dns:` verbatim as `nameserver <value>` into the container's
+# /etc/resolv.conf, which requires an IP literal; `"unbound"` is
+# unparseable and crashes the container recreate. This gate now rejects the
+# old service-name form and enforces that the pin points at the sidecar.
 #
 # Why: without the sidecar, Caddy resolves HTTP-01 challenge names through
 # the host's /etc/resolv.conf and an attacker-controlled authoritative
@@ -90,8 +98,31 @@ compose_has_unbound_service() {
 	grep -E '^[[:space:]]{2}unbound:[[:space:]]*$' "$f" >/dev/null
 }
 
-# caddy_dns_pinned_to_unbound <compose-file>
-caddy_dns_pinned_to_unbound() {
+# unbound_static_ip <compose-file>
+#
+# Returns the `ipv4_address` assigned to the top-level `unbound:` service
+# (long-form `networks: { <net>: { ipv4_address: X } }`). Empty when the
+# service has no static IP. SIN-66592.
+unbound_static_ip() {
+	local f="$1"
+	awk '
+		/^[[:space:]]{2}unbound:[[:space:]]*$/ { in_u=1; next }
+		in_u && /^[[:space:]]{2}[^[:space:]]/ { in_u=0 }
+		in_u && /ipv4_address:/ {
+			line=$0
+			sub(/^.*ipv4_address:[[:space:]]*/, "", line)
+			gsub(/[[:space:]"'\'']/, "", line)
+			print line
+			exit
+		}
+	' "$f"
+}
+
+# caddy_dns_value <compose-file>
+#
+# Returns the value of the caddy service `dns:` key with brackets, quotes
+# and spaces stripped (e.g. `172.29.0.53`). Empty when absent. SIN-66592.
+caddy_dns_value() {
 	local f="$1"
 	awk '
 		/^[[:space:]]+caddy:[[:space:]]*$/ { in_caddy=1; next }
@@ -99,11 +130,35 @@ caddy_dns_pinned_to_unbound() {
 		in_caddy && /^[[:space:]]+dns:/ {
 			line=$0
 			sub(/^[[:space:]]+dns:[[:space:]]*/, "", line)
-			# Accept any of: ["unbound"], [unbound], "unbound", unbound (single-line forms)
-			if (line ~ /[\["'\'']?unbound[\]"'\'']?/) print "ok"
+			gsub(/[][ "'\'']/, "", line)
+			print line
 			exit
 		}
-	' "$f" | grep -q ok
+	' "$f"
+}
+
+# caddy_dns_pinned_to_unbound <compose-file>
+#
+# SIN-66592 — the caddy `dns:` pin must be an IPv4 literal that equals the
+# unbound sidecar's static ipv4_address. This rejects both the legacy
+# service-name form (`dns: ["unbound"]`, which crashes the container
+# recreate) and any IP that does not actually point at our resolver.
+caddy_dns_pinned_to_unbound() {
+	local f="$1"
+	local ip dns
+	ip=$(unbound_static_ip "$f")
+	dns=$(caddy_dns_value "$f")
+	[[ -n "$dns" ]] || { log "  dns: pin missing"; return 1; }
+	if [[ ! "$dns" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+		log "  dns: pin '${dns}' is not an IPv4 literal (service names crash docker resolv.conf)"
+		return 1
+	fi
+	[[ -n "$ip" ]] || { log "  unbound service has no ipv4_address to pin to"; return 1; }
+	if [[ "$dns" != "$ip" ]]; then
+		log "  dns: pin '${dns}' != unbound ipv4_address '${ip}'"
+		return 1
+	fi
+	return 0
 }
 
 fail=0
@@ -166,7 +221,7 @@ for compose_file in "${files[@]}"; do
 		this_fail=1
 	fi
 	if ! caddy_dns_pinned_to_unbound "$compose_file"; then
-		log "${compose_file}: FAIL — caddy.dns must include 'unbound'"
+		log "${compose_file}: FAIL — caddy.dns must be unbound's static ipv4_address (IP literal, not the service name)"
 		this_fail=1
 	fi
 

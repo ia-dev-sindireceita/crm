@@ -5,7 +5,18 @@
 name: crm
 
 networks:
-  crm: { driver: bridge }
+  # SIN-66592 — static ipam subnet so the unbound sidecar can hold a fixed
+  # ipv4_address (172.29.0.53) that caddy's `dns:` points at. Docker's
+  # `dns:` requires an IP literal in /etc/resolv.conf; a service name like
+  # "unbound" crashes the container recreate. Kept identical to
+  # compose.stg.yml so scripts/check-compose-unbound-parity.sh holds across
+  # both files. The subnet is inside 172.16.0.0/12, which
+  # infra/caddy/unbound.conf's access-control allows.
+  crm:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
 
 volumes:
   postgres-data: {}
@@ -171,12 +182,18 @@ services:
   unbound:
     image: mvance/unbound:latest
     restart: unless-stopped
-    networks: [crm]
+    # SIN-66592 — static ipv4_address so caddy's `dns:` can point at a fixed
+    # IP literal (see the networks block at the top of this file).
+    networks:
+      crm:
+        ipv4_address: 172.29.0.53
     volumes:
       - ../../infra/caddy/unbound.conf:/opt/unbound/etc/unbound/a-records.conf:ro
     healthcheck:
+      # SIN-66592 — probe :53 (the resolv.conf leg caddy's `dns:` queries).
+      # The same process still answers :5353 for the tls.resolvers callers.
       <<: *hd
-      test: ["CMD", "drill", "@127.0.0.1", "-p", "5353", "example.com"]
+      test: ["CMD", "drill", "@127.0.0.1", "-p", "53", "example.com"]
 
   # [SIN-62788] F2-05 — ClamAV daemon used by the mediascan worker.
   # The freshclam sidecar (below) keeps signatures fresh; clamd itself
@@ -356,7 +373,12 @@ services:
     # Unbound sidecar. This catches HTTP-01 challenge name resolution,
     # which goes through the OS resolver (not Caddy's `tls.resolvers`
     # block, which only covers DNS-01 plugin lookups).
-    dns: ["unbound"]
+    #
+    # SIN-66592 — MUST be unbound's static ipv4_address, not the service
+    # name: docker writes it verbatim as `nameserver <value>` into
+    # /etc/resolv.conf, which requires an IP literal. unbound answers on
+    # :53 at this address.
+    dns: ["172.29.0.53"]
     environment:
       # Fase 6 default ([SIN-63218](/SIN/issues/SIN-63218)): 1 year (31536000s)
       # — the minimum the browser HSTS preload list accepts. Operators MAY
