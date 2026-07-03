@@ -316,7 +316,15 @@ services:
     env_file: .env
     environment:
       TZ: ${BACKUP_TZ:-America/Sao_Paulo}
-      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # SIN-66566: parity with stg — prefer the dedicated read-only backup role
+      # DSN (BACKUP_DATABASE_URL → app_backup: BYPASSRLS + pg_read_all_data,
+      # migration 0133) so pg_dump can read the whole RLS schema, falling back
+      # to the app-role DSN when unset. Only the backup service changes.
+      DATABASE_URL: ${BACKUP_DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # SIN-66566: bootstrap size floor passthrough (empty default → the
+      # script's own 1 MiB default). Dev dumps are tiny too, so a dev may lower
+      # it via .env; documented at the service boundary.
+      BACKUP_MIN_BYTES_FLOOR: ${BACKUP_MIN_BYTES_FLOOR:-}
       # Dev default bucket points at the local MinIO instance.
       BACKUP_BUCKET: ${BACKUP_BUCKET:-lmhost-backup-dev}
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-http://minio:9000}

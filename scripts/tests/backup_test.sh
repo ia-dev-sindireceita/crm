@@ -298,6 +298,9 @@ clear_test_env() {
   unset BACKUP_TEST_AWS_CP_EXIT BACKUP_TEST_AWS_CP_DROP
   unset BACKUP_TEST_AWS_HEAD_EXIT BACKUP_TEST_AWS_HEAD_OVERRIDE_BYTES
   unset BACKUP_TEST_HOSTNAME
+  # SIN-66566: the env-overridable bootstrap floor. Cleared between tests so a
+  # value set by one case never leaks into the default-floor assertions.
+  unset BACKUP_MIN_BYTES_FLOOR
 }
 
 # -----------------------------------------------------------------------------
@@ -333,6 +336,46 @@ test_pg_dump_silent_truncation() {
   assert_true "log_has_level err 'stage=pg_dump status=fail'" "pg_dump fail log" || return 1
   assert_true "log_has 'size-below-threshold'" "size-below-threshold reason"     || return 1
   assert_false "[[ -f \"$STATE_DIR/backup-last-success.json\" ]]" "state file NOT written on failure" || return 1
+}
+
+# SIN-66566: the SAME 4 KiB dump that trips the default 1 MiB floor above must
+# now SUCCEED when BACKUP_MIN_BYTES_FLOOR lowers the floor beneath it — this is
+# the staging case (complete dump ~682 KB < 1 MiB). Proves the override reaches
+# the size guard and only relaxes the floor, leaving the rest of the pipeline
+# (encrypt→upload→verify→state) intact.
+test_min_bytes_floor_override_allows_small_dump() {
+  clear_test_env
+  stage_env
+  trap teardown_env RETURN
+  export BACKUP_TEST_PG_DUMP_BYTES=4096   # 4 KiB — below the 1 MiB default
+  export BACKUP_TEST_PG_DUMP_EXIT=0
+  export BACKUP_MIN_BYTES_FLOOR=1024      # lower the floor to 1 KiB
+  run_backup
+  assert_eq "$RC" 0 "exit code"                                             || return 1
+  assert_true "log_has_level info 'stage=done status=ok'" "done log line"   || return 1
+  assert_true "log_has 'min_bytes=1024'" "overridden floor logged"          || return 1
+  assert_true "[[ -f \"$STATE_DIR/backup-last-success.json\" ]]" "state file written" || return 1
+  assert_false "log_has 'size-below-threshold'" "no size failure with lowered floor" || return 1
+}
+
+# SIN-66566: a non-integer BACKUP_MIN_BYTES_FLOOR is an operator
+# misconfiguration and must abort at preflight — BEFORE pg_dump runs — with a
+# structured failure, never a bare bash arithmetic error mid-pipeline.
+test_min_bytes_floor_non_integer_rejected() {
+  clear_test_env
+  stage_env
+  trap teardown_env RETURN
+  export BACKUP_TEST_PG_DUMP_BYTES=$((2 * 1024 * 1024))
+  export BACKUP_TEST_PG_DUMP_EXIT=0
+  export BACKUP_MIN_BYTES_FLOOR="not-a-number"
+  run_backup
+  assert_true "(( RC != 0 ))" "exit non-zero"                                     || return 1
+  assert_true "log_has_level err 'stage=preflight status=fail'" "preflight fail log" || return 1
+  assert_true "log_has 'BACKUP_MIN_BYTES_FLOOR must be a positive integer'" "reason logged" || return 1
+  # Preflight aborts before the pipeline, so no success state is ever written
+  # and no stage=start / stage=done line is emitted.
+  assert_false "[[ -f \"$STATE_DIR/backup-last-success.json\" ]]" "no state on preflight failure" || return 1
+  assert_false "log_has 'stage=start'" "pipeline never started" || return 1
 }
 
 test_pg_dump_exit_nonzero() {
@@ -511,6 +554,8 @@ main() {
 
   run_test "golden bootstrap (no state file)"             test_golden_bootstrap
   run_test "pg_dump silent truncation below 1 MiB floor"  test_pg_dump_silent_truncation
+  run_test "min-bytes floor override allows small dump"   test_min_bytes_floor_override_allows_small_dump
+  run_test "min-bytes floor non-integer rejected"         test_min_bytes_floor_non_integer_rejected
   run_test "pg_dump exits non-zero"                       test_pg_dump_exit_nonzero
   run_test "age encrypt fails"                            test_encrypt_failure
   run_test "aws s3 cp fails"                              test_upload_failure
