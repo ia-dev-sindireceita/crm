@@ -310,9 +310,11 @@ if [[ "${VERB}" == "migrate-up" ]]; then
   # shellcheck disable=SC2064  # we want $workdir captured at trap-install time
   trap "rm -rf '${workdir}'" EXIT
   carrier="$(docker create "${NEW_IMAGE}")"
+  # shellcheck disable=SC2064  # capture ${workdir}/${carrier} at trap-install time
   trap "rm -rf '${workdir}'; docker rm -f '${carrier}' >/dev/null 2>&1 || true" EXIT
   docker cp "${carrier}:/migrations" "${workdir}/migrations"
   docker rm -f "${carrier}" >/dev/null
+  # shellcheck disable=SC2064  # capture ${workdir} at trap-install time
   trap "rm -rf '${workdir}'" EXIT
   if [[ ! -d "${workdir}/migrations" ]] || [[ -z "$(ls -A "${workdir}/migrations" 2>/dev/null)" ]]; then
     echo "stg-deploy: /migrations missing or empty inside ${NEW_IMAGE}" >&2
