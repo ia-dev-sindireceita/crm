@@ -286,10 +286,24 @@ services:
       # crontab fires at America/Sao_Paulo 03:15 (matching the legacy
       # `OnCalendar=*-*-* 03:15:00 America/Sao_Paulo`).
       TZ: ${BACKUP_TZ:-America/Sao_Paulo}
-      # DATABASE_URL composed against the in-network postgres service, same
-      # as the app's. The script connects to postgres:5432 via the crm
-      # bridge; no host port is required.
-      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # DATABASE_URL composed against the in-network postgres service. The
+      # script connects to postgres:5432 via the crm bridge; no host port is
+      # required.
+      #
+      # SIN-66566: the backup service prefers BACKUP_DATABASE_URL — a dedicated
+      # read-only role (app_backup: BYPASSRLS + pg_read_all_data, migration
+      # 0133) — so pg_dump can read the whole 191-RLS-policy schema. The app
+      # role (app_runtime, NOBYPASSRLS) cannot and would fail permission-denied
+      # on RLS tables. Falls back to the app-role DSN when BACKUP_DATABASE_URL
+      # is unset (today's behaviour, for hosts not yet migrated). Only this
+      # backup service line changes; the app service keeps ${DATABASE_URL:-…}.
+      DATABASE_URL: ${BACKUP_DATABASE_URL:-postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}
+      # SIN-66566: bootstrap size floor passthrough. Staging's complete dump is
+      # ~682 KB, below the 1 MiB default anti-truncation floor, so .env.stg sets
+      # BACKUP_MIN_BYTES_FLOOR lower. Explicit passthrough (empty default keeps
+      # the script's own 1 MiB default when unset) documents the knob at the
+      # service boundary even though env_file already reaches the container.
+      BACKUP_MIN_BYTES_FLOOR: ${BACKUP_MIN_BYTES_FLOOR:-}
       # S3 / Backblaze B2 bucket name. AWS credentials and AWS_ENDPOINT_URL
       # come from `.env.stg` (env_file above).
       BACKUP_BUCKET: ${BACKUP_BUCKET:?BACKUP_BUCKET not set in /opt/crm/stg/.env.stg}

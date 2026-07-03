@@ -83,7 +83,41 @@ step assumes a shell with `sudo` on the host.
    # Optional TZ override. Default America/Sao_Paulo matches the legacy
    # systemd unit's OnCalendar timing (cron line `15 3 * * *`).
    # BACKUP_TZ=America/Sao_Paulo
+
+   # SIN-66566 — point the sidecar at the DEDICATED read-only backup role
+   # (app_backup: BYPASSRLS + pg_read_all_data, migration 0133) so pg_dump can
+   # read the entire RLS-guarded schema. The app role (app_runtime, NOBYPASSRLS)
+   # CANNOT dump the 191-RLS-policy schema and fails permission-denied. The
+   # password is the one you set with `\password app_backup` (DB-role step
+   # below). If BACKUP_DATABASE_URL is unset, the sidecar falls back to the
+   # app-role DSN — a degraded default that only works where RLS is absent.
+   BACKUP_DATABASE_URL=postgres://app_backup:<password>@postgres:5432/crm?sslmode=disable
+
+   # SIN-66566 — staging's COMPLETE dump is ~682 KB, BELOW the 1 MiB bootstrap
+   # anti-truncation floor, so a fresh install aborts every backup with
+   # `stage=pg_dump status=fail reason=size-below-threshold bytes=698199
+   # min=1048576`. Lower the floor for staging; production (a much larger DB)
+   # should leave it UNSET to keep the safe 1 MiB default. Must be a positive
+   # integer count of bytes; a non-integer aborts at preflight.
+   BACKUP_MIN_BYTES_FLOOR=262144   # 256 KiB
    ```
+
+   **DB role (`app_backup`).** Apply migration `0133_app_backup_role.up.sql`
+   as part of the normal migration run (it needs superuser, like
+   `0001_roles.up.sql` — CREATE ROLE is cluster-scoped). The migration creates
+   `app_backup` with `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS` and
+   grants `pg_read_all_data`; it deliberately does NOT set a password (same
+   model as `app_runtime`/`app_admin`). Set one out-of-band, then use it in
+   `BACKUP_DATABASE_URL` above:
+   ```bash
+   # As a superuser against the crm database:
+   sudo -u postgres psql -d crm -c "\password app_backup"
+   # Verify the role shape (must be rolbypassrls=t, rolsuper=f):
+   sudo -u postgres psql -d crm -tAc \
+     "SELECT rolname, rolsuper, rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname='app_backup'"
+   ```
+   `app_backup` can read every table and ignore RLS, but has no write, DDL, or
+   superuser rights — the least privilege pg_dump needs.
 4. **Generate the recipient keypair** (also used during rotation; see below).
    The script runs on the host (not in the container) so the private key
    never enters the image filesystem:
@@ -159,11 +193,15 @@ step assumes a shell with `sudo` on the host.
    recipient-distinctness rule.
 7. **Stash a second copy of the cleartext private key in the offline cofre**
    — see § "Cofre offline" for the storage policy and the verification cadence.
-8. **Verify the install** with a dry-run against the running compose stack:
+8. **Verify the install** with a dry-run against the running compose stack.
+   The image `ENTRYPOINT` is `supercronic` (it treats its argument as a
+   crontab path), so a one-shot MUST override it with `--entrypoint` to run
+   the script directly — without it, supercronic tries to parse `backup.sh`
+   as a crontab and aborts with `bad crontab line: 'set -Eeuo pipefail'`:
    ```bash
    sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
      --env-file /opt/crm/stg/.env.stg \
-     run --rm backup /usr/local/bin/backup.sh
+     run --rm --entrypoint /usr/local/bin/backup.sh backup
    sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml logs --tail=200 backup
    ```
    A clean run ends with a `stage=done status=ok bytes=… dump_bytes=… target=s3://…`
@@ -222,10 +260,12 @@ sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
   logs --since 24h backup
 
 # Trigger an out-of-cycle backup (manual one-shot — does NOT touch the cron
-# schedule, fires backup.sh exactly once and exits).
+# schedule, fires backup.sh exactly once and exits). `--entrypoint` overrides
+# the image's supercronic ENTRYPOINT so backup.sh runs directly instead of
+# being parsed as a crontab.
 sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
   --env-file /opt/crm/stg/.env.stg \
-  run --rm backup /usr/local/bin/backup.sh
+  run --rm --entrypoint /usr/local/bin/backup.sh backup
 ```
 
 Smoke-check that an object actually landed. Objects are nested under the

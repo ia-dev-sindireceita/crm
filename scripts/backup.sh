@@ -50,7 +50,12 @@ set -o errtrace
 shopt -s inherit_errexit
 
 readonly LOG_TAG="lmhost-backup"
-readonly MIN_BYTES_FLOOR=$((1 * 1024 * 1024))      # 1 MiB
+# SIN-66566: the bootstrap size floor is env-overridable so small tenants —
+# e.g. staging's ~682 KB *complete* dump — don't trip the anti-truncation
+# guard that aborts a first run below the floor. Default unchanged (1 MiB).
+# Assigned here (not readonly yet) and validated + frozen in the preflight
+# block below, once fail() is defined.
+MIN_BYTES_FLOOR=${BACKUP_MIN_BYTES_FLOOR:-$((1 * 1024 * 1024))}   # 1 MiB default
 readonly LAST_SUCCESS_FLOOR_FRACTION_PCT=10        # 10% of last success
 
 # sblog emits a single structured key=value line on stderr at the given
@@ -123,6 +128,16 @@ read_last_dump_bytes() {
 
 : "${DATABASE_URL:?DATABASE_URL must be set}"
 : "${BACKUP_BUCKET:?BACKUP_BUCKET must be set}"
+
+# SIN-66566: validate + freeze the (possibly overridden) bootstrap size floor.
+# Must be a non-negative integer count of bytes; a non-numeric value is an
+# operator misconfiguration and aborts before we dump anything (the value is
+# used in `(( ... ))` arithmetic below, where a non-integer would otherwise
+# blow up under set -e with an opaque message). fail() is defined above.
+case "$MIN_BYTES_FLOOR" in
+  ''|*[!0-9]*) fail preflight "BACKUP_MIN_BYTES_FLOOR must be a positive integer (bytes)" 1 ;;
+esac
+readonly MIN_BYTES_FLOOR
 
 require_age_v1
 
