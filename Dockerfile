@@ -124,6 +124,35 @@ COPY --from=builder /src/web/static /app/web/static
 # touches /migrations at runtime.
 COPY migrations /migrations
 
+# SIN-66619 / ADR 0111 (SIN-66600) — carry the staging deploy topology
+# artifacts inside the cosign-signed image under a stable /deploy prefix,
+# mirroring the /migrations image-carry above (SIN-63332). Ticket 2/4
+# (SIN-66620, stg-deploy.sh) teaches the deploy wrapper to `docker cp`
+# /deploy out of the just-verified image and atomically install it over the
+# host copies, structurally eliminating repo<->host compose/caddy/unbound
+# drift (the SIN-66592 failure class). Until that wrapper flip lands these
+# are inert read-only data layers — this COPY is a deploy-time no-op on its
+# own and is reversible by dropping the layers.
+#
+# No secrets enter the image: compose.stg.yml interpolates every credential
+# from the host-only .env.stg ($$-escaped MinIO refs are runtime container
+# env, not build values); the caddy/unbound configs and scripts/minio carry
+# zero secret literals (init-quarantine.sh uses REPLACE_* placeholders + an
+# mc alias arg). .env.stg and the ADR-0110 age recipient deliberately stay
+# OFF the image / host-mutable.
+#
+# The image layout intentionally differs from the repo source paths
+# (unbound.conf lives under infra/caddy/, compose under deploy/compose/);
+# the authoritative source->image->host mapping is the table in
+# docs/adr/0111-image-carried-compose-deploy-artifacts.md. The C6 CI
+# guardrail (ticket 3/4, SIN-66621) asserts each /deploy/* byte-equals its
+# repo source so this COPY can never silently drift from the sources.
+COPY deploy/compose/compose.stg.yml       /deploy/compose.stg.yml
+COPY deploy/caddy/Caddyfile.stg           /deploy/caddy/Caddyfile.stg
+COPY deploy/caddy/security-headers.caddy  /deploy/caddy/security-headers.caddy
+COPY infra/caddy/unbound.conf             /deploy/caddy/unbound.conf
+COPY scripts/minio                        /deploy/scripts/minio
+
 USER 65532:65532
 WORKDIR /app
 EXPOSE 8080

@@ -2,6 +2,18 @@
 .github
 bin
 deploy
+# SIN-66619 / ADR 0111 (SIN-66600) — re-include the staging deploy topology
+# carry-set so the crm-server runtime stage can COPY it to /deploy/* inside
+# the cosign-signed image (mirrors the !migrations exception below). Only
+# these three files under deploy/ are re-included; the rest of deploy/ (prod
+# Caddyfile, compose.yml, grafana/loki/prometheus, restore-drill) stays out
+# of the build context. The other two carry-set members live outside deploy/
+# and are handled elsewhere: infra/caddy/unbound.conf is already in context
+# (infra/ is not ignored) and scripts/minio is re-included below. No secret
+# literals are in any of these files.
+!deploy/compose/compose.stg.yml
+!deploy/caddy/Caddyfile.stg
+!deploy/caddy/security-headers.caddy
 docs
 migrations
 # SIN-63332 — re-include the migrations/ tree in the build context so the
@@ -17,6 +29,10 @@ migrations
 scripts
 !scripts/backup.sh
 !scripts/backup-restore.sh
+# SIN-66619 / ADR 0111 — re-include scripts/minio (bucket + IAM policy
+# provisioning one-shot) into the /deploy carry-set. init-quarantine.sh
+# carries zero secret literals (REPLACE_* placeholders + an mc alias arg).
+!scripts/minio
 tools
 web
 # SIN-63299 — keep the whole web/static/ runtime asset tree in the build
