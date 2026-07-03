@@ -112,7 +112,12 @@ services:
   # app's media path goes live. The script is idempotent — re-runs
   # on every deploy are no-ops once the resources exist.
   minio-init:
-    image: minio/mc:latest
+    # [SIN-66605] Pin the mc client to a release contemporaneous with the
+    # server pin above (RELEASE.2024-10-13). Floating `mc:latest` drifted to
+    # the 2025-09 build, whose admin API broke `mc admin policy` against the
+    # pinned 2024-10 server → minio-init exit 1, blocking cd-stg. Client must
+    # be <= server; 2024-10-08 is the release just before the server's.
+    image: minio/mc:RELEASE.2024-10-08T09-37-26Z@sha256:c0d345a438dcac5677c1158e4ac46637069b67b3cc38e7b04c08cf93bdee4a62
     networks: [crm]
     restart: "no"
     depends_on:
