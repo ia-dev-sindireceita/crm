@@ -769,8 +769,8 @@ func TestRunbookRestorePipelineInvocation(t *testing.T) {
 			"restore-pipeline container MUST run as root so bind-mounted host key (0440 root:lmhost-backup) is readable — SIN-63195 SE BLOCKER #2"},
 		{"-v /etc/lmhost/age-backup.key:/etc/lmhost/age-backup.key:ro",
 			"private age key MUST be bind-mounted read-only with the absolute host path"},
-		{"backup /usr/local/bin/backup-restore.sh",
-			"invocation MUST target the inner restore pipeline at /usr/local/bin/backup-restore.sh (NOT restore-drill.sh — the latter is the SIN-63187 outer drill orchestrator)"},
+		{"--entrypoint /usr/local/bin/backup-restore.sh",
+			"invocation MUST target the inner restore pipeline via --entrypoint (image ENTRYPOINT is supercronic, so a positional script arg is parsed as a crontab and aborts on line 1 — SIN-66536 §4); MUST be backup-restore.sh, NOT restore-drill.sh (the latter is the SIN-63187 outer drill orchestrator)"},
 		{"PGHOST=",
 			"restore target MUST use PG* env vars (libpq env interface), NOT --dbname=$URL on argv — SIN-63195 SE MEDIUM #1"},
 		{"PGPASSWORD=",
@@ -944,5 +944,65 @@ func TestComposeStgBackupImageIsSoftDefaulted(t *testing.T) {
 	if !bytes.Contains(block, []byte("${BACKUP_IMAGE:-")) {
 		t.Fatalf("compose service `backup` in %s must set its image via the soft `${BACKUP_IMAGE:-<default>}` form so a default `docker compose up` never errors when BACKUP_IMAGE is unset (SIN-66535). Block:\n%s",
 			path, block)
+	}
+}
+
+// TestComposeBackupSidecarPrefersBackupDBRole is the SIN-66566 regression: the
+// scheduled `backup` service in both compose files MUST source its
+// DATABASE_URL from the dedicated backup role var (BACKUP_DATABASE_URL) so
+// pg_dump runs as the read-only, RLS-bypassing app_backup role (migration
+// 0133) rather than the app role (app_runtime, NOBYPASSRLS) which cannot dump
+// the 191-RLS-policy schema. The compose value MUST still fall back to the
+// in-network app-role DSN when BACKUP_DATABASE_URL is unset (hosts not yet
+// migrated keep working), and MUST expose the env-overridable size-floor knob
+// (BACKUP_MIN_BYTES_FLOOR) at the service boundary.
+//
+// Only the backup service line changes — the app service keeps
+// `${DATABASE_URL:-…}`; this test reads only the backup block so an app-side
+// edit cannot mask a regression here.
+func TestComposeBackupSidecarPrefersBackupDBRole(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	for _, composeRel := range []string{
+		"deploy/compose/compose.stg.yml",
+		"deploy/compose/compose.yml",
+	} {
+		composeRel := composeRel
+		t.Run(composeRel, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(root, composeRel)
+			block := readBackupServiceBlock(t, path)
+
+			// DATABASE_URL must be driven by BACKUP_DATABASE_URL (dedicated
+			// read-only backup role), NOT the app role's ${DATABASE_URL:-…}.
+			const preferBackupDSN = "DATABASE_URL: ${BACKUP_DATABASE_URL:-"
+			if !bytes.Contains(block, []byte(preferBackupDSN)) {
+				t.Errorf("compose service `backup` in %s must source DATABASE_URL from %q so pg_dump runs as the RLS-bypassing app_backup role (SIN-66566). Block:\n%s",
+					path, preferBackupDSN, block)
+			}
+			// The app role must NOT drive the backup DSN. The backup block
+			// still references POSTGRES_USER inside the *fallback*, so we
+			// specifically forbid the app-role driver form.
+			const appRoleDriver = "DATABASE_URL: ${DATABASE_URL:-"
+			if bytes.Contains(block, []byte(appRoleDriver)) {
+				t.Errorf("compose service `backup` in %s still drives DATABASE_URL from the app role via %q; pg_dump under app_runtime (NOBYPASSRLS) cannot dump the RLS schema (SIN-66566). Block:\n%s",
+					path, appRoleDriver, block)
+			}
+			// Fallback to the in-network app-role DSN must be retained so a
+			// host that has not yet provisioned app_backup / BACKUP_DATABASE_URL
+			// keeps producing a backup (degraded, but not broken).
+			const fallbackDSN = "postgres://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm}?sslmode=disable}"
+			if !bytes.Contains(block, []byte(fallbackDSN)) {
+				t.Errorf("compose service `backup` in %s must retain the in-network app-role DSN as the BACKUP_DATABASE_URL fallback (SIN-66566). Block:\n%s",
+					path, block)
+			}
+			// The env-overridable bootstrap size floor must be surfaced at the
+			// service boundary (staging's ~682 KB dump needs a lower floor).
+			const floorPassthrough = "BACKUP_MIN_BYTES_FLOOR: ${BACKUP_MIN_BYTES_FLOOR:-}"
+			if !bytes.Contains(block, []byte(floorPassthrough)) {
+				t.Errorf("compose service `backup` in %s must expose the size-floor knob via %q (SIN-66566). Block:\n%s",
+					path, floorPassthrough, block)
+			}
+		})
 	}
 }
