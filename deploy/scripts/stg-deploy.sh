@@ -29,9 +29,19 @@
 #                                 side-effects.
 #   - Argument: APP_IMAGE reference, MUST match ghcr.io/pericles-luz/crm@sha256:[0-9a-f]{64}
 #                                    (only required for deploy/migrate-up).
-#   - Effect (deploy):     updates /opt/crm/stg/.env.stg, runs `compose pull && up -d`,
-#                          then prunes dangling images. Previous APP_IMAGE is recorded
-#                          in /opt/crm/stg/.last-image so manual rollback can read it.
+#   - Effect (deploy):     extracts the /deploy carry-set (compose.stg.yml +
+#                          caddy/{Caddyfile.stg,security-headers.caddy,unbound.conf}
+#                          + scripts/minio/) from the just-verified image via
+#                          docker cp and atomically installs it over
+#                          /opt/crm/stg/* (SIN-66600 / ADR 0111 — the on-host
+#                          topology becomes a derived, signed artifact, never a
+#                          hand-edited input), then updates /opt/crm/stg/.env.stg,
+#                          runs `compose pull && up -d`, then prunes dangling
+#                          images. Previous APP_IMAGE is recorded in
+#                          /opt/crm/stg/.last-image so manual rollback can read it.
+#                          Carry-set fail-closed exits: 69 missing / 70 empty /
+#                          63 install-failed — host copies are never touched on
+#                          failure, and CD never falls back to a stale host copy.
 #   - Effect (migrate-up): runs `migrate -path /migrations -database ... up` against
 #                          crm-stg-postgres-1 inside the compose project network.
 #                          The migrations bytes come from the just-deployed image at
@@ -42,7 +52,14 @@
 
 set -euo pipefail
 
-readonly STG_DIR="/opt/crm/stg"
+# STG_DIR is the on-host deploy root. Fixed at /opt/crm/stg in production;
+# override ONLY via `${STG_DIR}=` from the hermetic wrapper test
+# (deploy/scripts/stg-deploy.test.sh, SIN-66620) so it can point every
+# read/write at a sandbox. The forced-command SSH key means an attacker on
+# the CD path cannot set this env var. Same override convention as ${COSIGN}
+# and ${MIGRATE_IMAGE_REF} below.
+: "${STG_DIR:=/opt/crm/stg}"
+readonly STG_DIR
 readonly ENV_FILE="${STG_DIR}/.env.stg"
 readonly COMPOSE_FILE="${STG_DIR}/compose.stg.yml"
 readonly LAST_IMAGE_FILE="${STG_DIR}/.last-image"
@@ -138,6 +155,114 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 66
 fi
 
+# SIN-66600 / ADR 0111 (impl 2/4, SIN-66620) — image-carried deploy topology.
+#
+# The staging compose/caddy/unbound/minio artifacts are COPY-carried into the
+# cosign-signed image under /deploy (SIN-66619, impl 1/4). On the `deploy`
+# verb we extract them from the JUST-VERIFIED image and atomically install them
+# over the host copies, so the bytes CD runs are byte-for-byte the signed bytes
+# — repo↔host drift becomes structurally impossible (this closes the SIN-66592
+# stale-on-host-compose class). Extraction runs strictly DOWNSTREAM of the
+# cosign gate above: it inherits the existing trust boundary and adds no new
+# SSH write path.
+#
+# Carry-set manifest — image path under /deploy  ➜  host destination under
+# ${STG_DIR}. Enumerated BY NAME (SecEng C1): a drifted Dockerfile `COPY …
+# /deploy/*` that renames or drops any of these makes the named source ABSENT
+# in /deploy, which aborts the deploy — a directory-level `ls -A` would pass
+# silently, so we never use one. Keep in lockstep with the Dockerfile COPY
+# block and the C6 byte-parity CI guard (SIN-66621).
+readonly CARRY_SET=(
+  "compose.stg.yml:${STG_DIR}/compose.stg.yml"
+  "caddy/Caddyfile.stg:${STG_DIR}/caddy/Caddyfile.stg"
+  "caddy/security-headers.caddy:${STG_DIR}/caddy/security-headers.caddy"
+  "caddy/unbound.conf:${STG_DIR}/caddy/unbound.conf"
+  "scripts/minio/init-quarantine.sh:${STG_DIR}/scripts/minio/init-quarantine.sh"
+)
+
+# install_staging_carry_set — extract /deploy from ${NEW_IMAGE} and install it
+# over ${STG_DIR}. Fail-closed guards (SecEng C1–C4):
+#   exit 69 — a carry-set artifact is missing inside the image (COPY drift).
+#   exit 70 — a carry-set artifact is present but empty inside the image.
+#   exit 63 — installing an extracted artifact onto the host failed (mv/cp).
+# Distinct fresh codes in the existing 63–73 convention. On ANY of these the
+# host copies are left untouched (C2): all artifacts are validated inside a
+# `mktemp -d` staging dir BEFORE the first host write, and we NEVER fall back
+# to the stale host copy.
+install_staging_carry_set() {
+  local workdir carrier entry src dst tmp
+
+  workdir="$(mktemp -d /tmp/stg-carry.XXXXXX)"
+  # shellcheck disable=SC2064  # capture ${workdir} at trap-install time
+  trap "rm -rf '${workdir}'" EXIT
+
+  # `docker create` does not run the entrypoint; the image is already
+  # pulled/cached because compose pull runs later on the same ref. We extract
+  # the CONTENTS of /deploy (`/deploy/.`) so files land at ${workdir}/<path>.
+  carrier="$(docker create "${NEW_IMAGE}")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '${workdir}'; docker rm -f '${carrier}' >/dev/null 2>&1 || true" EXIT
+  if ! docker cp "${carrier}:/deploy/." "${workdir}/" >/dev/null 2>&1; then
+    echo "stg-deploy: /deploy prefix missing inside ${NEW_IMAGE} — Dockerfile carry drift (see ADR 0111)" >&2
+    exit 69
+  fi
+  docker rm -f "${carrier}" >/dev/null 2>&1 || true
+  # shellcheck disable=SC2064
+  trap "rm -rf '${workdir}'" EXIT
+
+  # C1/C2 — validate EVERY named artifact (exists + non-empty) into the staging
+  # dir before any host copy is touched.
+  for entry in "${CARRY_SET[@]}"; do
+    src="${workdir}/${entry%%:*}"
+    if [[ ! -f "${src}" ]]; then
+      echo "stg-deploy: carry-set artifact missing inside image: /deploy/${entry%%:*}" >&2
+      exit 69
+    fi
+    if [[ ! -s "${src}" ]]; then
+      echo "stg-deploy: carry-set artifact empty inside image: /deploy/${entry%%:*}" >&2
+      exit 70
+    fi
+  done
+
+  # C3 — every artifact is validated; install each via write-to-temp + atomic
+  # `mv` within the destination's own filesystem, so no consumer ever observes
+  # a partial/truncated file. `docker compose … up` runs strictly AFTER this
+  # loop, so there is no live reader mid-install. Documented window: a crash
+  # BETWEEN two renames can leave a compose/caddy mix, but `set -e` then aborts
+  # the deploy red BEFORE any `compose up`, and the next deploy re-extracts and
+  # re-installs the full set from the signed image (idempotent overwrite). The
+  # caddy bind-mount dir is thus never served half-updated. (ADR 0111 §5.)
+  for entry in "${CARRY_SET[@]}"; do
+    src="${workdir}/${entry%%:*}"
+    dst="${entry#*:}"
+    mkdir -p "$(dirname "${dst}")" || {
+      echo "stg-deploy: cannot create dir for carry-set artifact ${dst}" >&2
+      exit 63
+    }
+    tmp="$(mktemp "${dst}.stg-carry.XXXXXX")" || {
+      echo "stg-deploy: mktemp failed for carry-set artifact ${dst}" >&2
+      exit 63
+    }
+    if ! { cp -p "${src}" "${tmp}" && mv -f "${tmp}" "${dst}"; }; then
+      rm -f "${tmp}"
+      echo "stg-deploy: failed to install carry-set artifact ${dst}" >&2
+      exit 63
+    fi
+  done
+
+  rm -rf "${workdir}"
+  trap - EXIT
+  echo "stg-deploy: carry-set installed from ${NEW_IMAGE} (compose + caddy + minio)"
+}
+
+# Deploy verb only: install the carry-set from the verified image BEFORE the
+# compose-file existence check below, so a fresh host self-provisions compose/
+# caddy/minio from the signed image. migrate-up keeps requiring a pre-existing
+# compose (it runs after a deploy) and is unaffected.
+if [[ "${VERB}" == "deploy" ]]; then
+  install_staging_carry_set
+fi
+
 if [[ ! -f "${COMPOSE_FILE}" ]]; then
   echo "stg-deploy: ${COMPOSE_FILE} missing — run provisioning checklist first" >&2
   exit 66
@@ -185,9 +310,11 @@ if [[ "${VERB}" == "migrate-up" ]]; then
   # shellcheck disable=SC2064  # we want $workdir captured at trap-install time
   trap "rm -rf '${workdir}'" EXIT
   carrier="$(docker create "${NEW_IMAGE}")"
+  # shellcheck disable=SC2064  # capture ${workdir}/${carrier} at trap-install time
   trap "rm -rf '${workdir}'; docker rm -f '${carrier}' >/dev/null 2>&1 || true" EXIT
   docker cp "${carrier}:/migrations" "${workdir}/migrations"
   docker rm -f "${carrier}" >/dev/null
+  # shellcheck disable=SC2064  # capture ${workdir} at trap-install time
   trap "rm -rf '${workdir}'" EXIT
   if [[ ! -d "${workdir}/migrations" ]] || [[ -z "$(ls -A "${workdir}/migrations" 2>/dev/null)" ]]; then
     echo "stg-deploy: /migrations missing or empty inside ${NEW_IMAGE}" >&2
