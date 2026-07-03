@@ -1,12 +1,24 @@
-# ADR 0111 — Carry compose + caddy/unbound deploy artifacts inside the signed image and extract them with `docker cp`
+# ADR 0111 — Carry compose + caddy/unbound + minio-init deploy artifacts inside the signed image and extract them with `docker cp`
 
-- Status: Proposed (awaiting CTO + SecurityEngineer sign-off)
+- Status: Accepted (rev 2)
 - Date: 2026-07-03
 - Deciders: CTO, SecurityEngineer
+- Sign-off: CTO design approval + SecurityEngineer LGTM on [SIN-66602](/SIN/issues/SIN-66602); board go-ahead from Pericles 2026-07-03. Implementation split into tickets [SIN-66619](/SIN/issues/SIN-66619) (Dockerfile carry + this ADR rev 2), [SIN-66620](/SIN/issues/SIN-66620) (wrapper extraction), [SIN-66621](/SIN/issues/SIN-66621) (C6 byte-parity CI).
 - Drives: [SIN-66600](/SIN/issues/SIN-66600) (this ADR — design half of the drift-elimination guardrail)
 - Motivated by: [SIN-66592](/SIN/issues/SIN-66592) (caddy `dns:["unbound"]` deploy crash where the fix was correct on `main` but the host was never re-synced) and its manual unblock [SIN-66599](/SIN/issues/SIN-66599)
 - Builds on: [SIN-63332] image-carried `/migrations` + `docker cp` extraction in `deploy/scripts/stg-deploy.sh`, [ADR 0084](./0084-*.md)/SIN-62247 cosign keyless verify gate, [ADR 0110](./0110-backup-age-recipient-runtime-mount.md) (what stays host-mutable at runtime), [SIN-62332] compose↔unbound parity gate
 - Lenses: **Reversibility**, **Least privilege / defense in depth**, **Boring technology**
+
+## Revision history
+
+- **rev 1 (2026-07-03)** — original proposal: carry compose + caddy/unbound.
+- **rev 2 (2026-07-03, [SIN-66619](/SIN/issues/SIN-66619))** — (a) fold
+  `scripts/minio/` into the carry-set per CTO decision (a) so the *entire*
+  drift class — every host-resident deploy input except secrets — is closed in
+  one pass; (b) record the residual-risk note (host-**root** can still rewrite
+  the extractor wrapper / `.env.stg`; the wrapper *is* the extractor so it
+  cannot self-bootstrap from the image — same trust root as today, **not
+  regressed**). Shipped together with the Dockerfile `/deploy` COPY layers.
 
 ## Context
 
@@ -53,12 +65,25 @@ deploy, exactly mirroring the `/migrations` pattern.
 Add to the `crm-server` Dockerfile stage (read-only data layers, like
 `/migrations`):
 
-| Image path (proposed)              | Source in repo                         | On-host destination                       |
-|------------------------------------|----------------------------------------|-------------------------------------------|
-| `/deploy/compose.stg.yml`          | `deploy/compose/compose.stg.yml`       | `/opt/crm/stg/compose.stg.yml`            |
-| `/deploy/caddy/Caddyfile.stg`      | `deploy/caddy/Caddyfile.stg`           | `/opt/crm/stg/caddy/Caddyfile.stg`        |
-| `/deploy/caddy/security-headers.caddy` | `deploy/caddy/security-headers.caddy` | `/opt/crm/stg/caddy/security-headers.caddy` |
-| `/deploy/caddy/unbound.conf`       | `infra/caddy/unbound.conf`             | `/opt/crm/stg/caddy/unbound.conf`         |
+| Image path                             | Source in repo                         | On-host destination                       |
+|----------------------------------------|----------------------------------------|-------------------------------------------|
+| `/deploy/compose.stg.yml`              | `deploy/compose/compose.stg.yml`       | `/opt/crm/stg/compose.stg.yml`            |
+| `/deploy/caddy/Caddyfile.stg`          | `deploy/caddy/Caddyfile.stg`           | `/opt/crm/stg/caddy/Caddyfile.stg`        |
+| `/deploy/caddy/security-headers.caddy` | `deploy/caddy/security-headers.caddy`  | `/opt/crm/stg/caddy/security-headers.caddy` |
+| `/deploy/caddy/unbound.conf`           | `infra/caddy/unbound.conf`             | `/opt/crm/stg/caddy/unbound.conf`         |
+| `/deploy/scripts/minio/`               | `scripts/minio/`                       | `/opt/crm/stg/scripts/minio/`             |
+
+The image layout intentionally differs from the repo source paths
+(`unbound.conf` lives under `infra/caddy/`, compose under `deploy/compose/`);
+this table is the authoritative source→image→host mapping and is the contract
+the C6 byte-parity CI check ([SIN-66621](/SIN/issues/SIN-66621)) enforces.
+`scripts/minio/` (rev 2) is the bucket + IAM-policy provisioning one-shot
+(`init-quarantine.sh`); it is not consumed by `docker compose up` but is a
+host-resident deploy input that drifts the same way, so it joins the carry-set
+to close the class completely. It carries **zero secret literals** —
+`init-quarantine.sh` uses `REPLACE_*` placeholders and takes the `mc` alias as
+an argument; real key material comes from the operator's secrets manager at run
+time, never from the image.
 
 ### Extraction flow (`deploy` verb, before `compose … up`)
 
@@ -108,6 +133,28 @@ Dockerfile `COPY` makes repo == image).
 - `deploy.sh` (the wrapper itself) — installed once via the forced-command SSH
   key; it is the *extractor*, so it cannot bootstrap itself from the image.
 
+### Residual risk (rev 2 — explicit)
+
+A host **root** compromise can still rewrite two inputs that stay outside the
+image:
+
+- **`deploy.sh` (the extractor wrapper).** The wrapper *is* what pulls `/deploy`
+  out of the signed image, so by construction it cannot self-bootstrap from the
+  image — something has to run the `docker cp`. Whoever can rewrite the wrapper
+  can already run arbitrary code as the deploy principal.
+- **`.env.stg`.** All secrets live here and must stay host-only (same rule as
+  ADR 0110's age recipient). Root can read or rewrite it.
+
+This is **the same trust root as today** — on the current setup root already
+owns `compose.stg.yml`, the caddy configs, *and* the wrapper. Moving compose /
+caddy / unbound / minio-init *into* the signed image strictly **shrinks** the
+root-writable, unsigned surface (those files become tamper-evident and are
+overwritten from the signed image on every deploy); it does not add a new one.
+The residual `deploy.sh` + `.env.stg` surface is therefore **not a regression** —
+it is the irreducible bootstrap root that predates this ADR. Closing it further
+(e.g. signing the wrapper, or a read-only immutable deploy user) is out of scope
+and tracked separately, not blocked by this change.
+
 ### Rollback story (improves on today)
 
 - `.last-image` already records the previous `APP_IMAGE`. Because compose is now
@@ -127,9 +174,9 @@ After this ships, `docs/deploy/staging.md` §5 manual `scp`+`install` reduces to
 - an empty `.env.stg` (operator fills secrets)
 - the directory skeleton (`/opt/crm/stg`, `/bin`, `/caddy`)
 
-`compose.stg.yml` + all caddy/unbound files are **no longer** hand-installed —
-the first `deploy` extracts them. (This also retires the SIN-66600 doc-fix leg
-as a permanent concern.)
+`compose.stg.yml`, all caddy/unbound files, **and `scripts/minio/`** are
+**no longer** hand-installed — the first `deploy` extracts them. (This also
+retires the SIN-66600 doc-fix leg as a permanent concern.)
 
 ### Chicken-and-egg (one-time, unavoidable)
 
@@ -169,16 +216,20 @@ ticket). After that single sync, drift is gone permanently.
 3. **Status quo + discipline.** Rejected — this is the third+ drift incident;
    process discipline has already failed empirically (SIN-66592).
 
-## Follow-up implementation tickets (created only after sign-off)
+## Follow-up implementation tickets
 
-1. Dockerfile: add the `/deploy` COPY layers.
-2. `stg-deploy.sh`: add the extraction+atomic-install step to the `deploy` verb,
-   with fail-closed guards and tests (hermetic wrapper test in the SIN-65902
-   style — sandbox paths, shimmed `docker`).
-3. `docs/deploy/staging.md` §5: rewrite the manual install to the shrunk
+1. **[SIN-66619](/SIN/issues/SIN-66619)** (this PR) — Dockerfile: add the
+   `/deploy` COPY layers (incl. `scripts/minio/`) + this ADR rev 2. No-op at
+   deploy time on its own (inert data layers); reversible by dropping the COPY.
+2. **[SIN-66620](/SIN/issues/SIN-66620)** — `stg-deploy.sh`: add the
+   extraction+atomic-install step to the `deploy` verb, with fail-closed guards
+   and a hermetic wrapper test (SIN-65902 style — sandbox paths, shimmed
+   `docker`). This is the behavioral flip.
+3. **[SIN-66621](/SIN/issues/SIN-66621)** — C6 CI check asserting the image
+   `/deploy/*` bytes equal the repo source bytes (defence in depth against a
+   Dockerfile COPY drifting from source paths). Non-optional per SIN-66600.
+4. `docs/deploy/staging.md` §5: rewrite the manual install to the shrunk
    bootstrap; note the one-time re-sync.
-4. Optional CI check asserting the image `/deploy/*` bytes equal the repo bytes
-   (defence in depth against a Dockerfile COPY drifting from source paths).
 
 The dual gate (CTO + SecurityEngineer) applies to every implementation PR
 because they touch the deploy trust boundary.
