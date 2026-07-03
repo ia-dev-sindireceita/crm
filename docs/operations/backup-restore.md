@@ -387,6 +387,7 @@ sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
   --env-file /opt/crm/stg/.env.stg \
   run --rm \
     --user 0:0 \
+    --entrypoint /usr/local/bin/backup-restore.sh \
     -v /etc/lmhost/age-backup.key:/etc/lmhost/age-backup.key:ro \
     -e BACKUP_AGE_KEY=/etc/lmhost/age-backup.key \
     -e PGHOST=postgres \
@@ -396,7 +397,7 @@ sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
     -e PGPASSWORD="$DRILL_PASSWORD" \
     -e RESTORE_VERIFY_SQL='select count(*) from users' \
     -e RESTORE_VERIFY_MIN=1 \
-    backup /usr/local/bin/backup-restore.sh
+    backup
 ```
 
 Pass criteria:
@@ -479,21 +480,23 @@ the recipients file and encrypts to all of them.
    sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
      --env-file /opt/crm/stg/.env.stg run --rm \
        --user 0:0 \
+       --entrypoint /usr/local/bin/backup-restore.sh \
        -v /etc/lmhost/age-backup.key:/etc/lmhost/age-backup.key:ro \
        -e BACKUP_AGE_KEY=/etc/lmhost/age-backup.key \
        -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE=scratch \
        -e PGUSER=drill -e PGPASSWORD="$DRILL_PASSWORD" \
-       backup /usr/local/bin/backup-restore.sh
+       backup
 
    # new key
    sudo -u crm-deploy docker compose -f /opt/crm/stg/compose.stg.yml \
      --env-file /opt/crm/stg/.env.stg run --rm \
        --user 0:0 \
+       --entrypoint /usr/local/bin/backup-restore.sh \
        -v /etc/lmhost/age-backup.key.new:/etc/lmhost/age-backup.key:ro \
        -e BACKUP_AGE_KEY=/etc/lmhost/age-backup.key \
        -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE=scratch \
        -e PGUSER=drill -e PGPASSWORD="$DRILL_PASSWORD" \
-       backup /usr/local/bin/backup-restore.sh
+       backup
    ```
 6. **One retention window later**, when every dump in the bucket can be
    decrypted by the new key alone, swap atomically and drop the old line:
