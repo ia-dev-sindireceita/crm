@@ -20,10 +20,12 @@ if [[ $# -lt 1 ]]; then
 fi
 
 ALIAS="$1"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POLICY_DIR="${SCRIPT_DIR}/policies"
-
-mkdir -p "${POLICY_DIR}"
+# Policy JSON files are transient inputs to `mc admin policy create`; there is
+# no reason to persist them next to the script. Write them to a private tmpdir
+# so this works even when the script dir is mounted read-only (the staging
+# init-container bind-mounts scripts/minio :ro — see [SIN-66614]).
+POLICY_DIR="$(mktemp -d)"
+trap 'rm -rf "${POLICY_DIR}"' EXIT
 
 write_policy_app_runtime() {
   cat >"${POLICY_DIR}/app_runtime.json" <<'JSON'
