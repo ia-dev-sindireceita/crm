@@ -590,17 +590,17 @@ scp deploy/caddy/Caddyfile.stg deploy/caddy/security-headers.caddy \
     "root@${STG_HOST}:/tmp/"
 ```
 
-Back on the VPS, lay out the stack directory and install all four files. The
+Back on the VPS, lay out the stack directory and install all five files. The
 operator running this block must be `root` (or in a sudo session) — the
 `crm-deploy` account exists but has no shell.
 
 ```bash
 # Sanity check: confirm scp landed everything in /tmp.
-for f in compose.stg.yml stg-deploy.sh Caddyfile.stg security-headers.caddy; do
+for f in compose.stg.yml stg-deploy.sh Caddyfile.stg security-headers.caddy unbound.conf; do
   test -s "/tmp/${f}" || { echo "missing /tmp/${f}"; exit 1; }
 done
 
-# Lay out the stack directory and install the four files into it.
+# Lay out the stack directory and install the five files into it.
 install -d -o crm-deploy -g crm-deploy -m 0750 \
   /opt/crm/stg /opt/crm/stg/bin /opt/crm/stg/caddy
 install -o crm-deploy -g crm-deploy -m 0640 \
@@ -611,16 +611,22 @@ install -o crm-deploy -g crm-deploy -m 0640 \
   /tmp/Caddyfile.stg /opt/crm/stg/caddy/Caddyfile.stg
 install -o crm-deploy -g crm-deploy -m 0640 \
   /tmp/security-headers.caddy /opt/crm/stg/caddy/security-headers.caddy
+# unbound.conf: the compose `unbound` service bind-mounts ./caddy/unbound.conf
+# (i.e. /opt/crm/stg/caddy/unbound.conf) read-only into the sidecar. Omitting
+# this install line leaves the on-host copy stale/missing — the exact drift
+# that broke SIN-62332 / SIN-66592.
+install -o crm-deploy -g crm-deploy -m 0640 \
+  /tmp/unbound.conf /opt/crm/stg/caddy/unbound.conf
 
 # Empty secrets file with the right ownership; you fill it in below.
 install -o crm-deploy -g crm-deploy -m 0640 /dev/null /opt/crm/stg/.env.stg
 ```
 
-If you ever bump `compose.stg.yml`, `stg-deploy.sh`, or any file under
-`deploy/caddy/` on `main`, repeat the same `scp` + `install` flow from a
-workstation — the CD pipeline only pushes the application image, not these
-on-host artifacts. Automating that sync is tracked as a follow-up; until
-then it is operator-driven.
+If you ever bump `compose.stg.yml`, `stg-deploy.sh`, any file under
+`deploy/caddy/`, or `infra/caddy/unbound.conf` on `main`, repeat the same
+`scp` + `install` flow from a workstation — the CD pipeline only pushes the
+application image, not these on-host artifacts. Automating that sync is
+tracked as a follow-up (SIN-66600); until then it is operator-driven.
 
 > **Wrapper-version preflight (SIN-63348).** Because the wrapper is
 > operator-installed and the application image is auto-deployed, the two
