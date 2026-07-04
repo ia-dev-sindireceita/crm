@@ -39,8 +39,7 @@ or fetch from `media-quarantine`.
       "Effect": "Allow",
       "Action": [
         "s3:GetObject",
-        "s3:PutObject",
-        "s3:HeadObject"
+        "s3:PutObject"
       ],
       "Resource": [
         "arn:aws:s3:::media/*"
@@ -104,8 +103,7 @@ to receive 1-hour credentials scoped to:
       "Sid": "WriteToQuarantine",
       "Effect": "Allow",
       "Action": [
-        "s3:PutObject",
-        "s3:HeadObject"
+        "s3:PutObject"
       ],
       "Resource": [
         "arn:aws:s3:::media-quarantine/*"
