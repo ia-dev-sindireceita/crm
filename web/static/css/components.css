@@ -89,20 +89,22 @@
   border-color: var(--border-strong);
 }
 
+/* Solid button uses the --color-primary-btn* trio (not the bare accent)
+   so white text clears WCAG AA in every state, including dark. SIN-66517 */
 .btn--primary {
   color: var(--text-on-primary);
-  background-color: var(--color-primary);
-  border-color: var(--color-primary);
+  background-color: var(--color-primary-btn);
+  border-color: var(--color-primary-btn);
 }
 
 .btn--primary:hover {
-  background-color: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
+  background-color: var(--color-primary-btn-hover);
+  border-color: var(--color-primary-btn-hover);
 }
 
 .btn--primary:active {
-  background-color: var(--color-primary-active);
-  border-color: var(--color-primary-active);
+  background-color: var(--color-primary-btn-active);
+  border-color: var(--color-primary-btn-active);
 }
 
 .btn--ghost {
@@ -880,7 +882,13 @@
 }
 
 .tabs__tab[aria-selected="true"] {
-  color: var(--color-primary);
+  /* Selected-tab label is accent-colored TEXT on the tab-bar surface, so it
+     must clear WCAG AA 1.4.3 (>=4.5:1). --color-primary is reserved for
+     fill/border/focus and is NOT AA as text — raw #6970dd is sub-AA on the
+     dark surfaces (SIN-66519). Use --color-link, the calibrated accent-text
+     token that is AA on surfaces 0-3 in both themes. The underline indicator
+     below stays --color-primary (a 2px graphic, not text). */
+  color: var(--color-link);
   border-bottom-color: var(--color-primary);
 }
 

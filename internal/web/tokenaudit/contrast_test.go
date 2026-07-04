@@ -144,6 +144,14 @@ func TestTokenContrastLightAA(t *testing.T) {
 		{"warning-strong on warning-surface", "color-warning-strong", "color-warning-surface"},
 		// A3 — accent text on the primary-soft tint (selected nav / badges).
 		{"A3 on-primary-soft on primary-soft", "color-on-primary-soft", "color-primary-soft"},
+		// SIN-66517 — white badge text on the warning fill (.badge--warning
+		// "Desativado") + white button text on the solid-button fill trio
+		// (.btn--primary base/hover/active). Light passes today; the guard
+		// pins it so a future accent lift can't silently regress it.
+		{"badge--warning text on warning fill", "color-warning-text", "color-warning"},
+		{"btn--primary text on primary-btn", "text-on-primary", "color-primary-btn"},
+		{"btn--primary:hover text on primary-btn-hover", "text-on-primary", "color-primary-btn-hover"},
+		{"btn--primary:active text on primary-btn-active", "text-on-primary", "color-primary-btn-active"},
 		// Sanity guards for the existing text/link tokens we rely on.
 		{"text-default on surface-1", "text-default", "surface-1"},
 		{"text-strong on surface-1", "text-strong", "surface-1"},
@@ -161,11 +169,86 @@ func TestTokenContrastDarkAA(t *testing.T) {
 		{"success-strong on surface-1 (dark)", "color-success-strong", "surface-1"},
 		{"warning-strong on surface-1 (dark)", "color-warning-strong", "surface-1"},
 		{"warning-strong on warning-surface (dark)", "color-warning-strong", "color-warning-surface"},
+		// SIN-66517 — dark was the real miss: white on the lifted accent
+		// #6970dd was 4.23:1 and its hover/active lift made it worse. The
+		// button now uses the darker --color-primary-btn* trio; assert all
+		// three states clear AA with white text. badge--warning in dark uses
+		// dark text on light amber (already >=9:1) — pinned too.
+		{"badge--warning text on warning fill (dark)", "color-warning-text", "color-warning"},
+		{"btn--primary text on primary-btn (dark)", "text-on-primary", "color-primary-btn"},
+		{"btn--primary:hover text on primary-btn-hover (dark)", "text-on-primary", "color-primary-btn-hover"},
+		{"btn--primary:active text on primary-btn-active (dark)", "text-on-primary", "color-primary-btn-active"},
 		{"text-muted on surface-1 (dark)", "text-muted", "surface-1"},
 		{"color-link on surface-1 (dark)", "color-link", "surface-1"},
 		{"text-default on surface-1 (dark)", "text-default", "surface-1"},
 	}
 	runContrastCases(t, "dark", dark, cases)
+}
+
+// selectedTabColorTokenPattern extracts the token referenced by the `color:`
+// property of the `.tabs__tab[aria-selected="true"]` rule in components.css.
+// It pins the match to that exact selector block so an unrelated `color:`
+// elsewhere can't satisfy it.
+var selectedTabColorTokenPattern = regexp.MustCompile(
+	`\.tabs__tab\[aria-selected="true"\]\s*\{[^}]*?\bcolor:\s*var\(--([a-z0-9-]+)\)`)
+
+// selectedTabColorToken reads web/static/css/components.css and returns the
+// name of the token used as the selected-tab label color. The tab label is
+// accent-colored TEXT on the tab-bar surface, so whatever token this is MUST
+// clear WCAG AA 1.4.3 on the surfaces the tab bar can sit on. Coupling the
+// guard to the real CSS means reverting the rule to a sub-AA token (e.g. the
+// raw --color-primary that was #6970dd in dark) turns the assertions below
+// RED — SIN-66519.
+func selectedTabColorToken(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(repoRoot(t), "web", "static", "css", "components.css")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read components.css: %v", err)
+	}
+	m := selectedTabColorTokenPattern.FindStringSubmatch(string(raw))
+	if m == nil {
+		t.Fatalf("components.css: could not find `color: var(--…)` in .tabs__tab[aria-selected=\"true\"] rule")
+	}
+	return m[1]
+}
+
+// TestSelectedTabLabelContrastAA guards the accessible contrast of the
+// selected-tab label (.tabs__tab[aria-selected="true"]) in BOTH themes.
+// The tab component has no fill of its own, so the label sits directly on
+// the tab-bar surface — which can be the app background (surface-1) or a
+// card (surface-0). It reads the token the CSS actually uses so the guard
+// tracks the real rule (SIN-66519).
+func TestSelectedTabLabelContrastAA(t *testing.T) {
+	light, dark := loadTokens(t)
+	tok := selectedTabColorToken(t)
+	surfaces := []string{"surface-1", "surface-0"}
+	for _, tc := range []struct {
+		theme  string
+		tokens map[string]string
+	}{
+		{"light", light},
+		{"dark", dark},
+	} {
+		for _, bg := range surfaces {
+			name := "selected-tab " + tok + " on " + bg + " (" + tc.theme + ")"
+			t.Run(name, func(t *testing.T) {
+				fgHex, ok := tc.tokens[tok]
+				if !ok {
+					t.Fatalf("%s theme: selected-tab token --%s not defined in tokens.css", tc.theme, tok)
+				}
+				bgHex, ok := tc.tokens[bg]
+				if !ok {
+					t.Fatalf("%s theme: token --%s not defined in tokens.css", tc.theme, bg)
+				}
+				ratio := hexToRGB(t, fgHex).Contrast(hexToRGB(t, bgHex))
+				if ratio < aaBody {
+					t.Errorf("%s: selected-tab --%s (%s) on --%s (%s) = %.2f:1, want >= %.1f:1 (WCAG AA body)",
+						tc.theme, tok, fgHex, bg, bgHex, ratio, aaBody)
+				}
+			})
+		}
+	}
 }
 
 func runContrastCases(t *testing.T, theme string, tokens map[string]string, cases []contrastCase) {

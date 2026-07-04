@@ -301,6 +301,22 @@ type Deps struct {
 	//   DELETE /settings/ai-policy/{scope_type}/{scope_id}
 	WebAIPolicy http.Handler
 
+	// WebUsers is the HTMX tenant user-management admin UI from
+	// internal/web/users (SIN-66496). Mounted in the authed group with a
+	// per-route RequireAction gate (all four actions map to
+	// {RoleTenantGerente}), so atendente / common get 403 before the
+	// handler runs. Nil keeps the /settings/users* routes unmounted.
+	//
+	// Routes mounted:
+	//   GET   /settings/users
+	//   GET   /settings/users/new
+	//   GET   /settings/users/{id}/edit
+	//   POST  /settings/users
+	//   PATCH /settings/users/{id}
+	//   POST  /settings/users/{id}/deactivate
+	//   POST  /settings/users/{id}/reactivate
+	WebUsers http.Handler
+
 	// WebCatalog is the HTMX admin UI handler for the per-tenant
 	// product catalog from internal/web/catalog (SIN-62907 / Fase 3
 	// W4C). Mounted in the authed group with the same envelope as
@@ -392,6 +408,24 @@ type Deps struct {
 	// Routes mounted:
 	//   GET    /c/{slug}
 	WebCampaignPublic http.Handler
+
+	// WebInvite is the SIN-66510 public invite / set-password surface
+	// from internal/web/invite. Mounted inside the tenanted group BUT
+	// outside the authed sub-group — the credential token in the URL IS
+	// the authentication, so there is no session; middleware.TenantScope
+	// resolves the tenant from Host so the credential lookup runs inside
+	// the tenant's RLS envelope. The wire in cmd/server/invite_wire.go
+	// pre-wraps the handler with a per-IP + per-token-prefix rate limit
+	// (G6), so the slot here is the already-throttled http.Handler.
+	//
+	// Nil keeps /invite/{token} unmounted; cmd/server passes nil when
+	// DATABASE_URL or REDIS_URL is unset so partial-stack boots stay
+	// green.
+	//
+	// Routes mounted:
+	//   GET    /invite/{token}
+	//   POST   /invite/{token}
+	WebInvite http.Handler
 
 	// WebChat is the SIN-64972 public webchat widget surface from
 	// internal/adapter/channels/webchat (ADR-0021). Mounted inside the
@@ -718,6 +752,11 @@ func (d Deps) WebSurfaces() map[string]bool {
 		// CTO Rule-3 authorization to update the three router_surfaces_test
 		// pins; mirrors the gate on the mount below (deps.WebChannels != nil).
 		"channels": d.WebChannels != nil,
+		// SIN-66508 — tenant user-management admin surface
+		// (/settings/users, shipped by SIN-66496). Added to the inventory
+		// under CTO Rule-3 authorization to update the router_surfaces_test
+		// pins; mirrors the gate on the mount below (deps.WebUsers != nil).
+		"users": d.WebUsers != nil,
 	}
 }
 
@@ -949,6 +988,20 @@ func NewRouter(deps Deps) http.Handler {
 			tenanted.Method(http.MethodGet, "/c/{slug}", deps.WebCampaignPublic)
 		}
 
+		// SIN-66510 — public invite / set-password page. Mounted inside
+		// the tenanted group so middleware.TenantScope resolves the Host
+		// to a Tenant BEFORE the handler runs (the credential lookup then
+		// runs inside that tenant's RLS envelope); outside the authed
+		// sub-group because the token IS the credential — there is no
+		// session yet. deps.WebInvite re-dispatches GET vs POST on the
+		// exact method+path it registered, so both routes share one slot.
+		// The wire pre-wraps it with the per-IP + per-token-prefix rate
+		// limit (G6).
+		if deps.WebInvite != nil {
+			tenanted.Method(http.MethodGet, "/invite/{token}", deps.WebInvite)
+			tenanted.Method(http.MethodPost, "/invite/{token}", deps.WebInvite)
+		}
+
 		// SIN-63191 / Fase 6 PR4 — public LGPD-disclosure page.
 		// Unauthenticated by design (LGPD art. 9). Mounted alongside
 		// /c/{slug} so middleware.TenantScope resolves the tenant from
@@ -1073,6 +1126,7 @@ func NewRouter(deps Deps) http.Handler {
 				CampaignsEnabled:   deps.WebCampaigns != nil,
 				PrivacyEnabled:     deps.WebPrivacy != nil,
 				AIPolicyEnabled:    deps.WebAIPolicy != nil,
+				UsersEnabled:       deps.WebUsers != nil,
 				ConsentEnabled:     deps.WebConsent != nil,
 				// SIN-63940 / UX-F3 — Fase 6 surfaces. Each flag reads
 				// the matching dep slot the wire layer fills in
@@ -1104,6 +1158,10 @@ func NewRouter(deps Deps) http.Handler {
 					// /settings/channels mount (memory
 					// feedback_hello_tenant_sync_on_mount).
 					ChannelsEnabled: deps.WebChannels != nil,
+					// SIN-66496 — mirror the /settings/users mount so the
+					// gerente sees the user-management link post-login
+					// (memory feedback_hello_tenant_sync_on_mount).
+					UsersEnabled: deps.WebUsers != nil,
 				},
 			}))
 			if deps.Authorizer != nil {
@@ -1244,6 +1302,39 @@ func NewRouter(deps Deps) http.Handler {
 				authed.Method(http.MethodPost, "/settings/ai-policy", webAIPolicy)
 				authed.Method(http.MethodPatch, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
 				authed.Method(http.MethodDelete, "/settings/ai-policy/{scope_type}/{scope_id}", webAIPolicy)
+			}
+
+			// SIN-66496 — HTMX tenant user-management admin UI. The whole
+			// surface is gerente-only (SIN-66494 G3): each route carries a
+			// RequireAction gate mapped to {RoleTenantGerente}, so atendente
+			// / common get 403 before the handler runs. Distinct actions per
+			// operation give per-operation audit granularity. Every write
+			// route (POST create, PATCH role, POST deactivate/reactivate) is
+			// enumerated individually — chi does not mount subtrees (the
+			// route-enumeration trap). When Authorizer is nil (router tests
+			// that don't exercise authz) the gate skips and the inner mux
+			// still runs with a Principal.
+			if deps.WebUsers != nil {
+				gate := func(action iam.Action) http.Handler {
+					if deps.Authorizer != nil {
+						return middleware.RequireAuth(middleware.RequireAuthDeps{})(
+							middleware.RequireAction(deps.Authorizer, action, nil)(deps.WebUsers),
+						)
+					}
+					return middleware.RequireAuth(middleware.RequireAuthDeps{})(deps.WebUsers)
+				}
+				listGate := gate(iam.ActionTenantUserList)
+				createGate := gate(iam.ActionTenantUserCreate)
+				updateGate := gate(iam.ActionTenantUserUpdate)
+				deactivateGate := gate(iam.ActionTenantUserDeactivate)
+
+				authed.Method(http.MethodGet, "/settings/users", listGate)
+				authed.Method(http.MethodGet, "/settings/users/new", createGate)
+				authed.Method(http.MethodGet, "/settings/users/{id}/edit", updateGate)
+				authed.Method(http.MethodPost, "/settings/users", createGate)
+				authed.Method(http.MethodPatch, "/settings/users/{id}", updateGate)
+				authed.Method(http.MethodPost, "/settings/users/{id}/deactivate", deactivateGate)
+				authed.Method(http.MethodPost, "/settings/users/{id}/reactivate", deactivateGate)
 			}
 
 			// SIN-62907 — HTMX catalog admin UI (Fase 3 W4C). Same
@@ -1919,6 +2010,18 @@ func buildLoginRateLimit(deps Deps) func(http.Handler) http.Handler {
 // intentionally minimal: it logs status, method, path, and request id —
 // nothing that depends on a body parse, since that would interfere with
 // the body-form interop pattern documented on handler.LoginConfig.
+//
+// The "path" attribute is populated from the matched chi route pattern
+// (httpRouteOf), NOT the raw r.URL.Path. This is a defense-in-depth
+// redaction: routes that carry a secret in a path segment — e.g.
+// GET|POST /invite/{token}, where the token IS the unauthenticated
+// set-password credential (SIN-66510) — would otherwise leak the
+// plaintext credential into the access log (CWE-532). Logging the
+// pattern "/invite/{token}" keeps the endpoint observable while
+// redacting the secret, and also lowers log cardinality. The log line
+// is emitted AFTER next.ServeHTTP, so chi's RouteContext is populated
+// and httpRouteOf returns the matched pattern; unmatched requests (404)
+// fall back to the raw path, which has no secret segment to leak.
 func slogRequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1927,7 +2030,7 @@ func slogRequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			logger.LogAttrs(r.Context(), slog.LevelInfo, "http: request",
 				slog.String("request_id", chimw.GetReqID(r.Context())),
 				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
+				slog.String("path", httpRouteOf(r)),
 				slog.Int("status", ww.Status()),
 			)
 		})
