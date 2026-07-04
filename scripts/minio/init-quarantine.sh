@@ -34,7 +34,7 @@ write_policy_app_runtime() {
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:HeadObject"],
+      "Action": ["s3:GetObject", "s3:PutObject"],
       "Resource": ["arn:aws:s3:::media/*"]
     },
     {
@@ -67,7 +67,7 @@ write_policy_worker_quarantine() {
     {
       "Sid": "WriteToQuarantine",
       "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:HeadObject"],
+      "Action": ["s3:PutObject"],
       "Resource": ["arn:aws:s3:::media-quarantine/*"]
     }
   ]
