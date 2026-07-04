@@ -1,5 +1,5 @@
--- 0132_audit_log_security_user_events.down.sql
--- Reverse 0132: restore the 0129 event_type vocabulary (drop the four
+-- 0136_audit_log_security_user_events.down.sql
+-- Reverse 0136: restore the 0129 event_type vocabulary (drop the four
 -- user-management literals). Any rows carrying the new literals must be
 -- removed before this runs, or the ADD CONSTRAINT fails — expected for a
 -- rollback.

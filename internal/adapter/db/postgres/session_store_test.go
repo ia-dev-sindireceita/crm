@@ -51,7 +51,7 @@ func freshDBWithIAM(t *testing.T) *testpg.DB {
 		// SIN-66496: users.deactivated_at — the credential reader now filters
 		// `AND deactivated_at IS NULL`, so the fixture schema must carry the
 		// column to match production (login must reject deactivated users).
-		"0130_users_deactivated_at.up.sql",
+		"0134_users_deactivated_at.up.sql",
 	} {
 		path := filepath.Join(harness.MigrationsDir(), name)
 		body, err := os.ReadFile(path)

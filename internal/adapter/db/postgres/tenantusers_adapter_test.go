@@ -34,8 +34,8 @@ import (
 var tenantUsersMigrationChain = []string{
 	"0004_create_tenant.up.sql",
 	"0005_create_users.up.sql",
-	"0130_users_deactivated_at.up.sql",
-	"0131_user_credential_tokens.up.sql",
+	"0134_users_deactivated_at.up.sql",
+	"0135_user_credential_tokens.up.sql",
 }
 
 func freshDBWithTenantUsers(t *testing.T) *testpg.DB {

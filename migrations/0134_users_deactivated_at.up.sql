@@ -1,4 +1,4 @@
--- 0130_users_deactivated_at.up.sql
+-- 0134_users_deactivated_at.up.sql
 -- SIN-66496 (child of SIN-66493 / board SIN-66492) — tenant user management.
 --
 -- Numbering: ADR 0086 fork-only numbering. Last landed migration on fork

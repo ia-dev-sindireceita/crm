@@ -1,4 +1,4 @@
--- 0132_audit_log_security_user_events.up.sql
+-- 0136_audit_log_security_user_events.up.sql
 -- SIN-66496 / security gate SIN-66494 §3 — audit vocabulary for tenant user
 -- management. These actions are tenant-initiated (run as app_runtime, NOT
 -- app_master_ops), so the master_ops trigger/GUC does NOT apply; the
@@ -12,7 +12,7 @@
 --   * password_reset   — an invite/reset token was consumed / password set.
 --
 -- The CHECK is DROP + re-ADD with the FULL restated vocabulary (mirrors the
--- 0129 list plus the four above). Numbering: ADR 0086 fork-only, after 0131.
+-- 0129 list plus the four above). Numbering: ADR 0086 fork-only, after 0135.
 --
 -- Run as app_admin. Reversible: DOWN restores the 0129 vocabulary.
 

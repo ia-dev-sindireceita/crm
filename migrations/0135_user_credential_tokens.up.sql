@@ -1,4 +1,4 @@
--- 0131_user_credential_tokens.up.sql
+-- 0135_user_credential_tokens.up.sql
 -- SIN-66496 / security gate SIN-66494 — initial-credential policy = OPTION A
 -- (invite-by-link). When a gerente creates a tenant user, no server-side
 -- usable password ever exists: the account is seeded with a random,
@@ -10,7 +10,7 @@
 -- plaintext. Lookup is by hash. High-entropy token → fast hash (SHA-256) is
 -- correct; argon2 is for low-entropy human passwords only.
 --
--- Numbering: ADR 0086 fork-only, after 0130. Follows the canonical
+-- Numbering: ADR 0086 fork-only, after 0134. Follows the canonical
 -- four-policy RLS template (docs/adr/0072-rls-policies.md), tenant_id
 -- denormalized for index-backed policies (ADR 0072 §6), mirroring
 -- tenant_channels in 0128.

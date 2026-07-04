@@ -142,7 +142,7 @@ const (
 	//   * password_reset   — an invite/reset token was consumed / password set.
 	//
 	// role changes reuse the existing role_change literal. The CHECK clause in
-	// migration 0132 mirrors these literals — extending the constants requires
+	// migration 0136 mirrors these literals — extending the constants requires
 	// extending that migration first. Target jsonb NEVER carries the token,
 	// password, or hash.
 	SecurityEventUserCreate     SecurityEvent = "user_create"
