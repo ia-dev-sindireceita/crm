@@ -47,6 +47,15 @@ type CSRFTokenFn func(*http.Request) string
 // UserIDFn returns the authenticated user id.
 type UserIDFn func(*http.Request) uuid.UUID
 
+// ChannelAssociationWriter persists the (channel, association) → tenant
+// mapping the inbound webhook entry-point uses to resolve a tenant. For a
+// WhatsApp API channel the association is the Meta phone_number_id
+// (SIN-67143); it is the write side of the postgres
+// ChannelAssociationLookup the webhook adapter reads.
+type ChannelAssociationWriter interface {
+	SaveAssociation(ctx context.Context, tenantID uuid.UUID, channel, association string) error
+}
+
 // Deps bundles the handler collaborators. Channels + Access are required;
 // the rest default (Logger → slog.Default) or degrade gracefully
 // (CSRFToken / UserID / UserLabels nil → shell fallbacks).
@@ -74,6 +83,14 @@ type Deps struct {
 	// broken/half-wired QR channel. Flag ON (once SIN-66252 lands the QR
 	// onboarding): the submit proceeds to a real create.
 	WhatsAppWebEnabled bool
+	// Associations upserts the (channel, association) → tenant mapping when a
+	// WhatsApp API channel is registered (SIN-67143), so the inbound webhook
+	// entry-point can resolve the tenant from the Meta phone_number_id.
+	// Optional (nil ⇒ skip): a nil writer disables WhatsApp-API onboarding —
+	// the channel row still persists but the phone_number_id-format guard and
+	// the association upsert are skipped, so the surface renders + creates
+	// channels under fail-soft wiring. Production always provides it.
+	Associations ChannelAssociationWriter
 }
 
 // Handler serves the SIN-66391 channel-management admin surface.
@@ -209,6 +226,15 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "type", whatsAppWebNotReadyMsg)
 		return
 	}
+	// WhatsApp API onboarding (SIN-67143): when the association writer is wired
+	// (production always wires it; nil ⇒ feature-flag skip) the identity is the
+	// Meta phone_number_id and must be all-digits. Validate at the boundary,
+	// BEFORE any persistence, so a malformed id never reaches storage or the
+	// webhook resolver.
+	if key == channelKeyWhatsApp && h.deps.Associations != nil && !isAllDigits(identity) {
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "phone_number_id deve conter apenas dígitos.")
+		return
+	}
 	// TODO(SIN-66252): hook QR-session onboarding for key == whatsapp_web when
 	// the flag is ON. Until then, an ON flag persists a plain channel row with
 	// channel_key=whatsapp_web (no QR handshake yet).
@@ -225,6 +251,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		}
 		h.fail(w, "create channel", err)
 		return
+	}
+	// Persist the phone_number_id → tenant association so the inbound webhook
+	// entry-point can resolve this tenant (SIN-67143). The channel row already
+	// committed above; a write failure surfaces as a 500 rather than silently
+	// leaving the channel unroutable. The identity was validated all-digits at
+	// the boundary above.
+	if key == channelKeyWhatsApp && h.deps.Associations != nil {
+		if err := h.deps.Associations.SaveAssociation(r.Context(), tenant.ID, channelKeyWhatsApp, identity); err != nil {
+			h.fail(w, "save channel association", err)
+			return
+		}
 	}
 	if err := h.deps.Access.ReplaceAccess(r.Context(), tenant.ID, ch.ID, userIDs); err != nil {
 		h.fail(w, "grant channel access", err)
@@ -630,6 +667,23 @@ func parseUserIDs(raw []string) []uuid.UUID {
 // channel). r.ParseForm must have been called by the caller.
 func parseRestricted(r *http.Request) bool {
 	return strings.TrimSpace(r.PostFormValue("restricted")) != ""
+}
+
+// isAllDigits reports whether s is non-empty and every byte is an ASCII
+// digit. It validates a WhatsApp phone_number_id at the boundary
+// (SIN-67143): Meta ids are all-digits, so anything else — a phone number
+// with "+"/spaces, or a forged value — is rejected before persistence. A
+// hand-rolled loop avoids a package-level regexp for a trivial check.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // buildNavItems / buildUserMenu mirror the wasession / dashboard chrome so
