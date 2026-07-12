@@ -24,6 +24,7 @@ import (
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgchannels "github.com/pericles-luz/crm/internal/adapter/db/postgres/channels"
 	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
+	pgstore "github.com/pericles-luz/crm/internal/adapter/store/postgres"
 	"github.com/pericles-luz/crm/internal/channels"
 	webchannels "github.com/pericles-luz/crm/internal/web/channels"
 	"github.com/pericles-luz/crm/internal/web/userlabel"
@@ -71,7 +72,13 @@ func buildWebChannelsHandler(ctx context.Context, getenv func(string) string) (h
 	} else {
 		auditor = newChannelAccessAuditor(splitLogger, slog.Default())
 	}
-	handler, err := assembleWebChannelsHandlerFlagged(store, userDir, slog.Default(), whatsappWebEnabled(getenv), auditor)
+	// WhatsApp API onboarding (SIN-67143): the association writer persists a
+	// registered channel's phone_number_id → tenant mapping on the same
+	// RLS-gated runtime pool, so the inbound webhook entry-point can resolve
+	// the tenant. Mirrors the NewChannelAssociationLookup wiring on the read
+	// side.
+	associations := pgstore.NewChannelAssociationWriter(pool)
+	handler, err := assembleWebChannelsHandlerWithDeps(store, userDir, slog.Default(), whatsappWebEnabled(getenv), associations, auditor)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/channels disabled — assemble: %v", err)
@@ -116,8 +123,19 @@ func whatsappWebEnabled(getenv func(string) string) bool {
 
 // assembleWebChannelsHandlerFlagged is the flag-aware assembly seam. The
 // wsWebEnabled input threads FEATURE_WHATSAPP_WEB_ENABLED from the boot
-// environment into the handler's WhatsAppWebEnabled field.
+// environment into the handler's WhatsAppWebEnabled field. It delegates to
+// assembleWebChannelsHandlerWithDeps with no association writer (nil ⇒
+// WhatsApp-API onboarding skipped), keeping the pre-SIN-67143 call sites
+// source-compatible.
 func assembleWebChannelsHandlerFlagged(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger, wsWebEnabled bool, auditor ...webchannels.AccessAuditor) (http.Handler, error) {
+	return assembleWebChannelsHandlerWithDeps(store, userLabels, logger, wsWebEnabled, nil, auditor...)
+}
+
+// assembleWebChannelsHandlerWithDeps is the deepest assembly seam. It adds
+// the optional WhatsApp-API association writer (SIN-67143) on top of the
+// flag-aware seam; a nil writer disables onboarding so the surface still
+// renders + creates channels under fail-soft wiring.
+func assembleWebChannelsHandlerWithDeps(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger, wsWebEnabled bool, associations webchannels.ChannelAssociationWriter, auditor ...webchannels.AccessAuditor) (http.Handler, error) {
 	if store == nil {
 		return nil, errors.New("channels_wire: store is nil")
 	}
@@ -137,6 +155,7 @@ func assembleWebChannelsHandlerFlagged(store channelsStore, userLabels userlabel
 		Audit:              accessAuditor,
 		Logger:             logger,
 		WhatsAppWebEnabled: wsWebEnabled,
+		Associations:       associations,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("channels_wire: build handler: %w", err)
@@ -148,3 +167,7 @@ func assembleWebChannelsHandlerFlagged(store channelsStore, userLabels userlabel
 
 // Compile-time guard: the pgx adapter satisfies the channelsStore union.
 var _ channelsStore = (*pgchannels.Store)(nil)
+
+// Compile-time guard: the postgres association writer satisfies the web
+// handler's ChannelAssociationWriter port (SIN-67143).
+var _ webchannels.ChannelAssociationWriter = (*pgstore.ChannelAssociationWriter)(nil)
