@@ -10,16 +10,35 @@
 <link rel="stylesheet" href="/static/css/login.css">
 <link rel="stylesheet" href="/static/css/brand.css">
 <link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
-<title>2FA já está ativo — Pitho</title>
+<title>{{ if .AllowRecovery }}Reconfigurar 2FA{{ else }}2FA já está ativo{{ end }} — Pitho</title>
 </head>
 <body>
 <main class="login-page">
   <section class="login-card" role="region" aria-labelledby="already-heading">
     <header class="login-card__header">
       <span class="login-card__wordmark login-card__wordmark--brand" aria-hidden="true" data-testid="login-wordmark"><img class="pitho-logo pitho-logo--light" src="/static/brand/pitho-logo-light.svg" alt="Pitho" /><img class="pitho-logo pitho-logo--dark" src="/static/brand/pitho-logo-dark.svg" alt="Pitho" /></span>
-      <h1 id="already-heading" class="login-card__title">2FA já está ativo</h1>
+      <h1 id="already-heading" class="login-card__title">{{ if .AllowRecovery }}Reconfigurar verificação em duas etapas{{ else }}2FA já está ativo{{ end }}</h1>
       <p class="login-card__subtitle">Verificação em duas etapas</p>
     </header>
+    {{ if .AllowRecovery }}
+    <p class="login-card__help">
+      Esta conta já tem verificação em duas etapas configurada. Para gerar um
+      novo segredo — por exemplo, se você perdeu o acesso ao autenticador —
+      confirme sua identidade com um <strong>código de recuperação</strong>
+      (ou o código atual do autenticador, se ainda o tiver). Isso invalida o
+      autenticador e os códigos de recuperação anteriores.
+    </p>
+    {{ if .ErrorMessage }}<p role="alert" class="alert alert--danger login-card__error" data-testid="setup-error">{{ .ErrorMessage }}</p>{{ end }}
+    <form method="POST" action="/admin/2fa/setup" hx-post="/admin/2fa/setup">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <div class="login-card__field">
+        <label for="setup-stepup-code">Código de recuperação ou TOTP atual</label>
+        <input id="setup-stepup-code" type="text" name="code" autocomplete="one-time-code" aria-describedby="setup-stepup-help" required>
+        <p id="setup-stepup-help" class="login-card__help">Digite um código de recuperação salvo, ou os 6 dígitos do app autenticador se você ainda tiver acesso.</p>
+      </div>
+      <button type="submit" class="btn btn--primary login-card__submit">Reconfigurar 2FA</button>
+    </form>
+    {{ else }}
     <p class="login-card__help">
       A verificação em duas etapas já está configurada nesta conta. Não é
       necessário fazer nada — seu autenticador atual continua válido.
@@ -40,6 +59,7 @@
       </div>
       <button type="submit" class="btn btn--primary login-card__submit">Gerar novo segredo</button>
     </form>
+    {{ end }}
   </section>
 </main>
 </body>
