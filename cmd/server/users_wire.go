@@ -84,7 +84,11 @@ func assembleWebUsersHandler(repo tenantusers.Repository, hasher tenantusers.Has
 	if err != nil {
 		return nil, fmt.Errorf("users_wire: build service: %w", err)
 	}
-	h, err := webusers.New(webusers.Deps{Service: svc, Logger: logger})
+	h, err := webusers.New(webusers.Deps{
+		Service:   svc,
+		CSRFToken: csrfTokenFromSessionContext,
+		Logger:    logger,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("users_wire: build handler: %w", err)
 	}

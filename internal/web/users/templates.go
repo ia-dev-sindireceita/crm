@@ -3,11 +3,19 @@ package users
 import "html/template"
 
 // pageData is the view-model for the full page and the list partial.
+//
+// CSRFMeta and HXHeaders are required because the authed group's CSRF
+// middleware rejects POST/PATCH without an X-CSRF-Token header. Every
+// mutation on this surface (create, role change, deactivate, reactivate)
+// is an HTMX request that bubbles up from inside <body>; hx-headers on
+// <body> makes each inherit the token. Without it they 403 (SIN-67232).
 type pageData struct {
 	TenantName       string
 	Users            []userRow
 	Count            int
 	Flash            flashData
+	CSRFMeta         template.HTML
+	HXHeaders        template.HTMLAttr
 	TenantThemeStyle template.CSS
 	CSPNonce         string
 }
@@ -75,13 +83,14 @@ const pageSrc = `{{define "users.page"}}<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Usuários — {{.TenantName}}</title>
+  {{.CSRFMeta}}
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/users.css">
   {{- with .TenantThemeStyle}}<style id="tenant-theme" nonce="{{$.CSPNonce}}">{{.}}</style>{{end}}
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" nonce="{{.CSPNonce}}" defer></script>
 </head>
-<body>
+<body {{.HXHeaders}}>
   <main class="users-shell" role="main" aria-label="Usuários do tenant">
     <header class="users-header">
       <h1>Usuários — {{.TenantName}}</h1>
