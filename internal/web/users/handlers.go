@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pericles-luz/crm/internal/adapter/httpapi/csrf"
 	"github.com/pericles-luz/crm/internal/branding"
 	"github.com/pericles-luz/crm/internal/http/middleware/csp"
 	"github.com/pericles-luz/crm/internal/iam"
@@ -29,12 +30,21 @@ type Service interface {
 	Reactivate(ctx context.Context, actor tenantusers.Actor, id uuid.UUID) (tenantusers.User, error)
 }
 
-// Deps bundles handler collaborators. Service is required; Now and Logger
-// default.
+// CSRFTokenFn returns the request's CSRF token, resolved from the session
+// context populated by the authed group's CSRF middleware (double-submit,
+// ADR 0073). It is transported to HTMX via hx-headers on <body> so every
+// state-changing request on this surface carries X-CSRF-Token; without it
+// the middleware rejects the mutation with Forbidden before role/2FA is
+// even evaluated (SIN-67232).
+type CSRFTokenFn func(*http.Request) string
+
+// Deps bundles handler collaborators. Service is required; CSRFToken, Now
+// and Logger default.
 type Deps struct {
-	Service Service
-	Now     func() time.Time
-	Logger  *slog.Logger
+	Service   Service
+	CSRFToken CSRFTokenFn
+	Now       func() time.Time
+	Logger    *slog.Logger
 }
 
 // Handler serves the /settings/users HTMX surface.
@@ -46,6 +56,13 @@ type Handler struct {
 func New(deps Deps) (*Handler, error) {
 	if deps.Service == nil {
 		return nil, errors.New("web/users: Service is required")
+	}
+	if deps.CSRFToken == nil {
+		// Default keeps existing callers/tests working; production wires the
+		// real session-backed resolver (users_wire.go). An empty token still
+		// renders the hx-headers attribute — the token value simply resolves
+		// per request.
+		deps.CSRFToken = func(*http.Request) string { return "" }
 	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
@@ -346,10 +363,13 @@ func (h *Handler) pageData(r *http.Request, rows []userRow) pageData {
 	if t, err := tenancy.FromContext(r.Context()); err == nil {
 		name = t.Name
 	}
+	token := h.deps.CSRFToken(r)
 	return pageData{
 		TenantName:       name,
 		Users:            rows,
 		Count:            len(rows),
+		CSRFMeta:         csrf.MetaTag(token),
+		HXHeaders:        csrf.HXHeadersAttr(token),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 		CSPNonce:         csp.Nonce(r.Context()),
 	}
