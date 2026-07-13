@@ -21,7 +21,7 @@ jobs:
   customdomainnet:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
