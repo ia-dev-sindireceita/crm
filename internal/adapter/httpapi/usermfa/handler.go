@@ -160,14 +160,26 @@ type setupActor struct {
 //  2. The mid-login __Host-mfa-pending cookie — the original, unchanged
 //     forced-enrolment path.
 //
-// Guard against silent secret rotation: a full-session user who is ALREADY
-// enrolled never reaches Enroll on a bare GET (that would upsert a fresh
-// seed + invalidate recovery codes = self-lockout / DoS). They get the
-// styled "2FA já ativo" page; rotating an existing secret requires a
-// step-up (a current valid TOTP) on POST. First-time enrolment needs no
-// step-up. When neither predicate matches, the handler redirects to the
-// styled login page — it does NOT emit a raw 401 or a false 2fa_required
-// audit row.
+// Guard against silent secret rotation (SIN-67210 F1). An ALREADY-enrolled
+// actor — on EITHER predicate — never reaches Enroll on a bare GET (that
+// would upsert a fresh seed + invalidate recovery codes = self-lockout / DoS,
+// AND, on the password-only pending path, would let a stolen password alone
+// defeat 2FA by re-enrolling a new authenticator). They get the styled
+// re-enrol gate; rotating an existing secret requires proof of the current
+// factor on POST:
+//
+//   - Full-session path (post-login __Host-sess-tenant): a valid current
+//     TOTP. The user is already past 2FA, so the authenticator is the
+//     expected proof; recovery codes are handled by the regenerate flow.
+//   - Mid-login pending path (__Host-mfa-pending, password only): a valid
+//     current TOTP OR a valid recovery code. Recovery is the realistic
+//     lost-authenticator escape (SIN-67210 F2), and requiring possession of
+//     the current factor is exactly the property 2FA exists to guarantee —
+//     a stolen password can no longer silently rotate the secret.
+//
+// First-time enrolment (no user_mfa row, either predicate) needs no step-up.
+// When neither predicate matches, the handler redirects to the styled login
+// page — it does NOT emit a raw 401 or a false 2fa_required audit row.
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet, http.MethodPost:
@@ -180,13 +192,9 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !act.fromSession {
-		// Mid-login pending path — behaviour unchanged: enrol directly.
-		h.renderEnrollment(w, r, act)
-		return
-	}
-	// Full-session path: guard against silent rotation of an existing
-	// secret before ever calling Enroll.
+	// Complete mediation: the silent-rotation guard runs on BOTH predicates,
+	// not just the full session. The pending (password-only) path used to
+	// enrol directly here — that was the F1 bypass.
 	enrolled, err := h.cfg.Enrollment.IsEnrolled(r.Context(), act.userID)
 	if err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: enrollment check failed",
@@ -197,33 +205,62 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !enrolled {
-		// First-time enrolment for a logged-in user — no step-up.
+		// First-time enrolment (either predicate) — no step-up.
 		h.renderEnrollment(w, r, act)
 		return
 	}
-	// Already enrolled. A bare GET must NOT rotate; POST rotates only
-	// behind a valid current TOTP (step-up).
+	// Already enrolled: gate the rotation behind proof of the current factor.
+	// The pending path additionally accepts a recovery code (allowRecovery).
+	h.handleEnrolledSetup(w, r, act, !act.fromSession)
+}
+
+// handleEnrolledSetup gates secret rotation for an already-enrolled actor
+// behind proof of the current factor (SIN-67210 F1). A bare GET never
+// rotates — it renders the styled re-enrol gate. On POST the actor must
+// present a valid current TOTP; when allowRecovery is true (the mid-login
+// pending path, where a lost authenticator is the realistic case) a valid
+// recovery code is also accepted. Full-session callers (allowRecovery=false)
+// keep the TOTP-only contract, so a non-6-digit code is a 400 malformed
+// request, never a recovery attempt.
+func (h *Handler) handleEnrolledSetup(w http.ResponseWriter, r *http.Request, act setupActor, allowRecovery bool) {
 	if r.Method == http.MethodGet {
-		h.renderAlreadyEnrolled(w, r, "", http.StatusOK)
+		h.renderAlreadyEnrolled(w, r, "", http.StatusOK, allowRecovery)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.renderAlreadyEnrolled(w, r, "Requisição inválida.", http.StatusBadRequest)
+		h.renderAlreadyEnrolled(w, r, "Requisição inválida.", http.StatusBadRequest, allowRecovery)
 		return
 	}
 	code := strings.TrimSpace(r.PostForm.Get("code"))
-	if !isSixDigit(code) {
-		h.renderAlreadyEnrolled(w, r, "Digite o código de 6 dígitos do seu autenticador atual.", http.StatusBadRequest)
+	var verifyErr error
+	switch {
+	case isSixDigit(code):
+		verifyErr = h.cfg.Verifier.Verify(r.Context(), act.userID, code)
+	case allowRecovery && code != "":
+		reqCtx := mfa.RequestContext{
+			IP:        remoteIP(r),
+			UserAgent: r.Header.Get("User-Agent"),
+			Route:     r.URL.Path,
+		}
+		verifyErr = h.cfg.Consumer.ConsumeRecovery(r.Context(), act.userID, code, reqCtx)
+	default:
+		// Not a 6-digit TOTP and (full-session) recovery not accepted, or an
+		// empty submission. Malformed — reject before any verify/enroll.
+		msg := "Digite o código de 6 dígitos do seu autenticador atual."
+		if allowRecovery {
+			msg = "Digite o código do seu autenticador atual ou um código de recuperação."
+		}
+		h.renderAlreadyEnrolled(w, r, msg, http.StatusBadRequest, allowRecovery)
 		return
 	}
-	switch err := h.cfg.Verifier.Verify(r.Context(), act.userID, code); {
-	case errors.Is(err, mfa.ErrInvalidCode):
-		h.handleStepUpWrongCode(w, r, act.userID)
+	switch {
+	case errors.Is(verifyErr, mfa.ErrInvalidCode):
+		h.handleStepUpWrongCode(w, r, act.userID, allowRecovery)
 		return
-	case err != nil:
+	case verifyErr != nil:
 		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: step-up verify failed",
 			slog.String("user_id", act.userID.String()),
-			slog.String("err", err.Error()),
+			slog.String("err", verifyErr.Error()),
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -250,7 +287,7 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 // never rotated by a guess. At the threshold the counter is reset and the
 // request gets 429 + Retry-After (mirrors handleWrongCode) instead of the
 // form — the attacker is shut out for the window.
-func (h *Handler) handleStepUpWrongCode(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+func (h *Handler) handleStepUpWrongCode(w http.ResponseWriter, r *http.Request, userID uuid.UUID, allowRecovery bool) {
 	count, err := h.cfg.Failures.Increment(r.Context(), userID)
 	if err != nil {
 		h.cfg.Logger.ErrorContext(r.Context(), "usermfa: step-up failure increment failed",
@@ -286,7 +323,11 @@ func (h *Handler) handleStepUpWrongCode(w http.ResponseWriter, r *http.Request, 
 		_, _ = w.Write([]byte("<p>muitas tentativas; tente novamente em 15 minutos</p>\n"))
 		return
 	}
-	h.renderAlreadyEnrolled(w, r, "Código inválido. Tente novamente com um código atual.", http.StatusUnauthorized)
+	msg := "Código inválido. Tente novamente com um código atual."
+	if allowRecovery {
+		msg = "Código inválido. Tente novamente com um código atual ou um código de recuperação."
+	}
+	h.renderAlreadyEnrolled(w, r, msg, http.StatusUnauthorized, allowRecovery)
 }
 
 // resolveSetupActor applies the dual access predicate for /admin/2fa/setup.
@@ -433,12 +474,14 @@ func (h *Handler) renderEnrollment(w http.ResponseWriter, r *http.Request, act s
 	}
 }
 
-// renderAlreadyEnrolled renders the styled "2FA já está ativo" page for a
-// full-session user who already has a secret. It NEVER calls Enroll, so a
-// GET cannot rotate the secret. The page offers a step-up form (enter a
-// current TOTP) that POSTs back to /admin/2fa/setup to deliberately
-// re-enrol.
-func (h *Handler) renderAlreadyEnrolled(w http.ResponseWriter, r *http.Request, errMsg string, status int) {
+// renderAlreadyEnrolled renders the styled re-enrol gate for an actor who
+// already has a secret. It NEVER calls Enroll, so a GET cannot rotate the
+// secret. The page offers a step-up form that POSTs back to /admin/2fa/setup
+// to deliberately re-enrol. allowRecovery selects the copy + input contract:
+// false = full-session "2FA já ativo" (current TOTP only); true = mid-login
+// pending "reconfigurar 2FA" gate that also accepts a recovery code (the
+// lost-authenticator escape, SIN-67210 F2).
+func (h *Handler) renderAlreadyEnrolled(w http.ResponseWriter, r *http.Request, errMsg string, status int, allowRecovery bool) {
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -449,6 +492,7 @@ func (h *Handler) renderAlreadyEnrolled(w http.ResponseWriter, r *http.Request, 
 		// CSRF is mitigated by SameSite session cookies + the secret TOTP
 		// in the body, so the token stays empty by design.
 		CSRFToken:        "",
+		AllowRecovery:    allowRecovery,
 		CSPNonce:         csp.Nonce(r.Context()),
 		TenantThemeStyle: branding.ThemeStyleFromContext(r.Context()),
 	}
@@ -802,8 +846,12 @@ type regenerateViewData struct {
 }
 
 type alreadyEnrolledViewData struct {
-	ErrorMessage     string
-	CSRFToken        string
+	ErrorMessage string
+	CSRFToken    string
+	// AllowRecovery selects the re-enrol gate copy + input contract:
+	// true = mid-login pending path (recovery code accepted, lost-authenticator
+	// escape); false = full-session "2FA já ativo" (current TOTP only).
+	AllowRecovery    bool
 	CSPNonce         string
 	TenantThemeStyle template.CSS
 }
