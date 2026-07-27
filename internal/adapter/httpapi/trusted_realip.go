@@ -33,8 +33,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-
-	chimw "github.com/go-chi/chi/v5/middleware"
 )
 
 // defaultTrustedProxyCIDRs is the production-safe baseline: loopback +
@@ -71,15 +69,24 @@ const TrustedProxyEnv = "TRUSTED_PROXY_CIDRS"
 // trustedRealIP returns a middleware that:
 //
 //  1. inspects the immediate TCP peer (r.RemoteAddr) BEFORE any rewrite;
-//  2. if the peer IP is inside one of trusted, delegates to chimw.RealIP
-//     which honours the client-supplied identity headers;
+//  2. if the peer IP is inside one of trusted, rewrites r.RemoteAddr from
+//     the client-supplied identity headers via realIPFromHeaders (the
+//     inlined chi RealIP precedence — see that helper);
 //  3. otherwise serves the inner handler with r.RemoteAddr untouched,
 //     so the per-IP rate-limit middleware downstream sees the actual
 //     attacker IP rather than a forged value.
 //
 // An empty trusted slice disables the RealIP rewrite for every request
-// — equivalent to never mounting chimw.RealIP — which is the safe
-// failure mode if env parsing collapses entirely.
+// — equivalent to never honouring the identity headers — which is the
+// safe failure mode if env parsing collapses entirely.
+//
+// SIN-68109: the rewrite logic was previously delegated to
+// github.com/go-chi/chi/v5/middleware.RealIP, which chi v5.3.0 deprecated
+// as inherently IP-spoofable (GHSA-3fxj-6jh8-hvhx, GHSA-rjr7-jggh-pgcp,
+// GHSA-9g5q-2w5x-hmxf). We inline the same precedence in realIPFromHeaders
+// so this wrapper — whose trusted-proxy gate is exactly the mitigation
+// those advisories prescribe — no longer imports the deprecated symbol,
+// and is immune to its removal in chi v6.
 //
 // The wrapper is intentionally cheap: one IP parse + a linear walk over
 // trusted CIDRs per request. The trusted set is small (3–5 entries in
@@ -87,9 +94,7 @@ const TrustedProxyEnv = "TRUSTED_PROXY_CIDRS"
 // actual work — instead, NewTrustedRealIP pre-parses the slice once at
 // composition root.
 func trustedRealIP(trusted []*net.IPNet) func(http.Handler) http.Handler {
-	rewrite := chimw.RealIP
 	return func(next http.Handler) http.Handler {
-		rewritten := rewrite(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			peer := parsePeerIP(r.RemoteAddr)
 			if peer == nil || !ipIn(peer, trusted) {
@@ -104,9 +109,35 @@ func trustedRealIP(trusted []*net.IPNet) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			rewritten.ServeHTTP(w, r)
+			// Trusted peer: honour the identity headers, mirroring
+			// chi's (deprecated) middleware.RealIP behaviour.
+			if rip := realIPFromHeaders(r); rip != "" {
+				r.RemoteAddr = rip
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// realIPFromHeaders reproduces the header precedence of chi's deprecated
+// middleware.RealIP (True-Client-IP → X-Real-IP → first token of
+// X-Forwarded-For), returning the parsed IP string or "" when no valid
+// candidate is present. Inlined for SIN-68109 so trustedRealIP no longer
+// depends on the deprecated chimw.RealIP symbol; only reached for peers
+// that already passed the trusted-proxy CIDR gate in trustedRealIP.
+func realIPFromHeaders(r *http.Request) string {
+	var ip string
+	if tcip := r.Header.Get("True-Client-IP"); tcip != "" {
+		ip = tcip
+	} else if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		ip = xrip
+	} else if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		ip, _, _ = strings.Cut(xff, ",")
+	}
+	if ip == "" || net.ParseIP(ip) == nil {
+		return ""
+	}
+	return ip
 }
 
 // NewTrustedRealIP is the composition-root constructor used by NewRouter

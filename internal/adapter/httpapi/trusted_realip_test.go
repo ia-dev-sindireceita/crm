@@ -217,3 +217,81 @@ func TestNewTrustedRealIP_UnparseablePeerAddrIsUntrusted(t *testing.T) {
 		t.Fatalf("RemoteAddr = %q, want raw peer (unparseable → untrusted)", observed)
 	}
 }
+
+// TestNewTrustedRealIP_HeaderPrecedence pins the identity-header
+// precedence for a trusted peer (True-Client-IP → X-Real-IP → first
+// token of X-Forwarded-For), and that an unparseable candidate leaves
+// r.RemoteAddr on the raw peer. SIN-68109: this behaviour was previously
+// provided by chi's deprecated middleware.RealIP and is now inlined in
+// trustedRealIP's realIPFromHeaders helper — these cases guard the
+// re-implementation against precedence/validation drift.
+func TestNewTrustedRealIP_HeaderPrecedence(t *testing.T) {
+	t.Parallel()
+	const peer = "127.0.0.1:55555" // loopback → trusted by default allowlist
+
+	cases := []struct {
+		name           string
+		trueClientIP   string
+		xRealIP        string
+		xForwardedFor  string
+		wantRemoteAddr string
+	}{
+		{
+			name:           "true-client-ip wins over the others",
+			trueClientIP:   "203.0.113.1",
+			xRealIP:        "203.0.113.2",
+			xForwardedFor:  "203.0.113.3, 203.0.113.4",
+			wantRemoteAddr: "203.0.113.1",
+		},
+		{
+			name:           "x-real-ip wins when true-client-ip absent",
+			xRealIP:        "203.0.113.2",
+			xForwardedFor:  "203.0.113.3, 203.0.113.4",
+			wantRemoteAddr: "203.0.113.2",
+		},
+		{
+			name:           "first token of x-forwarded-for when it is the only header",
+			xForwardedFor:  "203.0.113.3, 203.0.113.4",
+			wantRemoteAddr: "203.0.113.3",
+		},
+		{
+			name:           "invalid candidate leaves raw peer untouched",
+			trueClientIP:   "not-an-ip",
+			wantRemoteAddr: peer,
+		},
+		{
+			name:           "no identity headers leaves raw peer untouched",
+			wantRemoteAddr: peer,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mw := httpapi.NewTrustedRealIP(func(string) string { return "" })
+
+			var observed string
+			handler := mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				observed = r.RemoteAddr
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+			req.RemoteAddr = peer
+			if tc.trueClientIP != "" {
+				req.Header.Set("True-Client-IP", tc.trueClientIP)
+			}
+			if tc.xRealIP != "" {
+				req.Header.Set("X-Real-IP", tc.xRealIP)
+			}
+			if tc.xForwardedFor != "" {
+				req.Header.Set("X-Forwarded-For", tc.xForwardedFor)
+			}
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if observed != tc.wantRemoteAddr {
+				t.Fatalf("RemoteAddr = %q, want %q", observed, tc.wantRemoteAddr)
+			}
+		})
+	}
+}
