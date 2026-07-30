@@ -40,6 +40,14 @@ type SendOutboundInput struct {
 	Body           string
 	SentByUserID   *uuid.UUID
 	ToExternalID   string
+	// IdempotencyKey is an optional at-most-once token forwarded to the
+	// outbound adapter as OutboundMessage.IdempotencyKey. When the web
+	// layer supplies a stable per-compose token, a retry or operator
+	// double-submit carrying the same key resolves to a single carrier
+	// send (see internal/adapter/channel/dispatch.Idempotent). An empty
+	// value keeps the pre-dispatcher behaviour (every send hits the
+	// carrier), so existing callers are unaffected.
+	IdempotencyKey string
 }
 
 // SendOutboundResult reports the outcome of an outbound send.
@@ -139,6 +147,7 @@ func (u *SendOutbound) Execute(ctx context.Context, in SendOutboundInput) (SendO
 		Channel:        conv.Channel,
 		ToExternalID:   to,
 		Body:           in.Body,
+		IdempotencyKey: in.IdempotencyKey,
 	}
 
 	cost, err := u.costFn(ctx, out)
