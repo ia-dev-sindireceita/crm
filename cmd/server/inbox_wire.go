@@ -16,9 +16,12 @@ package main
 //                   tenant-scoped GET /inbox so dev/staging operators
 //                   see a working loop without a real carrier. Lives
 //                   in inbox_wire_llmcustomer.go.
-//   - real        → returns nil + logs a clear "not yet wired" line.
-//                   The route shell stays unmounted on this listener
-//                   until SIN-63793 W3 ships the real-carrier wireup.
+//   - real        → real-carrier wireup (SIN-67470 / W3): postgres-backed
+//                   inbox read path + the WhatsApp Cloud outbound
+//                   dispatcher (SIN-68306). Surfaces the inbound messages
+//                   whatsapp_wire.go persists. Lives in
+//                   inbox_wire_real.go. Fail-soft to disabled stubs when
+//                   DATABASE_URL is unset.
 //
 // The handler.New constructor rejects nil required deps, so the
 // disabled branch supplies tiny in-process stubs rather than guarding
@@ -62,8 +65,7 @@ func buildInboxHandler(ctx context.Context, getenv func(string) string) (http.Ha
 	case InboxChannelProviderLLMCustomer:
 		return buildInboxHandlerLLMCustomer(ctx, getenv)
 	case InboxChannelProviderReal:
-		log.Printf("crm: inbox handler disabled — provider %q is not yet wired (SIN-63793 W3 follow-up)", provider)
-		return nil, noop
+		return buildInboxHandlerReal(ctx, getenv)
 	default:
 		log.Printf("crm: inbox handler disabled — provider %q is not recognised", provider)
 		return nil, noop
