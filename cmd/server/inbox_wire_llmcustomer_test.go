@@ -77,18 +77,25 @@ func TestBuildInboxHandler_LLMCustomer_NoDSN_DegradesToStubs(t *testing.T) {
 	}
 }
 
-func TestBuildInboxHandler_Real_ReturnsNil(t *testing.T) {
+func TestBuildInboxHandler_Real_NoDSN_DegradesToStubs(t *testing.T) {
 	t.Parallel()
-	// The "real" provider is intentionally not wired in W5 (deferred
-	// to SIN-63793 W3). The selector MUST return a nil handler so the
-	// chi router emits 404 for /inbox until the real-carrier wire
-	// lands, not a half-wired surface.
+	// SIN-67470 / W3: the real-carrier provider is now wired
+	// (inbox_wire_real.go). Without DATABASE_URL the production wrapper
+	// falls back to the disabled-mode stub mux — the same fail-soft posture
+	// as the llmcustomer branch — so the /inbox route shell stays mounted
+	// and degrades to "empty inbox" rather than 404'ing silently. A nil
+	// handler would make the surface disappear (see
+	// reference_crm_router_nil_dep_silent_skip in memory).
+	//
+	// This supersedes the pre-W3 TestBuildInboxHandler_Real_ReturnsNil,
+	// whose "returns nil until W3" contract this ticket intentionally
+	// overturns.
 	h, cleanup := buildInboxHandler(context.Background(), envOnly(map[string]string{
 		envInboxChannelProvider: string(InboxChannelProviderReal),
 	}))
 	t.Cleanup(cleanup)
-	if h != nil {
-		t.Fatalf("buildInboxHandler returned non-nil for provider=real; want nil until W3")
+	if h == nil {
+		t.Fatalf("buildInboxHandler returned nil for provider=real w/o DSN; want stub fallback")
 	}
 }
 

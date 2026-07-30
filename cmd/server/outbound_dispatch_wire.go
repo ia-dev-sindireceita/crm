@@ -30,14 +30,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
@@ -101,27 +99,13 @@ func assembleWhatsAppOutbound(sender inbox.OutboundChannel, limiter dispatch.Rat
 	return dispatch.NewRouter(map[string]inbox.OutboundChannel{channelswhatsapp.Channel: oc})
 }
 
-// whatsappOutboundPhoneNumberID returns the Meta phone_number_id associated
-// with a tenant for outbound sends, from tenant_channel_associations with
-// channel="whatsapp" (reverse of the inbound resolver direction). No row
-// means the tenant has not configured WhatsApp; the empty phone_number_id
-// surfaces as inbox.ErrChannelAuthFailed inside the Sender.
-func whatsappOutboundPhoneNumberID(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID) (string, error) {
-	const sql = `
-		SELECT association
-		  FROM tenant_channel_associations
-		 WHERE channel = $1 AND tenant_id = $2
-		 LIMIT 1`
-	var pn string
-	err := pool.QueryRow(ctx, sql, channelswhatsapp.Channel, tenantID).Scan(&pn)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", nil
-		}
-		return "", err
-	}
-	return pn, nil
-}
+// whatsappOutboundPhoneNumberID (the per-tenant Meta phone_number_id
+// resolver from tenant_channel_associations) is defined once in
+// whatsapp_outbound_wire.go (SIN-68302) and shared by both outbound
+// builders in this package. SIN-68306 originally shipped an identical copy
+// here; SIN-67470 W3 consolidated the two into the single canonical
+// definition so the cmd/server package builds (the duplicate declaration
+// was a merge-order collision between PR #488 and PR #489).
 
 // outboundRateMaxPerMin reads WHATSAPP_RATE_MAX_PER_MIN, falling back to
 // defaultOutboundRateMaxPerMin for an unset or non-positive value.
