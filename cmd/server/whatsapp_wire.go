@@ -168,6 +168,15 @@ func assembleWhatsAppAdapter(ctx context.Context, cfg whatsapp.Config, pool *pgx
 	})
 	rl := rlredis.New(rdb, "whatsapp")
 	flag := whatsapp.NewEnvFeatureFlag(getenv)
+	// SIN-68306: assemble the outbound WhatsApp dispatcher (Meta Cloud
+	// Sender + rate-limit + idempotency + channel router) and retain it
+	// for the send-outbound wireup. Not yet consumed by a live
+	// SendOutbound — the real inbox channel provider (SIN-63793 W3)
+	// injects it, mirroring the messenger_wire.go retain-for-follow-up
+	// pattern. META_GRAPH_TOKEN unset / flag-off → empty router no-op, so
+	// this never fails boot and issues no outbound HTTP.
+	outboundDispatcher := buildWhatsAppOutbound(getenv, pool, rdb, flag)
+	_ = outboundDispatcher
 	adapter, err := whatsapp.New(cfg, receiver, resolver, flag, rl,
 		whatsapp.WithLogger(slog.Default()),
 		// SIN-62768: dispatch carrier status callbacks to the inbox
