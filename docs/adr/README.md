@@ -15,6 +15,8 @@ inside the affected ADR, never via renumbering.
 
 | ADR  | Title                                                                                                            |
 |------|------------------------------------------------------------------------------------------------------------------|
+| 0112 | [WhatsApp app-level single webhook](./0112-whatsapp-app-level-single-webhook.md) — one `/webhooks/whatsapp` per Meta app, multi-tenant fan-out by `phone_number_id` + go-live handshake (SIN-68299) |
+| 0111 | [Image-carried compose deploy artifacts](./0111-image-carried-compose-deploy-artifacts.md) — compose extracted from the image at deploy |
 | 0110 | [Backup age recipient injected at runtime](./0110-backup-age-recipient-runtime-mount.md) — host-mount the public recipient, image keeps the placeholder (resolves SIN-66536 gap) |
 | 0109 | [Per-channel access — two-layer authz](./0109-per-channel-access-two-layer-authz.md) — surface-role gate + per-resource membership gate (extends 0090) |
 | 0021 | [Webchat embed — segurança](./0021-webchat-embed-seguranca.md) — CSP/CORS/CSRF, assinatura de origem, rate limit |
