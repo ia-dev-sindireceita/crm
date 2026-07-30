@@ -58,7 +58,7 @@ func buildInboxHandler(ctx context.Context, getenv func(string) string) (http.Ha
 	}
 	switch provider {
 	case InboxChannelProviderDisabled:
-		return buildInboxHandlerDisabled()
+		return buildInboxHandlerDisabledWithOutbound(ctx, getenv)
 	case InboxChannelProviderLLMCustomer:
 		return buildInboxHandlerLLMCustomer(ctx, getenv)
 	case InboxChannelProviderReal:
@@ -76,11 +76,43 @@ func buildInboxHandler(ctx context.Context, getenv func(string) string) (http.Ha
 // it whenever INBOX_CHANNEL_PROVIDER is unset or explicitly disabled so
 // real-carrier work in SIN-63793 W3 has a route table to slot into.
 func buildInboxHandlerDisabled() (http.Handler, func()) {
-	noop := func() {}
+	return mountDisabledInbox(notFoundSendOutbound{}, func() {})
+}
+
+// buildInboxHandlerDisabledWithOutbound is the disabled provider path used
+// by buildInboxHandler. It keeps the disabled read side (empty list / 404)
+// but wires the real WhatsApp Graph outbound send path (SIN-68302) onto the
+// POST /inbox/.../messages route when META_GRAPH_TOKEN + FEATURE_WHATSAPP +
+// DATABASE_URL are all present. Deny-by-default: any gate closed keeps the
+// notFoundSendOutbound{} stub, so the production default (bare deploy) is
+// byte-for-byte the prior behaviour.
+//
+// The read side stays stubbed on purpose: mounting the postgres-backed
+// conversation list + realtime read path is SIN-63793 W3's job. This branch
+// closes only the outbound (send) half so an authenticated operator reply on
+// a WhatsApp conversation dispatches through the Graph Sender instead of
+// 404'ing (parent SIN-68301, Parte E two-way).
+func buildInboxHandlerDisabledWithOutbound(ctx context.Context, getenv func(string) string) (http.Handler, func()) {
+	send, sendCleanup, ok := buildInboxOutboundSendForView(ctx, getenv)
+	if !ok {
+		return buildInboxHandlerDisabled()
+	}
+	return mountDisabledInbox(send, sendCleanup)
+}
+
+// mountDisabledInbox assembles the disabled-mode route shell with the
+// supplied outbound send use case (the stub or the real WhatsApp dispatcher)
+// and returns the mux plus a cleanup that runs sendCleanup. Splitting the
+// Deps construction out keeps the stub path and the outbound-wired path on
+// one assembler so the route table is identical across both.
+func mountDisabledInbox(send webinbox.SendOutboundUseCase, sendCleanup func()) (http.Handler, func()) {
+	if sendCleanup == nil {
+		sendCleanup = func() {}
+	}
 	deps := webinbox.Deps{
 		ListConversations: emptyListConversations{},
 		ListMessages:      notFoundListMessages{},
-		SendOutbound:      notFoundSendOutbound{},
+		SendOutbound:      send,
 		GetMessage:        notFoundGetMessage{},
 		CSRFToken:         csrfTokenFromSessionContext,
 		UserID:            userIDFromSessionContext,
@@ -93,12 +125,13 @@ func buildInboxHandlerDisabled() (http.Handler, func()) {
 		// mount if a future refactor breaks the invariant — preserving
 		// fail-soft boot behaviour.
 		log.Printf("crm: inbox handler disabled — webinbox.New: %v", err)
-		return nil, noop
+		sendCleanup()
+		return nil, func() {}
 	}
 	mux := http.NewServeMux()
 	h.Routes(mux)
 	log.Printf("crm: inbox HTMX routes mounted on public listener (provider=disabled, stub deps)")
-	return mux, noop
+	return mux, sendCleanup
 }
 
 // emptyListConversations is the disabled-mode placeholder for the
