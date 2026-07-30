@@ -19,6 +19,16 @@ import (
 // ToExternalID is the carrier identity of the recipient (a phone
 // number for WhatsApp). The use case resolves it from the
 // conversation's contact via the contacts port.
+//
+// IdempotencyKey is an optional, carrier-agnostic at-most-once token.
+// When non-empty an idempotent OutboundChannel decorator guarantees the
+// payload reaches the carrier at most once for a given (TenantID,
+// IdempotencyKey) pair — a retry or operator double-submit that carries
+// the same key resolves to the previously-assigned channel-external-id
+// without a second carrier call. Meta's Graph API has no server-side
+// idempotency key, so the dedup is enforced app-side. An empty value
+// disables dedup (the pre-dispatcher behaviour: every SendMessage hits
+// the carrier).
 type OutboundMessage struct {
 	TenantID       uuid.UUID
 	ConversationID uuid.UUID
@@ -26,6 +36,7 @@ type OutboundMessage struct {
 	ToExternalID   string
 	Body           string
 	OccurredAt     time.Time
+	IdempotencyKey string
 }
 
 // OutboundChannel is the seam through which the send-outbound use
