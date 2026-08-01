@@ -11,50 +11,67 @@ package main
 //   - MediaScanPublisher is optional: when NATS is not wired the handler
 //     still persists the placeholder body and logs a warn.
 //
-// Outbound path (OutboundChannel / SendMessage):
+// Outbound path (OutboundChannel / SendMessage) — buildMessengerOutboundEntry:
 //   - Resolves per-tenant PageID via a reverse lookup against
 //     tenant_channel_associations with channel="messenger" (single-key pattern,
 //     same as WhatsApp uses for phone_number_id in the same table).
-//   - META_GRAPH_TOKEN is the system-user token (shared with WhatsApp sender).
+//   - Token: META_MESSENGER_GRAPH_TOKEN if set, else falls back to
+//     META_GRAPH_TOKEN (the WhatsApp system-user token). The two Meta
+//     products are commonly authorized under the same Business Manager
+//     system user (one token for both), but a Page can also live under a
+//     different Business Manager / system user than the WhatsApp Business
+//     Account — the dedicated override lets that Page's own token be used
+//     for Messenger sends without touching WhatsApp's.
+//   - Called exactly once, from inbox_wire_real.go's combined outbound
+//     Router — NOT from assembleMessengerAdapter (inbound never needed it).
+//     Building it twice would register the messenger_send_* Prometheus
+//     collectors twice and panic at boot, the same class of bug fixed for
+//     WhatsApp's outbound dispatcher (whatsapp_wire.go's dead duplicate
+//     construction).
 //
 // Both paths gate on META_APP_SECRET and DATABASE_URL; any missing dep
-// logs a "disabled" line and returns nil (fail-soft, same as whatsapp_wire).
+// logs a "disabled" line and returns nil/false (fail-soft, same as
+// whatsapp_wire).
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/pericles-luz/crm/internal/adapter/channel/dispatch"
 	channelmessenger "github.com/pericles-luz/crm/internal/adapter/channel/messenger"
 	"github.com/pericles-luz/crm/internal/adapter/channels/messenger"
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
 	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
+	rlredis "github.com/pericles-luz/crm/internal/adapter/ratelimit/redis"
 	pgstore "github.com/pericles-luz/crm/internal/adapter/store/postgres"
 	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
+	"github.com/pericles-luz/crm/internal/inbox"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 )
 
 // messengerWiring bundles the artifacts buildMessengerWiring produces.
-// The outbound Sender is constructed during assembly but exposed only to
-// the send-outbound dispatcher when that dispatcher is wired (follow-up
-// issue covers Messenger + WhatsApp dispatcher alignment).
 type messengerWiring struct {
 	Register func(*http.ServeMux)
 	Cleanup  func()
 }
 
-// buildMessengerWiring assembles the production Messenger adapter (inbound
-// webhook + outbound sender). Returns nil when any required env var is
-// missing — the caller treats nil as "skip mounting Messenger routes".
+// buildMessengerWiring assembles the production Messenger inbound adapter.
+// Returns nil when any required env var is missing — the caller treats nil
+// as "skip mounting Messenger routes". Outbound sending is built
+// separately by buildMessengerOutboundEntry (see file doc comment).
 func buildMessengerWiring(ctx context.Context, getenv func(string) string) *messengerWiring {
 	cfg, err := messenger.ConfigFromEnv(getenv)
 	if err != nil {
@@ -71,7 +88,7 @@ func buildMessengerWiring(ctx context.Context, getenv func(string) string) *mess
 		log.Printf("crm: messenger intake disabled — pg connect: %v", err)
 		return nil
 	}
-	adapter, sender, cleanup, err := assembleMessengerAdapter(ctx, cfg, pool, getenv)
+	adapter, cleanup, err := assembleMessengerAdapter(ctx, cfg, pool, getenv)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: messenger intake disabled — assemble: %v", err)
@@ -81,29 +98,28 @@ func buildMessengerWiring(ctx context.Context, getenv func(string) string) *mess
 		adapter.Register(mux)
 	}
 	log.Printf("crm: messenger intake mounted on public listener")
-	_ = sender // retained for future dispatcher wiring; not yet consumed (mirrors whatsapp_wire.go)
 	return &messengerWiring{Register: register, Cleanup: cleanup}
 }
 
-// assembleMessengerAdapter constructs the adapter from already-connected
-// dependencies. Split out so unit tests can wire fakes instead of real
-// pgxpool clients.
-func assembleMessengerAdapter(ctx context.Context, cfg messenger.Config, pool *pgxpool.Pool, getenv func(string) string) (*messenger.Adapter, *channelmessenger.Sender, func(), error) {
+// assembleMessengerAdapter constructs the inbound adapter from
+// already-connected dependencies. Split out so unit tests can wire fakes
+// instead of real pgxpool clients.
+func assembleMessengerAdapter(ctx context.Context, cfg messenger.Config, pool *pgxpool.Pool, getenv func(string) string) (*messenger.Adapter, func(), error) {
 	contactsStore, err := pgcontacts.New(pool)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	inboxStore, err := pginbox.New(pool)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	contactsUC, err := contactsusecase.New(contactsStore)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	receiver, err := inboxusecase.NewReceiveInbound(inboxStore, inboxStore, contactsUC)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	// SIN-66378 P4 — route new conversations to the tenant channel
 	// instance resolved from the inbound identity (channel_id). Soft-fail.
@@ -150,32 +166,7 @@ func assembleMessengerAdapter(ctx context.Context, cfg messenger.Config, pool *p
 		// NATS-backed publisher in cmd/server.
 	)
 	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// OutboundChannel sender — requires META_GRAPH_TOKEN.
-	var outboundSender *channelmessenger.Sender
-	graphToken := getenv("META_GRAPH_TOKEN")
-	if graphToken != "" {
-		tenantConfig := channelmessenger.TenantConfigLookup(func(ctx context.Context, tenantID uuid.UUID) (channelmessenger.TenantConfig, error) {
-			pageID, err := messengerOutboundPageID(ctx, pool, tenantID)
-			if err != nil {
-				return channelmessenger.TenantConfig{}, fmt.Errorf("messenger outbound config: %w", err)
-			}
-			on, flagErr := flag.Enabled(ctx, tenantID)
-			if flagErr != nil {
-				return channelmessenger.TenantConfig{}, flagErr
-			}
-			return channelmessenger.TenantConfig{PageID: pageID, Enabled: on}, nil
-		})
-		outboundSender, err = channelmessenger.New(graphToken, tenantConfig, prometheus.DefaultRegisterer)
-		if err != nil {
-			log.Printf("crm: messenger outbound sender disabled — %v", err)
-		} else {
-			log.Printf("crm: messenger outbound sender ready")
-		}
-	} else {
-		log.Printf("crm: messenger outbound sender disabled (META_GRAPH_TOKEN unset)")
+		return nil, nil, err
 	}
 
 	cleanup := func() {
@@ -184,7 +175,85 @@ func assembleMessengerAdapter(ctx context.Context, cfg messenger.Config, pool *p
 		}
 		pool.Close()
 	}
-	return inboundAdapter, outboundSender, cleanup, nil
+	return inboundAdapter, cleanup, nil
+}
+
+// buildMessengerOutboundEntry builds the decorated (idempotent +
+// rate-limited) Messenger sender WITHOUT wrapping it in a Router, so
+// inbox_wire_real.go can merge it with the WhatsApp / fake-customer
+// entries into one combined Router built once per boot. ok=false means
+// Messenger outbound is disabled (no token / construction error) — the
+// caller should omit the entry from any combined route map.
+//
+// This is the ONLY construction site for channelmessenger.Sender — do not
+// also build one inside assembleMessengerAdapter (inbound doesn't need
+// it); see the file doc comment for why a second construction site
+// panics at boot.
+func buildMessengerOutboundEntry(getenv func(string) string, pool *pgxpool.Pool, rdb *goredis.Client, flag *messenger.EnvFeatureFlag) (inbox.OutboundChannel, bool) {
+	token := messengerOutboundGraphToken(getenv)
+	if token == "" {
+		log.Printf("crm: messenger outbound sender disabled (META_MESSENGER_GRAPH_TOKEN / META_GRAPH_TOKEN unset)")
+		return nil, false
+	}
+	lookup := channelmessenger.TenantConfigLookup(func(ctx context.Context, tenantID uuid.UUID) (channelmessenger.TenantConfig, error) {
+		pageID, err := messengerOutboundPageID(ctx, pool, tenantID)
+		if err != nil {
+			return channelmessenger.TenantConfig{}, err
+		}
+		on, flagErr := flag.Enabled(ctx, tenantID)
+		if flagErr != nil {
+			return channelmessenger.TenantConfig{}, flagErr
+		}
+		return channelmessenger.TenantConfig{PageID: pageID, Enabled: on}, nil
+	})
+	sender, err := channelmessenger.New(token, lookup, prometheus.DefaultRegisterer)
+	if err != nil {
+		log.Printf("crm: messenger outbound sender disabled — %v", err)
+		return nil, false
+	}
+	var limiter dispatch.RateLimiter
+	if rdb != nil {
+		limiter = rlredis.New(rdb, "messenger:out:")
+	}
+	log.Printf("crm: messenger outbound sender ready")
+	var oc inbox.OutboundChannel = sender
+	oc = dispatch.NewRateLimited(oc, limiter, time.Minute, messengerOutboundRateMaxPerMin(getenv), nil)
+	oc = dispatch.NewIdempotent(oc, dispatch.NewMemoryLedger())
+	return oc, true
+}
+
+// envMessengerGraphToken optionally overrides META_GRAPH_TOKEN for
+// Messenger sends. Useful when the Facebook Page is authorized under a
+// different Business Manager / system user than the WhatsApp Business
+// Account (so a single META_GRAPH_TOKEN can't cover both products).
+const envMessengerGraphToken = "META_MESSENGER_GRAPH_TOKEN"
+
+// messengerOutboundGraphToken reads META_MESSENGER_GRAPH_TOKEN, falling
+// back to the shared META_GRAPH_TOKEN (the common case: one Business
+// Manager system user authorized for both WhatsApp and Messenger).
+func messengerOutboundGraphToken(getenv func(string) string) string {
+	if token := strings.TrimSpace(getenv(envMessengerGraphToken)); token != "" {
+		return token
+	}
+	return getenv("META_GRAPH_TOKEN")
+}
+
+// defaultMessengerRateMaxPerMin mirrors defaultOutboundRateMaxPerMin
+// (outbound_dispatch_wire.go) for the Messenger channel.
+const defaultMessengerRateMaxPerMin = 600
+
+// messengerOutboundRateMaxPerMin reads MESSENGER_RATE_MAX_PER_MIN, falling
+// back to defaultMessengerRateMaxPerMin for an unset or non-positive value.
+func messengerOutboundRateMaxPerMin(getenv func(string) string) int {
+	raw := strings.TrimSpace(getenv("MESSENGER_RATE_MAX_PER_MIN"))
+	if raw == "" {
+		return defaultMessengerRateMaxPerMin
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultMessengerRateMaxPerMin
+	}
+	return n
 }
 
 // messengerOutboundPageID returns the Facebook Page ID associated with a

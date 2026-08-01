@@ -17,12 +17,12 @@ package main
 //     and no auto-reply loop — conversations arrive only from the real
 //     carrier webhook, so the read use cases front the postgres store
 //     directly with no bootstrap decorator.
-//   - Outbound sends go to the real WhatsApp Cloud dispatcher built by
-//     buildWhatsAppOutbound (outbound_dispatch_wire.go, SIN-68306): a
-//     channel-routed, idempotent, rate-limited Sender. Deny-by-default —
-//     when META_GRAPH_TOKEN is unset the dispatcher is an empty Router
-//     that answers every send with ErrChannelDisabled, so an operator
-//     reply cleanly fails closed instead of dispatching to a live carrier.
+//   - Outbound sends go to one combined dispatch.Router keyed by channel,
+//     merging the WhatsApp Cloud entry (outbound_dispatch_wire.go,
+//     SIN-68306) with the Messenger entry (messenger_wire.go). A channel
+//     with no entry fails closed with ErrChannelDisabled (Router's
+//     deny-by-default), so an operator reply on an unconfigured channel
+//     cleanly fails closed instead of dispatching to a live carrier.
 //
 // Fail-soft (identical posture to every other cmd/server wire): DATABASE_URL
 // unset OR any postgres construction error reverts to the disabled-mode
@@ -43,13 +43,18 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/pericles-luz/crm/internal/adapter/channel/dispatch"
+	"github.com/pericles-luz/crm/internal/adapter/channels/messenger"
 	"github.com/pericles-luz/crm/internal/adapter/channels/whatsapp"
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
 	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
+	"github.com/pericles-luz/crm/internal/contacts"
+	"github.com/pericles-luz/crm/internal/inbox"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	webinbox "github.com/pericles-luz/crm/internal/web/inbox"
 )
@@ -135,24 +140,44 @@ func assembleInboxHandlerRealFromPool(pool *pgxpool.Pool, rdb *goredis.Client, g
 		return nil, nil, fmt.Errorf("pginbox.NewUserDirectory: %w", err)
 	}
 
-	// Outbound dispatcher (SIN-68306). Always non-nil: a real routed
-	// Sender when META_GRAPH_TOKEN is present, an empty no-op Router
-	// otherwise (deny-by-default). The feature flag re-checks the
+	// Outbound router (SIN-68306 + Messenger wiring). One entry per
+	// channel; a channel with no entry fails closed with
+	// ErrChannelDisabled (dispatch.Router's deny-by-default).
+	routes := map[string]inbox.OutboundChannel{}
+
+	// WhatsApp entry: real routed Sender when META_GRAPH_TOKEN is
+	// present, absent otherwise. The feature flag re-checks the
 	// per-tenant allowlist inside the dispatcher's TenantConfig lookup.
 	flag := whatsapp.NewEnvFeatureFlag(getenv)
-	outbound := buildWhatsAppOutbound(getenv, pool, rdb, flag)
+	if entry, ok := buildWhatsAppOutboundEntry(getenv, pool, rdb, flag); ok {
+		routes[whatsapp.Channel] = entry
+	}
 
-	// SendOutbound resolves the recipient's WhatsApp E.164 from the
-	// conversation's contact (the web handler leaves ToExternalID empty),
-	// mirroring the disabled-provider outbound path in
-	// whatsapp_outbound_wire.go. passthroughWalletDebitor keeps the
-	// reserve→charge→commit ordering with a zero cost until the tariff
-	// wallet adapter lands (a separate slice).
+	// Messenger entry: same shape as WhatsApp — real routed Sender when
+	// META_MESSENGER_GRAPH_TOKEN/META_GRAPH_TOKEN is present, absent
+	// otherwise. buildMessengerOutboundEntry (messenger_wire.go) is the
+	// ONLY construction site for the Messenger sender — do not also
+	// build one in messenger_wire.go's inbound assembly (see that file's
+	// doc comment for the duplicate-Prometheus-registration panic this
+	// would otherwise cause).
+	msgFlag := messenger.NewEnvFeatureFlag(getenv)
+	if entry, ok := buildMessengerOutboundEntry(getenv, pool, rdb, msgFlag); ok {
+		routes[messenger.Channel] = entry
+	}
+
+	outbound := dispatch.NewRouter(routes)
+
+	// SendOutbound resolves the recipient's identity from the
+	// conversation's channel + contact (the web handler leaves
+	// ToExternalID empty): WhatsApp resolves E.164, Messenger resolves
+	// PSID. passthroughWalletDebitor keeps the reserve→charge→commit
+	// ordering with a zero cost until the tariff wallet adapter lands (a
+	// separate slice).
 	sendUC, err := inboxusecase.NewSendOutbound(
 		inboxStore,
 		passthroughWalletDebitor{},
 		outbound,
-		inboxusecase.WithContactLookup(whatsappOutboundContactLookup(inboxStore, contactsStore)),
+		inboxusecase.WithContactLookup(combinedOutboundContactLookup(inboxStore, contactsStore)),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("send outbound usecase: %w", err)
@@ -204,4 +229,32 @@ func assembleInboxHandlerRealFromPool(pool *pgxpool.Pool, rdb *goredis.Client, g
 	mux := http.NewServeMux()
 	h.Routes(mux)
 	return mux, func() {}, nil
+}
+
+// combinedOutboundContactLookup resolves a conversation to the
+// recipient's channel-side identity: WhatsApp and Messenger fall through
+// to the matching contact identity (E.164 / PSID respectively) —
+// whatsapp_outbound_wire.go's whatsappOutboundContactLookup inlined here
+// since every branch needs the same conversation read first.
+func combinedOutboundContactLookup(convs conversationResolver, finder contactIdentityFinder) inboxusecase.ContactLookupFn {
+	return func(ctx context.Context, tenantID, conversationID uuid.UUID) (string, error) {
+		conv, err := convs.GetConversation(ctx, tenantID, conversationID)
+		if err != nil {
+			return "", err
+		}
+		identityChannel := contacts.ChannelWhatsApp
+		if conv.Channel == messenger.Channel {
+			identityChannel = contacts.ChannelMessenger
+		}
+		c, err := finder.FindByID(ctx, tenantID, conv.ContactID)
+		if err != nil {
+			return "", err
+		}
+		for _, id := range c.Identities() {
+			if id.Channel == identityChannel {
+				return id.ExternalID, nil
+			}
+		}
+		return "", fmt.Errorf("outbound: contact %s has no %s identity", conv.ContactID, identityChannel)
+	}
 }
