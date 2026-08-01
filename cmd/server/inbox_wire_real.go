@@ -48,6 +48,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/pericles-luz/crm/internal/adapter/channel/dispatch"
+	"github.com/pericles-luz/crm/internal/adapter/channels/instagram"
 	"github.com/pericles-luz/crm/internal/adapter/channels/messenger"
 	"github.com/pericles-luz/crm/internal/adapter/channels/whatsapp"
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
@@ -165,14 +166,25 @@ func assembleInboxHandlerRealFromPool(pool *pgxpool.Pool, rdb *goredis.Client, g
 		routes[messenger.Channel] = entry
 	}
 
+	// Instagram entry: same shape as WhatsApp/Messenger — real routed
+	// Sender when META_INSTAGRAM_GRAPH_TOKEN/META_GRAPH_TOKEN is present,
+	// absent otherwise. buildInstagramOutboundEntry (instagram_outbound_wire.go)
+	// is the ONLY construction site for the Instagram sender — do not
+	// also build one in instagram_wire.go's inbound assembly (duplicate-
+	// Prometheus-registration panic, see that file's doc comment).
+	igFlag := instagram.NewEnvFeatureFlag(getenv)
+	if entry, ok := buildInstagramOutboundEntry(getenv, pool, rdb, igFlag); ok {
+		routes[instagram.Channel] = entry
+	}
+
 	outbound := dispatch.NewRouter(routes)
 
 	// SendOutbound resolves the recipient's identity from the
 	// conversation's channel + contact (the web handler leaves
-	// ToExternalID empty): WhatsApp resolves E.164, Messenger resolves
-	// PSID. passthroughWalletDebitor keeps the reserve→charge→commit
-	// ordering with a zero cost until the tariff wallet adapter lands (a
-	// separate slice).
+	// ToExternalID empty): WhatsApp resolves E.164, Messenger and
+	// Instagram resolve PSID/IGSID. passthroughWalletDebitor keeps the
+	// reserve→charge→commit ordering with a zero cost until the tariff
+	// wallet adapter lands (a separate slice).
 	sendUC, err := inboxusecase.NewSendOutbound(
 		inboxStore,
 		passthroughWalletDebitor{},
@@ -232,10 +244,10 @@ func assembleInboxHandlerRealFromPool(pool *pgxpool.Pool, rdb *goredis.Client, g
 }
 
 // combinedOutboundContactLookup resolves a conversation to the
-// recipient's channel-side identity: WhatsApp and Messenger fall through
-// to the matching contact identity (E.164 / PSID respectively) —
-// whatsapp_outbound_wire.go's whatsappOutboundContactLookup inlined here
-// since every branch needs the same conversation read first.
+// recipient's channel-side identity: WhatsApp, Messenger, and Instagram
+// fall through to the matching contact identity (E.164 / PSID / IGSID
+// respectively) — whatsapp_outbound_wire.go's whatsappOutboundContactLookup
+// inlined here since every branch needs the same conversation read first.
 func combinedOutboundContactLookup(convs conversationResolver, finder contactIdentityFinder) inboxusecase.ContactLookupFn {
 	return func(ctx context.Context, tenantID, conversationID uuid.UUID) (string, error) {
 		conv, err := convs.GetConversation(ctx, tenantID, conversationID)
@@ -245,6 +257,8 @@ func combinedOutboundContactLookup(convs conversationResolver, finder contactIde
 		identityChannel := contacts.ChannelWhatsApp
 		if conv.Channel == messenger.Channel {
 			identityChannel = contacts.ChannelMessenger
+		} else if conv.Channel == instagram.Channel {
+			identityChannel = contacts.ChannelInstagram
 		}
 		c, err := finder.FindByID(ctx, tenantID, conv.ContactID)
 		if err != nil {

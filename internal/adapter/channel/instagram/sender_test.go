@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,177 +12,52 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/pericles-luz/crm/internal/adapter/channel/instagram"
+	"github.com/pericles-luz/crm/internal/inbox"
 )
 
-type stubTokens struct {
-	token string
-	err   error
-}
-
-func (s stubTokens) AccessToken(context.Context, uuid.UUID) (string, error) {
-	return s.token, s.err
-}
-
-type fixedClock struct{ now time.Time }
-
-func (c fixedClock) Now() time.Time { return c.now }
-
-func mustSender(t *testing.T, tokens instagram.TokenSource, opts ...func(*instagram.SenderConfig)) *instagram.Sender {
-	t.Helper()
-	cfg := instagram.SenderConfig{
-		Clock:       fixedClock{now: time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)},
-		BackoffBase: time.Nanosecond,
-	}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-	s, err := instagram.NewSender(tokens, cfg)
-	if err != nil {
-		t.Fatalf("NewSender: %v", err)
-	}
-	return s
-}
-
-func withBaseURL(u string) func(*instagram.SenderConfig) {
-	return func(c *instagram.SenderConfig) { c.BaseURL = u }
-}
-
-func withMaxAttempts(n int) func(*instagram.SenderConfig) {
-	return func(c *instagram.SenderConfig) { c.MaxAttempts = n }
-}
-
-func withTimeout(d time.Duration) func(*instagram.SenderConfig) {
-	return func(c *instagram.SenderConfig) {
-		c.HTTPClient = &http.Client{Timeout: d}
-	}
-}
-
-func TestNewSender_NilTokens(t *testing.T) {
+// TestSender_ImplementsOutboundChannel pins the interface contract at compile time.
+func TestSender_ImplementsOutboundChannel(t *testing.T) {
 	t.Parallel()
-	if _, err := instagram.NewSender(nil, instagram.SenderConfig{}); err == nil {
-		t.Fatalf("expected error for nil TokenSource")
-	}
+	var _ inbox.OutboundChannel = (*instagram.Sender)(nil)
 }
 
-func TestNewSender_Defaults(t *testing.T) {
-	t.Parallel()
-	s, err := instagram.NewSender(stubTokens{token: "tok"}, instagram.SenderConfig{})
-	if err != nil {
-		t.Fatalf("NewSender: %v", err)
-	}
-	if s == nil {
-		t.Fatalf("expected sender, got nil")
-	}
-}
-
-func TestSendText_Success(t *testing.T) {
+func TestNew_Validation(t *testing.T) {
 	t.Parallel()
 
-	var gotPath, gotQuery, gotMethod, gotCT string
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		gotPath = r.URL.Path
-		gotQuery = r.URL.Query().Get("access_token")
-		gotCT = r.Header.Get("Content-Type")
-		raw, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(raw, &gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"message_id":"m_ok"}`))
-	}))
-	defer srv.Close()
+	lookup := stubLookup(instagram.TenantConfig{IGBusinessID: "ig123", Enabled: true})
 
-	s := mustSender(t, stubTokens{token: "graph-tok"}, withBaseURL(srv.URL))
-	mid, err := s.SendText(context.Background(), uuid.New(), "igsid-1", "ig-biz-42", "hello",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("SendText: %v", err)
+	cases := []struct {
+		name    string
+		token   string
+		lookup  instagram.TenantConfigLookup
+		reg     prometheus.Registerer
+		wantErr string
+	}{
+		{"empty token", "", lookup, prometheus.NewRegistry(), "META_INSTAGRAM_GRAPH_TOKEN"},
+		{"nil lookup", "tok", nil, prometheus.NewRegistry(), "tenant config lookup"},
+		{"nil registerer", "tok", lookup, nil, "prometheus registerer"},
 	}
-	if mid != "m_ok" {
-		t.Errorf("mid: want m_ok, got %q", mid)
-	}
-	if gotMethod != http.MethodPost {
-		t.Errorf("method: want POST, got %s", gotMethod)
-	}
-	if !strings.HasSuffix(gotPath, "/ig-biz-42/messages") {
-		t.Errorf("path: want suffix /ig-biz-42/messages, got %q", gotPath)
-	}
-	if gotQuery != "graph-tok" {
-		t.Errorf("access_token: want graph-tok, got %q", gotQuery)
-	}
-	if gotCT != "application/json" {
-		t.Errorf("content-type: want application/json, got %q", gotCT)
-	}
-	rec, _ := gotBody["recipient"].(map[string]any)
-	if rec == nil || rec["id"] != "igsid-1" {
-		t.Errorf("recipient.id: got %v", gotBody["recipient"])
-	}
-	msg, _ := gotBody["message"].(map[string]any)
-	if msg == nil || msg["text"] != "hello" {
-		t.Errorf("message.text: got %v", gotBody["message"])
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := instagram.New(tc.token, tc.lookup, tc.reg)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tc.wantErr, err.Error())
+			}
+		})
 	}
 }
 
-func TestSendMedia_ImageSuccess(t *testing.T) {
+func TestSendMessage_FeatureFlagOff_NoHTTPCall(t *testing.T) {
 	t.Parallel()
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(raw, &gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"message_id":"m_img"}`))
-	}))
-	defer srv.Close()
 
-	s := mustSender(t, stubTokens{token: "tok"}, withBaseURL(srv.URL))
-	mid, err := s.SendMedia(context.Background(), uuid.New(), "igsid", "ig-biz",
-		instagram.Media{Type: instagram.AttachmentImage, URL: "https://example.com/p.jpg"},
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("SendMedia: %v", err)
-	}
-	if mid != "m_img" {
-		t.Errorf("mid: want m_img, got %q", mid)
-	}
-	msg, _ := gotBody["message"].(map[string]any)
-	att, _ := msg["attachment"].(map[string]any)
-	if att["type"] != "image" {
-		t.Errorf("attachment.type: want image, got %v", att["type"])
-	}
-	payload, _ := att["payload"].(map[string]any)
-	if payload["url"] != "https://example.com/p.jpg" {
-		t.Errorf("payload.url: got %v", payload["url"])
-	}
-}
-
-func TestSendMedia_VideoSuccess(t *testing.T) {
-	t.Parallel()
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(raw, &gotBody)
-		_, _ = w.Write([]byte(`{"message_id":"m_vid"}`))
-	}))
-	defer srv.Close()
-
-	s := mustSender(t, stubTokens{token: "tok"}, withBaseURL(srv.URL))
-	_, err := s.SendMedia(context.Background(), uuid.New(), "igsid", "ig-biz",
-		instagram.Media{Type: instagram.AttachmentVideo, URL: "https://example.com/v.mp4"},
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("SendMedia: %v", err)
-	}
-	msg, _ := gotBody["message"].(map[string]any)
-	att, _ := msg["attachment"].(map[string]any)
-	if att["type"] != "video" {
-		t.Errorf("attachment.type: want video, got %v", att["type"])
-	}
-}
-
-func TestSendText_WindowExpired(t *testing.T) {
-	t.Parallel()
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&hits, 1)
@@ -191,227 +65,208 @@ func TestSendText_WindowExpired(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := mustSender(t, stubTokens{token: "tok"}, withBaseURL(srv.URL))
-	// fixedClock now = 2026-05-16 12:00. Last inbound 25h before → expired.
-	_, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "hi",
-		time.Date(2026, 5, 15, 10, 59, 59, 0, time.UTC))
-	if !errors.Is(err, instagram.ErrOutsideWindow) {
-		t.Fatalf("want ErrOutsideWindow, got %v", err)
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: false}),
+		instagram.WithBaseURL(srv.URL))
+
+	_, err := s.SendMessage(context.Background(), outMsg("hi"))
+	if !errors.Is(err, inbox.ErrChannelDisabled) {
+		t.Fatalf("expected ErrChannelDisabled, got %v", err)
 	}
 	if h := atomic.LoadInt32(&hits); h != 0 {
-		t.Errorf("expected 0 HTTP calls, got %d", h)
+		t.Fatalf("expected no HTTP calls when disabled, got %d", h)
 	}
 }
 
-func TestSendText_TokenUnknown(t *testing.T) {
+func TestSendMessage_MissingIGBusinessID_AuthFailed(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name   string
-		tokens instagram.TokenSource
-	}{
-		{"explicit ErrTokenUnknown", stubTokens{err: instagram.ErrTokenUnknown}},
-		{"empty string token", stubTokens{token: ""}},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			s := mustSender(t, tc.tokens)
-			_, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "hi",
-				time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-			if !errors.Is(err, instagram.ErrTokenUnknown) {
-				t.Fatalf("want ErrTokenUnknown, got %v", err)
-			}
-		})
+
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{Enabled: true}))
+	_, err := s.SendMessage(context.Background(), outMsg("hi"))
+	if !errors.Is(err, inbox.ErrChannelAuthFailed) {
+		t.Fatalf("expected ErrChannelAuthFailed, got %v", err)
 	}
 }
 
-func TestSendText_TokenSourceError(t *testing.T) {
+func TestSendMessage_LookupError_Transient(t *testing.T) {
 	t.Parallel()
-	boom := errors.New("db down")
-	s := mustSender(t, stubTokens{err: boom})
-	_, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "hi",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if errors.Is(err, instagram.ErrTokenUnknown) {
-		t.Fatalf("non-Unknown lookup error should not coalesce: %v", err)
-	}
-	if err == nil || !strings.Contains(err.Error(), "token lookup") {
-		t.Fatalf("want wrapped token lookup error, got %v", err)
+
+	boom := errors.New("db is down")
+	s := mustSender(t, "tok", func(_ context.Context, _ uuid.UUID) (instagram.TenantConfig, error) {
+		return instagram.TenantConfig{}, boom
+	})
+	_, err := s.SendMessage(context.Background(), outMsg("hi"))
+	if !errors.Is(err, inbox.ErrChannelTransient) {
+		t.Fatalf("expected ErrChannelTransient, got %v", err)
 	}
 }
 
-func TestSendText_TransportError(t *testing.T) {
+func TestSendMessage_EmptyRecipient_Rejected(t *testing.T) {
 	t.Parallel()
-	// httptest server that closes the connection immediately to provoke
-	// a transport error every attempt.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}))
+	m := inbox.OutboundMessage{
+		TenantID:     uuid.New(),
+		ToExternalID: "",
+		Body:         "hello",
+	}
+	_, err := s.SendMessage(context.Background(), m)
+	if !errors.Is(err, inbox.ErrChannelRejected) {
+		t.Fatalf("expected ErrChannelRejected, got %v", err)
+	}
+}
+
+func TestSendMessage_TextSuccess(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
 		}
-		conn, _, _ := hj.Hijack()
-		_ = conn.Close()
-	}))
-	defer srv.Close()
-
-	s := mustSender(t, stubTokens{token: "tok-shh"},
-		withBaseURL(srv.URL),
-		withMaxAttempts(2),
-		withTimeout(2*time.Second),
-	)
-	_, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "hi",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if !errors.Is(err, instagram.ErrTransport) {
-		t.Fatalf("want ErrTransport, got %v", err)
-	}
-	if strings.Contains(err.Error(), "tok-shh") {
-		t.Fatalf("transport error must not leak access token: %v", err)
-	}
-	if strings.Contains(err.Error(), "access_token") {
-		t.Fatalf("transport error must not leak access_token query param: %v", err)
-	}
-}
-
-func TestSendText_Non2xxResponse(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name   string
-		status int
-		want   error
-	}{
-		{"400 rejected", http.StatusBadRequest, instagram.ErrUpstream},
-		{"401 rejected", http.StatusUnauthorized, instagram.ErrUpstream},
-		{"500 transient", http.StatusInternalServerError, instagram.ErrTransport},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			var hits int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				atomic.AddInt32(&hits, 1)
-				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(`{"error":{"message":"nope"}}`))
-			}))
-			defer srv.Close()
-
-			s := mustSender(t, stubTokens{token: "tok"},
-				withBaseURL(srv.URL),
-				withMaxAttempts(2),
-			)
-			_, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "hi",
-				time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("want %v, got %v", tc.want, err)
-			}
-			h := atomic.LoadInt32(&hits)
-			if tc.want == instagram.ErrTransport && h != 2 {
-				t.Errorf("expected 2 attempts on transient, got %d", h)
-			}
-			if tc.want == instagram.ErrUpstream && h != 1 {
-				t.Errorf("expected 1 attempt on 4xx (no retry), got %d", h)
-			}
-		})
-	}
-}
-
-func TestSendMedia_UnsupportedAttachment(t *testing.T) {
-	t.Parallel()
-	s := mustSender(t, stubTokens{token: "tok"})
-	_, err := s.SendMedia(context.Background(), uuid.New(), "igsid", "ig-biz",
-		instagram.Media{Type: "audio", URL: "https://example.com/a.mp3"},
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if !errors.Is(err, instagram.ErrUnsupportedAttachment) {
-		t.Fatalf("want ErrUnsupportedAttachment, got %v", err)
-	}
-}
-
-func TestSendMedia_EmptyURL(t *testing.T) {
-	t.Parallel()
-	s := mustSender(t, stubTokens{token: "tok"})
-	_, err := s.SendMedia(context.Background(), uuid.New(), "igsid", "ig-biz",
-		instagram.Media{Type: instagram.AttachmentImage, URL: "  "},
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if !errors.Is(err, instagram.ErrEmptyURL) {
-		t.Fatalf("want ErrEmptyURL, got %v", err)
-	}
-}
-
-func TestSendText_EmptyBody(t *testing.T) {
-	t.Parallel()
-	s := mustSender(t, stubTokens{token: "tok"})
-	_, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "  ",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if !errors.Is(err, instagram.ErrEmptyBody) {
-		t.Fatalf("want ErrEmptyBody, got %v", err)
-	}
-}
-
-func TestSendText_EmptyIGBusinessID(t *testing.T) {
-	t.Parallel()
-	s := mustSender(t, stubTokens{token: "tok"})
-	_, err := s.SendText(context.Background(), uuid.New(), "igsid", "", "hi",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if err == nil || !strings.Contains(err.Error(), "ig_business_id") {
-		t.Fatalf("want ig_business_id empty error, got %v", err)
-	}
-}
-
-func TestSendText_MalformedResponse(t *testing.T) {
-	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`not json`))
+		_, _ = w.Write([]byte(`{"message_id":"m_abc123","recipient_id":"igsid"}`))
 	}))
 	defer srv.Close()
 
-	s := mustSender(t, stubTokens{token: "tok"}, withBaseURL(srv.URL))
-	_, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "hi",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if !errors.Is(err, instagram.ErrUpstream) {
-		t.Fatalf("want ErrUpstream on malformed JSON, got %v", err)
+	s := mustSender(t, "test-token", stubLookup(instagram.TenantConfig{IGBusinessID: "ig42", Enabled: true}),
+		instagram.WithBaseURL(srv.URL))
+
+	mid, err := s.SendMessage(context.Background(), outMsg("Hello Instagram!"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mid != "m_abc123" {
+		t.Errorf("expected mid m_abc123, got %q", mid)
+	}
+
+	rec, _ := gotBody["recipient"].(map[string]any)
+	if rec == nil || rec["id"] == nil {
+		t.Fatalf("recipient.id missing from request body: %v", gotBody)
+	}
+	msg, _ := gotBody["message"].(map[string]any)
+	if msg == nil || msg["text"] == nil {
+		t.Fatalf("message.text missing from request body: %v", gotBody)
 	}
 }
 
-func TestSendText_MissingMessageID(t *testing.T) {
+func TestSendMessage_ImageAttachment(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{}`))
+
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message_id":"m_img1"}`))
 	}))
 	defer srv.Close()
 
-	s := mustSender(t, stubTokens{token: "tok"}, withBaseURL(srv.URL))
-	_, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "hi",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if !errors.Is(err, instagram.ErrUpstream) {
-		t.Fatalf("want ErrUpstream on missing message_id, got %v", err)
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}),
+		instagram.WithBaseURL(srv.URL))
+
+	body := instagram.ImagePrefix + "https://example.com/image.jpg"
+	mid, err := s.SendMessage(context.Background(), outMsg(body))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mid != "m_img1" {
+		t.Errorf("expected m_img1, got %q", mid)
+	}
+
+	msg, _ := gotBody["message"].(map[string]any)
+	att, _ := msg["attachment"].(map[string]any)
+	if att["type"] != "image" {
+		t.Errorf("expected attachment type image, got %v", att["type"])
+	}
+	payload, _ := att["payload"].(map[string]any)
+	if payload["is_reusable"] != true {
+		t.Errorf("is_reusable: expected bool true, got %T(%v)", payload["is_reusable"], payload["is_reusable"])
 	}
 }
 
-func TestSendText_CtxCancelDuringBackoff(t *testing.T) {
+func TestSendMessage_VideoAttachment(t *testing.T) {
 	t.Parallel()
+
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = w.Write([]byte(`{"message_id":"m_vid1"}`))
+	}))
+	defer srv.Close()
+
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}),
+		instagram.WithBaseURL(srv.URL))
+
+	body := instagram.VideoPrefix + "https://example.com/video.mp4"
+	if _, err := s.SendMessage(context.Background(), outMsg(body)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	msg, _ := gotBody["message"].(map[string]any)
+	att, _ := msg["attachment"].(map[string]any)
+	if att["type"] != "video" {
+		t.Errorf("expected video, got %v", att["type"])
+	}
+}
+
+func TestSendMessage_Unauthorized_AuthFailed(t *testing.T) {
+	t.Parallel()
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid OAuth access token"}}`))
+	}))
+	defer srv.Close()
+
+	s := mustSender(t, "bad-tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}),
+		instagram.WithBaseURL(srv.URL))
+	_, err := s.SendMessage(context.Background(), outMsg("hi"))
+	if !errors.Is(err, inbox.ErrChannelAuthFailed) {
+		t.Fatalf("expected ErrChannelAuthFailed, got %v", err)
+	}
+}
+
+func TestSendMessage_ClientError_Rejected(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"outside 24h window"}}`))
+	}))
+	defer srv.Close()
+
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}),
+		instagram.WithBaseURL(srv.URL))
+	_, err := s.SendMessage(context.Background(), outMsg("late reply"))
+	if !errors.Is(err, inbox.ErrChannelRejected) {
+		t.Fatalf("expected ErrChannelRejected, got %v", err)
+	}
+}
+
+func TestSendMessage_ServerError_Transient_Retries(t *testing.T) {
+	t.Parallel()
+
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
-	s := mustSender(t, stubTokens{token: "tok"},
-		withBaseURL(srv.URL),
-		withMaxAttempts(5),
-		func(c *instagram.SenderConfig) { c.BackoffBase = 200 * time.Millisecond },
-	)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	_, err := s.SendText(ctx, uuid.New(), "igsid", "ig-biz", "hi",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
-	if !errors.Is(err, instagram.ErrTransport) {
-		t.Fatalf("want ErrTransport on ctx cancel, got %v", err)
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}),
+		instagram.WithBaseURL(srv.URL),
+		instagram.WithMaxAttempts(3),
+		instagram.WithBackoffBase(0))
+	_, err := s.SendMessage(context.Background(), outMsg("hi"))
+	if !errors.Is(err, inbox.ErrChannelTransient) {
+		t.Fatalf("expected ErrChannelTransient, got %v", err)
+	}
+	if h := atomic.LoadInt32(&hits); h != 3 {
+		t.Errorf("expected 3 attempts, got %d", h)
 	}
 }
 
-func TestSendText_RetryThenSuccess(t *testing.T) {
+func TestSendMessage_SuccessAfterTransient(t *testing.T) {
 	t.Parallel()
+
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		n := atomic.AddInt32(&hits, 1)
@@ -419,23 +274,100 @@ func TestSendText_RetryThenSuccess(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		_, _ = w.Write([]byte(`{"message_id":"m_after_retry"}`))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message_id":"m_retry_ok"}`))
 	}))
 	defer srv.Close()
 
-	s := mustSender(t, stubTokens{token: "tok"},
-		withBaseURL(srv.URL),
-		withMaxAttempts(3),
-	)
-	mid, err := s.SendText(context.Background(), uuid.New(), "igsid", "ig-biz", "hi",
-		time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC))
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}),
+		instagram.WithBaseURL(srv.URL),
+		instagram.WithMaxAttempts(3),
+		instagram.WithBackoffBase(0))
+	mid, err := s.SendMessage(context.Background(), outMsg("hi"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if mid != "m_after_retry" {
-		t.Errorf("mid: want m_after_retry, got %q", mid)
+	if mid != "m_retry_ok" {
+		t.Errorf("expected m_retry_ok, got %q", mid)
 	}
-	if h := atomic.LoadInt32(&hits); h != 2 {
-		t.Errorf("expected 2 attempts, got %d", h)
+}
+
+func TestSendMessage_CtxCancel_Transient(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}),
+		instagram.WithBaseURL(srv.URL),
+		instagram.WithMaxAttempts(5),
+		instagram.WithBackoffBase(200*time.Millisecond))
+	_, err := s.SendMessage(ctx, outMsg("hi"))
+	if !errors.Is(err, inbox.ErrChannelTransient) {
+		t.Fatalf("expected ErrChannelTransient on ctx cancel, got %v", err)
+	}
+}
+
+func TestSendMessage_AuthHeader(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"message_id":"m_auth"}`))
+	}))
+	defer srv.Close()
+
+	s := mustSender(t, "secret-token", stubLookup(instagram.TenantConfig{IGBusinessID: "ig", Enabled: true}),
+		instagram.WithBaseURL(srv.URL))
+	_, _ = s.SendMessage(context.Background(), outMsg("hi"))
+	if gotAuth != "Bearer secret-token" {
+		t.Errorf("expected Bearer secret-token, got %q", gotAuth)
+	}
+}
+
+func TestSendMessage_URLPath(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"message_id":"m_path"}`))
+	}))
+	defer srv.Close()
+
+	s := mustSender(t, "tok", stubLookup(instagram.TenantConfig{IGBusinessID: "ig99", Enabled: true}),
+		instagram.WithBaseURL(srv.URL))
+	_, _ = s.SendMessage(context.Background(), outMsg("hi"))
+	if !strings.Contains(gotPath, "ig99/messages") {
+		t.Errorf("expected path to contain ig99/messages, got %q", gotPath)
+	}
+}
+
+// helpers
+
+func stubLookup(cfg instagram.TenantConfig) instagram.TenantConfigLookup {
+	return func(_ context.Context, _ uuid.UUID) (instagram.TenantConfig, error) { return cfg, nil }
+}
+
+func mustSender(t *testing.T, token string, lookup instagram.TenantConfigLookup, opts ...instagram.Option) *instagram.Sender {
+	t.Helper()
+	s, err := instagram.New(token, lookup, prometheus.NewRegistry(), opts...)
+	if err != nil {
+		t.Fatalf("instagram.New: %v", err)
+	}
+	return s
+}
+
+func outMsg(body string) inbox.OutboundMessage {
+	return inbox.OutboundMessage{
+		TenantID:     uuid.New(),
+		ToExternalID: "igsid-123",
+		Body:         body,
 	}
 }
