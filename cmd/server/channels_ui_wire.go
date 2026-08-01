@@ -78,7 +78,7 @@ func buildWebChannelsHandler(ctx context.Context, getenv func(string) string) (h
 	// the tenant. Mirrors the NewChannelAssociationLookup wiring on the read
 	// side.
 	associations := pgstore.NewChannelAssociationWriter(pool)
-	handler, err := assembleWebChannelsHandlerWithDeps(store, userDir, slog.Default(), whatsappWebEnabled(getenv), associations, auditor)
+	handler, err := assembleWebChannelsHandlerWithDeps(store, userDir, slog.Default(), whatsappWebEnabled(getenv), fakeCustomerChannelEnabled(getenv), associations, auditor)
 	if err != nil {
 		pool.Close()
 		log.Printf("crm: web/channels disabled — assemble: %v", err)
@@ -121,21 +121,33 @@ func whatsappWebEnabled(getenv func(string) string) bool {
 	return strings.TrimSpace(getenv(EnvWhatsAppWebEnabled)) == "1"
 }
 
+// fakeCustomerChannelEnabled reads INBOX_FAKE_CUSTOMER_ENABLED (defined in
+// inbox_fake_customer_wire.go) from the boot environment, gating the
+// FUNCTIONAL readiness of the "Cliente Fake (Demo)" channel type the same
+// way whatsappWebEnabled gates WhatsApp Web.
+func fakeCustomerChannelEnabled(getenv func(string) string) bool {
+	if getenv == nil {
+		return false
+	}
+	return strings.TrimSpace(getenv(envInboxFakeCustomerEnabled)) == "1"
+}
+
 // assembleWebChannelsHandlerFlagged is the flag-aware assembly seam. The
 // wsWebEnabled input threads FEATURE_WHATSAPP_WEB_ENABLED from the boot
 // environment into the handler's WhatsAppWebEnabled field. It delegates to
 // assembleWebChannelsHandlerWithDeps with no association writer (nil ⇒
-// WhatsApp-API onboarding skipped), keeping the pre-SIN-67143 call sites
-// source-compatible.
+// WhatsApp-API onboarding skipped) and fake-customer readiness off, keeping
+// the pre-SIN-67143 call sites source-compatible.
 func assembleWebChannelsHandlerFlagged(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger, wsWebEnabled bool, auditor ...webchannels.AccessAuditor) (http.Handler, error) {
-	return assembleWebChannelsHandlerWithDeps(store, userLabels, logger, wsWebEnabled, nil, auditor...)
+	return assembleWebChannelsHandlerWithDeps(store, userLabels, logger, wsWebEnabled, false, nil, auditor...)
 }
 
 // assembleWebChannelsHandlerWithDeps is the deepest assembly seam. It adds
-// the optional WhatsApp-API association writer (SIN-67143) on top of the
-// flag-aware seam; a nil writer disables onboarding so the surface still
-// renders + creates channels under fail-soft wiring.
-func assembleWebChannelsHandlerWithDeps(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger, wsWebEnabled bool, associations webchannels.ChannelAssociationWriter, auditor ...webchannels.AccessAuditor) (http.Handler, error) {
+// the optional WhatsApp-API association writer (SIN-67143) and the
+// fake-customer channel readiness flag on top of the flag-aware seam; a nil
+// writer disables WhatsApp-API onboarding so the surface still renders +
+// creates channels under fail-soft wiring.
+func assembleWebChannelsHandlerWithDeps(store channelsStore, userLabels userlabel.Directory, logger *slog.Logger, wsWebEnabled bool, fakeCustomerEnabled bool, associations webchannels.ChannelAssociationWriter, auditor ...webchannels.AccessAuditor) (http.Handler, error) {
 	if store == nil {
 		return nil, errors.New("channels_wire: store is nil")
 	}
@@ -147,15 +159,16 @@ func assembleWebChannelsHandlerWithDeps(store channelsStore, userLabels userlabe
 		accessAuditor = auditor[0]
 	}
 	h, err := webchannels.New(webchannels.Deps{
-		Channels:           store,
-		Access:             store,
-		CSRFToken:          csrfTokenFromSessionContext,
-		UserID:             userIDFromSessionContext,
-		UserLabels:         userLabels,
-		Audit:              accessAuditor,
-		Logger:             logger,
-		WhatsAppWebEnabled: wsWebEnabled,
-		Associations:       associations,
+		Channels:            store,
+		Access:              store,
+		CSRFToken:           csrfTokenFromSessionContext,
+		UserID:              userIDFromSessionContext,
+		UserLabels:          userLabels,
+		Audit:               accessAuditor,
+		Logger:              logger,
+		WhatsAppWebEnabled:  wsWebEnabled,
+		FakeCustomerEnabled: fakeCustomerEnabled,
+		Associations:        associations,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("channels_wire: build handler: %w", err)

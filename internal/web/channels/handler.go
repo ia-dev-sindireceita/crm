@@ -37,6 +37,13 @@ const (
 // silently persisting a broken channel.
 const whatsAppWebNotReadyMsg = "WhatsApp Web (sessão QR) está em implementação e estará disponível em breve — SIN-66252."
 
+// fakeCustomerNotReadyMsg is the pt-BR bounce shown when an operator
+// submits the "Cliente Fake (Demo)" family while INBOX_FAKE_CUSTOMER_ENABLED
+// is off — same posture as whatsAppWebNotReadyMsg: the option is always
+// visible, but a submit is refused with an explanation instead of silently
+// persisting a channel whose messages nobody will ever answer.
+const fakeCustomerNotReadyMsg = "O canal de cliente fake está desativado neste ambiente."
+
 // CSRFTokenFn / UserIDFn mirror the dashboard / wasession surfaces:
 // optional app-shell chrome collaborators sourced from the session by the
 // auth middleware. UserID is only used for the shell user-menu label
@@ -83,6 +90,14 @@ type Deps struct {
 	// broken/half-wired QR channel. Flag ON (once SIN-66252 lands the QR
 	// onboarding): the submit proceeds to a real create.
 	WhatsAppWebEnabled bool
+	// FakeCustomerEnabled gates the FUNCTIONAL readiness of the "Cliente
+	// Fake (Demo)" channel family (channelKeyFakeCustomer / "fakellm")
+	// behind INBOX_FAKE_CUSTOMER_ENABLED (default OFF, prod-refused —
+	// see cmd/server/inbox_fake_customer_wire.go). Same posture as
+	// WhatsAppWebEnabled: the option is always offered in the picker;
+	// flag OFF bounces a submit with fakeCustomerNotReadyMsg instead of
+	// persisting a channel the fake-customer wire won't route to.
+	FakeCustomerEnabled bool
 	// Associations upserts the (channel, association) → tenant mapping when a
 	// WhatsApp API channel is registered (SIN-67143), so the inbound webhook
 	// entry-point can resolve the tenant from the Meta phone_number_id.
@@ -224,6 +239,14 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	// through to the real create/onboarding path below.
 	if key == channelKeyWhatsAppWeb && !h.deps.WhatsAppWebEnabled {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "type", whatsAppWebNotReadyMsg)
+		return
+	}
+	// Functional-readiness guard for the fake-customer channel (same
+	// posture as WhatsApp Web above): always visible, but a submit is
+	// refused while INBOX_FAKE_CUSTOMER_ENABLED is off so prod never
+	// creates a channel the fake-customer wire won't route messages to.
+	if key == channelKeyFakeCustomer && !h.deps.FakeCustomerEnabled {
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "type", fakeCustomerNotReadyMsg)
 		return
 	}
 	// Meta channel onboarding (WhatsApp API: SIN-67143, Messenger and

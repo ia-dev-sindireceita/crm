@@ -569,6 +569,14 @@ func runWithListener(ctx context.Context, ln net.Listener, getenv func(string) s
 	if err := InboxChannelProviderRefusedInProd(getenv); err != nil {
 		return fmt.Errorf("inbox channel provider wire-up: %w", err)
 	}
+	// Same fail-closed posture for the fake-customer channel that can now
+	// run alongside INBOX_CHANNEL_PROVIDER=real (see
+	// inbox_fake_customer_wire.go) — checked independently of the
+	// provider value above so a stray INBOX_FAKE_CUSTOMER_ENABLED=1 can
+	// never boot in a production-tier APP_ENV.
+	if err := InboxFakeCustomerRefusedInProd(getenv); err != nil {
+		return fmt.Errorf("inbox fake-customer wire-up: %w", err)
+	}
 	inboxChannelProvider, err := ReadInboxChannelProvider(getenv)
 	if err != nil {
 		return fmt.Errorf("inbox channel provider wire-up: %w", err)

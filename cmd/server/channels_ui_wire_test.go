@@ -193,3 +193,62 @@ func TestAssembleWebChannelsHandlerFlagged_ThreadsFlag(t *testing.T) {
 		}
 	}
 }
+
+// TestAssembleWebChannelsHandlerWithDeps_ThreadsFakeCustomerFlag mirrors
+// TestAssembleWebChannelsHandlerFlagged_ThreadsFlag for the newer
+// fakeCustomerEnabled param: a POST of channel_key=fakellm persists nothing
+// and bounces while off, and persists while on.
+func TestAssembleWebChannelsHandlerWithDeps_ThreadsFakeCustomerFlag(t *testing.T) {
+	t.Parallel()
+	for _, on := range []bool{false, true} {
+		store := &recordingChannelsStore{}
+		h, err := assembleWebChannelsHandlerWithDeps(store, nil, nil, false, on, nil)
+		if err != nil {
+			t.Fatalf("assemble(on=%v): %v", on, err)
+		}
+		tenant := &tenancy.Tenant{ID: uuid.New(), Name: "acme", Host: "acme.crm.local"}
+
+		form := url.Values{}
+		form.Set("name", "Cliente Fake")
+		form.Set("channel_key", "fakellm")
+		rPost := httptest.NewRequest(http.MethodPost, "/settings/channels", strings.NewReader(form.Encode()))
+		rPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rPost = rPost.WithContext(tenancy.WithContext(rPost.Context(), tenant))
+		recPost := httptest.NewRecorder()
+		h.ServeHTTP(recPost, rPost)
+
+		if on {
+			if store.createCalls != 1 {
+				t.Fatalf("on=true: fakellm submit must persist a channel; Create calls=%d, want 1", store.createCalls)
+			}
+			if store.lastKey != "fakellm" {
+				t.Fatalf("on=true: persisted channel_key=%q, want fakellm", store.lastKey)
+			}
+		} else {
+			if store.createCalls != 0 {
+				t.Fatalf("on=false: fakellm submit must persist NOTHING; Create calls=%d, want 0", store.createCalls)
+			}
+			if !strings.Contains(recPost.Body.String(), "desativado") {
+				t.Fatalf("on=false: fakellm submit must bounce with the not-ready message; body=%q", recPost.Body.String())
+			}
+		}
+	}
+}
+
+func TestFakeCustomerChannelEnabled(t *testing.T) {
+	t.Parallel()
+	if fakeCustomerChannelEnabled(nil) {
+		t.Fatal("nil getenv must resolve to false")
+	}
+	if fakeCustomerChannelEnabled(func(string) string { return "" }) {
+		t.Fatal("unset env must resolve to false")
+	}
+	if !fakeCustomerChannelEnabled(func(k string) string {
+		if k == envInboxFakeCustomerEnabled {
+			return "1"
+		}
+		return ""
+	}) {
+		t.Fatal("INBOX_FAKE_CUSTOMER_ENABLED=1 must resolve to true")
+	}
+}
