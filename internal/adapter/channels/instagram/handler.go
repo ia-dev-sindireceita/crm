@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -202,16 +201,12 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, igBusi
 		SenderExternalID:  igsid,
 		Body:              extractBody(m.Message),
 		OccurredAt:        parseMillis(m.Timestamp),
+		HasAttachments:    len(m.Message.Attachments) > 0,
 	}
 	deliverCtx, cancel := context.WithTimeout(ctx, a.cfg.DeliverTimeout)
 	defer cancel()
-	if err := a.inbox.HandleInbound(deliverCtx, ev); err != nil {
-		if errors.Is(err, inbox.ErrInboundAlreadyProcessed) {
-			a.logger.Debug("instagram.duplicate_mid",
-				slog.String("tenant_id", tenantID.String()),
-				slog.String("mid", mid))
-			return
-		}
+	res, err := a.inbox.MaterialiseInbound(deliverCtx, ev)
+	if err != nil {
 		a.logger.Error("instagram.deliver_failed",
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("ig_business_id", igBusinessID),
@@ -219,21 +214,27 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, igBusi
 			slog.String("err", err.Error()))
 		return
 	}
+	if res.Duplicate {
+		a.logger.Debug("instagram.duplicate_mid",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("mid", mid))
+		return
+	}
 	a.logger.Info("instagram.delivered",
 		slog.String("tenant_id", tenantID.String()),
 		slog.String("ig_business_id", igBusinessID),
 		slog.String("mid", mid))
-	a.requestMediaScans(ctx, tenantID, mid, m.Message.Attachments)
+	a.requestMediaScans(ctx, tenantID, res.MessageID, mid, m.Message.Attachments)
 }
 
 // requestMediaScans publishes one media.scan.requested envelope per
 // attachment. We use mid (deterministic per attachment row index) as
 // the storage key fragment so retries land on the same row when the
-// inbox use case later re-materialises the attachment list. The
-// MessageID passed to the publisher is uuid.Nil for Fase 2 — message-id
-// wiring lands in the follow-up "post-clean re-materialisation" PR
-// (the inbox use case does not yet return ids on HandleInbound).
-func (a *Adapter) requestMediaScans(ctx context.Context, tenantID uuid.UUID, mid string, atts []igAttachment) {
+// inbox use case later re-materialises the attachment list. messageID
+// is the persisted message row's id, surfaced by
+// inbox.InboundMessageMaterialiser — the worker needs it to patch
+// `message.media` with the scan verdict.
+func (a *Adapter) requestMediaScans(ctx context.Context, tenantID, messageID uuid.UUID, mid string, atts []igAttachment) {
 	if len(atts) == 0 {
 		return
 	}
@@ -244,9 +245,20 @@ func (a *Adapter) requestMediaScans(ctx context.Context, tenantID uuid.UUID, mid
 			slog.Int("attachments", len(atts)))
 		return
 	}
+	if messageID == uuid.Nil {
+		// Defensive — the materialiser never returns Nil on a non-duplicate
+		// path, and the duplicate path short-circuits before we get here.
+		// Log loudly so a regression trips a dashboard alert instead of a
+		// silent worker drop (the worker treats a nil message_id as poison).
+		a.logger.Warn("instagram.media_scan_missing_message_id",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("mid", mid),
+			slog.Int("attachments", len(atts)))
+		return
+	}
 	for i, att := range atts {
 		key := mediaKey(tenantID, mid, i, att.Type)
-		if err := a.media.PublishScanRequest(ctx, tenantID, uuid.Nil, key); err != nil {
+		if err := a.media.PublishScanRequest(ctx, tenantID, messageID, key); err != nil {
 			a.logger.Warn("instagram.media_scan_publish_failed",
 				slog.String("tenant_id", tenantID.String()),
 				slog.String("mid", mid),
