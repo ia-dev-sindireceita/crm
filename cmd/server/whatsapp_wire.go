@@ -168,15 +168,19 @@ func assembleWhatsAppAdapter(ctx context.Context, cfg whatsapp.Config, pool *pgx
 	})
 	rl := rlredis.New(rdb, "whatsapp")
 	flag := whatsapp.NewEnvFeatureFlag(getenv)
-	// SIN-68306: assemble the outbound WhatsApp dispatcher (Meta Cloud
-	// Sender + rate-limit + idempotency + channel router) and retain it
-	// for the send-outbound wireup. Not yet consumed by a live
-	// SendOutbound — the real inbox channel provider (SIN-63793 W3)
-	// injects it, mirroring the messenger_wire.go retain-for-follow-up
-	// pattern. META_GRAPH_TOKEN unset / flag-off → empty router no-op, so
-	// this never fails boot and issues no outbound HTTP.
-	outboundDispatcher := buildWhatsAppOutbound(getenv, pool, rdb, flag)
-	_ = outboundDispatcher
+	// Do NOT also build the outbound WhatsApp dispatcher here. The inbox
+	// wire branches that actually consume it — buildInboxHandlerReal
+	// (inbox_wire_real.go) and buildInboxHandlerDisabledWithOutbound via
+	// buildInboxOutboundSendForView (whatsapp_outbound_wire.go) — each
+	// construct their own channelwhatsapp.New(...)/waoutbound.New(...)
+	// Sender against prometheus.DefaultRegisterer. A second construction
+	// here used to register the same whatsapp_send_* collector names
+	// twice and panic at boot ("duplicate metrics collector registration
+	// attempted") the moment META_GRAPH_TOKEN was actually set, in EITHER
+	// INBOX_CHANNEL_PROVIDER branch (real, or disabled-with-outbound) —
+	// it only went unnoticed because the llmcustomer provider is the one
+	// branch that never builds a second dispatcher. This wire only needs
+	// `flag` for the inbound adapter below.
 	adapter, err := whatsapp.New(cfg, receiver, resolver, flag, rl,
 		whatsapp.WithLogger(slog.Default()),
 		// SIN-62768: dispatch carrier status callbacks to the inbox
