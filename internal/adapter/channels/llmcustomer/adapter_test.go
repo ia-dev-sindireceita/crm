@@ -563,3 +563,113 @@ func TestConcurrentSendsAreSafe(t *testing.T) {
 		t.Fatalf("llm called %d times, want %d", got, fanout)
 	}
 }
+
+// stubAllowlist is a fixed true/false/error TenantAllowlist test double.
+type stubAllowlist struct {
+	allowed bool
+	err     error
+}
+
+func (s stubAllowlist) Enabled(_ context.Context, _ uuid.UUID) (bool, error) {
+	return s.allowed, s.err
+}
+
+func newAdapterWithAllowlist(t *testing.T, downstream inbox.InboundChannel, llm llmcustomer.PersonaLLM, allowlist llmcustomer.TenantAllowlist) *llmcustomer.Adapter {
+	t.Helper()
+	a, err := llmcustomer.New(llmcustomer.Config{
+		Downstream: downstream,
+		LLM:        llm,
+		Allowlist:  allowlist,
+		ReplyDelay: 0,
+		Now:        func() time.Time { return time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(a.Stop)
+	return a
+}
+
+func TestSendMessageDeniedByAllowlist_ReturnsChannelDisabled(t *testing.T) {
+	t.Parallel()
+	downstream := &recordingInbox{}
+	llm := &recordingLLM{}
+	a := newAdapterWithAllowlist(t, downstream, llm, stubAllowlist{allowed: false})
+	tenant := uuid.New()
+
+	_, err := a.SendMessage(context.Background(), inbox.OutboundMessage{
+		TenantID:       tenant,
+		ConversationID: uuid.New(),
+		Channel:        llmcustomer.ChannelName,
+		Body:           "oi",
+	})
+	if !errors.Is(err, inbox.ErrChannelDisabled) {
+		t.Fatalf("SendMessage err = %v, want ErrChannelDisabled", err)
+	}
+	a.Drain()
+	if got := len(downstream.snapshot()); got != 0 {
+		t.Fatalf("downstream got %d events, want 0 (no reply scheduled)", got)
+	}
+	if got := llm.called.Load(); got != 0 {
+		t.Fatalf("llm called %d times, want 0", got)
+	}
+}
+
+func TestBootstrapDeniedByAllowlist_IsSilentNoOp(t *testing.T) {
+	t.Parallel()
+	downstream := &recordingInbox{}
+	llm := &recordingLLM{}
+	a := newAdapterWithAllowlist(t, downstream, llm, stubAllowlist{allowed: false})
+
+	if err := a.Bootstrap(context.Background(), uuid.New()); err != nil {
+		t.Fatalf("Bootstrap: %v, want nil (silent no-op)", err)
+	}
+	if got := len(downstream.snapshot()); got != 0 {
+		t.Fatalf("downstream got %d events, want 0", got)
+	}
+	if got := llm.called.Load(); got != 0 {
+		t.Fatalf("llm called %d times, want 0", got)
+	}
+}
+
+func TestAllowlistError_PropagatesFromSendAndBootstrap(t *testing.T) {
+	t.Parallel()
+	downstream := &recordingInbox{}
+	llm := &recordingLLM{}
+	boom := errors.New("allowlist boom")
+	a := newAdapterWithAllowlist(t, downstream, llm, stubAllowlist{err: boom})
+
+	if err := a.Bootstrap(context.Background(), uuid.New()); !errors.Is(err, boom) {
+		t.Fatalf("Bootstrap err = %v, want wrapping %v", err, boom)
+	}
+	_, err := a.SendMessage(context.Background(), inbox.OutboundMessage{
+		TenantID:       uuid.New(),
+		ConversationID: uuid.New(),
+		Channel:        llmcustomer.ChannelName,
+		Body:           "oi",
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("SendMessage err = %v, want wrapping %v", err, boom)
+	}
+}
+
+func TestNilAllowlist_AllowsEveryTenant(t *testing.T) {
+	t.Parallel()
+	downstream := &recordingInbox{}
+	llm := &recordingLLM{replies: []string{"ok"}}
+	a := newAdapter(t, downstream, llm) // no Allowlist set
+	tenant := uuid.New()
+
+	if _, err := a.SendMessage(context.Background(), inbox.OutboundMessage{
+		TenantID:       tenant,
+		ConversationID: uuid.New(),
+		Channel:        llmcustomer.ChannelName,
+		Body:           "oi",
+	}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	a.Drain()
+	if got := len(downstream.snapshot()); got != 1 {
+		t.Fatalf("downstream got %d events, want 1", got)
+	}
+}
