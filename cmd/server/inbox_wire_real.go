@@ -13,16 +13,19 @@ package main
 // messages sat invisibly in Postgres. This closes that gap.
 //
 // Difference from the llmcustomer branch (inbox_wire_llmcustomer.go):
-//   - No fake channel adapter. There is no synthetic-customer Bootstrap
-//     and no auto-reply loop — conversations arrive only from the real
-//     carrier webhook, so the read use cases front the postgres store
-//     directly with no bootstrap decorator.
-//   - Outbound sends go to the real WhatsApp Cloud dispatcher built by
-//     buildWhatsAppOutbound (outbound_dispatch_wire.go, SIN-68306): a
-//     channel-routed, idempotent, rate-limited Sender. Deny-by-default —
-//     when META_GRAPH_TOKEN is unset the dispatcher is an empty Router
-//     that answers every send with ErrChannelDisabled, so an operator
-//     reply cleanly fails closed instead of dispatching to a live carrier.
+//   - Outbound sends go to one combined dispatch.Router keyed by channel,
+//     merging the real WhatsApp Cloud dispatcher (outbound_dispatch_wire.go,
+//     SIN-68306) with the Messenger and Instagram entries (messenger_wire.go,
+//     instagram_outbound_wire.go) and, optionally, the fake-customer
+//     adapter (internal/adapter/channels/llmcustomer) when
+//     INBOX_FAKE_CUSTOMER_ENABLED=1 — see buildFakeCustomerAdapter below.
+//     The fake-customer channel used to be a mutually exclusive
+//     INBOX_CHANNEL_PROVIDER value; it now coexists so real carrier
+//     conversations and the demo/QA fake customer both work under
+//     provider=real. Deny-by-default per channel: a channel with no
+//     entry fails closed with ErrChannelDisabled (Router's
+//     deny-by-default), so an operator reply on an unconfigured channel
+//     cleanly fails closed instead of dispatching to a live carrier.
 //
 // Fail-soft (identical posture to every other cmd/server wire): DATABASE_URL
 // unset OR any postgres construction error reverts to the disabled-mode
@@ -42,14 +45,23 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/pericles-luz/crm/internal/adapter/channel/dispatch"
+	"github.com/pericles-luz/crm/internal/adapter/channels/instagram"
+	"github.com/pericles-luz/crm/internal/adapter/channels/llmcustomer"
+	"github.com/pericles-luz/crm/internal/adapter/channels/messenger"
 	"github.com/pericles-luz/crm/internal/adapter/channels/whatsapp"
 	pgpool "github.com/pericles-luz/crm/internal/adapter/db/postgres"
 	pgcontacts "github.com/pericles-luz/crm/internal/adapter/db/postgres/contacts"
 	pginbox "github.com/pericles-luz/crm/internal/adapter/db/postgres/inbox"
+	"github.com/pericles-luz/crm/internal/contacts"
+	contactsusecase "github.com/pericles-luz/crm/internal/contacts/usecase"
+	"github.com/pericles-luz/crm/internal/inbox"
 	inboxusecase "github.com/pericles-luz/crm/internal/inbox/usecase"
 	webinbox "github.com/pericles-luz/crm/internal/web/inbox"
 )
@@ -135,24 +147,70 @@ func assembleInboxHandlerRealFromPool(pool *pgxpool.Pool, rdb *goredis.Client, g
 		return nil, nil, fmt.Errorf("pginbox.NewUserDirectory: %w", err)
 	}
 
-	// Outbound dispatcher (SIN-68306). Always non-nil: a real routed
-	// Sender when META_GRAPH_TOKEN is present, an empty no-op Router
-	// otherwise (deny-by-default). The feature flag re-checks the
+	// Outbound router (SIN-68306 + Messenger wiring). One entry per
+	// channel; a channel with no entry fails closed with
+	// ErrChannelDisabled (dispatch.Router's deny-by-default).
+	routes := map[string]inbox.OutboundChannel{}
+
+	// WhatsApp entry: real routed Sender when META_GRAPH_TOKEN is
+	// present, absent otherwise. The feature flag re-checks the
 	// per-tenant allowlist inside the dispatcher's TenantConfig lookup.
 	flag := whatsapp.NewEnvFeatureFlag(getenv)
-	outbound := buildWhatsAppOutbound(getenv, pool, rdb, flag)
+	if entry, ok := buildWhatsAppOutboundEntry(getenv, pool, rdb, flag); ok {
+		routes[whatsapp.Channel] = entry
+	}
 
-	// SendOutbound resolves the recipient's WhatsApp E.164 from the
-	// conversation's contact (the web handler leaves ToExternalID empty),
-	// mirroring the disabled-provider outbound path in
-	// whatsapp_outbound_wire.go. passthroughWalletDebitor keeps the
+	// Messenger entry: same shape as WhatsApp — real routed Sender when
+	// META_MESSENGER_GRAPH_TOKEN/META_GRAPH_TOKEN is present, absent
+	// otherwise. buildMessengerOutboundEntry (messenger_wire.go) is the
+	// ONLY construction site for the Messenger sender — do not also
+	// build one in messenger_wire.go's inbound assembly (see that file's
+	// doc comment for the duplicate-Prometheus-registration panic this
+	// would otherwise cause).
+	msgFlag := messenger.NewEnvFeatureFlag(getenv)
+	if entry, ok := buildMessengerOutboundEntry(getenv, pool, rdb, msgFlag); ok {
+		routes[messenger.Channel] = entry
+	}
+
+	// Instagram entry: same shape as WhatsApp/Messenger — real routed
+	// Sender when META_INSTAGRAM_GRAPH_TOKEN/META_GRAPH_TOKEN is present,
+	// absent otherwise. buildInstagramOutboundEntry (instagram_outbound_wire.go)
+	// is the ONLY construction site for the Instagram sender — do not
+	// also build one in instagram_wire.go's inbound assembly (duplicate-
+	// Prometheus-registration panic, see that file's doc comment).
+	igFlag := instagram.NewEnvFeatureFlag(getenv)
+	if entry, ok := buildInstagramOutboundEntry(getenv, pool, rdb, igFlag); ok {
+		routes[instagram.Channel] = entry
+	}
+
+	// Fake-customer entry (opt-in, INBOX_FAKE_CUSTOMER_ENABLED=1): lets
+	// the demo/QA "fake customer" channel run alongside the real carriers
+	// instead of requiring the mutually-exclusive llmcustomer provider.
+	var fakeAdapter *llmcustomer.Adapter
+	if strings.TrimSpace(getenv(envInboxFakeCustomerEnabled)) == "1" {
+		var ferr error
+		fakeAdapter, ferr = buildFakeCustomerAdapter(pool, inboxStore, contactsStore, getenv)
+		if ferr != nil {
+			log.Printf("crm: inbox fake-customer channel disabled — %v", ferr)
+			fakeAdapter = nil
+		} else {
+			routes[llmcustomer.ChannelName] = fakeAdapter
+		}
+	}
+
+	outbound := dispatch.NewRouter(routes)
+
+	// SendOutbound resolves the recipient's identity from the
+	// conversation's channel + contact (the web handler leaves
+	// ToExternalID empty): WhatsApp resolves E.164, Messenger and
+	// Instagram resolve PSID/IGSID. passthroughWalletDebitor keeps the
 	// reserve→charge→commit ordering with a zero cost until the tariff
 	// wallet adapter lands (a separate slice).
 	sendUC, err := inboxusecase.NewSendOutbound(
 		inboxStore,
 		passthroughWalletDebitor{},
 		outbound,
-		inboxusecase.WithContactLookup(whatsappOutboundContactLookup(inboxStore, contactsStore)),
+		inboxusecase.WithContactLookup(combinedOutboundContactLookup(inboxStore, contactsStore)),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("send outbound usecase: %w", err)
@@ -173,12 +231,37 @@ func assembleInboxHandlerRealFromPool(pool *pgxpool.Pool, rdb *goredis.Client, g
 	assignUC := inboxusecase.MustNewAssignConversation(inboxStore, inboxStore, inboxStore, inboxStore)
 	listAssignableUC := &listAssignableAdapter{r: inboxStore}
 
+	// Read use cases, optionally wrapped so the very first GET /inbox
+	// still lazily seeds the fake-customer's synthetic conversation
+	// (mirrors inbox_wire_llmcustomer.go's bootstrap decorators — reused
+	// verbatim). No-op wrapping when the fake-customer flag is off.
+	var listConversations webinbox.ListConversationsUseCase = inboxusecase.MustNewListConversations(inboxStore)
+	// *pginbox.Store satisfies inbox.ConversationReadModel, so the same
+	// store backs the enriched GET /inbox list (snippet + atendente +
+	// filters) that surfaces persisted inbound messages (SIN-64968).
+	var listSummaries webinbox.ListSummariesUseCase = inboxusecase.MustNewListConversationSummaries(inboxStore, userDir)
+	var resetUC webinbox.ResetConversationUseCase
+	if fakeAdapter != nil {
+		listConversations = &bootstrapOnListConversations{
+			inner:   listConversations.(*inboxusecase.ListConversations),
+			adapter: fakeAdapter,
+			logger:  slog.Default(),
+		}
+		listSummaries = &bootstrapOnListSummaries{
+			inner:   listSummaries.(*inboxusecase.ListConversationSummaries),
+			adapter: fakeAdapter,
+			logger:  slog.Default(),
+		}
+		// The fake adapter satisfies inboxusecase.ConversationResetter
+		// (clears per-tenant turn history + bootstrapped flag) — reset
+		// is only meaningful for fakellm conversations; the use case
+		// itself rejects any other channel.
+		resetUC = inboxusecase.MustNewResetConversation(inboxStore, fakeAdapter)
+	}
+
 	deps := webinbox.Deps{
-		ListConversations: inboxusecase.MustNewListConversations(inboxStore),
-		// *pginbox.Store satisfies inbox.ConversationReadModel, so the same
-		// store backs the enriched GET /inbox list (snippet + atendente +
-		// filters) that surfaces persisted inbound messages (SIN-64968).
-		ListSummaries:       inboxusecase.MustNewListConversationSummaries(inboxStore, userDir),
+		ListConversations:   listConversations,
+		ListSummaries:       listSummaries,
 		ListMessages:        inboxusecase.MustNewListMessages(inboxStore),
 		ListMessagesSince:   inboxusecase.MustNewListMessagesSince(inboxStore),
 		SendOutbound:        sendUC,
@@ -186,6 +269,7 @@ func assembleInboxHandlerRealFromPool(pool *pgxpool.Pool, rdb *goredis.Client, g
 		ConversationContext: ctxUC,
 		AssignConversation:  assignUC,
 		ListAssignable:      listAssignableUC,
+		ResetConversation:   resetUC,
 		// SIN-66378 P4 — per-channel access scope on the live read path.
 		// Soft-degrade: a build fault disables the filter + chip (nil) but
 		// never downs the inbox; IsGerente reads the request principal.
@@ -199,9 +283,91 @@ func assembleInboxHandlerRealFromPool(pool *pgxpool.Pool, rdb *goredis.Client, g
 
 	h, err := webinbox.New(deps)
 	if err != nil {
+		if fakeAdapter != nil {
+			fakeAdapter.Stop()
+		}
 		return nil, nil, fmt.Errorf("webinbox.New: %w", err)
 	}
 	mux := http.NewServeMux()
 	h.Routes(mux)
-	return mux, func() {}, nil
+	cleanup := func() {}
+	if fakeAdapter != nil {
+		cleanup = fakeAdapter.Stop
+	}
+	return mux, cleanup, nil
+}
+
+// buildFakeCustomerAdapter constructs the fake-customer (llmcustomer)
+// adapter on the same Postgres pool the real carriers use, so all
+// channels' conversations/messages land in the same tables. Mirrors
+// inbox_wire_llmcustomer.go's receiver + adapter construction; the only
+// difference is wireChannelResolver, which stamps a real tenant_channels
+// channel_id on synthetic conversations (see cmd/server/channel_resolver_wire.go)
+// so the ChannelScope visibility filter treats them like any other channel
+// for non-gerente atendentes — requires a gerente to have created a
+// "fakellm" channel via /settings/channels first; until then the resolver
+// leaves channel_id NULL (pre-P4 behaviour, gerente-only visibility).
+func buildFakeCustomerAdapter(pool *pgxpool.Pool, inboxStore *pginbox.Store, contactsStore *pgcontacts.Store, getenv func(string) string) (*llmcustomer.Adapter, error) {
+	contactsUC, err := contactsusecase.New(contactsStore)
+	if err != nil {
+		return nil, fmt.Errorf("contacts usecase: %w", err)
+	}
+	receiver, err := inboxusecase.NewReceiveInbound(inboxStore, inboxStore, contactsUC)
+	if err != nil {
+		return nil, fmt.Errorf("receive inbound usecase: %w", err)
+	}
+	wireChannelResolver(receiver, pool)
+
+	llm, err := buildPersonaLLM(getenv)
+	if err != nil {
+		return nil, fmt.Errorf("persona llm: %w", err)
+	}
+
+	adapter, err := llmcustomer.New(llmcustomer.Config{
+		Downstream: receiver,
+		LLM:        llm,
+		ReplyDelay: llmcustomerReplyDelay,
+		Logger:     slog.Default(),
+		Allowlist:  newInboxFakeCustomerFlag(getenv),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("adapter: %w", err)
+	}
+	return adapter, nil
+}
+
+// combinedOutboundContactLookup resolves a conversation to the
+// recipient's channel-side identity: the fake-customer channel always
+// answers with its fixed synthetic contact id (one persona per tenant,
+// mirroring inbox_wire_llmcustomer.go's syntheticLookup); WhatsApp,
+// Messenger, and Instagram fall through to the matching contact
+// identity (E.164 / PSID / IGSID respectively) —
+// whatsapp_outbound_wire.go's whatsappOutboundContactLookup inlined
+// here since every branch needs the same conversation read first.
+func combinedOutboundContactLookup(convs conversationResolver, finder contactIdentityFinder) inboxusecase.ContactLookupFn {
+	return func(ctx context.Context, tenantID, conversationID uuid.UUID) (string, error) {
+		conv, err := convs.GetConversation(ctx, tenantID, conversationID)
+		if err != nil {
+			return "", err
+		}
+		if conv.Channel == llmcustomer.ChannelName {
+			return llmcustomer.SyntheticContactExternalID, nil
+		}
+		identityChannel := contacts.ChannelWhatsApp
+		if conv.Channel == messenger.Channel {
+			identityChannel = contacts.ChannelMessenger
+		} else if conv.Channel == instagram.Channel {
+			identityChannel = contacts.ChannelInstagram
+		}
+		c, err := finder.FindByID(ctx, tenantID, conv.ContactID)
+		if err != nil {
+			return "", err
+		}
+		for _, id := range c.Identities() {
+			if id.Channel == identityChannel {
+				return id.ExternalID, nil
+			}
+		}
+		return "", fmt.Errorf("outbound: contact %s has no %s identity", conv.ContactID, identityChannel)
+	}
 }

@@ -195,6 +195,27 @@ func TestPost_SignatureValid_AcceptsAndDelivers(t *testing.T) {
 	}
 }
 
+// Meta's Cloud API sends `from` as bare digits (no leading '+'), never
+// E.164 — a real payload shape that otherwise fails contact upsert with
+// ErrInvalidE164 and drops the message entirely.
+func TestPost_FromWithoutPlusPrefix_NormalisedToE164(t *testing.T) {
+	t.Parallel()
+	k := newTestKit(t)
+	body := envelopeJSON(t, testPhoneID, k.clock.Now(), envMsg{
+		WamID: "wamid.BARE1", From: "5511955554444", Body: "olá",
+	})
+	resp := k.post(t, body, signBody(t, body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := k.inbox.PersistedCount(); got != 1 {
+		t.Fatalf("persisted = %d, want 1", got)
+	}
+	if got := k.inbox.Persisted()[0].SenderExternalID; got != "+5511955554444" {
+		t.Fatalf("SenderExternalID = %q, want %q", got, "+5511955554444")
+	}
+}
+
 func TestPost_SignatureMissing_Returns401(t *testing.T) {
 	t.Parallel()
 	k := newTestKit(t)

@@ -1,28 +1,20 @@
 package main
 
-// SIN-68306 wiring — outbound WhatsApp Cloud dispatcher.
+// SIN-68306 wiring — outbound WhatsApp Cloud dispatcher entry.
 //
-// Closes the gap messenger_wire.go documents ("the outbound Sender is
-// constructed during assembly but exposed only to the send-outbound
-// dispatcher when that dispatcher is wired (follow-up)"): it builds the
-// Meta Cloud Sender (internal/adapter/channel/whatsapp) and wraps it in
-// the production decorator stack from internal/adapter/channel/dispatch —
-//
-//	Router{"whatsapp": Idempotent(RateLimited(sender))}
-//
-// so the send-outbound use case can talk to a single inbox.OutboundChannel
-// that routes by conversation channel, enforces the per-minute carrier
-// budget, and is idempotent per operator compose.
+// Builds the Meta Cloud Sender (internal/adapter/channel/whatsapp) and
+// wraps it in the production decorator stack from
+// internal/adapter/channel/dispatch — Idempotent(RateLimited(sender)) —
+// WITHOUT wrapping it in its own single-entry Router. inbox_wire_real.go
+// merges this entry with the Messenger / Instagram / fake-customer
+// entries into ONE combined dispatch.Router built once per boot, so a
+// conversation on any channel with no wired entry fails closed with
+// inbox.ErrChannelDisabled (Router's deny-by-default) instead of each
+// channel needing its own nested router.
 //
 // Deny-by-default / reversibility: when META_GRAPH_TOKEN is unset (or the
-// Sender fails to construct) the builder returns an empty Router — a
-// graceful no-op that answers every send with inbox.ErrChannelDisabled and
-// issues zero carrier HTTP, so wiring the dispatcher flag-off is safe.
-//
-// Injection point: the outbound dispatcher is assembled here and retained
-// by assembleWhatsAppAdapter; a live SendOutbound consumes it when the
-// real inbox channel provider is wired (SIN-63793 W3 follow-up), mirroring
-// the messenger_wire.go retain-for-follow-up pattern.
+// Sender fails to construct) the builder returns ok=false — the caller
+// omits the WhatsApp entry from the combined route map entirely.
 //
 // Idempotency ledger: MemoryLedger is in-process (single replica). A
 // Redis/Postgres-backed dispatch.Ledger that spans replicas is the
@@ -51,16 +43,23 @@ import (
 // channels/whatsapp when WHATSAPP_RATE_MAX_PER_MIN is unset or invalid.
 const defaultOutboundRateMaxPerMin = 600
 
-// buildWhatsAppOutbound assembles the outbound WhatsApp dispatcher from
-// already-connected dependencies. It always returns a non-nil
-// inbox.OutboundChannel: a real routed dispatcher when META_GRAPH_TOKEN is
-// present, or an empty Router no-op otherwise, so the caller never has to
-// nil-guard and boot never fails.
-func buildWhatsAppOutbound(getenv func(string) string, pool *pgxpool.Pool, rdb *goredis.Client, flag *channelswhatsapp.EnvFeatureFlag) inbox.OutboundChannel {
+// buildWhatsAppOutboundEntry builds the decorated (idempotent +
+// rate-limited) WhatsApp sender WITHOUT wrapping it in a Router, so
+// inbox_wire_real.go can merge it with the Messenger / Instagram /
+// fake-customer entries into one combined Router built once per boot.
+// ok=false means WhatsApp outbound is disabled (no token / construction
+// error) — the caller should omit the entry from any combined route map.
+//
+// This is the ONLY construction site for channelwhatsapp.Sender in the
+// real-provider path — do not also build one elsewhere; a second
+// construction site would register the whatsapp_send_* Prometheus
+// collectors twice and panic at boot (see whatsapp_wire.go's doc comment
+// for the incident this guards against).
+func buildWhatsAppOutboundEntry(getenv func(string) string, pool *pgxpool.Pool, rdb *goredis.Client, flag *channelswhatsapp.EnvFeatureFlag) (inbox.OutboundChannel, bool) {
 	token := getenv("META_GRAPH_TOKEN")
 	if token == "" {
-		log.Printf("crm: whatsapp outbound dispatcher disabled (META_GRAPH_TOKEN unset) — no-op router")
-		return dispatch.NewRouter(nil)
+		log.Printf("crm: whatsapp outbound dispatcher disabled (META_GRAPH_TOKEN unset)")
+		return nil, false
 	}
 	lookup := channelwhatsapp.TenantConfigLookup(func(ctx context.Context, tenantID uuid.UUID) (channelwhatsapp.TenantConfig, error) {
 		pn, err := whatsappOutboundPhoneNumberID(ctx, pool, tenantID)
@@ -76,27 +75,33 @@ func buildWhatsAppOutbound(getenv func(string) string, pool *pgxpool.Pool, rdb *
 	sender, err := channelwhatsapp.New(token, lookup, prometheus.DefaultRegisterer)
 	if err != nil {
 		log.Printf("crm: whatsapp outbound dispatcher disabled — %v", err)
-		return dispatch.NewRouter(nil)
+		return nil, false
 	}
 	var limiter dispatch.RateLimiter
 	if rdb != nil {
 		limiter = rlredis.New(rdb, "whatsapp:out:")
 	}
 	log.Printf("crm: whatsapp outbound dispatcher ready")
-	return assembleWhatsAppOutbound(sender, limiter, outboundRateMaxPerMin(getenv))
+	return assembleWhatsAppOutboundEntry(sender, limiter, outboundRateMaxPerMin(getenv)), true
 }
 
-// assembleWhatsAppOutbound wraps a carrier sender in the outbound decorator
-// stack and registers it under the WhatsApp channel key. Split out from
-// buildWhatsAppOutbound so unit tests can wire a fake sender + limiter
-// without dialling Postgres/Redis or registering prometheus metrics.
-func assembleWhatsAppOutbound(sender inbox.OutboundChannel, limiter dispatch.RateLimiter, rateMax int) inbox.OutboundChannel {
+// assembleWhatsAppOutboundEntry wraps a carrier sender in the outbound
+// decorator stack (rate-limit, then idempotency). Split out from
+// buildWhatsAppOutboundEntry so unit tests can wire a fake sender +
+// limiter without dialling Postgres/Redis or registering prometheus
+// metrics. The caller is responsible for keying this entry under
+// channelswhatsapp.Channel in a combined dispatch.Router — this function
+// does not wrap the result in its own single-entry Router (that
+// responsibility lives in inbox_wire_real.go's combined route map so
+// WhatsApp, Messenger, and Instagram share one Router instead of each
+// channel needing its own).
+func assembleWhatsAppOutboundEntry(sender inbox.OutboundChannel, limiter dispatch.RateLimiter, rateMax int) inbox.OutboundChannel {
 	var oc inbox.OutboundChannel = sender
 	// Rate limit before idempotency's carrier call, but inside the
 	// idempotency claim so a deduped resend never consumes budget.
 	oc = dispatch.NewRateLimited(oc, limiter, time.Minute, rateMax, nil)
 	oc = dispatch.NewIdempotent(oc, dispatch.NewMemoryLedger())
-	return dispatch.NewRouter(map[string]inbox.OutboundChannel{channelswhatsapp.Channel: oc})
+	return oc
 }
 
 // whatsappOutboundPhoneNumberID (the per-tenant Meta phone_number_id

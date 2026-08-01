@@ -28,6 +28,27 @@ type channelType struct {
 const (
 	channelKeyWhatsApp    = "whatsapp"
 	channelKeyWhatsAppWeb = "whatsapp_web"
+	// channelKeyMessenger is the Facebook Messenger channel
+	// (internal/adapter/channels/messenger). Like WhatsApp API, both
+	// inbound and outbound are fully implemented — the identity entered
+	// at create time is the tenant's Facebook Page ID (all-digits, same
+	// shape as WhatsApp's phone_number_id).
+	channelKeyMessenger = "messenger"
+	// channelKeyInstagram is the Instagram Direct channel
+	// (internal/adapter/channels/instagram). Like WhatsApp API and
+	// Messenger, both inbound and outbound are fully implemented — the
+	// identity entered at create time is the tenant's Instagram Business
+	// Account id (all-digits, same shape as WhatsApp's phone_number_id /
+	// Messenger's Page ID).
+	channelKeyInstagram = "instagram"
+	// channelKeyFakeCustomer is the demo/QA "fake customer" channel
+	// (internal/adapter/channels/llmcustomer, channel key "fakellm"): an
+	// LLM plays the customer side of a synthetic conversation so an
+	// operator can exercise the inbox loop without a real carrier.
+	// Functional readiness is gated by INBOX_FAKE_CUSTOMER_ENABLED at
+	// create time (Deps.FakeCustomerEnabled), same pattern as
+	// WhatsAppWebEnabled for whatsapp_web.
+	channelKeyFakeCustomer = "fakellm"
 )
 
 // channelTypes is the ordered, closed set of channel families the admin
@@ -42,10 +63,12 @@ const (
 var channelTypes = []channelType{
 	{Key: channelKeyWhatsApp, Label: "WhatsApp API"},
 	{Key: channelKeyWhatsAppWeb, Label: "WhatsApp Web"},
+	{Key: channelKeyMessenger, Label: "Messenger"},
 	{Key: "telegram", Label: "Telegram"},
-	{Key: "instagram", Label: "Instagram"},
+	{Key: channelKeyInstagram, Label: "Instagram"},
 	{Key: "webchat", Label: "Webchat"},
 	{Key: "email", Label: "E-mail"},
+	{Key: channelKeyFakeCustomer, Label: "Cliente Fake (Demo)"},
 }
 
 // allChannelTypes returns a fresh copy of the closed registry so the create

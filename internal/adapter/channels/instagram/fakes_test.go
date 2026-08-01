@@ -13,40 +13,62 @@ import (
 	"github.com/pericles-luz/crm/internal/inbox"
 )
 
-// fakeInbox mirrors the production ON CONFLICT DO NOTHING semantics
-// the dedup table enforces — see whatsapp tests for the rationale.
+// fakeInbox implements inbox.InboundMessageMaterialiser with an
+// in-memory dedup map. It mirrors the production "duplicate is a
+// no-op that surfaces res.Duplicate=true" semantics so the instagram
+// handler can be unit-tested without spinning up a database.
+//
+// Each non-duplicate MaterialiseInbound mints a fresh MessageID and
+// records it alongside the event so tests can assert the same id
+// flowed through to PublishScanRequest.
 type fakeInbox struct {
 	mu        sync.Mutex
-	seen      map[string]struct{}
-	persisted []inbox.InboundEvent
+	seen      map[string]uuid.UUID
+	persisted []persistedEvent
 	failure   error
 	calls     atomic.Int64
 }
 
-func newFakeInbox() *fakeInbox {
-	return &fakeInbox{seen: map[string]struct{}{}}
+type persistedEvent struct {
+	Event     inbox.InboundEvent
+	MessageID uuid.UUID
 }
 
-func (f *fakeInbox) HandleInbound(_ context.Context, ev inbox.InboundEvent) error {
+func newFakeInbox() *fakeInbox {
+	return &fakeInbox{seen: map[string]uuid.UUID{}}
+}
+
+func (f *fakeInbox) MaterialiseInbound(_ context.Context, ev inbox.InboundEvent) (inbox.MaterialisedInbound, error) {
 	f.calls.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failure != nil {
-		return f.failure
+		return inbox.MaterialisedInbound{}, f.failure
 	}
 	key := ev.Channel + ":" + ev.ChannelExternalID
 	if _, ok := f.seen[key]; ok {
-		return inbox.ErrInboundAlreadyProcessed
+		return inbox.MaterialisedInbound{Duplicate: true}, nil
 	}
-	f.seen[key] = struct{}{}
-	f.persisted = append(f.persisted, ev)
-	return nil
+	id := uuid.New()
+	f.seen[key] = id
+	f.persisted = append(f.persisted, persistedEvent{Event: ev, MessageID: id})
+	return inbox.MaterialisedInbound{MessageID: id}, nil
 }
 
 func (f *fakeInbox) Persisted() []inbox.InboundEvent {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]inbox.InboundEvent, len(f.persisted))
+	for i, p := range f.persisted {
+		out[i] = p.Event
+	}
+	return out
+}
+
+func (f *fakeInbox) PersistedRecords() []persistedEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]persistedEvent, len(f.persisted))
 	copy(out, f.persisted)
 	return out
 }
@@ -223,12 +245,12 @@ func (n *nopLookup) Resolve(_ context.Context, _, _ string) (uuid.UUID, error) {
 
 // Compile-time guards.
 var (
-	_ inbox.InboundChannel         = (*fakeInbox)(nil)
-	_ instagram.TenantResolver     = (*fakeResolver)(nil)
-	_ instagram.FeatureFlag        = (*fakeFlag)(nil)
-	_ instagram.RateLimiter        = (*fakeRateLimiter)(nil)
-	_ instagram.Clock              = (*fakeClock)(nil)
-	_ instagram.MediaScanPublisher = (*fakeMediaPublisher)(nil)
+	_ inbox.InboundMessageMaterialiser = (*fakeInbox)(nil)
+	_ instagram.TenantResolver         = (*fakeResolver)(nil)
+	_ instagram.FeatureFlag            = (*fakeFlag)(nil)
+	_ instagram.RateLimiter            = (*fakeRateLimiter)(nil)
+	_ instagram.Clock                  = (*fakeClock)(nil)
+	_ instagram.MediaScanPublisher     = (*fakeMediaPublisher)(nil)
 )
 
 var errInjected = errors.New("injected")

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -22,27 +21,28 @@ func (r *dispatchStubSender) SendMessage(_ context.Context, _ inbox.OutboundMess
 	return r.wamid, nil
 }
 
-func TestBuildWhatsAppOutbound_DisabledWhenTokenMissing(t *testing.T) {
+func TestBuildWhatsAppOutboundEntry_DisabledWhenTokenMissing(t *testing.T) {
 	t.Parallel()
-	// No META_GRAPH_TOKEN → graceful no-op router (never nil, never panics,
-	// zero outbound HTTP). pool/rdb/flag are unused on this path.
-	oc := buildWhatsAppOutbound(func(string) string { return "" }, nil, nil, nil)
-	if oc == nil {
-		t.Fatal("buildWhatsAppOutbound returned nil; want no-op router")
+	// No META_GRAPH_TOKEN → ok=false, nil entry. pool/rdb/flag are unused
+	// on this path.
+	entry, ok := buildWhatsAppOutboundEntry(func(string) string { return "" }, nil, nil, nil)
+	if ok {
+		t.Fatalf("ok = true, want false when no graph token is set")
 	}
-	_, err := oc.SendMessage(context.Background(), inbox.OutboundMessage{Channel: "whatsapp", TenantID: uuid.New()})
-	if !errors.Is(err, inbox.ErrChannelDisabled) {
-		t.Errorf("no-op router err = %v, want ErrChannelDisabled", err)
+	if entry != nil {
+		t.Fatalf("entry = %v, want nil when disabled", entry)
 	}
 }
 
-func TestAssembleWhatsAppOutbound_RoutesWhatsAppThroughStack(t *testing.T) {
+func TestAssembleWhatsAppOutboundEntry_RoutesThroughStack(t *testing.T) {
 	t.Parallel()
 	sender := &dispatchStubSender{wamid: "wamid.assembled"}
-	oc := assembleWhatsAppOutbound(sender, nil /* no limiter */, 600)
+	oc := assembleWhatsAppOutboundEntry(sender, nil /* no limiter */, 600)
 	tenant := uuid.New()
 
-	// whatsapp is routed through to the sender.
+	// The entry always calls through to the sender — channel-based
+	// routing is the combined Router's job (inbox_wire_real.go), not
+	// this decorated entry's.
 	got, err := oc.SendMessage(context.Background(), inbox.OutboundMessage{
 		Channel:        "whatsapp",
 		TenantID:       tenant,
@@ -68,18 +68,13 @@ func TestAssembleWhatsAppOutbound_RoutesWhatsAppThroughStack(t *testing.T) {
 	if sender.calls != 1 {
 		t.Errorf("carrier calls = %d, want 1 (idempotent stack)", sender.calls)
 	}
-
-	// A non-whatsapp channel is not routed by this dispatcher.
-	if _, err := oc.SendMessage(context.Background(), inbox.OutboundMessage{Channel: "sms", TenantID: tenant}); !errors.Is(err, inbox.ErrChannelDisabled) {
-		t.Errorf("unrouted channel err = %v, want ErrChannelDisabled", err)
-	}
 }
 
-func TestAssembleWhatsAppOutbound_ReturnsOutboundChannel(t *testing.T) {
+func TestAssembleWhatsAppOutboundEntry_ReturnsOutboundChannel(t *testing.T) {
 	t.Parallel()
 	// Compile-time-ish guard: the assembled value satisfies the port the
 	// send-outbound use case consumes.
-	var _ inbox.OutboundChannel = assembleWhatsAppOutbound(&dispatchStubSender{}, nil, 600)
+	var _ inbox.OutboundChannel = assembleWhatsAppOutboundEntry(&dispatchStubSender{}, nil, 600)
 	var _ dispatch.Ledger = dispatch.NewMemoryLedger()
 }
 

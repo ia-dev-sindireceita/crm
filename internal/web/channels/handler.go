@@ -37,6 +37,13 @@ const (
 // silently persisting a broken channel.
 const whatsAppWebNotReadyMsg = "WhatsApp Web (sessão QR) está em implementação e estará disponível em breve — SIN-66252."
 
+// fakeCustomerNotReadyMsg is the pt-BR bounce shown when an operator
+// submits the "Cliente Fake (Demo)" family while INBOX_FAKE_CUSTOMER_ENABLED
+// is off — same posture as whatsAppWebNotReadyMsg: the option is always
+// visible, but a submit is refused with an explanation instead of silently
+// persisting a channel whose messages nobody will ever answer.
+const fakeCustomerNotReadyMsg = "O canal de cliente fake está desativado neste ambiente."
+
 // CSRFTokenFn / UserIDFn mirror the dashboard / wasession surfaces:
 // optional app-shell chrome collaborators sourced from the session by the
 // auth middleware. UserID is only used for the shell user-menu label
@@ -83,6 +90,14 @@ type Deps struct {
 	// broken/half-wired QR channel. Flag ON (once SIN-66252 lands the QR
 	// onboarding): the submit proceeds to a real create.
 	WhatsAppWebEnabled bool
+	// FakeCustomerEnabled gates the FUNCTIONAL readiness of the "Cliente
+	// Fake (Demo)" channel family (channelKeyFakeCustomer / "fakellm")
+	// behind INBOX_FAKE_CUSTOMER_ENABLED (default OFF, prod-refused —
+	// see cmd/server/inbox_fake_customer_wire.go). Same posture as
+	// WhatsAppWebEnabled: the option is always offered in the picker;
+	// flag OFF bounces a submit with fakeCustomerNotReadyMsg instead of
+	// persisting a channel the fake-customer wire won't route to.
+	FakeCustomerEnabled bool
 	// Associations upserts the (channel, association) → tenant mapping when a
 	// WhatsApp API channel is registered (SIN-67143), so the inbound webhook
 	// entry-point can resolve the tenant from the Meta phone_number_id.
@@ -226,13 +241,30 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "type", whatsAppWebNotReadyMsg)
 		return
 	}
-	// WhatsApp API onboarding (SIN-67143): when the association writer is wired
-	// (production always wires it; nil ⇒ feature-flag skip) the identity is the
-	// Meta phone_number_id and must be all-digits. Validate at the boundary,
-	// BEFORE any persistence, so a malformed id never reaches storage or the
-	// webhook resolver.
-	if key == channelKeyWhatsApp && h.deps.Associations != nil && !isAllDigits(identity) {
-		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", "phone_number_id deve conter apenas dígitos.")
+	// Functional-readiness guard for the fake-customer channel (same
+	// posture as WhatsApp Web above): always visible, but a submit is
+	// refused while INBOX_FAKE_CUSTOMER_ENABLED is off so prod never
+	// creates a channel the fake-customer wire won't route messages to.
+	if key == channelKeyFakeCustomer && !h.deps.FakeCustomerEnabled {
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "type", fakeCustomerNotReadyMsg)
+		return
+	}
+	// Meta channel onboarding (WhatsApp API: SIN-67143, Messenger and
+	// Instagram mirror it): when the association writer is wired
+	// (production always wires it; nil ⇒ feature-flag skip) the identity
+	// is the Meta phone_number_id (WhatsApp), Facebook Page ID
+	// (Messenger), or Instagram Business Account id (Instagram) and must
+	// be all-digits. Validate at the boundary, BEFORE any persistence, so
+	// a malformed id never reaches storage or the webhook resolver.
+	if (key == channelKeyWhatsApp || key == channelKeyMessenger || key == channelKeyInstagram) && h.deps.Associations != nil && !isAllDigits(identity) {
+		msg := "phone_number_id deve conter apenas dígitos."
+		switch key {
+		case channelKeyMessenger:
+			msg = "Page ID deve conter apenas dígitos."
+		case channelKeyInstagram:
+			msg = "ID da conta comercial do Instagram deve conter apenas dígitos."
+		}
+		h.renderCreateModal(w, r, tenant.ID, name, key, identity, userIDs, restricted, "identity", msg)
 		return
 	}
 	// TODO(SIN-66252): hook QR-session onboarding for key == whatsapp_web when
@@ -252,13 +284,16 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, "create channel", err)
 		return
 	}
-	// Persist the phone_number_id → tenant association so the inbound webhook
-	// entry-point can resolve this tenant (SIN-67143). The channel row already
-	// committed above; a write failure surfaces as a 500 rather than silently
-	// leaving the channel unroutable. The identity was validated all-digits at
-	// the boundary above.
-	if key == channelKeyWhatsApp && h.deps.Associations != nil {
-		if err := h.deps.Associations.SaveAssociation(r.Context(), tenant.ID, channelKeyWhatsApp, identity); err != nil {
+	// Persist the phone_number_id/page_id/ig_business_id → tenant
+	// association so the inbound webhook entry-point can resolve this
+	// tenant (SIN-67143 + Messenger/Instagram mirror). The channel row
+	// already committed above; a write failure surfaces as a 500 rather
+	// than silently leaving the channel unroutable. The identity was
+	// validated all-digits at the boundary above. Pass `key`, not a
+	// hardcoded channel constant — a Messenger Page ID must be filed
+	// under channel="messenger", not "whatsapp".
+	if (key == channelKeyWhatsApp || key == channelKeyMessenger || key == channelKeyInstagram) && h.deps.Associations != nil {
+		if err := h.deps.Associations.SaveAssociation(r.Context(), tenant.ID, key, identity); err != nil {
 			h.fail(w, "save channel association", err)
 			return
 		}

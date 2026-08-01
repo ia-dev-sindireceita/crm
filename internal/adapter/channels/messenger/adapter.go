@@ -28,13 +28,16 @@ var ErrUnknownPageID = errors.New("messenger: unknown page_id")
 // reaches the row). The composition root binds the same
 // *inboxusecase.ReceiveInbound the other channels use to InboundChannel.
 type Adapter struct {
-	cfg     Config
-	inbox   inbox.InboundMessageMaterialiser
-	tenants TenantResolver
-	flag    FeatureFlag
-	media   MediaScanPublisher
-	clock   Clock
-	logger  *slog.Logger
+	cfg           Config
+	inbox         inbox.InboundMessageMaterialiser
+	tenants       TenantResolver
+	flag          FeatureFlag
+	media         MediaScanPublisher
+	clock         Clock
+	logger        *slog.Logger
+	statusUpdater inbox.MessageStatusUpdater
+	contacts      contactLookup
+	conversations conversationLookup
 }
 
 // Option mutates an Adapter at construction time. Tests use options to

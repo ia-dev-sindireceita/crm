@@ -304,6 +304,18 @@ func TestHandlePost_AttachmentsTriggerMediaScan(t *testing.T) {
 	if len(got) != 1 || got[0].Body != "[image]" {
 		t.Errorf("body: got %q, want [image]", got[0].Body)
 	}
+	if !got[0].HasAttachments {
+		t.Errorf("HasAttachments: got false, want true")
+	}
+	records := d.inbox.PersistedRecords()
+	if len(records) != 1 || records[0].MessageID == uuid.Nil {
+		t.Fatalf("expected a non-nil MessageID to have been minted")
+	}
+	for _, c := range calls {
+		if c.MessageID != records[0].MessageID {
+			t.Errorf("media scan MessageID: got %s, want %s (the persisted message id, not uuid.Nil)", c.MessageID, records[0].MessageID)
+		}
+	}
 }
 
 func TestHandlePost_TimestampOutsideWindowIsDropped(t *testing.T) {

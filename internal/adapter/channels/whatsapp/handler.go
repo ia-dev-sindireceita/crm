@@ -314,6 +314,13 @@ func (a *Adapter) deliverMessage(ctx context.Context, tenantID uuid.UUID, pnID, 
 		agg.otherDrops++
 		return
 	}
+	// Meta's Cloud API sends `from` as bare digits (e.g. "5511999990000"),
+	// never E.164 ('+'-prefixed) — but contacts.NewChannelIdentity requires
+	// E.164 for the whatsapp channel. Without this, every real inbound
+	// message fails contact upsert with ErrInvalidE164.
+	if from[0] != '+' {
+		from = "+" + from
+	}
 	ev := inbox.InboundEvent{
 		TenantID:          tenantID,
 		Channel:           Channel,

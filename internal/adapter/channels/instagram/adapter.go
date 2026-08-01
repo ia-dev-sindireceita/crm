@@ -17,7 +17,7 @@ import (
 // across the request goroutines net/http spawns.
 type Adapter struct {
 	cfg     Config
-	inbox   inbox.InboundChannel
+	inbox   inbox.InboundMessageMaterialiser
 	tenants TenantResolver
 	flag    FeatureFlag
 	rate    RateLimiter
@@ -63,7 +63,7 @@ func WithMediaScanPublisher(p MediaScanPublisher) Option {
 // New constructs an Adapter. Required dependencies are validated up
 // front so a misconfigured composition root panics at startup rather
 // than emitting a 500 on the first webhook delivery.
-func New(cfg Config, in inbox.InboundChannel, t TenantResolver, f FeatureFlag, r RateLimiter, opts ...Option) (*Adapter, error) {
+func New(cfg Config, in inbox.InboundMessageMaterialiser, t TenantResolver, f FeatureFlag, r RateLimiter, opts ...Option) (*Adapter, error) {
 	if cfg.AppSecret == "" {
 		return nil, errors.New("instagram: AppSecret is empty")
 	}
@@ -71,7 +71,7 @@ func New(cfg Config, in inbox.InboundChannel, t TenantResolver, f FeatureFlag, r
 		return nil, errors.New("instagram: VerifyToken is empty")
 	}
 	if in == nil {
-		return nil, errors.New("instagram: InboundChannel is nil")
+		return nil, errors.New("instagram: InboundMessageMaterialiser is nil")
 	}
 	if t == nil {
 		return nil, errors.New("instagram: TenantResolver is nil")

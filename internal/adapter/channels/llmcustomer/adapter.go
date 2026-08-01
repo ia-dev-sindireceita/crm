@@ -14,6 +14,18 @@ import (
 	"github.com/pericles-luz/crm/internal/inbox"
 )
 
+// TenantAllowlist gates which tenants may use the fake-customer channel.
+// Adapter treats a nil Allowlist as "all tenants" — preserves every
+// existing llmcustomer-only-provider behavior unmodified. Production
+// wiring binds it to an env-driven flag mirroring
+// channelswhatsapp.EnvFeatureFlag (INBOX_FAKE_CUSTOMER_ENABLED +
+// INBOX_FAKE_CUSTOMER_TENANTS), so the fake channel can run side-by-side
+// with real carriers under the "real" inbox provider without leaking
+// into tenants that didn't opt in.
+type TenantAllowlist interface {
+	Enabled(ctx context.Context, tenantID uuid.UUID) (bool, error)
+}
+
 // Adapter is the fakellm carrier adapter. It bridges the operator's
 // outbound channel (inbox.OutboundChannel.SendMessage) and the inbox's
 // inbound channel use-case (inbox.InboundChannel.HandleInbound) so a
@@ -29,6 +41,7 @@ import (
 type Adapter struct {
 	downstream inbox.InboundChannel
 	llm        PersonaLLM
+	allowlist  TenantAllowlist
 
 	replyDelay time.Duration
 	logger     *slog.Logger
@@ -58,6 +71,10 @@ type Config struct {
 	// fallback or to the future HTTP impl (SIN-63793 W3) in production
 	// fake-channel mode.
 	LLM PersonaLLM
+	// Allowlist optionally gates which tenants may use this adapter. nil
+	// means every tenant is allowed — the default, matching pre-existing
+	// behavior for the llmcustomer-only provider wire.
+	Allowlist TenantAllowlist
 	// ReplyDelay is the wall-clock delay between an operator's
 	// outbound SendMessage and the scheduled customer inbound being
 	// pushed downstream. Zero is allowed (synchronous-looking in tests);
@@ -106,6 +123,7 @@ func New(cfg Config) (*Adapter, error) {
 	return &Adapter{
 		downstream:   cfg.Downstream,
 		llm:          cfg.LLM,
+		allowlist:    cfg.Allowlist,
 		replyDelay:   cfg.ReplyDelay,
 		logger:       logger.With("component", "llmcustomer"),
 		nowFn:        nowFn,
@@ -141,6 +159,13 @@ func (a *Adapter) Channel() string { return ChannelName }
 func (a *Adapter) Bootstrap(ctx context.Context, tenantID uuid.UUID) error {
 	if tenantID == uuid.Nil {
 		return errors.New("llmcustomer: Bootstrap requires non-nil tenantID")
+	}
+	allowed, err := a.tenantAllowed(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("llmcustomer: bootstrap allowlist check: %w", err)
+	}
+	if !allowed {
+		return nil
 	}
 	a.mu.Lock()
 	if _, ok := a.bootstrapped[tenantID]; ok {
@@ -197,6 +222,13 @@ func (a *Adapter) Bootstrap(ctx context.Context, tenantID uuid.UUID) error {
 func (a *Adapter) SendMessage(ctx context.Context, m inbox.OutboundMessage) (string, error) {
 	if err := validateOutbound(m); err != nil {
 		return "", err
+	}
+	allowed, err := a.tenantAllowed(ctx, m.TenantID)
+	if err != nil {
+		return "", fmt.Errorf("llmcustomer: send allowlist check: %w", err)
+	}
+	if !allowed {
+		return "", inbox.ErrChannelDisabled
 	}
 
 	a.mu.Lock()
@@ -287,6 +319,15 @@ func (a *Adapter) Stop() {
 	a.mu.Unlock()
 	a.cancel()
 	a.wg.Wait()
+}
+
+// tenantAllowed reports whether tenantID may use the fake-customer
+// channel. A nil Allowlist means every tenant is allowed.
+func (a *Adapter) tenantAllowed(ctx context.Context, tenantID uuid.UUID) (bool, error) {
+	if a.allowlist == nil {
+		return true, nil
+	}
+	return a.allowlist.Enabled(ctx, tenantID)
 }
 
 // scheduleReply is the goroutine launcher. It snapshots the history at

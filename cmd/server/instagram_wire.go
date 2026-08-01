@@ -160,11 +160,26 @@ func assembleInstagramAdapter(ctx context.Context, cfg instagram.Config, pool *p
 	rl := rlredis.New(rdb, "instagram")
 	flag := instagram.NewEnvFeatureFlag(getenv)
 
-	adapter, err := instagram.New(cfg, receiver, resolver, flag, rl,
-		instagram.WithLogger(slog.Default()),
-		// MediaScanPublisher wired in a follow-up PR that lands the
-		// NATS-backed publisher in cmd/server (mirrors messenger_wire).
-	)
+	// Media-scan fan-out. NATS_URL unset → nil publisher → the handler
+	// still persists the placeholder body and logs a warn (soft-fail,
+	// same contract as the funnel-engine publisher above).
+	//
+	// mediaPub is only appended to opts when genuinely non-nil — passing
+	// a nil *MediaScanRequestPublisher straight into WithMediaScanPublisher
+	// would wrap it in a non-nil instagram.MediaScanPublisher interface
+	// value (a nil concrete pointer inside a non-nil interface), which
+	// defeats WithMediaScanPublisher's own `p != nil` guard and panics on
+	// first use.
+	mediaPub, mediaCleanup, err := buildInstagramMediaScanPublisher(ctx, getenv)
+	if err != nil {
+		slog.Default().Warn("instagram wire: media scan publisher disabled", "err", err)
+	}
+	opts := []instagram.Option{instagram.WithLogger(slog.Default())}
+	if mediaPub != nil {
+		opts = append(opts, instagram.WithMediaScanPublisher(mediaPub))
+	}
+
+	adapter, err := instagram.New(cfg, receiver, resolver, flag, rl, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -172,6 +187,9 @@ func assembleInstagramAdapter(ctx context.Context, cfg instagram.Config, pool *p
 	cleanup := func() {
 		if funnelCleanup != nil {
 			funnelCleanup()
+		}
+		if mediaCleanup != nil {
+			mediaCleanup()
 		}
 		pool.Close()
 		_ = rdb.Close()
