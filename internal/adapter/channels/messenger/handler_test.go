@@ -386,6 +386,47 @@ func TestHandlePost_MissingMIDSilentlyDropped(t *testing.T) {
 	}
 }
 
+func TestHandlePost_EchoSilentlyDropped(t *testing.T) {
+	t.Parallel()
+	in := newFakeInbox()
+	r := newFakeResolver()
+	tenant := uuid.New()
+	r.Register(testPageID, tenant)
+	a := newAdapter(t, in, r, newFakeFlag(true), newFakeClock(fixedNow))
+
+	// A message-echo envelope: same mid we just sent, sender.id is our
+	// own page id (not a customer PSID), is_echo=true.
+	payload := map[string]any{
+		"object": "page",
+		"entry": []any{
+			map[string]any{
+				"id":   testPageID,
+				"time": fixedNow.UnixMilli(),
+				"messaging": []any{
+					map[string]any{
+						"sender":    map[string]any{"id": testPageID},
+						"recipient": map[string]any{"id": testPSID},
+						"timestamp": fixedNow.UnixMilli(),
+						"message": map[string]any{
+							"mid":     "mid-1",
+							"text":    "oi",
+							"is_echo": true,
+						},
+					},
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	rec := doPost(t, a, body, sign(t, body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d", rec.Code)
+	}
+	if in.CallCount() != 0 {
+		t.Fatalf("inbox should not be called for a message echo, got %d calls", in.CallCount())
+	}
+}
+
 func TestHandlePost_MissingSenderPSIDDropped(t *testing.T) {
 	t.Parallel()
 	in := newFakeInbox()

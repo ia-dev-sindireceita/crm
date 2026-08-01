@@ -160,8 +160,17 @@ func assembleMessengerAdapter(ctx context.Context, cfg messenger.Config, pool *p
 	})
 	flag := messenger.NewEnvFeatureFlag(getenv)
 
+	// message_deliveries / message_reads status parity with WhatsApp.
+	// Both narrow read ports (contactsStore, inboxStore) already exist
+	// in this function; MustNewUpdateMessageStatus is the same
+	// channel-agnostic use case whatsapp_wire.go wires for WhatsApp's
+	// statuses[] array.
+	statusUpdater := inboxusecase.MustNewUpdateMessageStatus(inboxStore, inboxStore)
+
 	inboundAdapter, err := messenger.New(cfg, receiver, resolver, flag,
 		messenger.WithLogger(slog.Default()),
+		messenger.WithStatusUpdater(statusUpdater),
+		messenger.WithReadReceiptLookup(contactsStore, inboxStore),
 		// MediaScanPublisher wired in a follow-up PR that lands the
 		// NATS-backed publisher in cmd/server.
 	)
