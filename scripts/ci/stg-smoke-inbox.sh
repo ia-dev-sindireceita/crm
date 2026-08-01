@@ -20,15 +20,18 @@
 #        same conversation-view route every POLL_INTERVAL_SECONDS for up
 #        to POLL_TIMEOUT_SECONDS. Pass when msg-in count > baseline.
 #
-#   DEGRADED mode (provider=disabled or unset): the VPS has not opted
-#   into the fake-customer adapter yet. Validates only the operator-
-#   facing route contract (auth + /inbox 200 + role gate not 403) and
-#   exits 0. Without llmcustomer there is no bootstrap conversation
-#   and no LLM inbound to dispatch, so stages 4-7 cannot run — but the
-#   SIN-63858 authz gate (the original /inbox 403 incident) is still
-#   exercised. Operators flip INBOX_CHANNEL_PROVIDER=llmcustomer in
-#   /opt/crm/stg/.env.stg + recreate the `app` container to upgrade
-#   the smoke to FULL on the next deploy.
+#   DEGRADED mode (provider=disabled, unset, or real): the VPS has not
+#   opted into the fake-customer adapter yet, or is running the live
+#   WhatsApp Cloud API carrier (provider=real), which this script has
+#   no way to trigger an inbound message for from CI. Validates only
+#   the operator-facing route contract (auth + /inbox 200 + role gate
+#   not 403) and exits 0. Without llmcustomer (or a CI-triggerable real
+#   inbound) there is no bootstrap conversation and no inbound to
+#   dispatch, so stages 4-7 cannot run — but the SIN-63858 authz gate
+#   (the original /inbox 403 incident) is still exercised. Operators
+#   flip INBOX_CHANNEL_PROVIDER=llmcustomer in /opt/crm/stg/.env.stg +
+#   recreate the `app` container to upgrade the smoke to FULL on the
+#   next deploy.
 #
 # Failure modes are surfaced with greppable `stage=` labels so the
 # cd-stg.yml job log can be triaged at a glance:
@@ -133,11 +136,14 @@ case "${provider}" in
     log "stage=preflight degrade — provider=\"${provider:-unset}\"; running auth + /inbox route check only (dispatch loop skipped, set INBOX_CHANNEL_PROVIDER=llmcustomer on VPS to upgrade)"
     ;;
   real)
-    # `real` is the reserved-but-unwired production carrier slot. The
-    # smoke does not yet know how to exercise a live carrier so refuse
-    # rather than false-pass.
-    cat "${HEALTH}" >&2
-    die "stage=preflight: /health reports inbox_channel_provider=\"real\" but the smoke does not yet exercise the production-carrier wire (SIN-63793 W3 follow-up)"
+    # `real` is the live production-carrier wire (WhatsApp Cloud API).
+    # This script has no way to trigger an inbound WhatsApp message from
+    # CI, so it cannot exercise stages 4-7 (bootstrap/view/send/dispatch)
+    # the way it does for the llmcustomer loop — degrade to the same
+    # auth + /inbox route contract check as the disabled/unset case
+    # rather than false-failing a legitimate, intended configuration.
+    SMOKE_MODE=degraded
+    log "stage=preflight degrade — provider=\"real\"; running auth + /inbox route check only (WhatsApp dispatch loop cannot be triggered from CI)"
     ;;
   *)
     cat "${HEALTH}" >&2

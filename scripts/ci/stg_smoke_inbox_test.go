@@ -326,17 +326,19 @@ func TestSmoke_PreflightProviderUnknown(t *testing.T) {
 
 func TestSmoke_PreflightProviderReal(t *testing.T) {
 	t.Parallel()
-	// The reserved-but-unwired carrier slot is rejected because the
-	// smoke does not yet know how to exercise a real carrier loop.
+	// provider=real is the live WhatsApp Cloud API carrier — a
+	// legitimate, intended configuration. The smoke cannot trigger an
+	// inbound WhatsApp message from CI, so it must degrade (auth +
+	// /inbox route check only) rather than false-fail the deploy gate.
 	base := newInboxFake(t, inboxFakeOptions{
 		HealthProvider: "real",
 	})
 	out, code := runSmoke(t, base)
-	if code == 0 {
-		t.Fatalf("smoke exit=0 want non-zero for provider=real\n%s", out)
+	if code != 0 {
+		t.Fatalf("smoke exit=%d want 0 (provider=real must degrade, not fail)\n%s", code, out)
 	}
-	if !strings.Contains(out, "stage=preflight") {
-		t.Fatalf("smoke output missing stage=preflight failure label\n%s", out)
+	if !strings.Contains(out, "stage=preflight degrade") {
+		t.Fatalf("smoke output missing stage=preflight degrade label\n%s", out)
 	}
 }
 
