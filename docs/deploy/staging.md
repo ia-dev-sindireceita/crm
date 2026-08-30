@@ -568,59 +568,101 @@ else aborts before any docker/migrate command runs.
 ### 4. Stack layout on the VPS
 
 This step lays down `/opt/crm/stg/` on the VPS itself. Run it BEFORE the first
-deploy in §5 — `compose.stg.yml` and the deploy wrapper need to be present
-before `/opt/crm/stg/bin/deploy.sh` can be invoked.
+deploy in §5 — the deploy wrapper must be present before
+`/opt/crm/stg/bin/deploy.sh` can be invoked.
 
-The repo is private, so `raw.githubusercontent.com` cannot serve the two
-artifacts anonymously. Push them from a workstation that already has the repo
-cloned (the same workstation you used in §3 to generate the CD SSH keypair):
+**Where the staging topology lives now (SIN-66600 / ADR-0111).** The compose
+file, the three Caddy/Unbound configs, and the MinIO quarantine init script no
+longer travel out-of-band by `scp`. They are **carried inside the signed
+application image** under `/deploy` (Dockerfile `COPY`, SIN-66619). On every
+`deploy` verb, `stg-deploy.sh`:
+
+1. `cosign verify`s the image ref (the existing ADR-0084 trust gate), then
+2. extracts the `/deploy` carry-set from that just-verified image with
+   `docker cp`, and
+3. atomically installs it over `/opt/crm/stg/` (write-to-temp + `mv` per file;
+   validated fully in a `mktemp` staging dir first, so a drift or partial pull
+   never leaves a half-written config).
+
+This is the same image-carried pattern already used for `/migrations`
+(SIN-63332, §5c). Because the bytes come from the cosign-verified image, they
+inherit the existing trust boundary and add no new one, and a CI byte-parity
+gate (SIN-66621, ADR-0111 C6) proves the image `/deploy/*` matches the repo
+sources on every build. The carry-set is:
+
+| Image path (`/deploy/…`)              | Installed to (`/opt/crm/stg/…`)        |
+| ------------------------------------- | -------------------------------------- |
+| `compose.stg.yml`                     | `compose.stg.yml`                      |
+| `caddy/Caddyfile.stg`                 | `caddy/Caddyfile.stg`                  |
+| `caddy/security-headers.caddy`        | `caddy/security-headers.caddy`         |
+| `caddy/unbound.conf`                  | `caddy/unbound.conf`                   |
+| `scripts/minio/init-quarantine.sh`    | `scripts/minio/init-quarantine.sh`     |
+
+**Residual host-side set (never carried in the image).** Three things stay on
+the host and are the only manual/mutable surface after this change:
+
+- **`/opt/crm/stg/bin/deploy.sh`** — the wrapper itself. It is the *extractor*,
+  so it cannot self-bootstrap from the image (chicken-and-egg: it must already
+  be on disk to run the `docker cp`). Installed and updated by host-root — the
+  same trust root that could rewrite it today, so no new privilege.
+- **`/opt/crm/stg/.env.stg`** — secrets (DB / MinIO passwords, ACME email,
+  tenant hosts). Never in the image; you fill it in below.
+- **The ADR-0110 backup age recipient** (`/etc/lmhost/age-backup.pub`,
+  host-mounted read-only into the backup sidecar). Rotated by swapping the host
+  file; deliberately kept out of the image so the public recipient can be
+  re-pointed without a rebuild.
+
+The repo is private, so `raw.githubusercontent.com` cannot serve the wrapper
+anonymously. Push it from a workstation that already has the repo cloned (the
+same workstation you used in §3 to generate the CD SSH keypair):
 
 ```bash
 # On the workstation, in the cloned `crm` repo root.
 # Replace REPLACE_STG_HOST with the staging VPS hostname or IP.
 STG_HOST="REPLACE_STG_HOST"
-scp deploy/compose/compose.stg.yml deploy/scripts/stg-deploy.sh \
-    "root@${STG_HOST}:/tmp/"
-# Caddy reads its config from /etc/caddy/, mounted from /opt/crm/stg/caddy/.
-# Send the three files Caddy + Unbound need at startup:
-#   - Caddyfile.stg, security-headers.caddy        — Caddy
-#   - unbound.conf                                 — Unbound sidecar (SIN-62332)
-scp deploy/caddy/Caddyfile.stg deploy/caddy/security-headers.caddy \
-    infra/caddy/unbound.conf \
-    "root@${STG_HOST}:/tmp/"
+scp deploy/scripts/stg-deploy.sh "root@${STG_HOST}:/tmp/"
 ```
 
-Back on the VPS, lay out the stack directory and install all four files. The
+Back on the VPS, lay out the stack directory tree and install the wrapper. The
 operator running this block must be `root` (or in a sudo session) — the
-`crm-deploy` account exists but has no shell.
+`crm-deploy` account exists but has no shell. The carry-set directories
+(`caddy/`, `scripts/minio/`) are created here for correct ownership; the first
+`deploy.sh deploy` in §5 populates them from the image.
 
 ```bash
-# Sanity check: confirm scp landed everything in /tmp.
-for f in compose.stg.yml stg-deploy.sh Caddyfile.stg security-headers.caddy; do
-  test -s "/tmp/${f}" || { echo "missing /tmp/${f}"; exit 1; }
-done
+# Sanity check: confirm scp landed the wrapper.
+test -s /tmp/stg-deploy.sh || { echo "missing /tmp/stg-deploy.sh"; exit 1; }
 
-# Lay out the stack directory and install the four files into it.
+# Lay out the stack directory tree (carry-set files land here on first deploy).
 install -d -o crm-deploy -g crm-deploy -m 0750 \
-  /opt/crm/stg /opt/crm/stg/bin /opt/crm/stg/caddy
-install -o crm-deploy -g crm-deploy -m 0640 \
-  /tmp/compose.stg.yml /opt/crm/stg/compose.stg.yml
+  /opt/crm/stg /opt/crm/stg/bin /opt/crm/stg/caddy /opt/crm/stg/scripts/minio
+
+# Install the wrapper (root-owned, group-readable+executable by crm-deploy).
 install -o root -g crm-deploy -m 0750 \
   /tmp/stg-deploy.sh /opt/crm/stg/bin/deploy.sh
-install -o crm-deploy -g crm-deploy -m 0640 \
-  /tmp/Caddyfile.stg /opt/crm/stg/caddy/Caddyfile.stg
-install -o crm-deploy -g crm-deploy -m 0640 \
-  /tmp/security-headers.caddy /opt/crm/stg/caddy/security-headers.caddy
 
 # Empty secrets file with the right ownership; you fill it in below.
 install -o crm-deploy -g crm-deploy -m 0640 /dev/null /opt/crm/stg/.env.stg
 ```
 
-If you ever bump `compose.stg.yml`, `stg-deploy.sh`, or any file under
-`deploy/caddy/` on `main`, repeat the same `scp` + `install` flow from a
-workstation — the CD pipeline only pushes the application image, not these
-on-host artifacts. Automating that sync is tracked as a follow-up; until
-then it is operator-driven.
+> **One-time bootstrap (unavoidable).** On a brand-new host — or the first time
+> you migrate an existing host onto the image-carried flow — the carry-set files
+> (`compose.stg.yml`, `caddy/*`, `scripts/minio/init-quarantine.sh`) are not yet
+> on disk. That is expected: the first `deploy.sh deploy <image-ref>` in §5
+> extracts and installs them (step 2–3 above) *before* it touches compose, so
+> the host converges on the first deploy. The single step that can never be
+> automated is installing the wrapper itself — it is the extractor, so it can
+> never come from the image it is meant to open. This bootstrap is one-time.
+
+If you ever change `stg-deploy.sh` on `main`, repeat the `scp` + `install` of
+**just the wrapper** from a workstation — the CD pipeline pushes the application
+image (which now carries compose / caddy / unbound / minio) but never the
+wrapper. Bumps to `compose.stg.yml`, anything under `deploy/caddy/`,
+`infra/caddy/unbound.conf`, or `scripts/minio/init-quarantine.sh` now ride the
+next image automatically and install on the next `deploy` — no host action, no
+`scp`, no drift. This closes the §5-drift class that previously required a
+manual re-sync after every topology bump (the residual gap patched in PR #471 is
+superseded entirely by this flow).
 
 > **Wrapper-version preflight (SIN-63348).** Because the wrapper is
 > operator-installed and the application image is auto-deployed, the two
@@ -690,6 +732,18 @@ STG_TENANT_HOSTS=acme.crm.REPLACE_WITH_BASE, globex.crm.REPLACE_WITH_BASE
 # keep this line (cd-stg.yml runs a /master/tenants smoke gate that will fail
 # red if it is missing).
 MASTER_OPS_ACTOR_ID=00000000-0000-0000-0000-0000000a57e7
+# Master-ops Postgres DSN. Read by cmd/server/master_tenants_wire.go at boot —
+# this is the FIRST pre-condition checked (before MASTER_OPS_ACTOR_ID): unset
+# OR a DSN that fails to connect ⇒ master surface stays unmounted = /master/tenants
+# returns 404 instead of 302, and the cd-stg smoke gate fails red. SETTING
+# MASTER_OPS_ACTOR_ID ALONE IS NOT ENOUGH — this DSN must also exist and
+# authenticate. SECRET (contains a password): never commit the real value; store
+# it in the password manager alongside POSTGRES_PASSWORD. It authenticates as the
+# least-privilege `app_master_ops` role (migrations/0001_roles.up.sql), which is
+# created WITHOUT a password — you MUST provision one first; see §5e below. Once
+# the password is set, the value is:
+#   postgres://app_master_ops:REPLACE_WITH_APP_MASTER_OPS_PASSWORD@postgres:5432/crm?sslmode=disable
+# MASTER_OPS_DATABASE_URL=REPLACE_WITH_MASTER_OPS_DSN
 # APP_IMAGE is rewritten by the deploy wrapper on every push. Bootstrap with
 # the digest you discover in §5 below — full ref like
 # ghcr.io/pericles-luz/crm@sha256:6b8f…f730ba.
@@ -778,7 +832,10 @@ APP_IMAGE_REF="ghcr.io/pericles-luz/crm@${DIGEST}"
 sudo sed -i "s|^APP_IMAGE=.*|APP_IMAGE=${APP_IMAGE_REF}|" /opt/crm/stg/.env.stg
 sudo grep '^APP_IMAGE=' /opt/crm/stg/.env.stg   # sanity
 
-# 2. Run the deploy wrapper as the constrained user (NOT root):
+# 2. Run the deploy wrapper as the constrained user (NOT root). On this first
+#    run it cosign-verifies the image, extracts the /deploy carry-set
+#    (compose.stg.yml + caddy/* + scripts/minio) via docker cp, and installs it
+#    over /opt/crm/stg/ before bringing compose up — see §4 (SIN-66600 / ADR-0111).
 sudo -u crm-deploy /opt/crm/stg/bin/deploy.sh deploy "${APP_IMAGE_REF}"
 
 # 3. Internal smoke check first — confirms the app/caddy/network plumbing
@@ -851,7 +908,10 @@ the infra images (see "Bumping infra image digests").
 
 Manual mode also requires the migrations bytes on the VPS filesystem.
 Push them once during provisioning and re-push after any migration is
-added (parallel to the `compose.stg.yml` scp flow in §4):
+added. This is a break-glass `scp` only — like the compose carry-set
+(§4), `/migrations` normally rides the signed image and is installed by
+`deploy.sh` via `docker cp`, so you do this by hand only when the
+automatic `migrate-up` path cannot run:
 
 ```bash
 # On the workstation, in the cloned crm repo root.
@@ -981,8 +1041,9 @@ sudo -u crm-deploy docker compose ${COMPOSE_ARGS} exec -T postgres \
 
 The repo ships `scripts/stg-apply-seed.sh` as a one-liner wrapper around
 the same command, with the empty-string and `.local` tripwires baked in.
-Push it once with the other deploy artifacts (§4) and call it on every
-re-seed:
+Push it once from a workstation the same way you push the deploy wrapper
+(§4) — it is a host-side helper, not part of the image carry-set — and
+call it on every re-seed:
 
 ```bash
 sudo install -o root -g crm-deploy -m 0750 \
@@ -1310,6 +1371,56 @@ ssh-keyscan -t ed25519 "${STG_HOST}" | tee stg.host_key
 ```
 
 Paste the output of that file into the `STG_HOST_KEY` GitHub Actions secret.
+
+## Diagnostics & secret-redaction hygiene (SIN-65292)
+
+This section exists because of a real incident: the password for the
+`app_master_ops` (BYPASSRLS) role leaked **in clear text** inside a diagnostic
+paste on an issue thread (root-cause of SIN-65290). The credential then had to
+be rotated under owner gate. The class of mistake — pasting a live secret into a
+comment, log dump, or chat while debugging — is entirely preventable. Treat this
+as a hard rule, not a suggestion.
+
+**Rule: never paste a live secret in clear text — anywhere.**
+Comments, issue threads, chat, screenshots, PR descriptions, and commit messages
+are all "anywhere". The safe path is to reference the *name* of the secret (e.g.
+`POSTGRES_PASSWORD` in `/opt/crm/stg/.env.stg`) or redact the value to `***`,
+never the value itself. A secret that touched a paste is a leaked secret and must
+be rotated — there is no "but I deleted the comment".
+
+**Checklist — redact BEFORE you paste a log/diagnostic.** Run your text through
+this before hitting send:
+
+- [ ] **DSNs / connection strings** — `postgres://user:PASSWORD@host/db`. Redact
+      the `user:password@` segment to `***:***@`, or reference the env var name.
+- [ ] **`docker inspect` / `env` / `printenv` output** — these dump every
+      `environment:` value in clear text. Never paste raw; grep to the one line
+      you need and redact its value.
+- [ ] **`.env*` file contents** — `POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD`,
+      `AWS_SECRET_ACCESS_KEY`, `MAILGUN_API_KEY`, `SLACK_ALERTS_WEBHOOK_URL`
+      (the webhook URL is itself a bearer secret), any `*_KEY` / `*_TOKEN` /
+      `*_PASSWORD` / `*_SECRET` / `*_DSN`.
+- [ ] **`psql` / app error pages** — connection errors often echo the DSN back,
+      password included. Trim it.
+- [ ] **Authorization headers / cookies / JWTs** in `curl -v` output.
+- [ ] **PII (LGPD)** — customer names, e-mails, phones, message bodies from the
+      inbox. Mask before sharing outside the ticket.
+
+Quick one-liner to scrub a DSN before pasting (redacts the credential segment):
+
+```bash
+# Turns postgres://user:pass@host:5432/db?... into postgres://***:***@host:5432/db?...
+sed -E 's#(postgres(ql)?://)[^:/@]+:[^@]+@#\1***:***@#g'
+```
+
+**`sslmode` policy — reduce in-transit exposure.** Any DSN that crosses the
+network to a **remote or managed** Postgres MUST use `sslmode=require` at minimum
+(prefer `verify-full` when a CA bundle is available). `sslmode=disable` is
+acceptable **only** for the bundled, same-host in-network `postgres` container
+(traffic never leaves the Docker bridge on the VPS) — that is why the in-network
+migrate/compose DSNs in this runbook and in `deploy/compose/*.yml` use `disable`.
+The moment a DSN points at a host you don't control end-to-end, `require` is the
+floor. See `deploy/compose/.env.example` for the template.
 
 ## Reading logs
 
