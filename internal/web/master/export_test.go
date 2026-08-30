@@ -82,3 +82,15 @@ func ExportFormatImpersonationISO(t time.Time) string { return formatImpersonati
 // ExportTruncateImpersonationReason surfaces truncateImpersonationReason
 // for banner helpers tests.
 func ExportTruncateImpersonationReason(s string) string { return truncateImpersonationReason(s) }
+
+// ExportLedgerSourceLabel surfaces ledgerSourceLabel for table-driven
+// label tests (SIN-63987 coverage).
+func ExportLedgerSourceLabel(s string) string { return ledgerSourceLabel(s) }
+
+// ExportLedgerKindLabel surfaces ledgerKindLabel for table-driven label
+// tests (SIN-63987 coverage).
+func ExportLedgerKindLabel(k string) string { return ledgerKindLabel(k) }
+
+// ExportIsZeroUUID surfaces isZeroUUID for the template "no link target"
+// branch test (SIN-63987 coverage).
+func ExportIsZeroUUID(id uuid.UUID) bool { return isZeroUUID(id) }
