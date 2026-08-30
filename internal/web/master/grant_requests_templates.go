@@ -109,6 +109,7 @@ var grantRequestsLayoutTmpl = template.Must(template.New("grant_requests.layout"
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/js/impersonation-countdown.js" defer></script>
 </head>
 <body {{.HXHeaders}}{{with .ActiveImpersonation}} data-impersonating="true"{{end}}>
   {{template "shell_impersonation_banner" .}}
@@ -204,6 +205,7 @@ var grantRequestDetailLayoutTmpl = template.Must(template.New("grant_request_det
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/master.css">
   <script src="/static/vendor/htmx/2.0.9/htmx.min.js" defer></script>
+  <script src="/static/js/impersonation-countdown.js" defer></script>
 </head>
 <body {{.HXHeaders}}>
   <main class="master-shell" role="main" aria-labelledby="grant-request-detail-title">
