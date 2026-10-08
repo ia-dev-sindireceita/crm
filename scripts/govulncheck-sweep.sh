@@ -20,6 +20,8 @@
 #   extract-called      print sorted unique OSV ids from called findings
 #   diff <cur> <base>   print "<status>\t<id>" with status in {new,resolved}
 #   report <json>       emit the report from a pre-saved govulncheck JSON
+#   validate <json> <rc> fail (non-zero) if <json>+<rc> indicate the scan did
+#                       not complete (false-clean guard; SIN-67201)
 #   help                print usage
 #
 # Why these subcommands? The routine itself only ever calls `sweep`. The
@@ -32,7 +34,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE_FILE="${REPO_ROOT}/.govulncheck-known.txt"
 
 usage() {
-  sed -n '2,28p' "$0" >&2
+  sed -n '2,29p' "$0" >&2
 }
 
 # ---- extract_called -----------------------------------------------------------
@@ -158,17 +160,66 @@ emit_report() {
   rm -f "${current_ids}" "${new_ids}" "${resolved_ids}" "${grouping}"
 }
 
+# ---- validate_scan ------------------------------------------------------------
+# Guardrail against a FALSE-CLEAN report (SIN-67201). govulncheck exits
+# non-zero for TWO very different reasons:
+#   (a) it found *called* vulnerabilities — expected; the stream contains
+#       `finding` records and we still want the report; OR
+#   (b) it could not load the packages at all (e.g. the govulncheck binary was
+#       built with an older Go toolchain than the module's go/toolchain
+#       directive, "package load error", "requires newer Go"). In this case it
+#       writes an error to stderr and emits ZERO `finding` records — so
+#       emit_report would happily produce a perfectly clean `{new_ids: []}` and
+#       the unattended weekly routine would close "0 new" while real reachable
+#       CVEs hid behind the load failure. Hit live during the SIN-67198 sweep
+#       on 2026-07-13.
+#
+# We distinguish the two using the structure of the stream, not the exit code
+# alone:
+#   - A genuine run ALWAYS emits a `config` record first. No `config` record
+#     means the scan never produced output → hard error.
+#   - A non-zero exit is legitimate ONLY when it is accompanied by at least one
+#     `finding` record. Non-zero + zero findings === case (b) → hard error.
+# Fail loud (return 3) rather than let a clean-looking report through.
+#
+# Args: <govulncheck-json-stream> <govulncheck-exit-code>
+validate_scan() {
+  local json="$1" rc="${2:-0}"
+  if [[ ! -f "${json}" ]]; then
+    echo "validate: scan output not found: ${json}" >&2
+    return 2
+  fi
+
+  # Structural completeness: a real scan emits a `config` record at the start.
+  if ! jq -e 'select(.config != null) | .config' "${json}" >/dev/null 2>&1; then
+    echo "validate: govulncheck emitted no 'config' record — scan did not complete (exit=${rc}); refusing to emit a clean report" >&2
+    return 3
+  fi
+
+  # Non-zero exit is expected ONLY when called vulns were found (→ findings).
+  # Non-zero with zero findings means a package-load / toolchain failure.
+  if [[ "${rc}" -ne 0 ]]; then
+    if ! jq -e 'select(.finding != null) | .finding' "${json}" >/dev/null 2>&1; then
+      echo "validate: govulncheck exited ${rc} with zero 'finding' records — treating as a scan failure (likely package-load/toolchain error), not a clean result" >&2
+      return 3
+    fi
+  fi
+  return 0
+}
+
 # ---- run_sweep ----------------------------------------------------------------
 # The default mode: install/locate govulncheck, run it, emit the report.
 # Designed to be safe on a CI-like environment with Go installed — does not
 # mutate anything in the working tree.
 run_sweep() {
-  local out
+  local out err rc
   out="$(mktemp)"
+  err="$(mktemp)"
 
   if ! command -v govulncheck >/dev/null 2>&1; then
     if ! command -v go >/dev/null 2>&1; then
       echo "sweep: neither govulncheck nor go are on PATH" >&2
+      rm -f "${out}" "${err}"
       return 2
     fi
     GOFLAGS=-mod=readonly go install golang.org/x/vuln/cmd/govulncheck@latest >&2
@@ -176,11 +227,29 @@ run_sweep() {
   fi
 
   # `-mode source` matches the PR-time CI gate (.github/workflows/govulncheck.yml).
-  # `|| true` because govulncheck exits non-zero when it finds called CVEs;
-  # for the sweep we want the JSON regardless of exit code.
-  govulncheck -json -mode source ./... > "${out}" 2>&2 || true
+  # Capture the exit code separately — we must NOT blanket-swallow it with
+  # `|| true` the way the original did, because that hid package-load failures
+  # (see validate_scan / SIN-67201). govulncheck exits non-zero when it finds
+  # called CVEs, so a non-zero exit is not by itself an error.
+  set +e
+  govulncheck -json -mode source ./... > "${out}" 2>"${err}"
+  rc=$?
+  set -e
+
+  # Surface govulncheck's own diagnostics regardless of outcome.
+  if [[ -s "${err}" ]]; then
+    cat "${err}" >&2
+  fi
+
+  # Fail loud instead of emitting a false-clean report when the scan did not
+  # actually complete.
+  if ! validate_scan "${out}" "${rc}"; then
+    rm -f "${out}" "${err}"
+    return 3
+  fi
+
   emit_report "${out}"
-  rm -f "${out}"
+  rm -f "${out}" "${err}"
 }
 
 main() {
@@ -190,6 +259,7 @@ main() {
     extract-called)     shift; extract_called "$@" ;;
     diff)               shift; diff_baseline "$@" ;;
     report)             shift; emit_report "$@" ;;
+    validate)           shift; validate_scan "$@" ;;
     group-by-library)   shift; group_by_library "$@" ;;
     -h|--help|help)     usage ;;
     *)                  echo "unknown subcommand: ${cmd}" >&2; usage; exit 2 ;;
