@@ -22,7 +22,7 @@ the button does not appear.
 | Var | Default | Used by | Notes |
 | --- | --- | --- | --- |
 | `OPENROUTER_API_KEY` | _(unset)_ | both | OpenRouter bearer token. **Never logged.** Persona hard-refuses boot without it when `PERSONA_LLM_PROVIDER=openrouter`; AI-assist soft-degrades (off) without it. |
-| `OPENROUTER_MODEL` | `google/gemini-2.0-flash` | both | **Central model knob.** Sets the default model for *both* points at once. |
+| `OPENROUTER_MODEL` | `google/gemini-2.5-flash-lite` | both | **Central model knob.** Sets the default model for *both* points at once. Must be an allowlisted slug — see "Model allowlist" below. |
 | `AIASSIST_LLM_MODEL` | _(falls back to `OPENROUTER_MODEL`)_ | AI-assist | Per-point override for the operator Summarizer only. |
 | `PERSONA_LLM_MODEL` | _(falls back to `OPENROUTER_MODEL`)_ | persona | Per-point override for the fake-customer persona only. |
 | `PERSONA_LLM_PROVIDER` | `canned` | persona | `canned` (deterministic, no secrets) or `openrouter`. |
@@ -31,16 +31,41 @@ the button does not appear.
 ### Model resolution order (per point)
 
 ```
-per-point override  →  OPENROUTER_MODEL  →  google/gemini-2.0-flash
+per-point override  →  OPENROUTER_MODEL  →  google/gemini-2.5-flash-lite
 ```
 
-- AI-assist: `AIASSIST_LLM_MODEL` → `OPENROUTER_MODEL` → `google/gemini-2.0-flash`
-- Persona:   `PERSONA_LLM_MODEL`  → `OPENROUTER_MODEL` → `google/gemini-2.0-flash`
+- AI-assist: `AIASSIST_LLM_MODEL` → `OPENROUTER_MODEL` → `google/gemini-2.5-flash-lite`
+- Persona:   `PERSONA_LLM_MODEL`  → `OPENROUTER_MODEL` → `google/gemini-2.5-flash-lite`
 
 Leaving every model knob unset routes **both** points to
-`google/gemini-2.0-flash` (the SIN-65243 "same model everywhere by
+`google/gemini-2.5-flash-lite` (the SIN-65243 "same model everywhere by
 default" decision). Setting only `OPENROUTER_MODEL` moves both points
 together; a per-point override peels one point off the shared default.
+
+### Model allowlist (single source of truth)
+
+The two adapter defaults (`adapters/openrouter.DefaultModel` and
+`internal/adapter/channels/llmcustomer/openrouter.DefaultModel`) MUST be
+identical (the SIN-65243 invariant) and MUST be a slug OpenRouter still
+serves. A **retired** slug does not fail at boot — it only surfaces as
+`upstream status 404` on the first real round-trip, the exact path the
+staging smoke does not exercise (AI-assist is deny-by-default). That is
+how the previously-defaulted Gemini 2.0 Flash slug reached staging after
+OpenRouter retired it ([SIN-65406]).
+
+The guard against recurrence is the allowlist in
+[`internal/llmmodels/allowlist.go`](../../internal/llmmodels/allowlist.go).
+It is the **single place to edit when the board rotates the model**:
+
+1. Update the `live` map in `internal/llmmodels/allowlist.go` (add the
+   new slug; remove the retired one once nothing points at it).
+2. Update the two `DefaultModel` constants to the new slug.
+3. Update this runbook's defaults/examples to match.
+
+`internal/llmmodels.TestAdapterDefaultModelsAreConsistentAndLive` fails
+CI (no network round-trip) if either adapter default diverges from the
+other or points at a slug absent from the allowlist — converting the
+silent runtime 404 into a build-time failure.
 
 > **AI-assist model precedence caveat.** The per-tenant `ai_policy.model`
 > column (set in the AI-policy settings UI) is forwarded by the
@@ -63,7 +88,7 @@ this is an **operator action**, not something the deploy pipeline does.
    ```
    INBOX_CHANNEL_PROVIDER=llmcustomer
    OPENROUTER_API_KEY=sk-or-...          # the board-provisioned key
-   OPENROUTER_MODEL=google/gemini-2.0-flash   # optional; this is the default anyway
+   OPENROUTER_MODEL=google/gemini-2.5-flash-lite   # optional; this is the default anyway
    # AIASSIST_LLM_MODEL=...               # optional per-point override
    # PERSONA_LLM_PROVIDER=openrouter      # optional; enables the LLM persona too
    ```
@@ -74,7 +99,7 @@ this is an **operator action**, not something the deploy pipeline does.
 4. Verify the boot log shows the wireup line (the key is **not** printed):
    ```
    docker logs crm-stg-app-1 2>&1 | grep "ai-assist operator summarizer"
-   # wired:   crm: ai-assist operator summarizer wired (provider=openrouter, model=google/gemini-2.0-flash)
+   # wired:   crm: ai-assist operator summarizer wired (provider=openrouter, model=google/gemini-2.5-flash-lite)
    # off:     crm: ai-assist operator summarizer disabled — OPENROUTER_API_KEY unset (soft-degrade; route + button stay off)
    ```
 5. Run the smoke: `scripts/ci/stg-smoke-aiassist.sh` (see below).
