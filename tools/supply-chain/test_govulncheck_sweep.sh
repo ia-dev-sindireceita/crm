@@ -143,6 +143,99 @@ else
   pass "unknown subcommand returned non-zero"
 fi
 
+# ---- Case 7: validate — false-clean guard (SIN-67201) ----------------------
+# A package-load / toolchain failure makes govulncheck exit non-zero while
+# producing NO findings (and typically no config record on stdout). The guard
+# must refuse to pass that off as a clean scan.
+echo "==> Case 7: validate rejects a package-load failure (no config, exit!=0)"
+loadfail="${work}/loadfail.json"
+: > "${loadfail}"   # govulncheck wrote everything to stderr; stdout is empty
+if "${SWEEP_SH}" validate "${loadfail}" 1 >/dev/null 2>&1; then
+  fail "validate accepted an empty (no-config) scan output"
+else
+  pass "validate rejects empty scan output with non-zero exit"
+fi
+
+# Even with exit 0, an empty/structureless stream is not a real scan.
+echo "==> Case 7b: validate rejects a structureless stream even on exit 0"
+if "${SWEEP_SH}" validate "${loadfail}" 0 >/dev/null 2>&1; then
+  fail "validate accepted a no-config stream on exit 0"
+else
+  pass "validate rejects no-config stream on exit 0"
+fi
+
+# A config record present but exit!=0 with zero findings is still a failure
+# (e.g. the loader errored after emitting config). Must NOT read as clean.
+echo "==> Case 7c: validate rejects config-only stream with non-zero exit"
+configonly="${work}/configonly.json"
+printf '%s\n' '{"config":{"protocol_version":"v1.0.0"}}' > "${configonly}"
+printf '%s\n' '{"progress":{"message":"Scanning..."}}' >> "${configonly}"
+if "${SWEEP_SH}" validate "${configonly}" 2 >/dev/null 2>&1; then
+  fail "validate accepted non-zero exit with zero findings"
+else
+  pass "validate rejects non-zero exit with zero findings"
+fi
+
+# ---- Case 8: validate — legitimate scans pass ------------------------------
+# Clean scan: config + progress present, exit 0, no findings → valid, clean.
+echo "==> Case 8: validate accepts a clean scan (config, exit 0, no findings)"
+if "${SWEEP_SH}" validate "${configonly}" 0 >/dev/null 2>&1; then
+  pass "validate accepts a genuine clean scan"
+else
+  fail "validate rejected a legitimate clean scan"
+fi
+
+# Vulns-found scan: findings present, exit!=0 → valid; report still wanted.
+echo "==> Case 8b: validate accepts a vulns-found scan (findings, exit!=0)"
+if "${SWEEP_SH}" validate "${FIXTURE}" 3 >/dev/null 2>&1; then
+  pass "validate accepts non-zero exit when findings are present"
+else
+  fail "validate rejected a legitimate vulns-found scan"
+fi
+
+# ---- Case 9: sweep end-to-end fails loud on a stubbed load failure ---------
+# Put a fake `govulncheck` on PATH that mimics a toolchain/load error: it
+# writes to stderr and exits non-zero with EMPTY stdout. `sweep` must exit
+# non-zero and must NOT print a clean JSON report.
+echo "==> Case 9: sweep exits non-zero on a simulated package-load failure"
+stubdir="${work}/stub-fail"
+mkdir -p "${stubdir}"
+cat > "${stubdir}/govulncheck" <<'STUB'
+#!/usr/bin/env bash
+echo "govulncheck: loading packages: this package requires newer Go" >&2
+exit 1
+STUB
+chmod +x "${stubdir}/govulncheck"
+sweep_out="${work}/sweep-fail.out"
+if PATH="${stubdir}:${PATH}" "${SWEEP_SH}" sweep >"${sweep_out}" 2>/dev/null; then
+  fail "sweep returned 0 on a simulated load failure"
+elif jq -e '.new_ids' >/dev/null 2>&1 <"${sweep_out}"; then
+  fail "sweep emitted a (false-clean) JSON report on a load failure"
+else
+  pass "sweep fails loud and emits no clean report on a load failure"
+fi
+
+# ---- Case 9b: sweep end-to-end succeeds on a stubbed clean scan ------------
+# Fake `govulncheck` that emits a valid clean stream (config + progress) and
+# exits 0. `sweep` must exit 0 and emit a clean report.
+echo "==> Case 9b: sweep succeeds and emits a clean report on a valid clean scan"
+stubok="${work}/stub-ok"
+mkdir -p "${stubok}"
+cat > "${stubok}/govulncheck" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"config":{"protocol_version":"v1.0.0"}}'
+printf '%s\n' '{"progress":{"message":"Scanning your code..."}}'
+exit 0
+STUB
+chmod +x "${stubok}/govulncheck"
+sweep_ok="${work}/sweep-ok.out"
+if PATH="${stubok}:${PATH}" "${SWEEP_SH}" sweep >"${sweep_ok}" 2>/dev/null \
+   && jq -e '(.new_ids | length == 0) and (.current_ids | length == 0)' >/dev/null 2>&1 <"${sweep_ok}"; then
+  pass "sweep emits a clean report on a genuine clean scan"
+else
+  fail "sweep did not emit the expected clean report: $(cat "${sweep_ok}" 2>/dev/null)"
+fi
+
 echo
 if [[ "${failures}" -gt 0 ]]; then
   echo "RESULT: ${failures} failure(s)" >&2
