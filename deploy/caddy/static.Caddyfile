@@ -44,12 +44,24 @@ static.crm.local, static.{$CRM_PRIMARY_DOMAIN:crm.local} {
 	# circumstance, including error pages.
 	header -Set-Cookie
 
-	# 3. Shared defense-in-depth headers (HSTS, COOP, COEP, CORP same-origin,
+	# 3. Strip every client-supplied client-IP identity header before the
+	# request reaches app:8080 — SIN-62993. The @media routes below
+	# reverse_proxy to app:8080, which runs the global trustedRealIP
+	# wrapper (internal/adapter/httpapi/trusted_realip.go); Caddy's docker-
+	# bridge peer IP (172.16/12) is trusted, so without this strip an
+	# attacker could forge True-Client-IP / X-Real-IP / X-Forwarded-For via
+	# the static origin and bypass any rate-limit/audit path that keys off
+	# the client IP. Shared importable snippet — see
+	# deploy/caddy/strip-client-ip.caddy for the full rationale. This strip
+	# is a prerequisite before static.Caddyfile is wired into deployment.
+	import strip-client-ip.caddy
+
+	# 4. Shared defense-in-depth headers (HSTS, COOP, COEP, CORP same-origin,
 	# Referrer-Policy, Permissions-Policy, nosniff, …) — SIN-62330. Imported
 	# after cookie-strip so the baseline applies to every Caddy-served 404 too.
 	import security-headers.caddy
 
-	# 4. Reverse-proxy ONLY the two media routes to app:8080. Anything
+	# 5. Reverse-proxy ONLY the two media routes to app:8080. Anything
 	# else is a 404 served directly by Caddy.
 	@media path /t/*/logo /t/*/m/*
 	handle @media {
